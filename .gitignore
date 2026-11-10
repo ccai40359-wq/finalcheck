@@ -26,3 +26,6 @@ _*.txt
 tmp-redteam/
 {*
 _*
+
+# 运行时迁移标记（dev 数据目录用，不入库）
+desktop/.project-migrated
