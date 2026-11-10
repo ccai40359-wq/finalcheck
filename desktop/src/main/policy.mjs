@@ -9,6 +9,7 @@
 
 import os from 'node:os';
 import path from 'node:path';
+import { t } from '../renderer/i18n/core.mjs';
 
 export const POLICY_MODES = Object.freeze(['workspace', 'readonly', 'off']);
 
@@ -146,13 +147,13 @@ export function createPolicy({
   home = null
 } = {}) {
   if (!POLICY_MODES.includes(mode)) {
-    throw new Error(`未知策略模式：${mode}（允许 ${POLICY_MODES.join(' / ')}）`);
+    throw new Error(t('未知策略模式：{mode}（允许 {modes}）', { mode, modes: POLICY_MODES.join(' / ') }));
   }
   if (projectPath != null && typeof projectPath !== 'string') {
-    throw new TypeError('projectPath 必须是字符串');
+    throw new TypeError(t('projectPath 必须是字符串'));
   }
-  if (!Array.isArray(allowPaths)) throw new TypeError('allowPaths 必须是数组');
-  if (platform != null && typeof platform !== 'string') throw new TypeError('platform 必须是字符串');
+  if (!Array.isArray(allowPaths)) throw new TypeError(t('allowPaths 必须是数组'));
+  if (platform != null && typeof platform !== 'string') throw new TypeError(t('platform 必须是字符串'));
 
   const effectivePlatform = isWinPlatform(platform) ? 'win32' : 'posix';
   const pathApi = pathApiFor(effectivePlatform);
@@ -174,7 +175,7 @@ export function createPolicy({
   const project = projectPath != null ? normalizeRoot(pathApi, projectPath, null, homeDir) : null;
   const allow = [];
   for (const entry of allowPaths) {
-    if (typeof entry !== 'string') throw new TypeError('allowPaths 的每一项都必须是字符串');
+    if (typeof entry !== 'string') throw new TypeError(t('allowPaths 的每一项都必须是字符串'));
     const normalized = normalizeRoot(pathApi, entry, project, homeDir);
     if (normalized) allow.push(normalized);
   }
@@ -246,7 +247,7 @@ function detectSensitive(policy, normalized) {
   for (const item of dirs) {
     if (item && typeof item.path === 'string'
       && isInside(pathApi, item.path, normalized, caseInsensitive)) {
-      return item.label || '敏感目录';
+      return t(item.label || '敏感目录');
     }
   }
 
@@ -254,14 +255,14 @@ function detectSensitive(policy, normalized) {
   for (const item of files) {
     if (item && typeof item.path === 'string'
       && samePath(policy.platform, item.path, normalized)) {
-      return item.label || '敏感文件';
+      return t(item.label || '敏感文件');
     }
   }
 
   const base = pathApi.basename(normalized);
   const target = caseInsensitive ? base.toLowerCase() : base;
   const keys = Array.isArray(policy.sensitive?.keyBasenames) ? policy.sensitive.keyBasenames : [];
-  if (keys.includes(target)) return 'SSH 私钥文件';
+  if (keys.includes(target)) return t('SSH 私钥文件');
 
   return null;
 }
@@ -273,36 +274,36 @@ function detectSensitive(policy, normalized) {
  */
 export function assertPathAllowed(policy, absPath, { write = false, tool = DEFAULT_TOOL } = {}) {
   if (!policy || typeof policy !== 'object' || !POLICY_MODES.includes(policy.mode)) {
-    return deny(tool, absPath, '策略对象无效');
+    return deny(tool, absPath, t('策略对象无效'));
   }
   if (typeof absPath !== 'string' || absPath.trim() === '') {
-    return deny(tool, absPath, typeof absPath === 'string' ? '路径为空' : '路径无效');
+    return deny(tool, absPath, typeof absPath === 'string' ? t('路径为空') : t('路径无效'));
   }
 
   let normalized;
   try {
     normalized = normalizeTarget(policy, absPath);
   } catch {
-    return deny(tool, absPath, '路径无效');
+    return deny(tool, absPath, t('路径无效'));
   }
-  if (!normalized) return deny(tool, absPath, '路径无效');
+  if (!normalized) return deny(tool, absPath, t('路径无效'));
 
   const sensitive = detectSensitive(policy, normalized);
-  if (sensitive) return deny(tool, normalized, `敏感路径禁止访问（${sensitive}）`);
+  if (sensitive) return deny(tool, normalized, t('敏感路径禁止访问（{item}）', { item: sensitive }));
 
   if (write && policy.mode === 'readonly') {
-    return deny(tool, normalized, '只读模式禁止写入');
+    return deny(tool, normalized, t('只读模式禁止写入'));
   }
 
   if (policy.mode !== 'off') {
     const roots = Array.isArray(policy.roots) ? policy.roots : [];
-    if (roots.length === 0) return deny(tool, normalized, '策略未设置项目目录');
+    if (roots.length === 0) return deny(tool, normalized, t('策略未设置项目目录'));
     const pathApi = pathApiFor(policy.platform);
     const caseInsensitive = isWinPlatform(policy.platform);
     const inside = roots.some(
       (root) => typeof root === 'string' && isInside(pathApi, root, normalized, caseInsensitive)
     );
-    if (!inside) return deny(tool, normalized, '路径不在项目边界内');
+    if (!inside) return deny(tool, normalized, t('路径不在项目边界内'));
   }
 
   return { ok: true, path: normalized };
@@ -316,12 +317,12 @@ export function assertPathAllowed(policy, absPath, { write = false, tool = DEFAU
 export function assertCwd(policy, cwd) {
   const tool = 'cwd';
   if (!policy || typeof policy !== 'object' || !POLICY_MODES.includes(policy.mode)) {
-    return deny(tool, cwd, '策略对象无效');
+    return deny(tool, cwd, t('策略对象无效'));
   }
   if (cwd == null || (typeof cwd === 'string' && cwd.trim() === '')) {
     if (policy.mode === 'off') return { ok: true, path: null };
     if (policy.projectPath) return { ok: true, path: policy.projectPath };
-    return deny(tool, cwd, '策略未设置项目目录');
+    return deny(tool, cwd, t('策略未设置项目目录'));
   }
   return assertPathAllowed(policy, cwd, { write: false, tool });
 }
@@ -398,7 +399,7 @@ const COMMAND_RULES = Object.freeze([
 export function checkCommand(policy, command) {
   void policy; // 命令规则与模式无关；保留参数位以便后续按模式扩展
   if (typeof command !== 'string') {
-    return { ok: false, reason: '命令必须是字符串', matchedRule: 'invalid-command' };
+    return { ok: false, reason: t('命令必须是字符串'), matchedRule: 'invalid-command' };
   }
   const cmd = command.trim();
   if (!cmd) return { ok: true };
@@ -406,7 +407,7 @@ export function checkCommand(policy, command) {
   const segments = commandSegments(cmd);
   for (const rule of COMMAND_RULES) {
     if (segments.some((seg) => rule.test(seg))) {
-      return { ok: false, reason: `命令命中安全黑名单：${rule.name}`, matchedRule: rule.name };
+      return { ok: false, reason: t('命令命中安全黑名单：{rule}', { rule: rule.name }), matchedRule: rule.name };
     }
   }
   return { ok: true };

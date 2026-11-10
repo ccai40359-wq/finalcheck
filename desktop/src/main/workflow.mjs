@@ -14,6 +14,9 @@ import { buildHolesPromptSection, collectHoles, isSalvageText, salvageSubagentCo
 import { appendVerifyConclusions, buildUpstreamOnlyVerifyPrompt, clipStoredContent, existingNodeOutputPath, withFullOutputHint, writeNodeOutput } from './workflow-outputs.mjs';
 // 受限脚本 DSL（script 模式）解释器；它反向引用本文件的纯函数，ESM 函数声明在实例化阶段已可用
 import { runScriptWorkflow, SCRIPT_DEFAULT_CONCURRENCY, SCRIPT_MAX_CONCURRENCY } from './workflow-script.mjs';
+import { withOutputLanguage } from './lang.mjs';
+// 双语：失败原因/警告/摘要会显示在聊天与工作流卡里（zh 下 t() 原样返回源串）
+import { t } from '../renderer/i18n/core.mjs';
 
 export const DEFAULT_MAX_STEPS = 14;
 export const MAX_STEPS_CAP = 64;
@@ -38,13 +41,13 @@ function clampInt(value, min, max, fallback) {
 }
 
 function normalizeBudget(raw, id) {
-  if (typeof raw !== 'object' || Array.isArray(raw)) return { error: `步骤 ${id} 的 budget 必须是对象` };
+  if (typeof raw !== 'object' || Array.isArray(raw)) return { error: t('步骤 {id} 的 budget 必须是对象', { id }) };
   const out = {};
   for (const [key, [min, max]] of Object.entries(BUDGET_LIMITS)) {
     const value = raw[key];
     if (value === undefined || value === null) continue;
     const n = Number(value);
-    if (!Number.isFinite(n)) return { error: `步骤 ${id} 的 budget.${key} 必须是数字` };
+    if (!Number.isFinite(n)) return { error: t('步骤 {id} 的 budget.{key} 必须是数字', { id, key }) };
     out[key] = clampInt(n, min, max, min);
   }
   return { budget: Object.keys(out).length ? out : null };
@@ -62,12 +65,12 @@ function durationText(ms) {
 
 /** 显式墙钟到点时的文案（失败步骤必须有可读原因，不能是空字符串） */
 export function stepTimeoutText(ms) {
-  return `单步超时（${durationText(ms)}）：已中断，产出可能不完整`;
+  return t('单步超时（{duration}）：已中断，产出可能不完整', { duration: durationText(ms) });
 }
 
 /** 历史软预算文案（仅保留给旧调用/测试引用；流式子代理已不再按时间强制收尾） */
 export function softBudgetText(ms) {
-  return `工具预算用尽（${durationText(ms)}），已强制收尾`;
+  return t('工具预算用尽（{duration}），已强制收尾', { duration: durationText(ms) });
 }
 
 /** 解析单步墙钟上限：budget.maxStepMs 显式正数才生效；缺省/非法/0 = 不限制（返回 0） */
@@ -119,7 +122,7 @@ export function withStepDeadline(callStep, { abortGraceMs = STEP_ABORT_GRACE_MS,
       out = await Promise.race([
         Promise.resolve()
           .then(() => callStep({ ...ctx, budget, signal: ctl.signal }))
-          .catch((e) => ({ error: e?.message || '子代理调用失败' })),
+          .catch((e) => ({ error: e?.message || t('子代理调用失败') })),
         abortedRace || new Promise(() => { /* 不限制时永不抢跑 */ }),
       ]);
     } finally {
@@ -134,7 +137,7 @@ export function withStepDeadline(callStep, { abortGraceMs = STEP_ABORT_GRACE_MS,
         ...base,
         ...(content ? { content } : {}),
         error: stepTimeoutText(maxMs),
-        warnings: [...(Array.isArray(base.warnings) ? base.warnings : []), `单步超时（${durationText(maxMs)}）：已中断`],
+        warnings: [...(Array.isArray(base.warnings) ? base.warnings : []), t('单步超时（{duration}）：已中断', { duration: durationText(maxMs) })],
       };
     }
     if (stopped) {
@@ -142,8 +145,8 @@ export function withStepDeadline(callStep, { abortGraceMs = STEP_ABORT_GRACE_MS,
       return {
         ...base,
         ...(content ? { content } : {}),
-        error: base.error || '已中断（用户停止）',
-        warnings: [...(Array.isArray(base.warnings) ? base.warnings : []), '已中断（用户停止）'],
+        error: base.error || t('已中断（用户停止）'),
+        warnings: [...(Array.isArray(base.warnings) ? base.warnings : []), t('已中断（用户停止）')],
       };
     }
     return out;
@@ -179,8 +182,8 @@ export function stepHash(goal, step) {
 /** 纯函数：校验并规范化 steps；返回 { steps, levels, byId } 或 { error } */
 export function normalizeSteps(steps, { maxSteps = DEFAULT_MAX_STEPS } = {}) {
   const stepLimit = clampInt(maxSteps, 1, MAX_STEPS_CAP, DEFAULT_MAX_STEPS);
-  if (!Array.isArray(steps) || steps.length === 0) return { error: 'steps 不能为空：至少 1 个步骤' };
-  if (steps.length > stepLimit) return { error: `步骤最多 ${stepLimit} 个（当前 ${steps.length}）` };
+  if (!Array.isArray(steps) || steps.length === 0) return { error: t('steps 不能为空：至少 1 个步骤') };
+  if (steps.length > stepLimit) return { error: t('步骤最多 {limit} 个（当前 {n}）', { limit: stepLimit, n: steps.length }) };
   const list = [];
   for (let i = 0; i < steps.length; i += 1) {
     const s = steps[i] && typeof steps[i] === 'object' ? steps[i] : {};
@@ -203,18 +206,18 @@ export function normalizeSteps(steps, { maxSteps = DEFAULT_MAX_STEPS } = {}) {
         if (swarm.providerId) item.providerId = swarm.providerId;
         if (swarm.targetsFrom) item.targetsFrom = swarm.targetsFrom;
       } catch (e) {
-        return { error: `步骤 ${item.id} 协议字段非法：${e?.message || e}` };
+        return { error: t('步骤 {id} 协议字段非法：{error}', { id: item.id, error: e?.message || e }) };
       }
     }
     list.push(item);
   }
   const ids = new Set();
   for (const s of list) {
-    if (!s.id || !/^[A-Za-z0-9_-]{1,32}$/.test(s.id)) return { error: `步骤 id 非法（只允许字母数字-_，最长 32）：${s.id || '(空)'}` };
-    if (ids.has(s.id)) return { error: `步骤 id 重复：${s.id}` };
+    if (!s.id || !/^[A-Za-z0-9_-]{1,32}$/.test(s.id)) return { error: t('步骤 id 非法（只允许字母数字-_，最长 32）：{id}', { id: s.id || t('(空)') }) };
+    if (ids.has(s.id)) return { error: t('步骤 id 重复：{id}', { id: s.id }) };
     ids.add(s.id);
-    if (!s.prompt) return { error: `步骤 ${s.id} 缺少 prompt（要交给子代理的具体任务）` };
-    if (s.prompt.length > MAX_PROMPT) return { error: `步骤 ${s.id} 的 prompt 过长（>${MAX_PROMPT} 字符）` };
+    if (!s.prompt) return { error: t('步骤 {id} 缺少 prompt（要交给子代理的具体任务）', { id: s.id }) };
+    if (s.prompt.length > MAX_PROMPT) return { error: t('步骤 {id} 的 prompt 过长（>{max} 字符）', { id: s.id, max: MAX_PROMPT }) };
     if (s.budget !== undefined && s.budget !== null) {
       const b = normalizeBudget(s.budget, s.id);
       if (b.error) return { error: b.error };
@@ -226,12 +229,12 @@ export function normalizeSteps(steps, { maxSteps = DEFAULT_MAX_STEPS } = {}) {
   }
   for (const s of list) {
     for (const d of s.depends_on) {
-      if (!ids.has(d)) return { error: `步骤 ${s.id} 依赖不存在的步骤：${d}` };
-      if (d === s.id) return { error: `步骤 ${s.id} 不能依赖自己` };
+      if (!ids.has(d)) return { error: t('步骤 {id} 依赖不存在的步骤：{dep}', { id: s.id, dep: d }) };
+      if (d === s.id) return { error: t('步骤 {id} 不能依赖自己', { id: s.id }) };
     }
     if (s.targetsFrom) {
-      if (s.targetsFrom === s.id) return { error: `步骤 ${s.id} 的 targetsFrom 不能指向自己` };
-      if (!ids.has(s.targetsFrom)) return { error: `步骤 ${s.id} 的 targetsFrom 指向不存在的步骤：${s.targetsFrom}` };
+      if (s.targetsFrom === s.id) return { error: t('步骤 {id} 的 targetsFrom 不能指向自己', { id: s.id }) };
+      if (!ids.has(s.targetsFrom)) return { error: t('步骤 {id} 的 targetsFrom 指向不存在的步骤：{target}', { id: s.id, target: s.targetsFrom }) };
     }
   }
   const topo = topoLevels(list);
@@ -247,7 +250,7 @@ function topoLevels(list) {
   let remaining = list.length;
   while (remaining > 0) {
     const level = list.filter((s) => !done.has(s.id) && s.depends_on.every((d) => done.has(d)));
-    if (!level.length) return { error: '步骤依赖成环，无法执行（检查 depends_on）' };
+    if (!level.length) return { error: t('步骤依赖成环，无法执行（检查 depends_on）') };
     for (const s of level) done.add(s.id);
     levels.push(level.map((s) => s.id));
     remaining -= level.length;
@@ -277,43 +280,43 @@ export function computeReuse(journal, norm, goal) {
   const decide = (step) => {
     if (Object.prototype.hasOwnProperty.call(reasons, step.id)) return reusable.has(step.id);
     if (visiting.has(step.id)) {
-      reasons[step.id] = '依赖成环，不可复用';
+      reasons[step.id] = t('依赖成环，不可复用');
       return false;
     }
     visiting.add(step.id);
     let ok = false;
     let reason = '';
     if (!journalSteps) {
-      reason = '没有 journal 记录';
+      reason = t('没有 journal 记录');
     } else {
       const js = journalSteps[step.id];
       if (!js) {
-        reason = 'journal 中没有该步骤';
+        reason = t('journal 中没有该步骤');
       } else if (js.status !== 'success') {
-        reason = `上次未成功（${js.status || '未知'}）`;
+        reason = t('上次未成功（{status}）', { status: js.status || t('未知') });
       } else if (!String(js.content || '').trim()) {
-        reason = '上次结果为空';
+        reason = t('上次结果为空');
       } else if (String(js.hash || '') !== stepHash(goal, step)) {
-        reason = '步骤内容已变更（hash 不一致）';
+        reason = t('步骤内容已变更（hash 不一致）');
       } else {
         ok = true;
         for (const d of step.depends_on) {
           const dep = byId.get(d);
           if (!dep) {
             ok = false;
-            reason = `依赖 ${d} 不在本次步骤中`;
+            reason = t('依赖 {dep} 不在本次步骤中', { dep: d });
             break;
           }
           if (!decide(dep)) {
             ok = false;
-            reason = `依赖 ${d} 不可复用`;
+            reason = t('依赖 {dep} 不可复用', { dep: d });
             break;
           }
         }
       }
     }
     visiting.delete(step.id);
-    reasons[step.id] = ok ? '可复用' : (reason || '不可复用');
+    reasons[step.id] = ok ? t('可复用') : (reason || t('不可复用'));
     if (ok) reusable.add(step.id);
     return ok;
   };
@@ -523,7 +526,7 @@ export function applyAdversarialGate({ claims = [], results = [], verifySteps = 
     && Array.isArray(r.verdicts)
     && r.verdicts.length > 0);
   if (list.length && hasVerifyStep && !effectiveVerify) {
-    warnings.push('对抗复核未完成：verify 步骤失败、被跳过或没有给出任何有效 verdict，全部 claim 未经对抗复核');
+    warnings.push(t('对抗复核未完成：verify 步骤失败、被跳过或没有给出任何有效 verdict，全部 claim 未经对抗复核'));
   }
 
   const out = list.map((raw) => {
@@ -534,13 +537,13 @@ export function applyAdversarialGate({ claims = [], results = [], verifySteps = 
     const covered = claim.verdicts.length > 0;
     if (String(claim.status || '').toLowerCase() !== 'confirmed') return claim;
     if (!claimHasVerifier(claim)) {
-      warnings.push(`claim ${claim.id} 标为 confirmed 但缺少复核者（model/stepId），已降级为 lead`);
+      warnings.push(t('claim {id} 标为 confirmed 但缺少复核者（model/stepId），已降级为 lead', { id: claim.id }));
       claim.status = 'lead';
       claim.gate = [...(Array.isArray(claim.gate) ? claim.gate : []), 'missing-verifier'];
       return claim;
     }
     if (!covered) {
-      warnings.push(`claim ${claim.id} 标为 confirmed 但没有对抗复核覆盖（无 verdict），已降级为 lead`);
+      warnings.push(t('claim {id} 标为 confirmed 但没有对抗复核覆盖（无 verdict），已降级为 lead', { id: claim.id }));
       claim.status = 'lead';
       claim.gate = [...(Array.isArray(claim.gate) ? claim.gate : []), 'unreviewed'];
     }
@@ -548,7 +551,7 @@ export function applyAdversarialGate({ claims = [], results = [], verifySteps = 
   });
   const unreviewed = out
     .filter((c) => !(Array.isArray(c.verdicts) && c.verdicts.length) && String(c.status || '').toLowerCase() !== 'rejected')
-    .map((c) => String(c.id || '(无 id)'));
+    .map((c) => String(c.id || t('(无 id)')));
   return { claims: out, warnings, unreviewed };
 }
 
@@ -560,7 +563,7 @@ export function appendAdversarialReportNote(content, unreviewed = []) {
   const text = String(content || '');
   const ids = Array.isArray(unreviewed) ? unreviewed.filter(Boolean) : [];
   if (!text.trim() || !ids.length) return text;
-  return `${text}\n\n> 复核状态：claim ${ids.join('、')} 未经对抗复核（没有 verifier verdict），只能按「疑似/未复核」处理。`;
+  return `${text}\n\n> ${t('复核状态：claim {ids} 未经对抗复核（没有 verifier verdict），只能按「疑似/未复核」处理。', { ids: ids.join('、') })}`;
 }
 
 function applyReportNotes(results, unreviewed) {
@@ -583,14 +586,14 @@ export function judgeSubagentOutcome({ kind = null, content = '', toolCount = 0,
   const text = String(content || '').trim();
   const k = String(kind || '').trim().toLowerCase();
   if (requiresTools && toolCountKnown && Math.max(0, Math.trunc(Number(toolCount) || 0)) === 0) {
-    return { ok: false, error: '未产生任何工具调用：该步没有取证（疑似空转）' };
+    return { ok: false, error: t('未产生任何工具调用：该步没有取证（疑似空转）') };
   }
   if (k === 'report' && text.length < 80) {
-    return { ok: false, error: `汇总为空：report 步骤内容不足 80 字（${text.length}）` };
+    return { ok: false, error: t('汇总为空：report 步骤内容不足 80 字（{n}）', { n: text.length }) };
   }
   if (truncated && (k === 'find' || k === 'verify')) {
     const parsed = parseAgentJson(text);
-    if (parsed?.error) return { ok: false, error: '输出被截断，取证不完整' };
+    if (parsed?.error) return { ok: false, error: t('输出被截断，取证不完整') };
   }
   return { ok: true, error: null };
 }
@@ -644,7 +647,7 @@ export async function runSubagentStep({
   const endpoint = String(baseUrl || '').replace(/\/+$/, '') + '/chat/completions';
   const headers = { 'content-type': 'application/json', ...(apiKey ? { authorization: 'Bearer ' + apiKey } : {}) };
   let messages = [
-    { role: 'system', content: String(systemPrompt || '') },
+    { role: 'system', content: withOutputLanguage(String(systemPrompt || '')) },
     { role: 'user', content: String(prompt || '') }
   ];
   let toolChoiceUnsupported = false;
@@ -675,7 +678,7 @@ export async function runSubagentStep({
     if (!res.ok && (res.status === 400 || res.status === 422) && body.tool_choice) {
       delete body.tool_choice;
       toolChoiceUnsupported = true;
-      warnings.push(`网关不支持 tool_choice（HTTP ${res.status}），已去掉该字段重试`);
+      warnings.push(t('网关不支持 tool_choice（HTTP {status}），已去掉该字段重试', { status: res.status }));
       res = await fetchImpl(endpoint, { method: 'POST', headers, body: JSON.stringify(body), signal });
       text = await res.text();
       json = null;
@@ -747,7 +750,7 @@ export async function runSubagentStep({
       try {
         out = typeof executeTool === 'function' ? await executeTool(name, args) : { error: '子代理不允许调用工具：' + name };
       } catch (e) {
-        out = { error: e?.message || '工具执行失败' };
+        out = { error: e?.message || t('工具执行失败') };
       }
       toolCount += 1;
       const toolText = JSON.stringify(out ?? null).slice(0, 16000);
@@ -762,7 +765,7 @@ export async function runSubagentStep({
   messages.push({ role: 'user', content: '工具调用预算已用完（轮次或时间到上限）。请基于目前已经拿到的工具结果，直接输出本步骤的交付物（结论 + 证据），不要再请求工具；还没查完的部分如实标「未覆盖」。' });
   messages = trimToolResults(messages);
   const fin = await chat(messages, null, { withTools: false });
-  if (fin.error) return { error: `子代理收尾请求失败 ${fin.error}`, toolCount, truncated, warnings };
+  if (fin.error) return { error: t('子代理收尾请求失败 {error}', { error: fin.error }), toolCount, truncated, warnings };
   const finChoice = fin.json?.choices?.[0];
   const finMsg = finChoice?.message;
   const finReason = finChoice?.finish_reason ?? null;
@@ -791,7 +794,7 @@ export async function runSubagentStep({
     if (typeof onAssistant === 'function') onAssistant({ content: partial, toolCalls: [], reasoning: '', ms: null, final: true });
     return { content: partial, toolCount, truncated, warnings, finishReason };
   }
-  return { error: '子代理用完工具轮次仍没有给出结论', toolCount, truncated, warnings };
+  return { error: t('子代理用完工具轮次仍没有给出结论'), toolCount, truncated, warnings };
 }
 
 /**
@@ -825,14 +828,14 @@ export async function runWorkflow({
   projectPath = null,
 } = {}) {
   const goalText = String(goal || '').trim();
-  if (!goalText) return { error: 'goal 不能为空（整个工作流要达成的目标）' };
+  if (!goalText) return { error: t('goal 不能为空（整个工作流要达成的目标）') };
   if (steps !== undefined && steps !== null && script !== undefined && script !== null) {
-    return { error: 'steps 与 script 互斥：一次只能给一个（steps 模式或受限脚本模式）' };
+    return { error: t('steps 与 script 互斥：一次只能给一个（steps 模式或受限脚本模式）') };
   }
   const scriptMode = script !== undefined && script !== null;
   const norm = scriptMode ? null : normalizeSteps(steps, { maxSteps });
   if (!scriptMode && norm.error) return { error: norm.error };
-  if (!scriptMode && typeof callStep !== 'function') return { error: '当前通道不支持子代理调用' };
+  if (!scriptMode && typeof callStep !== 'function') return { error: t('当前通道不支持子代理调用') };
   // 默认强制对抗复核：有取证步骤且没有 verify 时，调度前自动补一个盲验节点
   if (!scriptMode) injectAdversarialVerify(norm);
 
@@ -840,18 +843,18 @@ export async function runWorkflow({
   const dir = journalDir == null ? null : String(journalDir).trim();
   let resumeJournal = null;
   if (typeof resumeFrom === 'string' && resumeFrom.trim()) {
-    if (!dir) return { error: 'resumeFrom 传 runId 时必须同时提供 journalDir' };
+    if (!dir) return { error: t('resumeFrom 传 runId 时必须同时提供 journalDir') };
     try {
       resumeJournal = await loadJournal(resumeFrom.trim(), { dir });
     } catch (e) {
-      return { error: `读取 journal 失败：${e?.message || e}` };
+      return { error: t('读取 journal 失败：{error}', { error: e?.message || e }) };
     }
-    if (!resumeJournal) return { error: `找不到 journal：${resumeFrom.trim()}` };
+    if (!resumeJournal) return { error: t('找不到 journal：{runId}', { runId: resumeFrom.trim() }) };
   } else if (resumeFrom && typeof resumeFrom === 'object') {
     try {
       resumeJournal = JSON.parse(JSON.stringify(resumeFrom));
     } catch {
-      return { error: 'resumeFrom journal 无法序列化（需为纯 JSON 对象）' };
+      return { error: t('resumeFrom journal 无法序列化（需为纯 JSON 对象）') };
     }
     if (!resumeJournal || typeof resumeJournal !== 'object') resumeJournal = null;
     else if (!resumeJournal.steps || typeof resumeJournal.steps !== 'object' || Array.isArray(resumeJournal.steps)) resumeJournal.steps = {};
@@ -1018,7 +1021,7 @@ export async function runWorkflow({
         const final = ['confirmed', 'rejected', 'uncertain'].includes(finalRaw) ? finalRaw : 'uncertain';
         const idx = claimId ? claimsStore.findIndex((c) => c.id === claimId) : -1;
         if (idx < 0) {
-          unmatched.push(claimId || '(空 claimId)');
+          unmatched.push(claimId || t('(空 claimId)'));
           continue;
         }
         const current = { ...claimsStore[idx], verdicts: [...(claimsStore[idx].verdicts || [])] };
@@ -1032,7 +1035,7 @@ export async function runWorkflow({
           quote: String(d?.quote ?? ''),
           reason: String(d?.reason ?? ''),
           stepId: step.id,
-          ...(effective !== final ? { downgraded: '没有 verify 覆盖，confirmed 降为 lead' } : {}),
+          ...(effective !== final ? { downgraded: t('没有 verify 覆盖，confirmed 降为 lead') } : {}),
         };
         if (effective === 'confirmed' && (!current.verifiedBy || !current.verifiedBy.model)) {
           current.verifiedBy = {
@@ -1203,7 +1206,7 @@ export async function runWorkflow({
         blind: step.kind ? !!step.blind : null,
       });
     } catch (e) {
-      out = { error: e?.message || '子代理调用失败' };
+      out = { error: e?.message || t('子代理调用失败') };
     }
     let content = String(out?.content || '').trim();
     const originalEmpty = !content;
@@ -1243,8 +1246,8 @@ export async function runWorkflow({
     });
     // 中断/空回复即使 salvage 出了正文，也必须失败（ok 不能翻绿）
     const ok = !out?.error && !originalEmpty && judged.ok && !aborted;
-    let error = out?.error || judged.error || (originalEmpty ? '子代理没有返回内容' : null);
-    if (aborted) error = out?.error || '子代理被中断';
+    let error = out?.error || judged.error || (originalEmpty ? t('子代理没有返回内容') : null);
+    if (aborted) error = out?.error || t('子代理被中断');
     // 结构化错误码：与 script 模式同一套口径（复用 swarm.mjs 的纯函数，不在此另写映射）；
     // 成功步骤为 null，失败步骤随快照/结果行/journal 透传给卡片 chip
     const errorCode = ok ? null : (
@@ -1359,7 +1362,7 @@ export async function runWorkflow({
         hash: stepHash(goalText, s),
         status,
         content: status === 'success' ? String(results.get(s.id)?.content || '') : '',
-        error: status === 'success' ? null : (st.error || (stopped ? '工作流已停止' : '未执行（上游失败或依赖不可达）')),
+        error: status === 'success' ? null : (st.error || (stopped ? t('工作流已停止') : t('未执行（上游失败或依赖不可达）'))),
         errorCode: status === 'success' ? null : (st.errorCode || null),
         ms: st.ms || 0,
         tools: st.tools || 0,
@@ -1420,9 +1423,9 @@ export async function runWorkflow({
     warnings,
     claimsFile,
     summary: ordered.map((r) => `${r.id} ${r.name}: ${r.ok
-      ? '完成'
+      ? t('完成')
       : (r.errorCode
-        ? `失败（${r.errorCode} · ${errorCodeLabel(r.errorCode)}）`
-        : `失败（${r.error}）`)}`).join('\n'),
+        ? t('失败（{code} · {label}）', { code: r.errorCode, label: errorCodeLabel(r.errorCode) })
+        : t('失败（{error}）', { error: r.error }))}`).join('\n'),
   };
 }

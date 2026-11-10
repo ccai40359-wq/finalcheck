@@ -6,6 +6,7 @@ import { CommandDetail, GenericToolDetail, BODY_CARD_TOOLS } from './TraceCards.
 import { humanizeToolError, summarizeToolArgs } from '../lib/humanize.js';
 import { iconFor, IconBrain } from './ToolIcons.jsx';
 import { DEFAULT_WORKING_LABEL, retryLabel } from './activity.mjs';
+import { t } from '../i18n/core.mjs';
 
 // 时长进位：60s → 1m，60m → 1h（不再出现 Working 152s / 3900s）
 const fmtDur = (ms) => {
@@ -35,8 +36,8 @@ const splitPath = (p) => {
   return i >= 0 ? { file: n.slice(i + 1), dir: n.slice(0, i) } : { file: n, dir: '' };
 };
 const oneLine = (s, max = 220) => {
-  const t = String(s ?? '').replace(/\s+/g, ' ').trim();
-  return t.length > max ? t.slice(0, max) + '…' : t;
+  const str = String(s ?? '').replace(/\s+/g, ' ').trim();
+  return str.length > max ? str.slice(0, max) + '…' : str;
 };
 
 /* ---------- 事件归约 ---------- */
@@ -175,8 +176,8 @@ function Chevron({ open }) {
 export function WorkingStatus({ startedAt, label = null, tone = 'activity', className = '' }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 500);
-    return () => clearInterval(t);
+    const timer = setInterval(() => setNow(Date.now()), 500);
+    return () => clearInterval(timer);
   }, []);
   if (!startedAt) return null;
   const elapsed = Math.max(0, now - startedAt);
@@ -199,8 +200,8 @@ function ThoughtEntry({ e }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     if (!e.live) return undefined;
-    const t = setInterval(() => setNow(Date.now()), 500);
-    return () => clearInterval(t);
+    const timer = setInterval(() => setNow(Date.now()), 500);
+    return () => clearInterval(timer);
   }, [e.live]);
   const text = String(e.text || '').trim();
   const ms = e.live ? (e.startedAt ? now - e.startedAt : 0) : e.ms;
@@ -232,7 +233,7 @@ function toolMeta(e) {
     case 'run_command':
       return { icon: 'terminal', label: 'Terminal', detail: oneLine(a.command || '', 260), mono: true };
     case 'read_file':
-      return { icon: 'file', label: 'Read', file: p.file, dir: p.dir, extra: r.totalLines != null ? `${r.totalLines} 行` : '' };
+      return { icon: 'file', label: 'Read', file: p.file, dir: p.dir, extra: r.totalLines != null ? t('{n} 行', { n: r.totalLines }) : '' };
     case 'edit_file':
       return { icon: 'edit', label: 'Edit', file: p.file, dir: p.dir, added: r.added, removed: r.removed };
     case 'write_file':
@@ -241,7 +242,7 @@ function toolMeta(e) {
       // 技能加载：ZCode 式紧凑壳——行内只露 "Skill"，类目/文件等细节收进展开面板
       return { icon: 'skill', label: 'Skill', detail: '' };
     case 'list_playbooks':
-      return { icon: 'skill', label: 'Skills', detail: r.total ? `${r.total} 类` : '40 类' };
+      return { icon: 'skill', label: 'Skills', detail: r.total ? t('{n} 类', { n: r.total }) : t('40 类') };
     case 'remember_project':
       return { icon: 'edit', label: 'Memory', detail: oneLine(a.fact || '', 200) };
     case 'present_artifact':
@@ -269,8 +270,8 @@ function ReadDetail({ result }) {
     <div className="space-y-1.5 text-[11px]">
       <div className="flex items-center gap-2 font-mono text-mute/60">
         <span>{result?.path}</span>
-        <span className="text-mute/40">{result?.totalLines} 行</span>
-        {result?.truncated ? <span className="text-goldDeep">已截断，nextOffset={result.nextOffset}</span> : null}
+        <span className="text-mute/40">{t('{n} 行', { n: result?.totalLines })}</span>
+        {result?.truncated ? <span className="text-goldDeep">{t('已截断，nextOffset={offset}', { offset: result.nextOffset })}</span> : null}
       </div>
       <pre className="rounded-lg bg-[#0d0d10] border border-edge px-2.5 py-2 font-mono text-ink/75 whitespace-pre-wrap break-all max-h-72 overflow-y-auto">{result?.content || ''}</pre>
     </div>
@@ -284,7 +285,7 @@ function PlaybookDetail({ result }) {
       <div className="flex items-center gap-2 font-mono text-mute/60">
         <span>{result?.dir}</span>
         <span className="text-goldSoft/80">{result?.file}</span>
-        <span className="text-mute/40">{result?.totalChars} 字符</span>
+        <span className="text-mute/40">{t('{n} 字符', { n: result?.totalChars })}</span>
       </div>
       <pre className="rounded-lg bg-[#0d0d10] border border-edge px-2.5 py-2 font-mono text-ink/75 whitespace-pre-wrap break-all max-h-72 overflow-y-auto">{result?.content || ''}</pre>
     </div>
@@ -301,7 +302,7 @@ function DiffDetail({ result }) {
         <span className="text-jade">+{result?.added ?? 0}</span>
         <span className="text-red-400">-{result?.removed ?? 0}</span>
         <span className="text-mute/50 truncate">{result?.path}</span>
-        {result?.created ? <span className="text-goldSoft/80">新建</span> : null}
+        {result?.created ? <span className="text-goldSoft/80">{t('新建')}</span> : null}
       </div>
       <div className="rounded-lg border border-edge bg-[#0d0d10] max-h-72 overflow-auto font-mono text-[11px] leading-5">
         {lines.length ? lines.map((l, i) => (
@@ -313,9 +314,9 @@ function DiffDetail({ result }) {
             <span className="inline-block w-5 text-center select-none opacity-60">{l.type === 'add' ? '+' : l.type === 'del' ? '-' : ' '}</span>
             <span className="whitespace-pre-wrap break-all">{l.text === '' ? ' ' : l.text}</span>
           </div>
-        )) : <div className="px-2.5 py-2 text-mute/40">无行级改动</div>}
+        )) : <div className="px-2.5 py-2 text-mute/40">{t('无行级改动')}</div>}
       </div>
-      {result?.diffTruncated ? <div className="text-[10px] text-goldDeep/70">diff 过长，仅显示前 200 行</div> : null}
+      {result?.diffTruncated ? <div className="text-[10px] text-goldDeep/70">{t('diff 过长，仅显示前 200 行')}</div> : null}
     </div>
   );
 }
@@ -327,7 +328,7 @@ function ToolEntry({ e, cardInBody }) {
   const expandable = running || !!e.args || e.result !== undefined;
   const meta = toolMeta(e);
   const summary = summarizeToolArgs(e.name, e.args);
-  const detailText = summary === '无参数' && meta.detail ? meta.detail : summary;
+  const detailText = summary === t('无参数') && meta.detail ? meta.detail : summary;
   const Icon = iconFor(meta.icon);
   const isCmd = e.name === 'run_command';
   const isDiff = e.name === 'edit_file' || e.name === 'write_file';
@@ -373,7 +374,7 @@ function ToolEntry({ e, cardInBody }) {
           ) : showCardHint ? (
             <div className="space-y-2 text-[11px]">
               <div className="text-ink/80 break-words">{detailText}</div>
-              <div className="flex items-center gap-1.5 text-jade"><span className="font-bold">✓</span>成果已在下方卡片展示</div>
+              <div className="flex items-center gap-1.5 text-jade"><span className="font-bold">✓</span>{t('成果已在下方卡片展示')}</div>
             </div>
           ) : (
             <GenericToolDetail name={e.name} args={e.args} result={e.result} running={running} />
@@ -392,7 +393,7 @@ function EntryList({ entries, cardInBody }) {
       {entries.map((e, i) => {
         if (e.type === 'thought') return <ThoughtEntry key={i} e={e} />;
         if (e.type === 'retry') {
-          return <div key={i} className="text-[11px] text-goldSoft/80 font-mono">↻ 重试 {e.attempt}/{e.max}{e.reason ? ` · ${humanizeToolError(e.reason)}` : ''}</div>;
+          return <div key={i} className="text-[11px] text-goldSoft/80 font-mono">↻ {t('重试 {attempt}/{max}', { attempt: e.attempt, max: e.max })}{e.reason ? ` · ${humanizeToolError(e.reason)}` : ''}</div>;
         }
         return <ToolEntry key={i} e={e} cardInBody={cardInBody} />;
       })}
@@ -424,7 +425,7 @@ export function ProcessTimeline({ msg }) {
         {wfStarting ? (
           <div className="flex items-center gap-2 text-[11px] text-goldSoft/70">
             <span className="w-1.5 h-1.5 shrink-0 bg-goldSoft/70 animate-pulse" />
-            <span className="tracking-wide">Workflow 已启动 · 等待第一个子代理…</span>
+            <span className="tracking-wide">{t('Workflow 已启动 · 等待第一个子代理…')}</span>
           </div>
         ) : null}
       </div>
@@ -450,7 +451,9 @@ export function ProcessTimeline({ msg }) {
   const expandable = entries.length > 0;
   if (!expandable && msg.workedMs == null) return null;
 
-  const label = msg.workedMs != null ? `Worked for ${fmtDur(msg.workedMs)}` : `Worked for ${entries.filter((e) => e.type === 'tool').length || 1} 步`;
+  const label = msg.workedMs != null
+    ? `Worked for ${fmtDur(msg.workedMs)}`
+    : t('Worked for {n} 步', { n: entries.filter((e) => e.type === 'tool').length || 1 });
   const cardInBody = !msg.error;
   return (
     <div className="mb-2.5">

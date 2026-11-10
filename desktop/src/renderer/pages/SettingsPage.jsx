@@ -5,6 +5,9 @@ import React, { useEffect, useId, useRef, useState } from 'react';
 import { api, Card, ErrorNote } from '../lib/ui.jsx';
 import { initialUpdateState, reduceUpdateEvent, describeUpdate } from '../lib/updater-state.mjs';
 import UsagePage from './UsagePage.jsx';
+// 双语：界面语言开关（auto 跟随系统 / zh / en）；applyLanguage 立即生效，保存后写入 config
+import { t, setLanguage as applyLanguage, resolveLanguage } from '../i18n/core.mjs';
+import { useLanguage } from '../i18n/index.jsx';
 
 const API_FORMATS = [
   { value: 'chat-completions', label: 'chat-completions（OpenAI 兼容）' },
@@ -17,6 +20,12 @@ const SANDBOX_MODES = [
   { value: 'off', label: 'off', desc: '放开项目边界，敏感路径仍拒绝' }
 ];
 const DEFAULT_TOOL_CONCURRENCY = 8;
+// 界面语言：auto 跟随系统（系统语言是中文则中文，否则英文）
+export const LANGUAGE_MODES = [
+  { value: 'auto', label: '跟随系统', desc: '系统为中文时用中文，否则英文' },
+  { value: 'zh', label: '中文', desc: '始终中文界面与中文报告' },
+  { value: 'en', label: 'English', desc: 'English UI and English report output' }
+];
 const SECTIONS = ['models', 'runtime', 'usage', 'about'];
 const newId = () => `p-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
 const FOCUSABLE_SELECTOR = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -156,19 +165,22 @@ export function toModelObjects(models) {
 
 export default function SettingsPage({ onBack, initialSection = 'models' }) {
   const y = api();
+  useLanguage(); // 切换语言后本页跟着重渲染（t() 读的是模块级语言状态）
   const [providers, setProviders] = useState([]);   // 草稿（保存前仅在本地）
   const [activeId, setActiveId] = useState(null);   // 对话使用的供应商（activeProviderId）
   const [selectedId, setSelectedId] = useState(null); // 右侧正在编辑的供应商
   const [loaded, setLoaded] = useState(false);
   const [saved, setSaved] = useState(false);
   const [dirty, setDirty] = useState(false);
-  const [err, setErr] = useState('');
+  const [err, setErr] = useState(null); // { key, msg?, fallback? }：渲染时取译文，切换语言后跟着变
+  const errText = !err ? '' : t(err.key, { msg: err.msg || (err.fallback ? t(err.fallback) : '') });
   const [modelDialog, setModelDialog] = useState(null); // { isNew, index, entry }
   const [testing, setTesting] = useState(false);
   const [testRes, setTestRes] = useState(null);     // { ok, reason, hint, count, models }
   const [baseCfg, setBaseCfg] = useState({});       // 保留 permissionMode / activeModel / thinkingEffort 等字段
   const [sandboxMode, setSandboxMode] = useState('workspace');
   const [toolConc, setToolConc] = useState(DEFAULT_TOOL_CONCURRENCY);
+  const [language, setLanguageChoice] = useState('auto'); // 界面语言：auto（跟随系统）/ zh / en
   const [section, setSection] = useState(() => (SECTIONS.includes(initialSection) ? initialSection : 'models')); // 设置页内分节：models / runtime / usage / about（仿 ZCode 左侧分组导航）
   const [update, setUpdate] = useState(initialUpdateState); // 更新状态机（纯函数见 lib/updater-state.mjs）
   const [appVersion, setAppVersion] = useState('');
@@ -191,10 +203,11 @@ export default function SettingsPage({ onBack, initialSection = 'models' }) {
         setSandboxMode(SANDBOX_MODES.some((m) => m.value === c?.sandboxMode) ? c.sandboxMode : 'workspace');
         const conc = Number(c?.toolConcurrency);
         setToolConc(Number.isFinite(conc) && conc > 0 ? Math.min(16, Math.max(1, Math.trunc(conc))) : DEFAULT_TOOL_CONCURRENCY);
+        setLanguageChoice(c?.language === 'en' || c?.language === 'zh' ? c.language : 'auto');
         setSelectedId(list[0]?.id ?? null);
         setLoaded(true);
       })
-      .catch((e) => { setErr('读取配置失败：' + e.message); setLoaded(true); });
+      .catch((e) => { setErr({ key: '读取配置失败：{msg}', msg: e.message }); setLoaded(true); });
   }, [y]);
 
   // ---- 关于 / 更新：当前版本 + 订阅主进程更新事件（卸载时取消订阅） ----
@@ -262,7 +275,7 @@ export default function SettingsPage({ onBack, initialSection = 'models' }) {
   };
 
   const addProvider = () => {
-    const p = { id: newId(), name: '新供应商', baseUrl: '', apiFormat: 'chat-completions', apiKey: '', models: [], enabled: true };
+    const p = { id: newId(), name: t('新供应商'), baseUrl: '', apiFormat: 'chat-completions', apiKey: '', models: [], enabled: true };
     setProviders((ps) => [...ps, p]);
     setSelectedId(p.id);
     setTestRes(null);
@@ -271,7 +284,7 @@ export default function SettingsPage({ onBack, initialSection = 'models' }) {
 
   const removeProvider = (id) => {
     const p = providers.find((x) => x.id === id);
-    if (!window.confirm(`删除供应商「${p?.name || id}」？`)) return;
+    if (!window.confirm(t('删除供应商「{name}」？', { name: p?.name || id }))) return;
     const rest = providers.filter((x) => x.id !== id);
     setProviders(rest);
     if (activeId === id) setActiveId(rest.find((x) => x.enabled)?.id ?? rest[0]?.id ?? null);
@@ -308,14 +321,14 @@ export default function SettingsPage({ onBack, initialSection = 'models' }) {
   };
 
   const save = async () => {
-    setErr('');
+    setErr(null);
     try {
       const clean = providers.map((p) => {
         const windowRaw = asPositiveInt(p.contextWindow);
         // 以原对象为底：family / 供应商级 toolConcurrency 等非界面字段必须原样保留，否则一次保存就丢
         const entry = {
           ...p,
-          id: p.id, name: String(p.name || '').trim() || '未命名供应商',
+          id: p.id, name: String(p.name || '').trim() || t('未命名供应商'),
           baseUrl: String(p.baseUrl || '').trim(), apiFormat: p.apiFormat === 'openai-responses' ? 'openai-responses' : 'chat-completions',
           apiKey: String(p.apiKey || '').trim(),
           // 写回统一转对象：{ id, contextWindow?, maxOutputTokens?, vision? }，空字段不写（继承供应商）
@@ -334,6 +347,7 @@ export default function SettingsPage({ onBack, initialSection = 'models' }) {
         ...baseCfg,
         sandboxMode: mode,
         toolConcurrency: conc,
+        language: language === 'en' || language === 'zh' ? language : 'auto',
         providers: clean,
         activeProviderId: clean.some((p) => p.id === activeId) ? activeId : (clean[0]?.id ?? null)
       };
@@ -342,10 +356,12 @@ export default function SettingsPage({ onBack, initialSection = 'models' }) {
       setProviders(clean);
       setSandboxMode(mode);
       setToolConc(conc);
+      // 语言立即生效：界面与主进程提示词同步切换（保存后无需重启）
+      applyLanguage(resolveLanguage(nextCfg.language, navigator.language));
       setDirty(false);
       setSaved(true);
       setTimeout(() => setSaved(false), 2500);
-    } catch (e) { setErr('保存失败：' + (e?.message || '请检查配置是否可写（Electron 中运行）')); }
+    } catch (e) { setErr({ key: '保存失败：{msg}', msg: e?.message, fallback: '请检查配置是否可写（Electron 中运行）' }); }
   };
 
   const testConnection = async () => {
@@ -361,15 +377,30 @@ export default function SettingsPage({ onBack, initialSection = 'models' }) {
     } finally { setTesting(false); }
   };
 
-  // Agent / 运行时：策略沙箱 + 工具并发（写入 cfg.sandboxMode / cfg.toolConcurrency，无供应商时也可配置）
+  // Agent / 运行时：策略沙箱 + 工具并发 + 界面语言（写入 cfg.sandboxMode / cfg.toolConcurrency / cfg.language）
   const runtimeCard = (
     <Card className="p-5 space-y-4">
       <div>
-        <div className="text-sm text-ink font-medium">Agent / 运行时</div>
-        <div className="text-xs text-mute mt-0.5">Sandbox 管路径与命令边界，Tool concurrency 管同时跑几个工具。</div>
+        <div className="text-sm text-ink font-medium">{t('Agent / 运行时')}</div>
+        <div className="text-xs text-mute mt-0.5">{t('Sandbox 管路径与命令边界，Tool concurrency 管同时跑几个工具，Language 管界面与报告语言。')}</div>
       </div>
 
-      <Field label="Sandbox mode" hint="默认 workspace；Full access 下也生效">
+      <Field label="Language" hint={t('切换后立即生效；英文模式下 agent、工作流与报告也用英文输出')}>
+        <div className="grid grid-cols-3 gap-2">
+          {LANGUAGE_MODES.map((m) => {
+            const on = language === m.value;
+            return (
+              <button key={m.value} type="button" onClick={() => { setLanguageChoice(m.value); touch(); applyLanguage(resolveLanguage(m.value, navigator.language)); }} disabled={!y}
+                className={`rounded-lg border px-3 py-2 text-left transition-colors disabled:opacity-50 ${on ? 'border-gold/45 bg-gold/10' : 'border-edge bg-[#15151a] hover:bg-cardHover'}`}>
+                <div className="text-sm text-ink">{t(m.label)}</div>
+                <div className="text-xs text-mute mt-0.5">{t(m.desc)}</div>
+              </button>
+            );
+          })}
+        </div>
+      </Field>
+
+      <Field label="Sandbox mode" hint={t('默认 workspace；Full access 下也生效')}>
         <div className="grid grid-cols-3 gap-2">
           {SANDBOX_MODES.map((m) => {
             const on = sandboxMode === m.value;
@@ -377,14 +408,14 @@ export default function SettingsPage({ onBack, initialSection = 'models' }) {
               <button key={m.value} type="button" onClick={() => { setSandboxMode(m.value); touch(); }} disabled={!y}
                 className={`rounded-lg border px-3 py-2 text-left transition-colors disabled:opacity-50 ${on ? 'border-gold/45 bg-gold/10' : 'border-edge bg-[#15151a] hover:bg-cardHover'}`}>
                 <div className={`text-xs font-mono ${on ? 'text-goldSoft' : 'text-ink/85'}`}>{m.label}</div>
-                <div className="text-[10px] text-mute/70 mt-0.5 leading-snug">{m.desc}</div>
+                <div className="text-[10px] text-mute/70 mt-0.5 leading-snug">{t(m.desc)}</div>
               </button>
             );
           })}
         </div>
       </Field>
 
-      <Field label="Tool concurrency" hint="同时执行的工具调用数，1–16，默认 8">
+      <Field label="Tool concurrency" hint={t('同时执行的工具调用数，1–16，默认 8')}>
         <div className="flex items-center gap-1.5">
           <button type="button" onClick={() => { setToolConc((v) => Math.max(1, (Math.trunc(Number(v)) || DEFAULT_TOOL_CONCURRENCY) - 1)); touch(); }} disabled={!y}
             className="h-8 w-8 rounded-md bg-white/[0.06] hover:bg-white/[0.12] text-ink/80 disabled:opacity-40">−</button>
@@ -399,42 +430,57 @@ export default function SettingsPage({ onBack, initialSection = 'models' }) {
       </Field>
 
       <div className="flex items-center gap-3 pt-2 border-t border-edge/60">
-        <button className="btn-primary min-w-[92px]" onClick={save} disabled={!y || !loaded}>保存</button>
+        <button className="btn-primary min-w-[92px]" onClick={save} disabled={!y || !loaded}>{t('保存')}</button>
         {saved && !dirty && (
           <span className="text-sm text-jade flex items-center gap-1.5 transition-all duration-200">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="20 6 9 17 4 12" /></svg>
-            已保存
+            {t('已保存')}
           </span>
         )}
-        {dirty && <span className="text-xs text-mute">有未保存的修改</span>}
+        {dirty && <span className="text-xs text-mute">{t('有未保存的修改')}</span>}
       </div>
-      <ErrorNote>{!y ? '请在 Electron 中运行后修改设置。' : err}</ErrorNote>
+      <ErrorNote>{!y ? t('请在 Electron 中运行后修改设置。') : errText}</ErrorNote>
     </Card>
   );
 
   // 关于 / 更新：文案与按钮可见性全部来自纯函数 describeUpdate（不硬编码 owner/repo，不展示原始 JSON）
   const updateView = describeUpdate(update, appVersion);
+  // 状态机只产出中文句，这里在渲染时按语言重组（zh 输出与 describeUpdate 原文逐字一致）
+  const currentVersionText = t(updateView.currentText);
+  const updateStatusText = (() => {
+    switch (updateView.phase) {
+      case 'checking': return t('正在检查…');
+      case 'not-available': return t('已是最新（{version}）', { version: currentVersionText });
+      case 'available': return updateView.latestText
+        ? t('发现 {version}，是否下载？', { version: updateView.latestText })
+        : t('发现新版本，是否下载？');
+      case 'downloading': return t('下载中 {percent}%', { percent: updateView.progress ?? 0 });
+      case 'downloaded': return t('已下载，重启安装');
+      case 'error': return t('检查更新失败');
+      default: return t('尚未检查更新');
+    }
+  })();
   const updateToneClass = { mute: 'text-mute', gold: 'text-goldSoft', jade: 'text-jade', red: 'text-red-300' };
   const aboutCard = (
     <Card className="p-5 space-y-4">
       <div>
-        <div className="text-sm text-ink font-medium">应用更新</div>
-        <div className="text-xs text-mute mt-0.5">从 GitHub Release 检查新版本。发现后由你确认下载，重启完成安装；版本与下载地址均由更新模块读取。</div>
+        <div className="text-sm text-ink font-medium">{t('应用更新')}</div>
+        <div className="text-xs text-mute mt-0.5">{t('从 GitHub Release 检查新版本。发现后由你确认下载，重启完成安装；版本与下载地址均由更新模块读取。')}</div>
       </div>
 
       <div className="flex items-center justify-between gap-3 rounded-lg bg-[#15151a] border border-edge px-4 py-3">
         <div>
-          <div className="text-sm text-ink">当前版本</div>
-          <div className="text-xs text-mute mt-0.5">仅安装版检查更新；开发模式不联网。</div>
+          <div className="text-sm text-ink">{t('当前版本')}</div>
+          <div className="text-xs text-mute mt-0.5">{t('仅安装版检查更新；开发模式不联网。')}</div>
         </div>
-        <span className="font-mono text-sm text-goldSoft shrink-0">{updateView.currentText}</span>
+        <span className="font-mono text-sm text-goldSoft shrink-0">{currentVersionText}</span>
       </div>
 
       <div className="min-h-[22px]">
         {updateView.errorText ? (
-          <div className="text-sm text-red-300 leading-relaxed break-words">{updateView.errorText}</div>
+          <div className="text-sm text-red-300 leading-relaxed break-words">{t(updateView.errorText)}</div>
         ) : (
-          <div className={`text-sm leading-relaxed ${updateToneClass[updateView.tone] || 'text-mute'}`}>{updateView.statusText}</div>
+          <div className={`text-sm leading-relaxed ${updateToneClass[updateView.tone] || 'text-mute'}`}>{updateStatusText}</div>
         )}
         {updateView.phase === 'downloading' && (
           <div className="mt-2 h-1 rounded-full bg-white/10 overflow-hidden">
@@ -446,24 +492,24 @@ export default function SettingsPage({ onBack, initialSection = 'models' }) {
       <div className="flex items-center gap-2 pt-2 border-t border-edge/60">
         {updateView.showCheck && (
           <button className="btn-primary min-w-[100px]" onClick={checkUpdate} disabled={!y || updateView.checkDisabled}>
-            {updateView.checkLabel}
+            {t(updateView.checkLabel)}
           </button>
         )}
         {updateView.showDownload && (
           <button className="btn-primary min-w-[100px]" onClick={downloadUpdate} disabled={!y}>
-            {updateView.downloadLabel}
+            {t(updateView.downloadLabel)}
           </button>
         )}
         {updateView.showInstall && (
           <button className="btn-primary min-w-[100px]" onClick={installUpdate} disabled={!y}>
-            {updateView.installLabel}
+            {t(updateView.installLabel)}
           </button>
         )}
-        {!y && <span className="text-xs text-mute">请在 Electron 中运行后检查更新。</span>}
+        {!y && <span className="text-xs text-mute">{t('请在 Electron 中运行后检查更新。')}</span>}
       </div>
 
       {updateView.phase === 'available' && (
-        <div className="text-xs text-mute leading-relaxed">下载完成后不会自动重启；点「重启并安装」立即更新，或下次退出应用时自动安装。</div>
+        <div className="text-xs text-mute leading-relaxed">{t('下载完成后不会自动重启；点「重启并安装」立即更新，或下次退出应用时自动安装。')}</div>
       )}
     </Card>
   );
@@ -491,7 +537,7 @@ export default function SettingsPage({ onBack, initialSection = 'models' }) {
           </NavGroup>
           <NavGroup label="About">
             <NavRow label="About & updates" active={section === 'about'} onClick={() => setSection('about')} icon={<IconRefresh />}
-              trailing={updateView.hasUpdate ? <span className="text-red-400">有新版本</span> : ''} />
+              trailing={updateView.hasUpdate ? <span className="text-red-400">{t('有新版本')}</span> : ''} />
           </NavGroup>
         </div>
       </nav>
@@ -510,10 +556,10 @@ export default function SettingsPage({ onBack, initialSection = 'models' }) {
             </h1>
             <p className="text-[12px] text-mute mt-1.5 leading-relaxed">
               {section === 'models'
-                ? '管理自定义模型供应商。配置好后可在对话里选择使用。'
+                ? t('管理自定义模型供应商。配置好后可在对话里选择使用。')
                 : section === 'runtime'
-                  ? '沙箱与工具并发：对所有供应商生效，与权限模式（Full access）独立。'
-                  : '版本信息与更新：检查 GitHub Release，下载后重启安装。'}
+                  ? t('沙箱与工具并发：对所有供应商生效，与权限模式（Full access）独立。')
+                  : t('版本信息与更新：检查 GitHub Release，下载后重启安装。')}
             </p>
           </div>
           {section === 'models' && (
@@ -531,7 +577,7 @@ export default function SettingsPage({ onBack, initialSection = 'models' }) {
                 <div className="px-3.5 pt-2 pb-2 text-[10px] uppercase tracking-[0.14em] text-mute/45">Providers</div>
                 <div className="flex-1 min-h-0 overflow-y-auto px-2 space-y-1">
                   {providers.length === 0 && loaded && (
-                    <div className="text-xs text-mute/70 px-2 py-3">还没有供应商，点下方按钮添加。</div>
+                    <div className="text-xs text-mute/70 px-2 py-3">{t('还没有供应商，点下方按钮添加。')}</div>
                   )}
                   {providers.map((p) => {
                     const sel = p.id === selectedId;
@@ -541,14 +587,14 @@ export default function SettingsPage({ onBack, initialSection = 'models' }) {
                           sel ? 'border-gold/45 bg-gold/10' : 'border-transparent hover:bg-cardHover hover:border-edge'}`}>
                         <div className="flex items-center gap-2 min-w-0">
                           {/* 绿点 = 已启用（与 ZCode 一致） */}
-                          <span title={p.enabled !== false ? '已启用' : '已停用'}
+                          <span title={p.enabled !== false ? t('已启用') : t('已停用')}
                             className={`w-2 h-2 rounded-full shrink-0 ${p.enabled !== false ? 'bg-jade' : 'bg-mute/30'}`} />
-                          <span className={`text-sm truncate ${sel ? 'text-goldSoft' : 'text-ink/90'}`}>{p.name || '未命名供应商'}</span>
+                          <span className={`text-sm truncate ${sel ? 'text-goldSoft' : 'text-ink/90'}`}>{p.name || t('未命名供应商')}</span>
                         </div>
                         {p.id === activeId && (
-                          <span className="badge bg-gold/15 text-goldSoft border border-gold/30 !px-1.5 !text-[10px] absolute right-1.5 top-1.5">当前</span>
+                          <span className="badge bg-gold/15 text-goldSoft border border-gold/30 !px-1.5 !text-[10px] absolute right-1.5 top-1.5">{t('当前')}</span>
                         )}
-                        <button title="删除供应商" onClick={(e) => { e.stopPropagation(); removeProvider(p.id); }}
+                        <button title={t('删除供应商')} onClick={(e) => { e.stopPropagation(); removeProvider(p.id); }}
                           className="absolute right-1.5 bottom-1 p-1 rounded-md text-mute/50 opacity-0 group-hover:opacity-100 hover:text-red-400 hover:bg-red-500/10 transition-all duration-200">
                           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                             <polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
@@ -573,9 +619,9 @@ export default function SettingsPage({ onBack, initialSection = 'models' }) {
                     <div className="h-14 w-14 rounded-2xl bg-gold/10 border border-gold/30 flex items-center justify-center mb-4">
                       <IconGearBig />
                     </div>
-                    <div className="font-kai text-lg text-goldSoft mb-1">还没有模型供应商</div>
+                    <div className="font-kai text-lg text-goldSoft mb-1">{t('还没有模型供应商')}</div>
                     <p className="text-sm text-mute mb-6 max-w-sm leading-relaxed">
-                      添加一个 OpenAI 兼容网关（Base URL + API Key + 模型），对话即可用。<br />API Key 只存本机 config.json。
+                      {t('添加一个 OpenAI 兼容网关（Base URL + API Key + 模型），对话即可用。')}<br />{t('API Key 只存本机 config.json。')}
                     </p>
                     <button className="btn-primary" onClick={addProvider} disabled={!y || !loaded}>
                       <IconPlus /> Add provider
@@ -586,30 +632,30 @@ export default function SettingsPage({ onBack, initialSection = 'models' }) {
             {/* 标题行 */}
             <div className="flex items-center justify-between gap-3">
               <div className="flex items-center gap-2.5 min-w-0">
-                <h2 className="text-lg font-bold truncate">{selected.name || '未命名供应商'}</h2>
+                <h2 className="text-lg font-bold truncate">{selected.name || t('未命名供应商')}</h2>
                 {selected.id === activeId
-                  ? <span className="badge bg-gold/15 text-goldSoft border border-gold/30 shrink-0">对话使用中</span>
-                  : <button className="btn-ghost text-xs px-2.5 py-1 shrink-0" onClick={() => { setActiveId(selected.id); touch(); }} disabled={!selected.enabled}>设为对话使用</button>}
+                  ? <span className="badge bg-gold/15 text-goldSoft border border-gold/30 shrink-0">{t('对话使用中')}</span>
+                  : <button className="btn-ghost text-xs px-2.5 py-1 shrink-0" onClick={() => { setActiveId(selected.id); touch(); }} disabled={!selected.enabled}>{t('设为对话使用')}</button>}
               </div>
             </div>
 
             <Card className="p-5 space-y-4">
-              <Field label="名称">
+              <Field label={t('名称')}>
                 <input value={selected.name} onChange={(e) => patchSelected({ name: e.target.value })}
-                  placeholder="供应商名称，如 硅基流动 / 自建网关" className="input" disabled={!y} />
+                  placeholder={t('供应商名称，如 硅基流动 / 自建网关')} className="input" disabled={!y} />
               </Field>
-              <Field label="Base URL" hint="通常以 https:// 开头、/v1 结尾">
+              <Field label="Base URL" hint={t('通常以 https:// 开头、/v1 结尾')}>
                 <input value={selected.baseUrl} onChange={(e) => patchSelected({ baseUrl: e.target.value })}
                   placeholder="https://api.example.com/v1" className="input font-mono" disabled={!y} />
               </Field>
-              <Field label="API 格式">
+              <Field label={t('API 格式')}>
                 <select value={selected.apiFormat || 'chat-completions'}
                   onChange={(e) => patchSelected({ apiFormat: e.target.value })}
                   className="input appearance-none cursor-pointer" disabled={!y}>
-                  {API_FORMATS.map((f) => <option key={f.value} value={f.value}>{f.label}</option>)}
+                  {API_FORMATS.map((f) => <option key={f.value} value={f.value}>{t(f.label)}</option>)}
                 </select>
               </Field>
-              <Field label="API Key" hint="只存本机 desktop/config.json，不上传、不进仓库">
+              <Field label="API Key" hint={t('只存本机 desktop/config.json，不上传、不进仓库')}>
                 <input type="password" value={selected.apiKey} onChange={(e) => patchSelected({ apiKey: e.target.value })}
                   placeholder="sk-…" className="input font-mono" disabled={!y} autoComplete="new-password" />
               </Field>
@@ -618,8 +664,8 @@ export default function SettingsPage({ onBack, initialSection = 'models' }) {
               <div>
                 <div className="flex items-center justify-between gap-3 mb-1.5">
                   <label className="block text-sm text-mute">
-                    模型列表
-                    <span className="ml-2 text-xs text-mute/60">对话使用列表中的第一个模型</span>
+                    {t('模型列表')}
+                    <span className="ml-2 text-xs text-mute/60">{t('对话使用列表中的第一个模型')}</span>
                   </label>
                   <button type="button" className="btn-ghost text-xs px-2.5 py-1 shrink-0" onClick={openAddModel} disabled={!y}>
                     <IconPlus /> Add model
@@ -627,16 +673,19 @@ export default function SettingsPage({ onBack, initialSection = 'models' }) {
                 </div>
                 <div className="space-y-1.5">
                   {(selected.models || []).length === 0 && (
-                    <div className="text-xs text-mute/70 px-1 py-1">还没有模型，点右上角「Add model」添加。</div>
+                    <div className="text-xs text-mute/70 px-1 py-1">{t('还没有模型，点右上角「Add model」添加。')}</div>
                   )}
                   {(selected.models || []).map((entry, idx) => {
                     const v = modelEntryView(entry, selected);
                     const windowTitle = v.window == null
-                      ? '上下文窗口未配置（默认 1,000,000）'
-                      : `上下文窗口 ${v.window.toLocaleString('en-US')} tokens${v.windowSource === 'model' ? '（模型单独设置）' : '（继承供应商）'}`;
+                      ? t('上下文窗口未配置（默认 1,000,000）')
+                      : t(v.windowSource === 'model'
+                        ? '上下文窗口 {window} tokens（模型单独设置）'
+                        : '上下文窗口 {window} tokens（继承供应商）',
+                        { window: v.window.toLocaleString('en-US') });
                     return (
                       <div key={`${idx}-${v.id}`} className="flex items-center justify-between gap-2 rounded-lg bg-[#15151a] border border-edge px-3 py-2 group">
-                        <span className="font-mono text-sm truncate min-w-0">{v.id || '（空模型名）'}</span>
+                        <span className="font-mono text-sm truncate min-w-0">{v.id || t('（空模型名）')}</span>
                         <div className="flex items-center gap-1.5 shrink-0">
                           <span title={windowTitle}
                             className={`badge !text-[10px] !px-1.5 !py-0.5 font-mono border ${
@@ -644,19 +693,19 @@ export default function SettingsPage({ onBack, initialSection = 'models' }) {
                                 ? 'bg-gold/10 text-goldSoft border-gold/30'
                                 : 'bg-white/[0.05] text-mute border-edge'
                             }`}>
-                            {formatWindowBadge(v.window)}
+                            {t(formatWindowBadge(v.window))}
                           </span>
                           {v.vision && (
-                            <span title="支持图片输入（多模态）"
+                            <span title={t('支持图片输入（多模态）')}
                               className="badge !text-[10px] !px-1.5 !py-0.5 border border-jade/30 bg-jade/10 text-jade">
                               Vision
                             </span>
                           )}
-                          <button type="button" title="编辑模型" aria-label="编辑模型" onClick={(e) => openEditModel(idx, e.currentTarget)}
+                          <button type="button" title={t('编辑模型')} aria-label={t('编辑模型')} onClick={(e) => openEditModel(idx, e.currentTarget)}
                             className="p-1 rounded-md text-mute/60 opacity-60 group-hover:opacity-100 hover:text-goldSoft hover:bg-gold/10 transition-all duration-200">
                             <IconPencil />
                           </button>
-                          <button type="button" title="删除模型" aria-label="删除模型" onClick={() => removeModel(idx)}
+                          <button type="button" title={t('删除模型')} aria-label={t('删除模型')} onClick={() => removeModel(idx)}
                             className="p-1 rounded-md text-mute/60 opacity-60 group-hover:opacity-100 hover:text-red-400 hover:bg-red-500/10 transition-all duration-200">
                             <IconX />
                           </button>
@@ -667,7 +716,7 @@ export default function SettingsPage({ onBack, initialSection = 'models' }) {
                 </div>
               </div>
 
-              <Field label="供应商上下文窗口" hint="模型未单独设置时使用；token 数，默认 1,000,000">
+              <Field label={t('供应商上下文窗口')} hint={t('模型未单独设置时使用；token 数，默认 1,000,000')}>
                 <input type="number" min="8000" max="2000000" step="1000"
                   value={selected.contextWindow || 1000000}
                   onChange={(e) => patchSelected({ contextWindow: Number(e.target.value) })}
@@ -677,10 +726,10 @@ export default function SettingsPage({ onBack, initialSection = 'models' }) {
               {/* 启用开关 */}
               <div className="flex items-center justify-between pt-1">
                 <div>
-                  <div className="text-sm text-ink">启用</div>
-                  <div className="text-xs text-mute mt-0.5">关闭后对话不会使用该供应商</div>
+                  <div className="text-sm text-ink">{t('启用')}</div>
+                  <div className="text-xs text-mute mt-0.5">{t('关闭后对话不会使用该供应商')}</div>
                 </div>
-                <button role="switch" aria-checked={selected.enabled} aria-label="启用供应商" onClick={() => patchSelected({ enabled: !selected.enabled })}
+                <button role="switch" aria-checked={selected.enabled} aria-label={t('启用供应商')} onClick={() => patchSelected({ enabled: !selected.enabled })}
                   className={`relative w-11 h-6 rounded-full transition-colors duration-200 shrink-0 ${selected.enabled ? 'bg-jade' : 'bg-edge'}`}>
                   <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-[#ece7dc] shadow transition-all duration-200 ${selected.enabled ? 'left-[22px]' : 'left-0.5'}`} />
                 </button>
@@ -688,17 +737,17 @@ export default function SettingsPage({ onBack, initialSection = 'models' }) {
 
               {/* 操作行 */}
               <div className="flex items-center gap-3 pt-2 border-t border-edge/60">
-                <button className="btn-primary min-w-[92px]" onClick={save} disabled={!y || !loaded}>保存</button>
+                <button className="btn-primary min-w-[92px]" onClick={save} disabled={!y || !loaded}>{t('保存')}</button>
                 <button className="btn-ghost" onClick={testConnection} disabled={!y || testing}>
-                  {testing ? '测试中…' : '测试连接'}
+                  {testing ? t('测试中…') : t('测试连接')}
                 </button>
                 {saved && !dirty && (
                   <span className="text-sm text-jade flex items-center gap-1.5 transition-all duration-200">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="20 6 9 17 4 12" /></svg>
-                    已保存
+                    {t('已保存')}
                   </span>
                 )}
-                {dirty && <span className="text-xs text-mute">有未保存的修改</span>}
+                {dirty && <span className="text-xs text-mute">{t('有未保存的修改')}</span>}
               </div>
 
               {/* 测试结果 */}
@@ -706,7 +755,7 @@ export default function SettingsPage({ onBack, initialSection = 'models' }) {
                 <div className="rounded-lg bg-jade/10 border border-jade/40 px-4 py-3 text-sm space-y-2">
                   <div className="text-jade font-medium flex items-center gap-1.5">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="20 6 9 17 4 12" /></svg>
-                    已连通 · 模型已回复
+                    {t('已连通 · 模型已回复')}
                   </div>
                   <div className="text-xs text-ink/80 bg-card border border-edge rounded px-2.5 py-1.5 leading-relaxed break-words">
                     <span className="text-mute font-mono mr-1.5">{testRes.model}</span>
@@ -717,18 +766,18 @@ export default function SettingsPage({ onBack, initialSection = 'models' }) {
                       {testRes.models.slice(0, 8).map((m) => (
                         <span key={m} className="badge bg-card border border-edge text-mute font-mono !text-[11px]">{m}</span>
                       ))}
-                      {testRes.count > 8 && <span className="text-xs text-mute self-center">…等 {testRes.count} 个</span>}
+                      {testRes.count > 8 && <span className="text-xs text-mute self-center">{t('…等 {n} 个', { n: testRes.count })}</span>}
                     </div>
                   )}
                 </div>
               ) : (
                 <div className="rounded-lg bg-red-500/10 border border-red-500/40 px-4 py-3 text-sm space-y-1">
-                  <div className="text-red-300 font-medium">✗ 连接失败：{testRes.reason}</div>
-                  {testRes.hint && <div className="text-xs text-mute leading-relaxed">{testRes.hint}</div>}
+                  <div className="text-red-300 font-medium">✗ {t('连接失败：{reason}', { reason: t(testRes.reason) })}</div>
+                  {testRes.hint && <div className="text-xs text-mute leading-relaxed">{t(testRes.hint)}</div>}
                 </div>
               ))}
 
-              <ErrorNote>{y ? err : '请在 Electron 中运行后修改设置。'}</ErrorNote>
+              <ErrorNote>{y ? errText : t('请在 Electron 中运行后修改设置。')}</ErrorNote>
             </Card>
 
             <div className="glass-card rounded-xl px-3.5 py-3 text-xs text-mute leading-relaxed">
@@ -736,7 +785,7 @@ export default function SettingsPage({ onBack, initialSection = 'models' }) {
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="mt-0.5 shrink-0 text-goldSoft">
                   <rect x="3" y="11" width="18" height="11" rx="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" />
                 </svg>
-                <span>对话使用<span className="text-goldSoft">已启用且标记「当前」</span>的供应商；选中者被禁用时自动回退到其他已启用供应商。所有 Key 只存本机。</span>
+                <span>{t('对话使用已启用且标记「当前」的供应商；选中者被禁用时自动回退到其他已启用供应商。所有 Key 只存本机。')}</span>
               </div>
             </div>
                   </div>
@@ -930,10 +979,10 @@ function ModelEditorDialog({ provider, isNew, initialEntry, otherIds, onSave, on
         <div className="flex items-start justify-between gap-3 px-5 pt-4 pb-3 border-b border-edge/60">
           <div className="min-w-0">
             <h3 id={titleId} className="font-kai text-base text-goldSoft">{isNew ? 'Add model' : 'Edit model settings'}</h3>
-            <div className="text-[11px] text-mute/60 mt-0.5">{isNew ? '新增模型；留空字段继承供应商' : '修改模型参数'}</div>
+            <div className="text-[11px] text-mute/60 mt-0.5">{isNew ? t('新增模型；留空字段继承供应商') : t('修改模型参数')}</div>
           </div>
           <button type="button" className="p-1.5 -mr-1 rounded-md text-mute/60 hover:text-ink hover:bg-white/[0.06] transition-colors shrink-0"
-            aria-label="关闭" onClick={onClose}>
+            aria-label={t('关闭')} onClick={onClose}>
             <IconX />
           </button>
         </div>
@@ -943,9 +992,9 @@ function ModelEditorDialog({ provider, isNew, initialEntry, otherIds, onSave, on
           <div className="flex items-start justify-between gap-3 rounded-lg bg-[#15151a] border border-edge px-3 py-2.5">
             <div className="min-w-0">
               <div className="text-sm text-ink">Smart configuration</div>
-              <div className="text-[11px] text-mute/70 mt-0.5 leading-snug">按模型名自动识别上下文窗口（如 128k / 200k / 1m）；关闭后手动填写。</div>
+              <div className="text-[11px] text-mute/70 mt-0.5 leading-snug">{t('按模型名自动识别上下文窗口（如 128k / 200k / 1m）；关闭后手动填写。')}</div>
               {smart && detectedWindow != null && (
-                <div className="text-[11px] text-jade/90 mt-1">已匹配到智能配置：{detectedWindow.toLocaleString('en-US')} tokens</div>
+                <div className="text-[11px] text-jade/90 mt-1">{t('已匹配到智能配置：{window} tokens', { window: detectedWindow.toLocaleString('en-US') })}</div>
               )}
             </div>
             <Switch checked={smart} onChange={toggleSmart} label="Smart configuration" />
@@ -953,31 +1002,37 @@ function ModelEditorDialog({ provider, isNew, initialEntry, otherIds, onSave, on
 
           <Field label="Model ID">
             <input ref={idInputRef} value={id} onChange={(e) => changeId(e.target.value)}
-              placeholder="如 glm-4.6 / deepseek-v4.1-flash"
+              placeholder={t('如 glm-4.6 / deepseek-v4.1-flash')}
               className="input font-mono" />
-            <FieldError>{errors.id}</FieldError>
+            <FieldError>{t(errors.id)}</FieldError>
           </Field>
 
           <Field label="Context window"
-            hint={smart ? 'Smart configuration 自动填写' : '留空 = 继承供应商'}>
+            hint={smart ? t('Smart configuration 自动填写') : t('留空 = 继承供应商')}>
             <input value={contextWindow} onChange={(e) => setContextWindow(e.target.value)}
               disabled={smart} inputMode="numeric" placeholder={String(providerWindow)}
               className={`input font-mono ${smart ? 'opacity-60 cursor-not-allowed' : ''}`} />
             <div className="text-[11px] text-mute/55 mt-1">
-              留空继承供应商：{providerWindow.toLocaleString('en-US')} tokens{asPositiveInt(provider?.contextWindow) == null ? '（默认）' : ''}
+              {t(asPositiveInt(provider?.contextWindow) == null
+                ? '留空继承供应商：{value} tokens（默认）'
+                : '留空继承供应商：{value} tokens',
+                { value: providerWindow.toLocaleString('en-US') })}
             </div>
-            <FieldError>{errors.contextWindow}</FieldError>
+            <FieldError>{t(errors.contextWindow)}</FieldError>
           </Field>
 
           <Field label="Max output tokens"
-            hint={smart ? '关闭 Smart configuration 后可手填' : '留空 = 继承供应商'}>
+            hint={smart ? t('关闭 Smart configuration 后可手填') : t('留空 = 继承供应商')}>
             <input value={maxOutputTokens} onChange={(e) => setMaxOutputTokens(e.target.value)}
               disabled={smart} inputMode="numeric" placeholder={String(providerMaxOut)}
               className={`input font-mono ${smart ? 'opacity-60 cursor-not-allowed' : ''}`} />
             <div className="text-[11px] text-mute/55 mt-1">
-              留空继承供应商：{providerMaxOut.toLocaleString('en-US')} tokens{asPositiveInt(provider?.maxOutputTokens) == null ? '（默认）' : ''}
+              {t(asPositiveInt(provider?.maxOutputTokens) == null
+                ? '留空继承供应商：{value} tokens（默认）'
+                : '留空继承供应商：{value} tokens',
+                { value: providerMaxOut.toLocaleString('en-US') })}
             </div>
-            <FieldError>{errors.maxOutputTokens}</FieldError>
+            <FieldError>{t(errors.maxOutputTokens)}</FieldError>
           </Field>
 
           {/* Advanced settings：默认收起 */}
@@ -992,7 +1047,7 @@ function ModelEditorDialog({ provider, isNew, initialEntry, otherIds, onSave, on
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <div className="text-sm text-ink">Vision</div>
-                    <div className="text-[11px] text-mute/70 mt-0.5">支持图片输入（多模态）</div>
+                    <div className="text-[11px] text-mute/70 mt-0.5">{t('支持图片输入（多模态）')}</div>
                   </div>
                   <Switch checked={vision} onChange={setVision} label="Vision" />
                 </div>

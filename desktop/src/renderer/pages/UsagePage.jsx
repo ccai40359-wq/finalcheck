@@ -3,6 +3,8 @@
 // 后端契约：window.finalcheck.usageStats({days:7|30})；接口缺失或返回旧/空数据时全部优雅降级。
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { api, Card } from '../lib/ui.jsx';
+import { t } from '../i18n/core.mjs';
+import { useLanguage } from '../i18n/index.jsx';
 
 const PALETTE = ['#e3c56b', '#c9a227', '#7aa2ff', '#6fd3c7', '#9b8cff', '#d38f6f', '#c6d36f', '#a9a2ff'];
 const OTHERS_COLOR = '#6d685f';
@@ -292,7 +294,7 @@ function TokenHeatmap({ series }) {
       <div className="mt-2 flex items-center gap-2 text-[10px] text-mute/40">
         <span>{series[0]?.date || ''}</span>
         <span className="text-mute/25">→</span>
-        <span>{series.length ? '今天' : ''}</span>
+        <span>{series.length ? t('今天') : ''}</span>
       </div>
     </div>
   );
@@ -301,13 +303,13 @@ function TokenHeatmap({ series }) {
 function HeatLegend() {
   return (
     <div className="flex items-center gap-1.5 text-[10px] text-mute/40 select-none">
-      <span>少</span>
+      <span>{t('少')}</span>
       <span className="h-3 w-3 rounded-[3px] bg-white/[0.05] border border-white/[0.05]" />
       <span className="h-3 w-3 rounded-[3px]" style={{ backgroundColor: 'rgba(201,162,39,0.18)' }} />
       <span className="h-3 w-3 rounded-[3px]" style={{ backgroundColor: 'rgba(201,162,39,0.36)' }} />
       <span className="h-3 w-3 rounded-[3px]" style={{ backgroundColor: 'rgba(201,162,39,0.58)' }} />
       <span className="h-3 w-3 rounded-[3px]" style={{ backgroundColor: 'rgba(201,162,39,0.86)' }} />
-      <span>多</span>
+      <span>{t('多')}</span>
     </div>
   );
 }
@@ -436,7 +438,7 @@ function TrendChart({ series, models }) {
       ref={wrapRef}
       className="relative"
       role="group"
-      aria-label="Daily token trend 图表，悬停或用手指拖动可查看每日各模型用量"
+      aria-label={t('Daily token trend 图表，悬停或用手指拖动可查看每日各模型用量')}
       onPointerMove={onPointerMove}
       onPointerLeave={onPointerLeave}
       onPointerCancel={onPointerLeave}
@@ -571,13 +573,14 @@ function ModelDonut({ slices, total }) {
 
 /* ---------------- 页面 ---------------- */
 export default function UsagePage() {
+  useLanguage(); // 切换语言后本页跟着重渲染（t() 读的是模块级语言状态）
   const [days, setDays] = useState(30);
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
   const [unsupported, setUnsupported] = useState(false);
   const [exporting, setExporting] = useState(false);
-  const [diagMsg, setDiagMsg] = useState('');
+  const [diagMsg, setDiagMsg] = useState(null); // { key, vars? }：渲染时取译文
   const reqRef = useRef(0);
 
   const load = useCallback(async (windowDays) => {
@@ -611,16 +614,16 @@ export default function UsagePage() {
   const exportDiagnostics = async () => {
     const y = api();
     if (exporting) return;
-    if (!y?.exportDiagnostics) { setDiagMsg('当前版本不支持导出诊断'); return; }
+    if (!y?.exportDiagnostics) { setDiagMsg({ key: '当前版本不支持导出诊断' }); return; }
     setExporting(true);
-    setDiagMsg('');
+    setDiagMsg(null);
     try {
       const r = await y.exportDiagnostics();
-      if (r?.canceled) setDiagMsg('已取消');
-      else if (r?.ok && r?.path) setDiagMsg('已导出：' + r.path);
-      else setDiagMsg(r?.error || '导出失败');
+      if (r?.canceled) setDiagMsg({ key: '已取消' });
+      else if (r?.ok && r?.path) setDiagMsg({ key: '已导出：{path}', vars: { path: r.path } });
+      else setDiagMsg({ key: r?.error || '导出失败' });
     } catch (e) {
-      setDiagMsg('导出失败：' + (e?.message || String(e)));
+      setDiagMsg({ key: '导出失败：{msg}', vars: { msg: e?.message || String(e) } });
     } finally { setExporting(false); }
   };
 
@@ -629,6 +632,8 @@ export default function UsagePage() {
   const hasAny = !view.empty;                     // 全历史有记录（甜甜圈/统计卡）
   const loadingEmpty = loading && !stats;         // 首屏还在读数据，别闪「没有记录」
   const statValue = (v) => (loadingEmpty ? '—' : v);
+  const streakDays = (n) => (n === 1 ? t('1 天') : t('{n} 天', { n }));
+  const diagText = diagMsg ? t(diagMsg.key, diagMsg.vars) : '';
   const formatShare = (s) => {
     if (Number.isFinite(s)) return `${s.toFixed(1)}%`;
     return '—';
@@ -640,7 +645,7 @@ export default function UsagePage() {
       <div className="shrink-0 px-8 pt-6 pb-5 flex items-start justify-between gap-4">
         <div className="min-w-0">
           <h1 className="font-kai text-[22px] leading-tight text-goldSoft">Usage stats</h1>
-          <p className="text-[12px] text-mute mt-1.5 leading-relaxed">本机 token 活动、每日趋势与模型占比。</p>
+          <p className="text-[12px] text-mute mt-1.5 leading-relaxed">{t('本机 token 活动、每日趋势与模型占比。')}</p>
         </div>
         <div className="flex items-center gap-2 shrink-0">
           <button onClick={exportDiagnostics} disabled={exporting}
@@ -662,17 +667,17 @@ export default function UsagePage() {
         <div className="max-w-6xl mx-auto px-6 py-5 space-y-4">
           {err && (
             <div className="rounded-xl border border-red-500/35 bg-red-500/10 px-4 py-2.5 text-xs text-red-300">
-              读取用量失败：{err}
+              {t('读取用量失败：{msg}', { msg: err })}
             </div>
           )}
 
           {/* 5 张统计卡 */}
           <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
-            <StatCard label="Total tokens" value={statValue(fmtTokens(view.totalTokens))} sub="全部历史" accent />
-            <StatCard label="Peak tokens" value={statValue(fmtTokens(view.peakTokens))} sub="单日最高" />
-            <StatCard label="Longest session" value={statValue(fmtDuration(view.longestSessionMs))} sub="单次会话时长" />
-            <StatCard label="Current streak" value={statValue(`${view.currentStreakDays} 天`)} sub="当前连续使用" />
-            <StatCard label="Longest streak" value={statValue(`${view.longestStreakDays} 天`)} sub="历史最长连续" />
+            <StatCard label="Total tokens" value={statValue(fmtTokens(view.totalTokens))} sub={t('全部历史')} accent />
+            <StatCard label="Peak tokens" value={statValue(fmtTokens(view.peakTokens))} sub={t('单日最高')} />
+            <StatCard label="Longest session" value={statValue(fmtDuration(view.longestSessionMs))} sub={t('单次会话时长')} />
+            <StatCard label="Current streak" value={statValue(streakDays(view.currentStreakDays))} sub={t('当前连续使用')} />
+            <StatCard label="Longest streak" value={statValue(streakDays(view.longestStreakDays))} sub={t('历史最长连续')} />
           </div>
 
           {/* Token 活动热力图 */}
@@ -680,32 +685,32 @@ export default function UsagePage() {
             <div className="flex items-start justify-between gap-4">
               <div>
                 <div className="text-sm text-ink font-medium">Token activity</div>
-                <div className="mt-0.5 text-[11px] text-mute/60">最近 {days} 天，每格一天，颜色越深用量越高</div>
+                <div className="mt-0.5 text-[11px] text-mute/60">{t('最近 {days} 天，每格一天，颜色越深用量越高', { days })}</div>
               </div>
               <HeatLegend />
             </div>
             {loadingEmpty ? (
-              <div className="mt-6 mb-2 text-center text-xs text-mute/45">正在读取用量…</div>
+              <div className="mt-6 mb-2 text-center text-xs text-mute/45">{t('正在读取用量…')}</div>
             ) : hasWindow ? (
               <div className="mt-4 flex flex-wrap items-center justify-between gap-6">
                 <TokenHeatmap series={view.series} />
                 <div className="flex items-center gap-8 text-right">
                   <div>
-                    <div className="text-[10px] text-mute/45">活跃天数</div>
+                    <div className="text-[10px] text-mute/45">{t('活跃天数')}</div>
                     <div className="mt-0.5 font-mono text-sm text-ink/85 tabular-nums">{view.activeDays} / {days}</div>
                   </div>
                   <div>
-                    <div className="text-[10px] text-mute/45">最高单日</div>
+                    <div className="text-[10px] text-mute/45">{t('最高单日')}</div>
                     <div className="mt-0.5 font-mono text-sm text-goldSoft tabular-nums">{fmtTokens(view.bestDay?.total || 0)}</div>
                   </div>
                   <div>
-                    <div className="text-[10px] text-mute/45">日均（活跃日）</div>
+                    <div className="text-[10px] text-mute/45">{t('日均（活跃日）')}</div>
                     <div className="mt-0.5 font-mono text-sm text-ink/85 tabular-nums">{fmtTokens(view.avgDaily)}</div>
                   </div>
                 </div>
               </div>
             ) : (
-              <div className="mt-6 mb-2 text-center text-sm text-mute/70">最近 {days} 天还没有用量记录，跑一次对话就会有了</div>
+              <div className="mt-6 mb-2 text-center text-sm text-mute/70">{t('最近 {days} 天还没有用量记录，跑一次对话就会有了', { days })}</div>
             )}
           </Card>
 
@@ -714,7 +719,7 @@ export default function UsagePage() {
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <div className="text-sm text-ink font-medium">Daily token trend</div>
-                <div className="mt-0.5 text-[11px] text-mute/60">按模型分色，X 轴日期，Y 轴 token</div>
+                <div className="mt-0.5 text-[11px] text-mute/60">{t('按模型分色，X 轴日期，Y 轴 token')}</div>
               </div>
               <div className="flex items-center gap-1 rounded-full bg-white/[0.04] p-0.5">
                 {[7, 30].map((d) => (
@@ -727,7 +732,7 @@ export default function UsagePage() {
               </div>
             </div>
             {loadingEmpty ? (
-              <div className="h-[220px] flex items-center justify-center text-xs text-mute/45">正在读取用量…</div>
+              <div className="h-[220px] flex items-center justify-center text-xs text-mute/45">{t('正在读取用量…')}</div>
             ) : hasWindow ? (
               <>
                 <TrendChart series={view.series} models={view.trendModels} />
@@ -742,7 +747,7 @@ export default function UsagePage() {
               </>
             ) : (
               <div className="h-[220px] flex items-center justify-center text-sm text-mute/60">
-                还没有用量记录，跑一次对话就会有了
+                {t('还没有用量记录，跑一次对话就会有了')}
               </div>
             )}
           </Card>
@@ -750,9 +755,9 @@ export default function UsagePage() {
           {/* 模型占比 */}
           <Card className="p-4">
             <div className="text-sm text-ink font-medium">Model usage</div>
-            <div className="mt-0.5 text-[11px] text-mute/60">模型 token 占比，最多列 6 个，其余归入 others</div>
+            <div className="mt-0.5 text-[11px] text-mute/60">{t('模型 token 占比，最多列 6 个，其余归入 others')}</div>
             {loadingEmpty ? (
-              <div className="py-10 text-center text-xs text-mute/45">正在读取用量…</div>
+              <div className="py-10 text-center text-xs text-mute/45">{t('正在读取用量…')}</div>
             ) : hasAny && view.slices.length ? (
               <div className="mt-3 flex flex-col sm:flex-row items-center gap-6">
                 <ModelDonut slices={view.slices} total={view.modelTotal || view.totalTokens} />
@@ -768,18 +773,18 @@ export default function UsagePage() {
                 </div>
               </div>
             ) : (
-              <div className="py-10 text-center text-sm text-mute/60">还没有用量记录，跑一次对话就会有了</div>
+              <div className="py-10 text-center text-sm text-mute/60">{t('还没有用量记录，跑一次对话就会有了')}</div>
             )}
           </Card>
 
           {unsupported && !loading && (
-            <div className="text-center text-[11px] text-mute/40">当前版本未提供 usageStats 接口（后端接入后自动生效）</div>
+            <div className="text-center text-[11px] text-mute/40">{t('当前版本未提供 usageStats 接口（后端接入后自动生效）')}</div>
           )}
 
           {/* 导出/刷新状态提示（按钮已移到页头右侧） */}
           {diagMsg && (
             <div className="flex items-center justify-end pb-3">
-              <span className="min-w-0 truncate text-[11px] text-mute/55" title={diagMsg}>{diagMsg}</span>
+              <span className="min-w-0 truncate text-[11px] text-mute/55" title={diagText}>{diagText}</span>
             </div>
           )}
         </div>

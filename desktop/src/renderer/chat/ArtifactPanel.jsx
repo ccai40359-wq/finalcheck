@@ -1,5 +1,6 @@
 // 右侧产物预览：图片 / HTML / PDF / 文本（agent 生成的文件可直接点开看）
 import React, { useEffect, useRef, useState } from 'react';
+import { t } from '../i18n/core.mjs';
 
 export const PREVIEW_EXTS = new Set([
   '.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp',
@@ -82,29 +83,29 @@ export function ArtifactPanel({ artifact, loading, error, onClose, onReload, onO
   };
   return (
     <aside style={{ width }} className="shrink-0 border-l border-edge bg-[#0b0b0e] flex flex-col min-h-0 relative">
-      <div onMouseDown={startDrag} onDoubleClick={() => setWidth(560)} title="拖动调整宽度（拖到头关闭，双击复位）"
+      <div onMouseDown={startDrag} onDoubleClick={() => setWidth(560)} title={t('拖动调整宽度（拖到头关闭，双击复位）')}
         className="group absolute left-0 top-0 h-full w-2 -ml-1 cursor-col-resize z-10">
         <div className="w-px h-full mx-auto bg-edge/70 group-hover:bg-gold/60 transition-colors" />
       </div>
       <div className="shrink-0 h-11 px-3.5 flex items-center gap-2 border-b border-edge">
         <span className="text-goldDeep text-sm">▤</span>
         <div className="min-w-0 flex-1">
-          <div className="text-xs text-ink/90 truncate">{a?.name || '产物预览'}</div>
+          <div className="text-xs text-ink/90 truncate">{a?.name || t('产物预览')}</div>
           <div className="text-[10px] text-mute/50 font-mono truncate">{a?.path || ''}</div>
         </div>
         {a?.path ? (
           <>
-            <button onClick={() => onReload?.(a.path)} title="重新读取"
-              className="text-[11px] px-2 py-1 rounded-md border border-edge text-mute hover:text-goldSoft hover:border-gold/40 transition-colors">刷新</button>
-            <button onClick={() => onOpen?.(a.path)} title="用系统程序打开"
-              className="text-[11px] px-2 py-1 rounded-md border border-edge text-mute hover:text-goldSoft hover:border-gold/40 transition-colors">外部打开</button>
+            <button onClick={() => onReload?.(a.path)} title={t('重新读取')}
+              className="text-[11px] px-2 py-1 rounded-md border border-edge text-mute hover:text-goldSoft hover:border-gold/40 transition-colors">{t('刷新')}</button>
+            <button onClick={() => onOpen?.(a.path)} title={t('用系统程序打开')}
+              className="text-[11px] px-2 py-1 rounded-md border border-edge text-mute hover:text-goldSoft hover:border-gold/40 transition-colors">{t('外部打开')}</button>
           </>
         ) : null}
-        <button onClick={onClose} title="关闭预览"
+        <button onClick={onClose} title={t('关闭预览')}
           className="h-7 w-7 rounded-md text-mute hover:text-ink hover:bg-white/5 transition-colors">✕</button>
       </div>
       <div className="flex-1 min-h-0 overflow-hidden bg-[#0a0a0c]">
-        {loading ? <div className="p-4 text-xs text-mute animate-pulse">读取中…</div>
+        {loading ? <div className="p-4 text-xs text-mute animate-pulse">{t('读取中…')}</div>
           : error ? <div className="p-4 text-xs text-red-300 whitespace-pre-wrap">{error}</div>
             : !a ? null
               : a.kind === 'image' ? (

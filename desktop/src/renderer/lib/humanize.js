@@ -2,6 +2,8 @@
 // 纯函数，不依赖 DOM / React，可直接在 Node 里单测（tests/humanize.test.mjs）。
 // 原则：任何返回值里都不出现 `{"`、`":`、`}]`、`\"` 这类 JSON 结构碎片；
 // 工具参数默认逐行铺开（formatToolArgs），不再折叠成一句占位文案。
+// 英文模式：只翻译固定文案（t() 在 zh 下原样返回，中文输出保持不变）。
+import { t, getLanguage } from '../i18n/core.mjs';
 
 /** 去掉 JSON 结构碎片（保留语义文字）：`{"` → `{`，`":` → 空格，`}]` → 空 */
 const deFrag = (s) => String(s ?? '')
@@ -9,14 +11,17 @@ const deFrag = (s) => String(s ?? '')
   .replace(/"\s*:/g, ' ')
   .replace(/\}\s*\]/g, '');
 
+/** 并列项分隔符：中文顿号 / 英文逗号（只影响展示拼接） */
+const listSep = () => (getLanguage() === 'en' ? ', ' : '、');
+
 const oneLine = (s, max = 120) => {
-  const t = deFrag(String(s ?? ''))
+  const text = deFrag(String(s ?? ''))
     .replace(/\s+/g, ' ')
     .replace(/^[\s:;,，、.。-]+/, '')
     .replace(/[\s:;,，、.。-]+$/, '')
     .trim();
   if (max <= 0) return '';
-  return t.length > max ? `${t.slice(0, max - 1)}…` : t;
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 };
 
 /** 常见异常前缀（Error: / TypeError: / SyntaxError: ...）不留在用户文案里 */
@@ -44,7 +49,7 @@ const splitFirstLine = (raw) => {
  * @returns {string} 单行中文提示
  */
 export function humanizeToolError(raw) {
-  if (raw == null || raw === '') return '执行失败（原因未记录）';
+  if (raw == null || raw === '') return t('执行失败（原因未记录）');
   let text = String(raw);
 
   // 有些工具把错误包在 JSON 里：先抽出 message/error 再走同样的映射
@@ -62,8 +67,8 @@ export function humanizeToolError(raw) {
   if (/(?:Expected|Unexpected).*(?:','|']'|'}'|token|JSON)|in JSON at position|JSON\.parse|Unterminated string in JSON|Unexpected end of JSON/i.test(line)) {
     const m = line.match(/(?:in JSON at position|at position|position)\s*(\d+)/i);
     return m
-      ? `脚本指令的 JSON 格式有误（第 ${m[1]} 字符附近缺逗号或括号）`
-      : '脚本指令的 JSON 格式有误（缺逗号或括号）';
+      ? t('脚本指令的 JSON 格式有误（第 {pos} 字符附近缺逗号或括号）', { pos: m[1] })
+      : t('脚本指令的 JSON 格式有误（缺逗号或括号）');
   }
 
   // 2) HTTP 网关错误：保留状态码 + 原始 message 片段（截 60 字）
@@ -75,22 +80,22 @@ export function humanizeToolError(raw) {
     const code = httpMatch[1];
     let detail = line.replace(httpMatch[0], '').replace(/^[\s:;,，、\-–—]+/, '').trim();
     if (!detail || /^HTTP(?:[\/\s]\S*)?$/i.test(detail)) detail = line;
-    return `网关返回 ${code}：${oneLine(detail, 60)}`.trim();
+    return t('网关返回 {code}：{detail}', { code, detail: oneLine(detail, 60) }).trim();
   }
 
   // 3) 超时 / 中断
   if (/\b(?:timeout|timed out|ETIMEDOUT|AbortError|aborted)\b|超时|已中断/i.test(line)) {
-    return '执行超时（已中断）';
+    return t('执行超时（已中断）');
   }
 
   // 4) 文件不存在
   if (/ENOENT|no such file or directory/i.test(line)) {
-    return '文件不存在或已被移动';
+    return t('文件不存在或已被移动');
   }
 
   // 5) 其它：去掉换行/括号压缩成一行
   const clean = oneLine(line.replace(/[{}\[\]]/g, ' '), 120);
-  return clean || '执行失败（原因未记录）';
+  return clean || t('执行失败（原因未记录）');
 }
 
 /** 转义还原一次：`\"` → `"`、`\\` → `\`、`\n` → 换行（只认 JSON 允许的转义，避免误伤普通文本） */
@@ -169,7 +174,7 @@ function plainArgsText(args) {
 
 const isScalar = (v) => typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean';
 const scalarText = (v) => {
-  if (typeof v === 'boolean') return v ? '是' : '否';
+  if (typeof v === 'boolean') return v ? t('是') : t('否');
   if (typeof v === 'number') return Number.isFinite(v) ? String(v) : '';
   return displayText(v, 200);
 };
@@ -184,8 +189,8 @@ function genericArgLines(obj, lines) {
     }
     if (Array.isArray(v)) {
       const scalars = v.filter(isScalar).map(scalarText).filter(Boolean);
-      if (v.length && scalars.length === v.length) lines.push({ label: key, value: oneLine(scalars.join('、'), 240) });
-      else if (v.length) lines.push({ label: key, value: `${v.length} 项` });
+      if (v.length && scalars.length === v.length) lines.push({ label: key, value: oneLine(scalars.join(listSep()), 240) });
+      else if (v.length) lines.push({ label: key, value: t('{n} 项', { n: v.length }) });
       continue;
     }
     if (v && typeof v === 'object') {
@@ -196,7 +201,7 @@ function genericArgLines(obj, lines) {
           if (text) lines.push({ label: `${key}.${k2}`, value: text });
         }
       } else if (Object.keys(v).length) {
-        lines.push({ label: key, value: `${Object.keys(v).length} 个字段` });
+        lines.push({ label: key, value: t('{n} 个字段', { n: Object.keys(v).length }) });
       }
     }
   }
@@ -215,10 +220,10 @@ export function formatToolArgs(name, args) {
   const parsed = parseArgsValue(args);
   if (parsed == null) {
     const text = plainArgsText(args);
-    return text ? [{ label: '原文', value: text }] : [];
+    return text ? [{ label: t('原文'), value: text }] : [];
   }
   if (Array.isArray(parsed)) {
-    const list = parsed.map((v, i) => (isScalar(v) ? `- ${scalarText(v)}` : `- 第 ${i + 1} 项：${Object.keys(v || {}).length} 个字段`));
+    const list = parsed.map((v, i) => (isScalar(v) ? `- ${scalarText(v)}` : t('- 第 {i} 项：{n} 个字段', { i: i + 1, n: Object.keys(v || {}).length })));
     return list.length ? [{ label: '', value: list.join('\n') }] : [];
   }
 
@@ -251,7 +256,7 @@ export function formatToolArgs(name, args) {
     case 'probe_target': {
       push('url', obj.url ?? obj.target);
       const n = obj.requests ?? obj.count;
-      if (Number.isFinite(Number(n)) && Number(n) > 0) push('requests', `${Number(n)} 次`);
+      if (Number.isFinite(Number(n)) && Number(n) > 0) push('requests', t('{n} 次', { n: Number(n) }));
       const timeout = obj.timeoutMs ?? obj.timeout;
       if (Number.isFinite(Number(timeout)) && Number(timeout) > 0) push('timeout', `${Number(timeout)}ms`);
       break;
@@ -270,9 +275,9 @@ export function formatToolArgs(name, args) {
       if (steps.length) {
         const list = steps.map((s, i) => {
           const step = s && typeof s === 'object' ? s : {};
-          const title = displayText(step.name || step.title || step.id || `步骤 ${i + 1}`, 80);
+          const title = displayText(step.name || step.title || step.id || t('步骤 {n}', { n: i + 1 }), 80);
           const deps = Array.isArray(step.depends_on) ? step.depends_on.map(String).filter(Boolean) : [];
-          return `- ${title}${deps.length ? `（依赖 ${deps.join('、')}）` : ''}`;
+          return `- ${title}${deps.length ? t('（依赖 {deps}）', { deps: deps.join(listSep()) }) : ''}`;
         });
         lines.push({ label: 'steps', value: list.join('\n') });
       }
@@ -281,8 +286,8 @@ export function formatToolArgs(name, args) {
         const list = script.map((n, i) => {
           const node = n && typeof n === 'object' ? n : {};
           const op = displayText(node.op || 'step', 20);
-          const title = displayText(node.name || node.id || `节点 ${i + 1}`, 80);
-          return `- ${title}（${op}）`;
+          const title = displayText(node.name || node.id || t('节点 {n}', { n: i + 1 }), 80);
+          return t('- {title}（{op}）', { title, op });
         });
         lines.push({ label: 'script', value: list.join('\n') });
       }
@@ -341,7 +346,7 @@ export function summarizeToolArgs(name, args) {
   }
 
   let out = '';
-  if (!Object.keys(obj).length) return '无参数';
+  if (!Object.keys(obj).length) return t('无参数');
   switch (name) {
     case 'read_file':
     case 'present_artifact':
@@ -359,19 +364,22 @@ export function summarizeToolArgs(name, args) {
     case 'audit_project': {
       const dir = readStr(obj, ['dir', 'path']);
       const tier = readStr(obj, ['tier', 'level']);
-      out = dir ? `${dir} · ${tier || '默认档位'}` : (tier ? `默认目录 · ${tier}` : '');
+      out = dir ? t('{dir} · {tier}', { dir, tier: tier || t('默认档位') }) : (tier ? t('默认目录 · {tier}', { tier }) : '');
       break;
     }
     case 'quality_gate': {
       const dir = readStr(obj, ['dir', 'path']);
       const repeat = obj.repeat ?? obj.repeats;
-      out = dir ? `${dir}${Number(repeat) > 1 ? ` · 重复 ${Number(repeat)} 次` : ''}` : '';
+      out = dir
+        ? (Number(repeat) > 1 ? t('{dir} · 重复 {n} 次', { dir, n: Number(repeat) }) : dir)
+        : '';
       break;
     }
     case 'probe_target': {
       const url = readStr(obj, ['url', 'target']);
       const n = obj.requests ?? obj.count;
-      out = url ? `${url} · ${Number.isFinite(Number(n)) && Number(n) > 0 ? Number(n) : 10} 次` : '';
+      const count = Number.isFinite(Number(n)) && Number(n) > 0 ? Number(n) : 10;
+      out = url ? t('{url} · {n} 次', { url, n: count }) : '';
       break;
     }
     case 'stress_target': {
@@ -380,19 +388,19 @@ export function summarizeToolArgs(name, args) {
       const connections = obj.connections;
       const parts = [url];
       if (Number.isFinite(Number(duration)) && Number(duration) > 0) parts.push(`${Number(duration)}s`);
-      if (Number.isFinite(Number(connections)) && Number(connections) > 0) parts.push(`${Number(connections)} 连接`);
+      if (Number.isFinite(Number(connections)) && Number(connections) > 0) parts.push(t('{n} 连接', { n: Number(connections) }));
       out = parts.filter(Boolean).join(' · ');
       break;
     }
     case 'review_diff': {
       const dir = readStr(obj, ['dir', 'path']);
       const base = readStr(obj, ['base', 'ref']);
-      out = dir ? `${dir} · 对比 ${base || 'HEAD'}` : '';
+      out = dir ? t('{dir} · 对比 {base}', { dir, base: base || 'HEAD' }) : '';
       break;
     }
     case 'download_gate': {
       const dir = readStr(obj, ['dir', 'path']);
-      out = dir ? `${dir} · 下载闸` : '';
+      out = dir ? t('{dir} · 下载闸', { dir }) : '';
       break;
     }
     case 'read_playbook': {
@@ -422,7 +430,7 @@ export function summarizeToolArgs(name, args) {
   if (first) {
     out = oneLine(first.label ? `${first.label}: ${first.value}` : first.value, 160);
   }
-  return out || '无参数';
+  return out || t('无参数');
 }
 
 /** 该位置是否落在 ``` 围栏里（围栏内的 JSON 是正常代码块，不算裸 JSON 倾倒） */

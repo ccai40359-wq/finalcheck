@@ -9,6 +9,9 @@ import { ProcessTimeline, WorkingStatus, applyAgentEvent, mergeTraceIntoEvents }
 import { ArtifactPanel, ArtifactChips, collectArtifacts } from './chat/ArtifactPanel.jsx';
 import { SubagentPanel } from './chat/SubagentPanel.jsx';
 import { renderMarkdown } from './chat/md.jsx';
+// 双语：t() 在英文模式查词典、中文模式原样返回；useLanguage() 只负责切换语言时触发重渲染
+import { t, setLanguage, resolveLanguage } from './i18n/core.mjs';
+import { useLanguage } from './i18n/index.jsx';
 
 const SESSION_PREVIEW = 5; // 每个工作区默认露出几条会话，其余走 Show more
 
@@ -73,21 +76,21 @@ export const needsFirstRunSetup = (cfg) => !(Array.isArray(cfg?.providers) ? cfg
 
 // 示例体检结果 → 展示摘要（verdict + 发现数 + 前 3 条）
 export function formatDemoAuditSummary(result, dir) {
-  const verdict = result?.conclusion?.verdict || result?.verdict || '未给出结论';
+  const verdict = result?.conclusion?.verdict || result?.verdict || t('未给出结论');
   const reason = result?.conclusion?.reason || result?.reason || '';
   const findings = Array.isArray(result?.findings) ? result.findings : [];
-  const SEV_LABEL = { high: '高危', medium: '中危', low: '低危' };
+  const SEV_LABEL = { high: t('高危'), medium: t('中危'), low: t('低危') };
   const lines = findings.slice(0, 3).map((f) => {
-    const sev = SEV_LABEL[f?.severity] || '提示';
-    const where = f?.file ? `（${baseName(f.file)}${f?.line ? `:${f.line}` : ''}）` : '';
-    return `- [${sev}] ${f?.checkId ? `${f.checkId} · ` : ''}${f?.message || f?.rule || '未命名问题'}${where}`;
+    const sev = SEV_LABEL[f?.severity] || t('提示');
+    const where = f?.file ? t('（{where}）', { where: `${baseName(f.file)}${f?.line ? `:${f.line}` : ''}` }) : '';
+    return `- [${sev}] ${f?.checkId ? `${f.checkId} · ` : ''}${f?.message || f?.rule || t('未命名问题')}${where}`;
   });
   return [
-    '### 示例体检完成（L2）',
-    `**结论：${verdict}**${reason ? ` · ${reason}` : ''}`,
-    `发现 **${findings.length}** 条${findings.length > 3 ? '，先列前 3 条' : ''}`,
-    lines.length ? lines.join('\n') : '没有发现明显问题。',
-    `> 示例目录：\`${dir}\``
+    t('### 示例体检完成（L2）'),
+    `${t('**结论：{verdict}**', { verdict })}${reason ? ` · ${reason}` : ''}`,
+    t(findings.length > 3 ? '发现 **{n}** 条，先列前 3 条' : '发现 **{n}** 条', { n: findings.length }),
+    lines.length ? lines.join('\n') : t('没有发现明显问题。'),
+    t('> 示例目录：`{dir}`', { dir })
   ].join('\n\n');
 }
 
@@ -119,7 +122,7 @@ const prettyTitle = (text) => {
   if (skill) return `✦ ${skill[1].trim().slice(0, 24)}`;
   if (s.startsWith(WF_PROMPT_PREFIX)) {
     const task = s.match(/\n任务：([^\n]+)/);
-    return `Workflow · ${(task?.[1] || '多 agent 工作流').trim().slice(0, 24)}`;
+    return `Workflow · ${(task?.[1] || t('多 agent 工作流')).trim().slice(0, 24)}`;
   }
   return s;
 };
@@ -246,7 +249,7 @@ function AttachmentChip({ item, onRemove }) {
         {src
           ? <img src={src} alt={item.name || ''} title={item.name || ''} className="h-9 w-9 rounded-lg object-cover border border-edge/60 hover:border-gold/50 transition-colors" onError={handleImgError} />
           : <span title={item.name || ''} className="h-9 w-9 rounded-lg bg-white/[0.04] border border-edge/60 flex items-center justify-center text-goldDeep">▤</span>}
-        <button onClick={onRemove} title="移除附件"
+        <button onClick={onRemove} title={t('移除附件')}
           className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-black/80 border border-edge text-[9px] leading-none text-mute/80 opacity-0 group-hover:opacity-100 hover:text-red-400 transition-opacity">✕</button>
       </div>
     );
@@ -255,7 +258,7 @@ function AttachmentChip({ item, onRemove }) {
     <div className="group inline-flex items-center gap-2 rounded-xl bg-white/[0.04] border border-edge/60 pl-1.5 pr-2 py-1 text-[11px] transition-colors duration-200 hover:border-edge">
       <span className="h-7 w-7 rounded-lg bg-white/[0.04] flex items-center justify-center text-goldDeep">▤</span>
       <span className="max-w-[170px] truncate text-ink/80">{item.name}</span>
-      <button onClick={onRemove} title="移除附件" className="text-mute/50 hover:text-red-400 transition-colors duration-200">✕</button>
+      <button onClick={onRemove} title={t('移除附件')} className="text-mute/50 hover:text-red-400 transition-colors duration-200">✕</button>
     </div>
   );
 }
@@ -321,7 +324,7 @@ function PastedTextBlock({ text }) {
 const relTime = (ts) => {
   if (!ts) return '';
   const d = Date.now() - ts;
-  if (d < 60e3) return '刚刚';
+  if (d < 60e3) return t('刚刚');
   if (d < 3600e3) return `${Math.floor(d / 60e3)}m`;
   if (d < 86400e3) return `${Math.floor(d / 3600e3)}h`;
   if (d < 7 * 86400e3) return `${Math.floor(d / 86400e3)}d`;
@@ -330,6 +333,7 @@ const relTime = (ts) => {
 
 export default function App() {
   const y = api(); // window.finalcheck（浏览器直开时为空 → 仅壳）
+  useLanguage(); // 订阅语言状态：设置页切换语言后整棵界面重渲染（t() 读的是最新语言）
   const [page, setPage] = useState('chat');
   const [sessions, setSessions] = useState([]);       // [{id,title,updatedAt,turns}]
   const [projects, setProjects] = useState([]);       // [{id,name,path,isDefault,sessionCount}]
@@ -459,6 +463,10 @@ export default function App() {
     try { const list = await y.projects.list(); setProjects(list); return list; } catch { return []; }
   };
 
+  // 「自动打开」只挑未归档会话：归档的默认看不见，也就不该被打开；
+  // 整个项目都归档了就停在新会话页（用户 2026-11-10 反馈：点项目不该跳回一条已归档的对话）
+  const firstOpenable = (list) => (Array.isArray(list) ? list.find((x) => !x.archived) : null) || null;
+
   // 切项目只切 UI 视角（ZCode 语义）：不中断任何在跑的回合，runsRef 里的后台流原样保留
   const switchProject = async (p) => {
     if (!p) return;
@@ -468,7 +476,8 @@ export default function App() {
     setAttachments([]);
     setInput('');
     const list = await refreshSessions();
-    if (list.length) await openSession(list[0].id);
+    const pick = firstOpenable(list);
+    if (pick) await openSession(pick.id);
     else { setActiveId(null); setMessages([]); }
     setPage('chat');
   };
@@ -492,14 +501,14 @@ export default function App() {
       await refreshProjects();
       await switchProject(p);
     } catch (e) {
-      setMessages((prev) => [...prev, { role: 'notice', content: '添加项目失败：' + e.message }]);
+      setMessages((prev) => [...prev, { role: 'notice', content: t('添加项目失败：{msg}', { msg: e.message }) }]);
     }
   };
 
   const removeProject = async (p) => {
     if (!y?.projects) return;
     const ok = await new Promise((resolve) => setConfirmBox({
-      text: `从项目列表移除「${p.name}」？不会删除磁盘文件夹，只移除这里的入口。`,
+      text: t('从项目列表移除「{name}」？不会删除磁盘文件夹，只移除这里的入口。', { name: p.name }),
       resolve
     }));
     setConfirmBox(null);
@@ -527,7 +536,7 @@ export default function App() {
       await y.sessions.move(s.id, targetProjectId);
       await refreshSessions();
       await refreshProjects();
-    } catch (e) { setMessages((prev) => [...prev, { role: 'notice', content: '移动失败：' + e.message }]); }
+    } catch (e) { setMessages((prev) => [...prev, { role: 'notice', content: t('移动失败：{msg}', { msg: e.message }) }]); }
   };
   const saveRename = async () => {
     if (!renameBox) return;
@@ -601,7 +610,7 @@ export default function App() {
     // 自定义黑金确认框（原生 window.confirm 太丑，用户实测点名）
     const ok = await new Promise((resolve) => {
       setConfirmBox({
-        text: `删除会话「${prettyTitle(s.title) || '未命名'}」？此操作不可恢复。`,
+        text: t('删除会话「{title}」？此操作不可恢复。', { title: prettyTitle(s.title) || t('未命名') }),
         resolve
       });
     });
@@ -613,7 +622,8 @@ export default function App() {
     if (activeId === s.id) {
       setActiveId(null);
       setMessages([]);
-      if (list.length) openSession(list[0].id);
+      const pick = firstOpenable(list);
+      if (pick) openSession(pick.id);
     }
   };
 
@@ -627,13 +637,14 @@ export default function App() {
       if (p) {
         try { await y.projects.select(p.id); setActiveProjectId(p.id); } catch { /* 忽略 */ }
         const list = await refreshSessions();
-        if (list.length) await openSession(list[0].id);
+        const pick = firstOpenable(list);
+        if (pick) await openSession(pick.id);
       }
       setBooted(true);
     })();
     // 权限模式 / 模型 / 思考强度：启动时从配置载入（仿 ZCode Full access）
     Promise.resolve(y.getConfig?.())
-      .then((c) => { setCfg(c || null); setPermMode(c?.permissionMode === 'full' ? 'full' : 'ask'); })
+      .then((c) => { setCfg(c || null); setPermMode(c?.permissionMode === 'full' ? 'full' : 'ask'); setLanguage(resolveLanguage(c?.language, navigator.language)); })
       .catch(() => {})
       .finally(() => setCfgLoaded(true));
     y.skillsList?.().then((list) => setSkills(Array.isArray(list) ? list : [])).catch(() => {});
@@ -642,7 +653,7 @@ export default function App() {
   // 从设置页回到对话：重新读配置（模型/effort 可能在设置页改过）
   useEffect(() => {
     if (page !== 'chat' || !y) return;
-    y.getConfig?.().then((c) => { setCfg(c); setPermMode(c?.permissionMode === 'full' ? 'full' : 'ask'); }).catch(() => {});
+    y.getConfig?.().then((c) => { setCfg(c); setPermMode(c?.permissionMode === 'full' ? 'full' : 'ask'); setLanguage(resolveLanguage(c?.language, navigator.language)); }).catch(() => {});
   }, [page]);
 
   // 首次使用向导：没有供应商（或全部 disabled）时显示；有可用供应商后清掉跳过标记
@@ -801,13 +812,13 @@ export default function App() {
       const r = await y.artifactRead(p);
       if (r && r.kind === 'missing') {
         setArtifact({ path: p, name: r.name || baseName(p) });
-        setArtifactError(r.error || '文件已不存在');
+        setArtifactError(r.error || t('文件已不存在'));
       } else {
         setArtifact(r);
       }
     } catch (e) {
       setArtifact({ path: p, name: baseName(p) });
-      setArtifactError(e.message || '读取失败');
+      setArtifactError(e.message || t('读取失败'));
     } finally {
       setArtifactLoading(false);
     }
@@ -917,7 +928,7 @@ export default function App() {
       if (r?.error) setMessages((prev) => [...prev, { role: 'notice', content: r.error }]);
       else await openSession(sid);
     } catch (e) {
-      setMessages((prev) => [...prev, { role: 'notice', content: '压缩失败：' + e.message }]);
+      setMessages((prev) => [...prev, { role: 'notice', content: t('压缩失败：{msg}', { msg: e.message }) }]);
     } finally { setCompacting(false); setMenu(null); }
   };
   const chooseSlash = (item) => {
@@ -1014,7 +1025,7 @@ export default function App() {
       return;
     }
     if (!activeModel) {
-      setMessages((prev) => [...prev, { role: 'notice', content: `供应商「${activeProv?.name || '未选择'}」还没有可用模型：请在模型面板里添加/选择模型后再发送。` }]);
+      setMessages((prev) => [...prev, { role: 'notice', content: t('供应商「{name}」还没有可用模型：请在模型面板里添加/选择模型后再发送。', { name: activeProv?.name || t('未选择') }) }]);
       pumpingRef.current = false;
       return;
     }
@@ -1100,7 +1111,7 @@ export default function App() {
           };
           if (r.cancelled || r.error === '已取消') next[last] = { role: 'assistant', content: r.partialContent || pm.content || '', interrupted: true, trace: r.trace || [], ...timeline };
           else if (r.error) next[last] = { role: 'assistant', content: '', error: r.error, trace: r.trace || [], ...timeline };
-          else next[last] = { role: 'assistant', content: r.answer || prev[last]?.content || '(空回复)', trace: r.trace || [], ...timeline };
+          else next[last] = { role: 'assistant', content: r.answer || prev[last]?.content || t('(空回复)'), trace: r.trace || [], ...timeline };
           return next;
         });
       }
@@ -1115,7 +1126,7 @@ export default function App() {
           const next = [...prev];
           const pm = next[next.length - 1] || {};
           next[next.length - 1] = {
-            role: 'assistant', content: '', error: 'Agent 调用失败：' + e.message, trace: [],
+            role: 'assistant', content: '', error: t('Agent 调用失败：{msg}', { msg: e.message }), trace: [],
             events: pm.events || [], startedAt: pm.startedAt,
             workedMs: pm.workedMs ?? (pm.startedAt ? Date.now() - pm.startedAt : undefined)
           };
@@ -1186,8 +1197,8 @@ export default function App() {
     const sid = activeId;
     const note = (content) => setMessages((prev) => [...prev, { role: 'notice', content }]);
     if (!sid || !item) return;
-    if (!runningIds[sid] || stoppingIds[sid]) { note('当前没有运行中的回合，无法 Steer'); return; }
-    if (!y?.agentSteer) { note('当前版本不支持 Steer'); return; }
+    if (!runningIds[sid] || stoppingIds[sid]) { note(t('当前没有运行中的回合，无法 Steer')); return; }
+    if (!y?.agentSteer) { note(t('当前版本不支持 Steer')); return; }
     const text = [
       String(item.text || '').trim(),
       ...(item.pasted || []),
@@ -1198,7 +1209,7 @@ export default function App() {
       if (r?.error) { note(r.error); return; } // 失败保留在队列，用户可重试或等回合结束
       setQueueBySession((prev) => ({ ...prev, [sid]: removeById(prev[sid], item.id) }));
     } catch (e) {
-      note('Steer 失败：' + (e?.message || e));
+      note(t('Steer 失败：{msg}', { msg: e?.message || e }));
     }
   };
 
@@ -1230,20 +1241,20 @@ export default function App() {
   const pushNotice = (content) => setMessages((prev) => [...prev, { role: 'notice', content }]);
   const runDemoAudit = async () => {
     if (!y || demoBusy) return;
-    if (!y.demoPath) { pushNotice('示例项目未随包发布'); return; }
+    if (!y.demoPath) { pushNotice(t('示例项目未随包发布')); return; }
     setDemoBusy(true);
     let phase = 'demo';
     try {
       const p = await y.demoPath();
       const dir = typeof p === 'string' ? p : (p && typeof p === 'object' && !p.error ? (p.path || p.dir || null) : null);
-      if (!dir) { pushNotice('示例项目未随包发布'); return; }
-      if (!y.audit) { pushNotice('当前版本不支持体检调用'); return; }
+      if (!dir) { pushNotice(t('示例项目未随包发布')); return; }
+      if (!y.audit) { pushNotice(t('当前版本不支持体检调用')); return; }
       phase = 'audit';
       const r = await y.audit(dir, { tier: 'L2', interactive: true });
       setMessages((prev) => [...prev, { role: 'assistant', content: formatDemoAuditSummary(r, dir), trace: [], local: true }]);
     } catch (e) {
-      if (phase === 'demo') pushNotice('示例项目未随包发布');
-      else pushNotice('示例体检失败：' + (e?.message || String(e)));
+      if (phase === 'demo') pushNotice(t('示例项目未随包发布'));
+      else pushNotice(t('示例体检失败：{msg}', { msg: e?.message || String(e) }));
     } finally {
       setDemoBusy(false);
     }
@@ -1320,9 +1331,9 @@ export default function App() {
           <span className="text-[12px] tracking-widest text-mute">FinalCheck</span>
         </div>
         <div className="flex items-center h-full" style={{ WebkitAppRegion: 'no-drag' }}>
-          <button onClick={() => y?.windowCtl('minimize')} className="h-full px-3.5 text-mute hover:text-ink hover:bg-white/5 transition-colors" title="最小化">─</button>
-          <button onClick={() => y?.windowCtl('maximize')} className="h-full px-3.5 text-mute hover:text-ink hover:bg-white/5 transition-colors" title="最大化">▢</button>
-          <button onClick={() => y?.windowCtl('close')} className="h-full px-3.5 text-mute hover:text-red-300 hover:bg-red-500/15 transition-colors" title="关闭">✕</button>
+          <button onClick={() => y?.windowCtl('minimize')} className="h-full px-3.5 text-mute hover:text-ink hover:bg-white/5 transition-colors" title={t('最小化')}>─</button>
+          <button onClick={() => y?.windowCtl('maximize')} className="h-full px-3.5 text-mute hover:text-ink hover:bg-white/5 transition-colors" title={t('最大化')}>▢</button>
+          <button onClick={() => y?.windowCtl('close')} className="h-full px-3.5 text-mute hover:text-red-300 hover:bg-red-500/15 transition-colors" title={t('关闭')}>✕</button>
         </div>
       </div>
       <div className="relative z-[1] flex-1 min-h-0 flex text-ink">
@@ -1339,7 +1350,7 @@ export default function App() {
         {/* Workspaces 标题 + 新建项目文件夹（右边这个图标） */}
         <div className="px-3.5 pt-3.5 pb-1 flex items-center justify-between">
           <span className="text-[10px] tracking-[0.16em] text-mute/45 select-none">Workspaces</span>
-          <button onClick={addProject} title="新建项目文件夹（会话与记忆存到该目录 .finalcheck/）"
+          <button onClick={addProject} title={t('新建项目文件夹（会话与记忆存到该目录 .finalcheck/）')}
             className="h-6 w-6 -mr-1 rounded-lg text-mute/55 hover:text-goldSoft hover:bg-white/[0.07] transition-colors flex items-center justify-center">
             <IconFolderPlus />
           </button>
@@ -1347,7 +1358,7 @@ export default function App() {
 
         {/* 工作区列表：文件夹行的箭头折叠它自己的会话；默认 5 条，多的 Show more */}
         <div className="flex-1 min-h-0 overflow-y-auto px-2 pb-2">
-          {!y && <div className="text-xs text-mute/70 px-2 py-3">浏览器直开：项目/会话不可用</div>}
+          {!y && <div className="text-xs text-mute/70 px-2 py-3">{t('浏览器直开：项目/会话不可用')}</div>}
           {y && booted && projects.length === 0 && <div className="text-xs text-mute/70 px-2 py-3">No workspaces yet</div>}
           {projects.map((p) => {
             const isActive = p.id === activeProjectId;
@@ -1366,19 +1377,19 @@ export default function App() {
               return (
                 <div key={s.id} onClick={() => openSession(s.id)}
                   onContextMenu={(e) => { e.preventDefault(); setMoveOpen(false); setRowMenu({ x: e.clientX, y: e.clientY, session: s, project: p }); }}
-                  title={`${prettyTitle(s.title)} · ${new Date(s.updatedAt).toLocaleString('zh-CN')}${s.turns ? ` · ${s.turns} 轮` : ''}`}
+                  title={`${prettyTitle(s.title)} · ${new Date(s.updatedAt).toLocaleString('zh-CN')}${s.turns ? ` · ${t('{n} 轮', { n: s.turns })}` : ''}`}
                   className={`group relative flex items-center gap-1.5 rounded-lg pl-2 pr-1.5 py-1.5 cursor-pointer transition-colors ${s.archived ? 'opacity-45' : ''} ${
                     sActive ? 'bg-white/[0.09] text-goldSoft' : 'text-ink/85 hover:bg-white/[0.06] hover:text-ink'}`}>
                   {s.pinned ? <span className="text-goldDeep/70 text-[9px] shrink-0">▴</span> : null}
                   {/* 状态槽：跑的时候转圈，跑完才是绿点 */}
                   <span className="w-3 shrink-0 flex items-center justify-center">
                     {running
-                      ? <Spinner size={13} className="text-ink/65" title="运行中" />
-                      : s.unread ? <span title="已完成" className="w-1.5 h-1.5 rounded-full bg-jade" /> : null}
+                      ? <Spinner size={13} className="text-ink/65" title={t('运行中')} />
+                      : s.unread ? <span title={t('已完成')} className="w-1.5 h-1.5 rounded-full bg-jade" /> : null}
                   </span>
                   <span className="flex-1 min-w-0 truncate text-[12px]">{prettyTitle(s.title)}</span>
                   <span className="shrink-0 text-[10px] text-mute/60 tabular-nums group-hover:opacity-0 transition-opacity">{relTime(s.updatedAt)}</span>
-                  <button title={s.archived ? '恢复会话' : '归档会话（历史与记忆保留，在 Archived 里可找回）'}
+                  <button title={s.archived ? t('恢复会话') : t('归档会话（历史与记忆保留，在 Archived 里可找回）')}
                     onClick={(e) => { e.stopPropagation(); archiveSession(s); }}
                     className="absolute right-1 top-1/2 -translate-y-1/2 p-1 rounded-md text-mute/40 opacity-0 group-hover:opacity-100 hover:text-goldSoft hover:bg-white/[0.08] transition-opacity">
                     {s.archived ? <IconUnarchive /> : <IconArchive />}
@@ -1400,7 +1411,7 @@ export default function App() {
                   <IconFolder active={isActive} />
                   <span className={`flex-1 min-w-0 truncate text-[13px] ${isActive ? 'font-medium' : ''}`}>{p.name}</span>
                   <span className="shrink-0 text-[10px] text-mute/55 tabular-nums group-hover:opacity-0 transition-opacity">{isActive ? live.length : (p.sessionCount || 0)}</span>
-                  <button title="从列表移除项目（不删磁盘目录）" onClick={(e) => { e.stopPropagation(); removeProject(p); }}
+                  <button title={t('从列表移除项目（不删磁盘目录）')} onClick={(e) => { e.stopPropagation(); removeProject(p); }}
                     className="absolute right-1 top-1/2 -translate-y-1/2 p-1 rounded-md text-mute/40 opacity-0 group-hover:opacity-100 hover:text-red-400 hover:bg-red-500/10 transition-opacity">
                     <IconTrash />
                   </button>
@@ -1441,11 +1452,11 @@ export default function App() {
               page === 'settings' ? 'bg-white/[0.06] text-goldSoft' : 'text-mute hover:text-ink hover:bg-white/[0.045]'}`}>
             <IconGear active={page === 'settings'} />Settings
             {updateVersion ? (
-              <span title={updateVersion ? `有新版本 v${updateVersion}` : '有新版本'}
+              <span title={updateVersion ? t('有新版本 v{v}', { v: updateVersion }) : t('有新版本')}
                 className="ml-auto w-1.5 h-1.5 rounded-full bg-red-400 shrink-0" />
             ) : null}
           </button>
-          <span title={y ? 'IPC 已连接' : 'IPC 不可用'} className={`w-1.5 h-1.5 rounded-full ${y ? 'bg-jade' : 'bg-red-400/70'}`} />
+          <span title={y ? t('IPC 已连接') : t('IPC 不可用')} className={`w-1.5 h-1.5 rounded-full ${y ? 'bg-jade' : 'bg-red-400/70'}`} />
         </div>
       </aside>}
 
@@ -1454,7 +1465,7 @@ export default function App() {
       <main className="chat-veil flex-1 min-w-0 flex flex-col">
         {!y && (
           <div className="m-4 mb-0 rounded-lg bg-amber-500/10 border border-amber-500/40 text-amber-300 text-sm px-4 py-3 transition-all duration-200">
-            请在 Electron 中运行：当前未检测到 window.finalcheck（浏览器直开），仅展示 UI 壳，功能不可用。
+            {t('请在 Electron 中运行：当前未检测到 window.finalcheck（浏览器直开），仅展示 UI 壳，功能不可用。')}
           </div>
         )}
 
@@ -1464,10 +1475,10 @@ export default function App() {
             <div className="shrink-0 h-10 flex items-center px-5 border-b border-edge/60">
               <span className="font-kai text-sm text-goldSoft truncate">{activeTitle || 'FinalCheck'}</span>
               {(() => { const cur = sessions.find((x) => x.id === activeId); return cur?.archived ? (
-                <button onClick={() => archiveSession(cur)} title="这条会话已归档（历史和记忆都还在），点一下恢复"
-                  className="ml-2 shrink-0 rounded-full border border-white/10 px-2 py-0.5 text-[10px] text-mute/70 hover:text-goldSoft hover:border-gold/40 transition-colors">归档</button>
+                <button onClick={() => archiveSession(cur)} title={t('这条会话已归档（历史和记忆都还在），点一下恢复')}
+                  className="ml-2 shrink-0 rounded-full border border-white/10 px-2 py-0.5 text-[10px] text-mute/70 hover:text-goldSoft hover:border-gold/40 transition-colors">{t('归档')}</button>
               ) : null; })()}
-              {busy && <span className="ml-3 text-[11px] text-mute">思考中…</span>}
+              {busy && <span className="ml-3 text-[11px] text-mute">{t('思考中…')}</span>}
             </div>
 
             {showSetup && (
@@ -1513,7 +1524,7 @@ export default function App() {
                           <div key={i} className="flex flex-col items-start gap-1 border-l-2 border-gold/70 pl-3" data-testid="steer-bubble">
                             <div className="inline-flex items-center gap-1.5">
                               <span className="badge bg-gold/20 text-goldSoft border border-gold/50">Steer</span>
-                              <span className="text-[10px] text-mute/60">已注入当前回合</span>
+                              <span className="text-[10px] text-mute/60">{t('已注入当前回合')}</span>
                             </div>
                             <div className="max-w-[75%] whitespace-pre-wrap break-words rounded-2xl rounded-bl-md border border-gold/25 bg-gold/[0.06] px-3.5 py-2 text-sm leading-relaxed text-ink/90">
                               {m.content}
@@ -1541,7 +1552,7 @@ export default function App() {
                                   <span aria-hidden="true" className="text-[12px] leading-none text-goldSoft/90 [text-shadow:0_0_10px_rgba(227,197,107,0.35)]">✦</span>
                                   <span className="font-kai text-[15px] font-semibold leading-none tracking-[0.14em] text-goldSoft">Workflow</span>
                                 </div>
-                                <div className="mt-2 text-[13.5px] leading-relaxed text-ink/90 break-words">{wf.task || '多 agent 并行执行'}</div>
+                                <div className="mt-2 text-[13.5px] leading-relaxed text-ink/90 break-words">{wf.task || t('多 agent 并行执行')}</div>
                                 {openWorkflowRaw === i ? (
                                   <div className="mt-2.5 max-h-36 overflow-y-auto border-t border-gold/15 pt-2 pr-1 text-[11px] leading-relaxed text-mute/70 whitespace-pre-wrap break-words">
                                     {u.text}
@@ -1558,13 +1569,13 @@ export default function App() {
                           <UserAttachments files={u.files} onOpen={openArtifact} />
                           <div className="mt-1 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
                             {wf ? (
-                              <button title={openWorkflowRaw === i ? '收起原始指令' : '查看原始指令'}
+                              <button title={openWorkflowRaw === i ? t('收起原始指令') : t('查看原始指令')}
                                 onClick={() => setOpenWorkflowRaw((v) => (v === i ? null : i))}
                                 className="p-1.5 rounded-md text-mute/55 hover:text-goldSoft hover:bg-white/5 transition-colors"><IconChevron /></button>
                             ) : null}
-                            <button title="复制" onClick={() => y?.copyText?.(restoreText)}
+                            <button title={t('复制')} onClick={() => y?.copyText?.(restoreText)}
                               className="p-1.5 rounded-md text-mute/55 hover:text-goldSoft hover:bg-white/5 transition-colors"><IconCopy /></button>
-                            <button title="编辑并从这条重开"
+                            <button title={t('编辑并从这条重开')}
                               onClick={() => {
                                 if (m.pasted?.length) {
                                   startEdit(i, typedSk?.tokenText || m.typed || '', keepTurns, u.files);
@@ -1587,7 +1598,7 @@ export default function App() {
                         {m.interrupted && !m.error && (
                           <div className="mb-1.5 inline-flex items-center gap-1.5 text-[11px] text-mute/80">
                             <span className="inline-block w-2.5 h-2.5 rounded-[2px] bg-gold/70" />
-                            已停止 · 输出已保留
+                            {t('已停止 · 输出已保留')}
                           </div>
                         )}
                         {m.content && <div className="md text-sm" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.content) }} />}
@@ -1604,7 +1615,7 @@ export default function App() {
                         )}
                         {m.error && (
                           <div className="text-red-300">
-                            <div className="font-medium mb-1">出错了</div>
+                            <div className="font-medium mb-1">{t('出错了')}</div>
                             <div className="text-xs leading-relaxed">{m.error}</div>
                             {/* 恢复键在工作流卡片底栏（只在中断/失败时出现）；这里只留说明文字 */}
                           </div>
@@ -1619,7 +1630,7 @@ export default function App() {
                 </div>
                 {/* 不在底部时：底部居中的回到底部箭头（不挡输入框、不压 WorkingStatus） */}
                 {showJump && (
-                  <button type="button" data-testid="scroll-bottom" onClick={jumpToBottom} title="回到底部"
+                  <button type="button" data-testid="scroll-bottom" onClick={jumpToBottom} title={t('回到底部')}
                     className="absolute bottom-2 left-1/2 z-20 flex h-[30px] w-[30px] -translate-x-1/2 items-center justify-center rounded-full border border-gold/45 bg-[#141210]/80 text-goldSoft shadow-lg backdrop-blur-md transition-all duration-200 hover:border-gold hover:bg-gold/20 hover:text-ink">
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12l7 7 7-7" /></svg>
                   </button>
@@ -1630,7 +1641,7 @@ export default function App() {
               <div className="flex-1 min-h-0 overflow-y-auto px-6">
                 <div className="min-h-full flex flex-col items-center justify-center py-10">
                   <div className="font-kai text-5xl text-goldSoft mb-3 tracking-[0.04em]">FinalCheck</div>
-                  <p className="text-sm text-mute mb-8 tracking-wide">体检 · 渗透 · 下载闸 · 工作流 —— 选一个，或直接说</p>
+                  <p className="text-sm text-mute mb-8 tracking-wide">{t('体检 · 渗透 · 下载闸 · 工作流 —— 选一个，或直接说')}</p>
                   <div className="w-full max-w-2xl grid grid-cols-2 gap-2.5">
                     {CAPABILITIES.map((c) => {
                       const Icon = CAP_ICON[c.icon] || IconSparkle;
@@ -1642,11 +1653,11 @@ export default function App() {
                           <span className="mt-0.5 text-goldSoft/85 group-hover:text-goldSoft transition-colors"><Icon /></span>
                           <span className="min-w-0 flex-1">
                             <span className="flex items-baseline gap-2">
-                              <span className="text-[13px] text-ink/90">{c.title}</span>
+                              <span className="text-[13px] text-ink/90">{t(c.title)}</span>
                               <span className="text-[10px] font-mono text-mute/40">{c.en}</span>
                             </span>
                             <span className="mt-1 block text-[11px] leading-relaxed text-mute/80">
-                              {isDemo && demoBusy ? '体检中…示例项目 L2 正在跑' : c.desc}
+                              {isDemo && demoBusy ? t('体检中…示例项目 L2 正在跑') : t(c.desc)}
                             </span>
                           </span>
                         </button>
@@ -1666,20 +1677,20 @@ export default function App() {
                     className="mb-2.5 rounded-xl border border-gold/50 bg-gold/10 px-4 py-3 animate-[fadeIn_.2s_ease]">
                     <div className="flex items-center gap-2 text-xs font-medium text-goldSoft">
                       <IconShield />
-                      <span>Agent 请求{approval.tool === 'edit_file' ? '修改文件' : approval.tool === 'write_file' ? '写入文件' : '执行命令'}，需要你的授权</span>
-                      <span className="ml-auto text-[11px] font-normal text-mute/70">120 秒内未处理将自动拒绝</span>
+                      <span>{t(approval.tool === 'edit_file' ? 'Agent 请求修改文件，需要你的授权' : approval.tool === 'write_file' ? 'Agent 请求写入文件，需要你的授权' : 'Agent 请求执行命令，需要你的授权')}</span>
+                      <span className="ml-auto text-[11px] font-normal text-mute/70">{t('120 秒内未处理将自动拒绝')}</span>
                     </div>
                     <div data-testid="approval-summary"
                       className="glass-card mt-2 rounded-xl px-3 py-2 font-mono text-xs text-ink/90 break-all whitespace-pre-wrap max-h-28 overflow-y-auto">
-                      {approval.summary || '(空命令)'}
+                      {approval.summary || t('(空命令)')}
                     </div>
                     <div className="mt-2.5 flex items-center gap-2">
                       <button data-testid="approval-allow-once" onClick={() => decideApproval('allowed-once')}
-                        className="btn-primary px-3 py-1.5 text-xs">允许一次</button>
+                        className="btn-primary px-3 py-1.5 text-xs">{t('允许一次')}</button>
                       <button data-testid="approval-allow-session" onClick={() => decideApproval('always-session')}
-                        className="btn-ghost px-3 py-1.5 text-xs !text-goldSoft !border-gold/40 hover:!bg-gold/10">本会话总是允许</button>
+                        className="btn-ghost px-3 py-1.5 text-xs !text-goldSoft !border-gold/40 hover:!bg-gold/10">{t('本会话总是允许')}</button>
                       <button data-testid="approval-reject" onClick={() => decideApproval('rejected')}
-                        className="ml-auto rounded-lg border border-red-500/40 px-3 py-1.5 text-xs text-red-300 hover:bg-red-500/10 transition-all duration-200">拒绝</button>
+                        className="ml-auto rounded-lg border border-red-500/40 px-3 py-1.5 text-xs text-red-300 hover:bg-red-500/10 transition-all duration-200">{t('拒绝')}</button>
                     </div>
                   </div>
                 )}
@@ -1687,8 +1698,8 @@ export default function App() {
                 {queueItems.length > 0 && (
                   <div className="mb-2.5 space-y-1.5" data-testid="queue-list">
                     <div className="flex items-center gap-2 px-1">
-                      <span className="badge bg-gold/15 text-goldSoft border border-gold/35">排队 {queueItems.length}</span>
-                      <span className="text-[10px] text-mute/55">当前回合结束后自动发送（Steer 可注入本回合）</span>
+                      <span className="badge bg-gold/15 text-goldSoft border border-gold/35">{t('排队 {n}', { n: queueItems.length })}</span>
+                      <span className="text-[10px] text-mute/55">{t('当前回合结束后自动发送（Steer 可注入本回合）')}</span>
                     </div>
                     {queueItems.map((item, idx) => (
                       <div key={item.id} data-testid="queue-item"
@@ -1697,20 +1708,20 @@ export default function App() {
                         <span className="min-w-0 flex-1 truncate text-xs text-ink/85"
                           title={[item.text, ...(item.pasted || [])].filter(Boolean).join('\n\n') || 'Pasted text'}>
                           {item.text || (item.pasted?.length
-                            ? `Pasted text · ${item.pasted.reduce((n, t) => n + countLines(t), 0)} 行`
-                            : '(空)')}
+                            ? t('Pasted text · {n} 行', { n: item.pasted.reduce((n, t) => n + countLines(t), 0) })
+                            : t('(空)'))}
                         </span>
-                        {item.previews?.length ? <span className="shrink-0 text-[10px] text-mute/50">附件 {item.previews.length}</span> : null}
+                        {item.previews?.length ? <span className="shrink-0 text-[10px] text-mute/50">{t('附件 {n}', { n: item.previews.length })}</span> : null}
                         <button type="button" data-testid="queue-steer" onClick={() => steerQueueItem(item)}
-                          title={busy && !stopping ? '注入当前回合（下一次模型请求前生效）' : '当前回合未在运行，无法 Steer'}
+                          title={busy && !stopping ? t('注入当前回合（下一次模型请求前生效）') : t('当前回合未在运行，无法 Steer')}
                           className="shrink-0 rounded-md border border-gold/40 px-2 py-0.5 text-[10px] text-goldSoft hover:bg-gold/15 transition-colors">Steer</button>
                         <button type="button" data-testid="queue-edit" onClick={() => moveQueueItemToInput(item.id)}
-                          title="取回编辑（从队列移除，内容放回输入框）"
+                          title={t('取回编辑（从队列移除，内容放回输入框）')}
                           className="shrink-0 rounded-md p-1 text-mute/55 hover:text-goldSoft hover:bg-white/5 transition-colors">
                           <IconEdit />
                         </button>
                         <button type="button" data-testid="queue-remove" onClick={() => removeQueueItem(item.id)}
-                          title="移除此条"
+                          title={t('移除此条')}
                           className="shrink-0 rounded-md p-1 text-mute/55 hover:text-red-300 hover:bg-red-500/10 transition-colors">
                           <IconTrash />
                         </button>
@@ -1726,9 +1737,9 @@ export default function App() {
                 >
                   {editing && (
                     <div className="flex items-center gap-2 px-3 pt-2.5 text-[11px]">
-                      <span className="badge bg-gold/15 text-goldSoft border border-gold/35">编辑中</span>
-                      <span className="text-mute/60">发送后将从这条消息重开，后面的对话会被丢弃</span>
-                      <button onClick={cancelEdit} className="ml-auto text-mute/60 hover:text-ink transition-colors">取消</button>
+                      <span className="badge bg-gold/15 text-goldSoft border border-gold/35">{t('编辑中')}</span>
+                      <span className="text-mute/60">{t('发送后将从这条消息重开，后面的对话会被丢弃')}</span>
+                      <button onClick={cancelEdit} className="ml-auto text-mute/60 hover:text-ink transition-colors">{t('取消')}</button>
                     </div>
                   )}
                   {attachments.length > 0 && (
@@ -1747,13 +1758,13 @@ export default function App() {
                           <div role="button" tabIndex={0}
                             onClick={() => togglePasted(b.id)}
                             onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); togglePasted(b.id); } }}
-                            title={b.expanded ? '收起粘贴文本' : '展开粘贴文本'}
+                            title={b.expanded ? t('收起粘贴文本') : t('展开粘贴文本')}
                             className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left cursor-pointer hover:bg-white/5 transition-colors">
                             <IconPaste />
                             <span className="shrink-0 text-[11px] text-goldSoft">Pasted text</span>
-                            <span className="shrink-0 text-[10px] text-mute/55">{b.lines} 行</span>
+                            <span className="shrink-0 text-[10px] text-mute/55">{t('{n} 行', { n: b.lines })}</span>
                             <span className="min-w-0 flex-1 truncate text-[11px] text-mute/70">{b.text.split('\n')[0]}</span>
-                            <button type="button" title="删除粘贴文本"
+                            <button type="button" title={t('删除粘贴文本')}
                               onClick={(e) => { e.stopPropagation(); removePasted(b.id); }}
                               className="shrink-0 rounded-md p-1 text-mute/45 hover:text-red-300 hover:bg-red-500/10 transition-colors">
                               <IconTrash />
@@ -1788,7 +1799,7 @@ export default function App() {
                         if (isLongPaste(pasted)) { e.preventDefault(); addPastedBlock(pasted); }
                       }}
                       onKeyDown={onComposerKeyDown}
-                      placeholder={y ? (busy ? '输入消息排队，回合结束后自动发送（Enter 入队）…' : '输入消息，/ 唤起技能，Enter 发送…') : 'IPC 不可用（浏览器直开）'}
+                      placeholder={y ? (busy ? t('输入消息排队，回合结束后自动发送（Enter 入队）…') : t('输入消息，/ 唤起技能，Enter 发送…')) : t('IPC 不可用（浏览器直开）')}
                       disabled={!y}
                       className="w-full bg-transparent outline-none resize-none text-sm leading-6 placeholder:text-mute/45 disabled:opacity-50"
                     />
@@ -1796,7 +1807,7 @@ export default function App() {
 
                   {/* 底部工具条：只有图标与文字，没有边框（对齐 ZCode） */}
                   <div className="flex items-center gap-0.5 px-2 pb-2">
-                    <button onClick={pickAttachFiles} title="添加文件（也可直接粘贴截图 / 拖拽文件）"
+                    <button onClick={pickAttachFiles} title={t('添加文件（也可直接粘贴截图 / 拖拽文件）')}
                       className="shrink-0 h-7 w-7 rounded-lg text-mute/70 hover:text-goldSoft hover:bg-white/[0.06] transition-colors flex items-center justify-center">
                       <IconPlus />
                     </button>
@@ -1804,22 +1815,22 @@ export default function App() {
                       <button onClick={() => setMenu(menu === 'perm' ? null : 'perm')}
                         className={`inline-flex items-center gap-1.5 text-[11px] rounded-lg px-2 py-1.5 transition-colors hover:bg-white/[0.06] ${permMode === 'full' ? 'text-goldSoft' : 'text-mute hover:text-ink'}`}>
                         <IconShield />
-                        {permMode === 'full' ? '完全权限' : '标准审批'}
+                        {permMode === 'full' ? t('完全权限') : t('标准审批')}
                         <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M6 9l6 6 6-6" /></svg>
                       </button>
                       {menu === 'perm' && (
                         <div className="glass-pop absolute bottom-full mb-1.5 left-0 w-60 rounded-2xl p-1.5 z-40">
                           <button onClick={() => changeMode('ask')} className={`w-full text-left px-2.5 py-2 rounded-lg transition-colors text-xs ${permMode === 'ask' ? 'bg-gold/10 text-goldSoft' : 'hover:bg-white/5'}`}>
-                            标准审批<span className="block text-[10px] text-mute mt-0.5">执行命令前每次确认（默认）</span>
+                            {t('标准审批')}<span className="block text-[10px] text-mute mt-0.5">{t('执行命令前每次确认（默认）')}</span>
                           </button>
                           <button onClick={() => changeMode('full')} className={`w-full text-left px-2.5 py-2 rounded-lg transition-colors text-xs ${permMode === 'full' ? 'bg-gold/10 text-goldSoft' : 'hover:bg-white/5'}`}>
-                            完全权限<span className="block text-[10px] text-mute mt-0.5">不再询问；灾难命令仍会被拦截</span>
+                            {t('完全权限')}<span className="block text-[10px] text-mute mt-0.5">{t('不再询问；灾难命令仍会被拦截')}</span>
                           </button>
                         </div>
                       )}
                     </div>
 
-                    <span className="text-[10px] text-mute/35 select-none pl-1">{compacting ? '压缩中…' : '输入 / 选技能'}</span>
+                    <span className="text-[10px] text-mute/35 select-none pl-1">{compacting ? t('压缩中…') : t('输入 / 选技能')}</span>
 
                     <div className="ml-auto flex items-center gap-1.5">
                       <div className="relative">
@@ -1827,7 +1838,7 @@ export default function App() {
                           onMouseEnter={() => setMenu('context')}
                           onMouseLeave={() => setMenu((m) => (m === 'context' ? null : m))}
                           onClick={() => setMenu(menu === 'context' ? null : 'context')}
-                          title="上下文使用情况"
+                          title={t('上下文使用情况')}
                           className="p-1 rounded-full hover:bg-white/5 transition-colors">
                           <ContextRing percent={ctxStats?.measured?.prompt ? Math.min(100, (ctxStats.measured.prompt / ctxStats.window) * 100) : (ctxStats?.percent || 0)} />
                         </button>
@@ -1850,24 +1861,24 @@ export default function App() {
                                   <div className="mt-1 flex items-center gap-1.5 text-[11px] text-mute/60">
                                     {measured?.prompt ? (
                                       <>
-                                        <span>实测 {pct.toFixed(1)}%</span>
+                                        <span>{t('实测 {pct}%', { pct: pct.toFixed(1) })}</span>
                                         <span className="text-mute/25">·</span>
-                                        <span className="text-mute/45">下一轮估算 {fmtTokens(ctxStats.used)}（{ctxStats.percent.toFixed(1)}%）</span>
+                                        <span className="text-mute/45">{t('下一轮估算 {tokens}（{pct}%）', { tokens: fmtTokens(ctxStats.used), pct: ctxStats.percent.toFixed(1) })}</span>
                                       </>
                                     ) : (
-                                      <span>估算 {pct.toFixed(1)}%（下一轮请求）{busy ? ' · 本轮进行中，暂无实测' : ''}</span>
+                                      <span>{busy ? t('估算 {pct}%（下一轮请求） · 本轮进行中，暂无实测', { pct: pct.toFixed(1) }) : t('估算 {pct}%（下一轮请求）', { pct: pct.toFixed(1) })}</span>
                                     )}
                                   </div>
                                   <div className="mt-1.5 h-1.5 rounded-full bg-white/10 overflow-hidden">
                                     <div className="h-full rounded-full bg-goldSoft transition-all duration-300" style={{ width: `${pct}%` }} />
                                   </div>
                                   <div className="mt-1 text-[10px] leading-relaxed text-mute/40">
-                                    {measured?.prompt ? '实测＝本轮最后一次请求（含工具输出）；估算只算下一轮要发的内容（不含历史工具输出）' : '估算＝下一轮要发的内容（不含历史工具输出）'}
+                                    {measured?.prompt ? t('实测＝本轮最后一次请求（含工具输出）；估算只算下一轮要发的内容（不含历史工具输出）') : t('估算＝下一轮要发的内容（不含历史工具输出）')}
                                   </div>
                                 </>
                               );
                             })()}
-                            <div className="mt-2.5 mb-1 text-[10px] text-mute/40">下一轮构成（按估算）</div>
+                            <div className="mt-2.5 mb-1 text-[10px] text-mute/40">{t('下一轮构成（按估算）')}</div>
                             <div className="space-y-1.5">
                               {[
                                 ['Messages', 'messages', 'bg-goldSoft'],
@@ -1890,16 +1901,16 @@ export default function App() {
                             </div>
                             <div className="mt-2.5 pt-2 border-t border-edge/70 flex items-center justify-between text-[11px]">
                               <span className="text-mute/60">Last request cache hit</span>
-                              <span className="font-mono text-mute/70">{ctxStats?.cacheHit != null ? `${ctxStats.cacheHit.toFixed(1)}%` : '—（网关未返回缓存字段）'}</span>
+                              <span className="font-mono text-mute/70">{ctxStats?.cacheHit != null ? `${ctxStats.cacheHit.toFixed(1)}%` : t('—（网关未返回缓存字段）')}</span>
                             </div>
-                            <div className="mt-1.5 text-[10px] text-mute/35 leading-relaxed">估算口径：CJK 1 字≈1 token、4 字符≈1 token；上下文上限在模型设置里改。</div>
+                            <div className="mt-1.5 text-[10px] text-mute/35 leading-relaxed">{t('估算口径：CJK 1 字≈1 token、4 字符≈1 token；上下文上限在模型设置里改。')}</div>
                           </div>
                         )}
                       </div>
                       <div className="relative" ref={modelMenuRef}>
                         <button onClick={() => { setMenu(menu === 'model' ? null : 'model'); setProviderMenu(false); }}
                           className="inline-flex items-center gap-1.5 max-w-[280px] text-[11px] px-1 py-1 text-mute hover:text-goldSoft transition-colors duration-200">
-                          <span className="truncate">{activeModel || '未配置模型'}</span>
+                          <span className="truncate">{activeModel || t('未配置模型')}</span>
                           <span className="text-mute/45">{effortLabel}</span>
                           <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M6 9l6 6 6-6" /></svg>
                         </button>
@@ -1909,7 +1920,7 @@ export default function App() {
                             <button onClick={() => setProviderMenu(!providerMenu)}
                               className="w-full flex items-center gap-2 px-3 py-2.5 hover:bg-white/5 transition-colors text-left">
                               <span className="w-5 h-5 rounded-md bg-gold/15 border border-gold/40 flex items-center justify-center text-[11px] text-goldSoft">⌬</span>
-                              <span className="text-[13px] text-ink/90 truncate">{activeProv?.name || '未配置供应商'}</span>
+                              <span className="text-[13px] text-ink/90 truncate">{activeProv?.name || t('未配置供应商')}</span>
                               <span className="text-[9px] px-1 py-0.5 rounded border border-edge text-mute/55">API</span>
                               <svg className="ml-auto shrink-0 text-mute/50" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 18l6-6-6-6" /></svg>
                             </button>
@@ -1926,8 +1937,8 @@ export default function App() {
                               ))}
                               {activeModelEntries.length === 0 && (
                                 <div className="px-2.5 py-3 text-[11px] text-mute">
-                                  该供应商还没有模型
-                                  <button onClick={() => { setMenu(null); setPage('settings'); }} className="ml-2 text-goldSoft hover:underline underline-offset-2">去添加</button>
+                                  {t('该供应商还没有模型')}
+                                  <button onClick={() => { setMenu(null); setPage('settings'); }} className="ml-2 text-goldSoft hover:underline underline-offset-2">{t('去添加')}</button>
                                 </div>
                               )}
                             </div>
@@ -1952,14 +1963,14 @@ export default function App() {
                             {/* 供应商列表：浮在面板左侧，切换不用跳去模型设置 */}
                             {providerMenu && (
                               <div className="glass-pop absolute right-full top-0 mr-2 w-56 rounded-2xl p-1.5 z-[60] pop-in">
-                                <div className="px-2.5 py-1.5 text-[10px] text-mute/50">供应商（{providers.length}）</div>
-                                {providers.length === 0 && <div className="px-2.5 py-3 text-[11px] text-mute">还没有供应商，请到「模型设置」添加</div>}
+                                <div className="px-2.5 py-1.5 text-[10px] text-mute/50">{t('供应商（{n}）', { n: providers.length })}</div>
+                                {providers.length === 0 && <div className="px-2.5 py-3 text-[11px] text-mute">{t('还没有供应商，请到「模型设置」添加')}</div>}
                                 {providers.map((p) => (
                                   <button key={p.id} onClick={() => pickProvider(p)}
                                     className={`w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-xs transition-colors ${p.id === activeProv?.id ? 'bg-white/[0.06] text-ink' : 'text-ink/75 hover:bg-white/5'}`}>
                                     <span className="truncate">{p.name}</span>
                                     <span className="text-[9px] px-1 py-0.5 rounded border border-edge text-mute/50">API</span>
-                                    {(p.models || []).length === 0 ? <span className="text-[9px] text-amber-400/80">无模型</span> : null}
+                                    {(p.models || []).length === 0 ? <span className="text-[9px] text-amber-400/80">{t('无模型')}</span> : null}
                                     {p.id === activeProv?.id ? <span className="ml-auto text-jade">✓</span> : null}
                                   </button>
                                 ))}
@@ -1980,17 +1991,17 @@ export default function App() {
                             React 的 {0 && <x/>} 会把「0」当成文本渲染出来（就是那个多余的 0） */}
                         {!!(input.trim() || pastedBlocks.length) && (
                           <button onClick={() => send()} data-testid="queue-send"
-                            title="排队发送（当前回合结束后自动发送）"
+                            title={t('排队发送（当前回合结束后自动发送）')}
                             className="ml-1.5 shrink-0 h-7 w-7 rounded-[9px] flex items-center justify-center border border-gold/45 text-goldSoft hover:bg-gold/15 transition-colors duration-200">
                             <IconSend />
                           </button>
                         )}
-                        <button onClick={stop} disabled={stopping} title={stopping ? '正在中断，请稍候' : '停止本回合'}
+                        <button onClick={stop} disabled={stopping} title={stopping ? t('正在中断，请稍候') : t('停止本回合')}
                           className={`ml-1.5 shrink-0 h-7 rounded-[9px] flex items-center justify-center gap-1 transition-colors duration-200 ${stopping ? 'px-2 bg-gold/60 text-[#0a0a0c] cursor-not-allowed' : 'w-7 bg-gold hover:bg-goldSoft text-[#0a0a0c]'}`}>
                           {stopping ? (
                             <>
                               <svg className="animate-spin" width="10" height="10" viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="6" r="4.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeDasharray="6 4" /></svg>
-                              <span className="text-[10px] font-medium leading-none">停止中…</span>
+                              <span className="text-[10px] font-medium leading-none">{t('停止中…')}</span>
                             </>
                           ) : (
                             <svg width="10" height="10" viewBox="0 0 12 12"><rect x="1" y="1" width="10" height="10" rx="2" fill="currentColor" /></svg>
@@ -1998,7 +2009,7 @@ export default function App() {
                         </button>
                       </>
                     ) : (
-                      <button onClick={() => send()} disabled={!y || (!input.trim() && !pastedBlocks.length)} title="发送"
+                      <button onClick={() => send()} disabled={!y || (!input.trim() && !pastedBlocks.length)} title={t('发送')}
                         className="ml-1.5 shrink-0 h-7 w-7 rounded-[9px] flex items-center justify-center bg-gold text-[#141008] hover:bg-goldSoft disabled:opacity-60 transition-colors duration-200">
                         <IconSend />
                       </button>
@@ -2010,7 +2021,7 @@ export default function App() {
                     <div className="glass-pop absolute bottom-full mb-2 left-0 right-0 rounded-2xl overflow-hidden z-50 pop-in">
                       <div className="max-h-80 overflow-y-auto p-1.5">
                         {slashItems.length === 0 ? (
-                          <div className="px-3 py-4 text-[11px] text-mute">没有匹配的命令或技能</div>
+                          <div className="px-3 py-4 text-[11px] text-mute">{t('没有匹配的命令或技能')}</div>
                         ) : slashItems.map((item, idx) => (
                           <button key={item.type + item.id}
                             onMouseDown={(e) => e.preventDefault()}
@@ -2018,14 +2029,14 @@ export default function App() {
                             onMouseEnter={() => setSlashIndex(idx)}
                             className={`w-full flex items-center gap-2 px-2.5 py-[7px] rounded-lg transition-colors ${idx === Math.min(slashIndex, slashItems.length - 1) ? 'bg-gold/12' : 'hover:bg-white/5'}`}>
                             <span className={`shrink-0 font-mono text-[12px] ${item.type === 'command' ? 'text-goldSoft' : 'text-jade'}`}>/{item.name}</span>
-                            <span className="min-w-0 flex-1 truncate text-[11px] text-ink/70">{item.cn}</span>
+                            <span className="min-w-0 flex-1 truncate text-[11px] text-ink/70">{t(item.cn)}</span>
                             <span className={`shrink-0 text-[9px] px-1.5 py-0.5 rounded-full ${item.type === 'command' ? 'text-goldDeep/80 bg-gold/10' : 'text-mute/50 bg-white/[0.05]'}`}>
-                              {item.type === 'command' ? '命令' : '技能'}
+                              {item.type === 'command' ? t('命令') : t('技能')}
                             </span>
                           </button>
                         ))}
                         <div className="px-3 py-1.5 text-[10px] text-mute/35 border-t border-white/[0.06] mt-1">
-                          ↑↓ 选择 · Enter 确认 · Esc 关闭
+                          {t('↑↓ 选择 · Enter 确认 · Esc 关闭')}
                         </div>
                       </div>
                     </div>
@@ -2067,13 +2078,13 @@ export default function App() {
                   <button key={x.id} onClick={() => moveSession(rowMenu.session, x.id)}
                     className="w-full text-left px-2 py-1 rounded-md text-[11px] text-mute hover:text-goldSoft hover:bg-white/5 truncate">{x.name}</button>
                 ))}
-                {projects.length < 2 && <div className="px-2 py-1 text-[10px] text-mute/40">只有当前项目</div>}
+                {projects.length < 2 && <div className="px-2 py-1 text-[10px] text-mute/40">{t('只有当前项目')}</div>}
               </div>
             )}
             <button onClick={() => patchFlags(rowMenu.session, { pinned: !rowMenu.session.pinned })} className="w-full text-left px-3 py-1.5 text-mute hover:text-ink hover:bg-white/5">{rowMenu.session.pinned ? 'Unpin task' : 'Pin task'}</button>
             <button onClick={() => { setRenameBox({ session: rowMenu.session, value: rowMenu.session.title }); setRowMenu(null); }} className="w-full text-left px-3 py-1.5 text-mute hover:text-ink hover:bg-white/5">Rename task</button>
             <button onClick={() => patchFlags(rowMenu.session, { archived: !rowMenu.session.archived })} className="w-full text-left px-3 py-1.5 text-mute hover:text-ink hover:bg-white/5">{rowMenu.session.archived ? 'Unarchive task' : 'Archive task'}</button>
-            <button onClick={() => { const s = rowMenu.session; setRowMenu(null); removeSession(s); }} className="w-full text-left px-3 py-1.5 text-mute hover:text-red-300 hover:bg-red-500/10">Delete task（不可恢复）</button>
+            <button onClick={() => { const s = rowMenu.session; setRowMenu(null); removeSession(s); }} className="w-full text-left px-3 py-1.5 text-mute hover:text-red-300 hover:bg-red-500/10">{t('Delete task（不可恢复）')}</button>
             <button onClick={() => patchFlags(rowMenu.session, { unread: true })} className="w-full text-left px-3 py-1.5 text-mute hover:text-ink hover:bg-white/5">Mark as unread</button>
             <div className="my-1 border-t border-edge/70" />
             <button onClick={() => { y?.artifactOpen?.(rowMenu.project.path); setRowMenu(null); }} className="w-full text-left px-3 py-1.5 text-mute hover:text-ink hover:bg-white/5">Open in File Explorer</button>
@@ -2085,9 +2096,9 @@ export default function App() {
             <button onClick={() => { setRowMenu(null); setPage('settings'); }} className="w-full text-left px-3 py-1.5 text-mute hover:text-ink hover:bg-white/5">Go to config</button>
             <button onClick={() => { const s = rowMenu.session; setRowMenu(null); if (s.path) openArtifact(s.path); }} className="w-full text-left px-3 py-1.5 text-mute hover:text-ink hover:bg-white/5">View model trajectory</button>
             <button onClick={() => {
-              copyText(`FinalCheck 问题反馈\n项目: ${rowMenu.project.path}\n会话: ${rowMenu.session.title}\n会话文件: ${rowMenu.session.path}\n模型: ${activeModel}\n上下文: ${ctxStats ? `${fmtTokens(ctxStats.used)}/${fmtTokens(ctxStats.window)}` : '—'}`);
+              copyText(`${t('FinalCheck 问题反馈')}\n${t('项目')}: ${rowMenu.project.path}\n${t('会话')}: ${rowMenu.session.title}\n${t('会话文件')}: ${rowMenu.session.path}\n${t('模型')}: ${activeModel}\n${t('上下文')}: ${ctxStats ? `${fmtTokens(ctxStats.used)}/${fmtTokens(ctxStats.window)}` : '—'}`);
               setRowMenu(null);
-              setMessages((prev) => [...prev, { role: 'notice', content: '已复制诊断信息，可粘贴到反馈里。' }]);
+              setMessages((prev) => [...prev, { role: 'notice', content: t('已复制诊断信息，可粘贴到反馈里。') }]);
             }} className="w-full text-left px-3 py-1.5 text-mute hover:text-ink hover:bg-white/5">Report issue</button>
           </div>
         </div>
@@ -2097,14 +2108,14 @@ export default function App() {
       {renameBox && (
         <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60" onClick={() => setRenameBox(null)}>
           <div className="glass-pop w-[380px] rounded-2xl p-4" onClick={(e) => e.stopPropagation()}>
-            <div className="text-sm text-goldSoft mb-2">重命名会话</div>
+            <div className="text-sm text-goldSoft mb-2">{t('重命名会话')}</div>
             <input autoFocus value={renameBox.value}
               onChange={(e) => setRenameBox({ ...renameBox, value: e.target.value })}
               onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); saveRename(); } if (e.key === 'Escape') setRenameBox(null); }}
               className="input w-full" />
             <div className="mt-3 flex justify-end gap-2">
-              <button onClick={() => setRenameBox(null)} className="btn-ghost px-3 py-1.5 text-xs">取消</button>
-              <button onClick={saveRename} className="btn-primary px-3 py-1.5 text-xs">保存</button>
+              <button onClick={() => setRenameBox(null)} className="btn-ghost px-3 py-1.5 text-xs">{t('取消')}</button>
+              <button onClick={saveRename} className="btn-primary px-3 py-1.5 text-xs">{t('保存')}</button>
             </div>
           </div>
         </div>
@@ -2114,11 +2125,11 @@ export default function App() {
       {confirmBox && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-[2px]" onClick={() => confirmBox.resolve(false)}>
           <div className="glass-pop w-[380px] rounded-2xl p-5" onClick={(e) => e.stopPropagation()}>
-            <div className="font-kai text-goldSoft text-base tracking-wider">确认操作</div>
+            <div className="font-kai text-goldSoft text-base tracking-wider">{t('确认操作')}</div>
             <div className="mt-2.5 text-sm text-ink/90 leading-relaxed">{confirmBox.text}</div>
             <div className="mt-4 flex justify-end gap-2">
-              <button onClick={() => confirmBox.resolve(false)} className="btn-ghost px-3.5 py-1.5 text-xs">取消</button>
-              <button onClick={() => confirmBox.resolve(true)} className="rounded-lg bg-red-500/90 hover:bg-red-500 px-3.5 py-1.5 text-xs text-white transition-colors">确定删除</button>
+              <button onClick={() => confirmBox.resolve(false)} className="btn-ghost px-3.5 py-1.5 text-xs">{t('取消')}</button>
+              <button onClick={() => confirmBox.resolve(true)} className="rounded-lg bg-red-500/90 hover:bg-red-500 px-3.5 py-1.5 text-xs text-white transition-colors">{t('确定删除')}</button>
             </div>
           </div>
         </div>
@@ -2141,12 +2152,12 @@ export function FirstRunCard({ y, cfg, onSaved, onSkip }) {
 
   const test = async () => {
     if (!canSubmit || testing) return;
-    if (!y?.testProvider) { setTestRes({ ok: false, reason: '当前版本没有 testProvider IPC' }); return; }
+    if (!y?.testProvider) { setTestRes({ ok: false, reason: t('当前版本没有 testProvider IPC') }); return; }
     setTesting(true);
     setTestRes(null);
     try {
       const r = await y.testProvider({ baseUrl: baseUrl.trim(), apiKey: apiKey.trim(), model: model.trim() });
-      setTestRes(r && typeof r === 'object' ? r : { ok: false, reason: '测试接口没有返回结果' });
+      setTestRes(r && typeof r === 'object' ? r : { ok: false, reason: t('测试接口没有返回结果') });
     } catch (e) {
       setTestRes({ ok: false, reason: e?.message || String(e) });
     } finally { setTesting(false); }
@@ -2157,7 +2168,7 @@ export function FirstRunCard({ y, cfg, onSaved, onSkip }) {
     setSaving(true);
     setErr('');
     try {
-      if (!y?.setConfig) throw new Error('当前版本不能写入配置（请在 Electron 中运行）');
+      if (!y?.setConfig) throw new Error(t('当前版本不能写入配置（请在 Electron 中运行）'));
       const cur = (await y.getConfig?.()) || cfg || {};
       const providers = Array.isArray(cur.providers) ? [...cur.providers] : [];
       const id = `p-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
@@ -2175,7 +2186,7 @@ export function FirstRunCard({ y, cfg, onSaved, onSkip }) {
       await y.setConfig(next);
       onSaved?.(next, provider);
     } catch (e) {
-      setErr('保存失败：' + (e?.message || '请检查配置是否可写'));
+      setErr(t('保存失败：{reason}', { reason: e?.message || t('请检查配置是否可写') }));
     } finally { setSaving(false); }
   };
 
@@ -2189,12 +2200,12 @@ export function FirstRunCard({ y, cfg, onSaved, onSkip }) {
         </span>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <span className="text-[10px] tracking-[0.18em] uppercase text-goldDeep">首次使用</span>
+            <span className="text-[10px] tracking-[0.18em] uppercase text-goldDeep">{t('首次使用')}</span>
             <span className="h-px flex-1 bg-gold/20" />
           </div>
-          <div className="mt-1 font-kai text-base text-goldSoft tracking-wider">连接 OpenAI 兼容网关</div>
+          <div className="mt-1 font-kai text-base text-goldSoft tracking-wider">{t('连接 OpenAI 兼容网关')}</div>
           <p className="mt-1 text-[11px] text-mute leading-relaxed">
-            FinalCheck 需要连接一个 OpenAI 兼容网关（Base URL + API Key + 模型名）才能对话、跑体检和工作流。Key 只存本机 config.json。
+            {t('FinalCheck 需要连接一个 OpenAI 兼容网关（Base URL + API Key + 模型名）才能对话、跑体检和工作流。Key 只存本机 config.json。')}
           </p>
         </div>
       </div>
@@ -2212,14 +2223,14 @@ export function FirstRunCard({ y, cfg, onSaved, onSkip }) {
             placeholder="sk-…" autoComplete="new-password" className="input font-mono" />
         </label>
         <label className="block">
-          <span className="mb-1 block text-[11px] text-mute">模型名</span>
+          <span className="mb-1 block text-[11px] text-mute">{t('模型名')}</span>
           <input value={model} onChange={(e) => setModel(e.target.value)} disabled={saving}
             placeholder="glm-4.6 / deepseek-v4.1-flash"
             onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); save(); } }}
             className="input font-mono" />
         </label>
         <label className="block sm:col-span-2">
-          <span className="mb-1 block text-[11px] text-mute">供应商名称 <span className="text-mute/45">（可选）</span></span>
+          <span className="mb-1 block text-[11px] text-mute">{t('供应商名称')} <span className="text-mute/45">{t('（可选）')}</span></span>
           <input value={name} onChange={(e) => setName(e.target.value)} disabled={saving}
             placeholder="My Provider" className="input" />
         </label>
@@ -2227,12 +2238,12 @@ export function FirstRunCard({ y, cfg, onSaved, onSkip }) {
 
       {testRes && (testRes.ok ? (
         <div className="mt-3 rounded-xl border border-jade/40 bg-jade/10 px-3.5 py-2.5 text-[11px] text-jade">
-          已连通 · 模型已回复
-          {testRes.reply ? <span className="ml-2 text-ink/75">“{String(testRes.reply).slice(0, 120)}”</span> : null}
+          {t('已连通 · 模型已回复')}
+          {testRes.reply ? <span className="ml-2 text-ink/75">{t('“{reply}”', { reply: String(testRes.reply).slice(0, 120) })}</span> : null}
         </div>
       ) : (
         <div className="mt-3 rounded-xl border border-red-500/40 bg-red-500/10 px-3.5 py-2.5 text-[11px] text-red-300">
-          连接失败：{testRes.reason || '未知原因'}
+          {t('连接失败：{reason}', { reason: testRes.reason || t('未知原因') })}
           {testRes.hint ? <span className="mt-1 block text-mute">{testRes.hint}</span> : null}
         </div>
       ))}
@@ -2240,13 +2251,13 @@ export function FirstRunCard({ y, cfg, onSaved, onSkip }) {
 
       <div className="mt-4 flex flex-wrap items-center gap-2">
         <button onClick={test} disabled={!canSubmit || testing || saving} className="btn-ghost text-xs px-3 py-1.5">
-          {testing ? '测试中…' : '测试连接'}
+          {testing ? t('测试中…') : t('测试连接')}
         </button>
         <button onClick={save} disabled={!canSubmit || saving || testing} className="btn-primary text-xs px-3.5 py-1.5">
-          {saving ? '保存中…' : '保存并开始'}
+          {saving ? t('保存中…') : t('保存并开始')}
         </button>
         <button onClick={onSkip} disabled={saving} className="ml-auto text-[11px] text-mute/55 hover:text-ink transition-colors px-2 py-1">
-          稍后配置
+          {t('稍后配置')}
         </button>
       </div>
     </div>

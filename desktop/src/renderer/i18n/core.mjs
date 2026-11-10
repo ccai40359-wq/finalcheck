@@ -1,0 +1,63 @@
+// 双语核心（无 React 依赖，主进程与渲染层共用同一份词典）
+// 约定：词典的 key 就是界面上的中文原文，value 是英文译文。
+// - 中文模式：t() 原样返回 key（只做占位符替换），所以 zh 不需要词典
+// - 英文模式：查表，查不到就回退中文原文（缺译不会渲染成空白）
+// - 动态文本用占位符：t('共 {n} 条', { n: 3 })；词典里写 '共 {n} 条': '{n} items'
+import { EN_COMMON } from './en/common.js';
+import { EN_APP } from './en/app.js';
+import { EN_CHAT } from './en/chat.js';
+import { EN_SETTINGS } from './en/settings.js';
+import { EN_MAIN } from './en/main.js';
+
+const DICTS = [EN_COMMON, EN_APP, EN_CHAT, EN_SETTINGS, EN_MAIN];
+const EN = Object.freeze(Object.assign({}, ...DICTS));
+
+export const LANGUAGES = Object.freeze(['auto', 'zh', 'en']);
+
+const listeners = new Set();
+let current = 'zh';
+
+export function getLanguage() {
+  return current;
+}
+
+export function setLanguage(lang) {
+  const next = lang === 'en' ? 'en' : 'zh';
+  if (next === current) return;
+  current = next;
+  for (const fn of [...listeners]) {
+    try { fn(); } catch { /* 单个订阅者出错不影响其他订阅者 */ }
+  }
+}
+
+export function subscribe(fn) {
+  if (typeof fn !== 'function') return () => {};
+  listeners.add(fn);
+  return () => listeners.delete(fn);
+}
+
+// 设置值 auto/zh/en → 实际语言。auto 跟随系统语言：中文系统用中文，其余一律英文。
+export function resolveLanguage(setting, systemLang) {
+  if (setting === 'zh' || setting === 'en') return setting;
+  const s = String(systemLang || '').trim().toLowerCase();
+  return s.startsWith('zh') ? 'zh' : 'en';
+}
+
+// 取译文：en 下查词典，其余（含 zh）返回原文；vars 做 {key} 占位符替换。
+export function t(source, vars) {
+  const src = source == null ? '' : String(source);
+  const text = current === 'zh' ? src : (Object.prototype.hasOwnProperty.call(EN, src) ? EN[src] : src);
+  if (!vars || typeof vars !== 'object') return text;
+  return text.replace(/\{([a-zA-Z0-9_]+)\}/g, (m, k) => (
+    Object.prototype.hasOwnProperty.call(vars, k) ? String(vars[k]) : m
+  ));
+}
+
+// 供测试/质检用：某条原文是否已有英文译文
+export function hasTranslation(source) {
+  return Object.prototype.hasOwnProperty.call(EN, String(source == null ? '' : source));
+}
+
+export function dictionarySize() {
+  return Object.keys(EN).length;
+}

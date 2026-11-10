@@ -1,41 +1,83 @@
-# FinalCheck · 终检
+# FinalCheck
 
-> **人看不懂的代码，跑之前先过闸。**
+> **Don't run code you can't read. Check it first.**
 
-给用 AI 写代码、但不懂安全的普通人做的**分级生产就绪验收工具**：
+FinalCheck is a tiered production-readiness desk for people who write with AI but are not security experts:
 
-- AI 写的代码、外来下载的代码——跑之前先体检，出一份**人话报告**
-- 不是"可能有 IDOR（CWE-639）"，是"**第 12 行注册了接口、没挂任何登录守卫——你的用户表对全网裸奔**"级别的**静态证据**（带行号与原文）；跑起来真打一发的**动态复现 v2 提供**
-- 按项目分级：个人小项目过 L1 底线，公司项目按 L3 全量验收、未达标不放行
+- **Audit before you run.** AI-written or downloaded code gets checked first, and you get a report in plain language.
+- **Evidence, not vibes.** Not "possible IDOR (CWE-639)" but "`register` route defined on line 12 with no auth guard — your user table is exposed to the internet", with file and line references. Dynamic reproduction is available as an opt-in second stage.
+- **Tiered gates.** Personal projects pass L1. Company projects must pass full L3 acceptance, and L3 does not ship until everything on the matrix is met.
 
-## 三件套
+## Tiers
 
-| 件 | 形态 | 干什么 |
+| Tier | One line | Enforcement |
 |---|---|---|
-| **引擎** | 独立 CLI（`npx finalcheck audit <目录>`） | 五道关编排：密钥/依赖/坏模式/鉴权矩阵/LLM 语义 → 分级评分卡 + 缺口工单 |
-| **闸门** | Claude Code skill + hook | 下载闸（AI 下完外部项目要装/跑之前）+ 交活闸（AI 写完代码要交之前），自动叫引擎 |
-| **规则手册** | 纯文字（按档分 L1/L2/L3） | AI 写代码时照着守，预防在先 |
+| **L1 Personal** | Losing the data would not hurt; only you use it | High-severity only, advisory |
+| **L2 With users** | Public and receiving other people's data | High severity blocks, medium must be fixed |
+| **L3 Company** | Company project, paid work, compliance obligations | Nothing ships until the matrix passes; produces a presentable acceptance report |
 
-## 分级
+## What's in the box
 
-| 档 | 一句话 | 力度 |
+| Piece | Form | What it does |
 |---|---|---|
-| **L1 自用** | 数据丢了不心疼，只有自己用 | 只报高危，提醒不拦 |
-| **L2 有用户** | 挂公网、有别人的数据进来 | 高危拦截，中危必修 |
-| **L3 公司级** | 公司项目 / 收钱 / 有合规义务 | 未达标不放行，出可出示的达标报告 |
+| **Desktop app** | Electron (Windows) | Chat + audit desk: tiered acceptance, agent workflows, live tool traces, artifact preview, usage stats |
+| **Engine** | CLI (`npx finalcheck audit <dir>`) | Static gates (secrets, dependencies, risky patterns, auth matrix, semantic checks) → scorecard + issue tickets |
+| **Agent runtime** | Built into the desktop app | DAG workflows **and** a restricted-script DSL, adversarial verification of every claim, journal-based resume, blind spot checks |
+| **Gates & playbooks** | Skill/hook integrations + `playbooks/` | Download gate (before installing/running third-party code) and delivery gate (before handing work over) |
+| **Rulebooks** | Text, per tier | What the AI must follow while writing code, so problems are prevented up front |
 
-## 自食其力条款（项目宪法）
+## Quick start
 
-**本项目自身按 L3 标准开发。** 引擎成熟后第一个白鼠就是本仓库——本仓库违反矩阵任何 L2 条目，一律算 bug。
+**Installed build**
 
-## 开发状态
+1. Download `FinalCheck-install.exe` from [Releases](https://github.com/ccai40359-wq/finalcheck/releases).
+2. Run it, open **Settings → Model settings**, and add an OpenAI-compatible gateway (Base URL ending in `/v1`, API key, model name).
+3. Open a workspace (a folder), choose your tier, and start a session.
 
-- [x] 产品定义 / 分级矩阵 → [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md)（SSOT，唯一事实源）
-- [ ] 规则手册 v1（三档）
-- [ ] 引擎最小版（路由提取 + 编排 + 人话报告）
-- [ ] skill/hook 接线
-- [ ] Juice Shop 打靶
+**From source**
 
-## 品牌说明
+```bash
+git clone https://github.com/ccai40359-wq/finalcheck
+cd finalcheck
+npm install
+npm test                     # 647 tests
+cd desktop && npm install
+npm run dev                  # launch the desktop app
+```
 
-`FinalCheck` = 终检——交付前最后一道安全检查。CLI/npm 包名均为 `finalcheck`；仓库目录沿用历史路径，随迁移另行更换。
+To package a Windows build: `cd desktop && npm run dist`.
+
+## Language
+
+The UI ships in Chinese and English.
+
+- **Settings → Runtime → Language**: Follow system / 中文 / English. Switching applies immediately.
+- In **English** mode the agents, workflows and generated reports also produce English output; in **Chinese** mode everything stays Chinese.
+- Chinese is the default: a Chinese system with *Follow system* stays Chinese, everything else starts in English.
+
+## Safety model
+
+- The API key lives **only** in the local `config.json` (`%APPDATA%\FinalCheck` in the installed build). It is never written to sessions, logs or reports.
+- Path and command access is controlled by a policy: `workspace` (writes inside the project only), `readonly`, or `off`. Sensitive locations (`.ssh`, `.aws`, `.gnupg`, Git credentials, private keys) are blocked in every mode, and a command blacklist applies on top.
+- Dynamic targets (probes, stress tests) require an explicit, per-target confirmation and are capped at 60s / 50 connections.
+- Removing a workspace from the list never deletes anything on disk.
+
+## Repository layout
+
+```
+bin/          CLI entry points (finalcheck, finalcheck-mcp)
+src/          audit engine (checks, probe/stress, MCP surface)
+desktop/      Electron app (main / preload / renderer)
+playbooks/    audit playbooks
+integrations/ skill + hook wiring for coding agents
+docs/         ACCEPTANCE.md — the single source of truth for the tiers
+tests/        node:test suites (647 passing)
+```
+
+## Status
+
+Early but real: the engine, the desktop app, tiered gates, agent workflows (DAG + script DSL), adversarial verification and in-app updates are in place, with 647 tests passing on every change. Development follows the project's own L3 standard — a known violation of any L2 item in this repository counts as a bug.
+
+## License
+
+Apache-2.0. See [LICENSE](LICENSE).

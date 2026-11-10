@@ -4,6 +4,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../lib/ui.jsx';
 import { isProgramStep } from '../lib/step-view.mjs';
+import { t } from '../i18n/core.mjs';
 import { ProcessTimeline, WorkingStatus } from './ProcessTimeline.jsx';
 import { SwarmResult } from './SwarmResult.jsx';
 
@@ -118,7 +119,7 @@ export function SubagentPanel({ target, onClose }) {
     let timer = null;
     setData(null); setErr('');
     if (isProgramNode) {
-      setErr('这是确定性检查节点（gate / aggregate）：由程序直接执行，没有子代理对话。结论请看工作流卡片里该步骤的结果。');
+      setErr(t('这是确定性检查节点（gate / aggregate）：由程序直接执行，没有子代理对话。结论请看工作流卡片里该步骤的结果。'));
       return () => { alive = false; };
     }
     const load = async () => {
@@ -132,10 +133,10 @@ export function SubagentPanel({ target, onClose }) {
           return;
         }
         tries += 1;
-        if (tries >= 6) { setErr('这次子代理的上下文没有留下（只保留最近一次工作流的记录）'); return; }
+        if (tries >= 6) { setErr(t('这次子代理的上下文没有留下（只保留最近一次工作流的记录）')); return; }
         timer = setTimeout(load, 1200);
       } catch (e) {
-        if (alive) setErr(e?.message || '读取失败');
+        if (alive) setErr(e?.message || t('读取失败'));
       }
     };
     load();
@@ -175,8 +176,8 @@ export function SubagentPanel({ target, onClose }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     if (!running) return undefined;
-    const t = setInterval(() => setNow(Date.now()), 500);
-    return () => clearInterval(t);
+    const timer = setInterval(() => setNow(Date.now()), 500);
+    return () => clearInterval(timer);
   }, [running]);
   const elapsedMs = running && data?.startedAt ? Math.max(0, now - data.startedAt) : (data?.ms || 0);
   const bodyRef = useRef(null);
@@ -197,32 +198,38 @@ export function SubagentPanel({ target, onClose }) {
 
   return (
     <aside style={{ width }} className="shrink-0 border-l border-white/[0.07] bg-[#0b0b0e] flex flex-col min-h-0 relative">
-      <div onMouseDown={startDrag} onDoubleClick={() => setWidth(620)} title="拖动调整宽度（拖到头关闭，双击复位）"
+      <div onMouseDown={startDrag} onDoubleClick={() => setWidth(620)} title={t('拖动调整宽度（拖到头关闭，双击复位）')}
         className="group absolute left-0 top-0 h-full w-2 -ml-1 cursor-col-resize z-10">
         <div className="w-px h-full mx-auto bg-white/[0.08] group-hover:bg-gold/60 transition-colors" />
       </div>
       <div className="shrink-0 h-11 px-3.5 flex items-center gap-2 border-b border-white/[0.07]">
         <span className="text-goldSoft text-sm">◈</span>
         <div className="min-w-0 flex-1">
-          <div className="text-xs text-ink/90 truncate">{data?.role || target?.name || '子代理'}</div>
+          <div className="text-xs text-ink/90 truncate">{data?.role || target?.name || t('子代理')}</div>
           <div className="text-[10px] text-mute/50 truncate">
-            {isProgramNode ? '确定性节点 · 无子代理对话' : (data ? `${data.toolCount || 0} 次工具调用 · ${Math.round(elapsedMs / 1000)}s${running ? ' · 运行中' : ''}` : '读取中…')}
+            {isProgramNode
+              ? t('确定性节点 · 无子代理对话')
+              : (data
+                ? (running
+                  ? t('{n} 次工具调用 · {s}s · 运行中', { n: data.toolCount || 0, s: Math.round(elapsedMs / 1000) })
+                  : t('{n} 次工具调用 · {s}s', { n: data.toolCount || 0, s: Math.round(elapsedMs / 1000) }))
+                : t('读取中…'))}
           </div>
         </div>
-        <button onClick={onClose} title="关闭"
+        <button onClick={onClose} title={t('关闭')}
           className="h-7 w-7 rounded-md text-mute hover:text-ink hover:bg-white/5 transition-colors">✕</button>
       </div>
 
       <div ref={bodyRef} onScroll={(e) => { const el = e.currentTarget; stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80; }}
         className="flex-1 min-h-0 overflow-y-auto px-4 py-4">
         {err ? <div className="text-xs text-amber-300/90 whitespace-pre-wrap">{err}</div> : null}
-        {!err && !data ? <div className="text-xs text-mute/60 animate-pulse">读取子代理上下文…</div> : null}
+        {!err && !data ? <div className="text-xs text-mute/60 animate-pulse">{t('读取子代理上下文…')}</div> : null}
         {data ? (
           <div className="w-full mx-auto space-y-4">
             <SystemPrompt text={system} />
             {task ? (
               <div className="flex flex-col items-end">
-                <span className="mb-1 text-[10px] text-mute/45">主 Agent · 派发任务</span>
+                <span className="mb-1 text-[10px] text-mute/45">{t('主 Agent · 派发任务')}</span>
                 <div className="glass-bubble max-w-[88%] rounded-2xl rounded-br-md px-3.5 py-2 text-sm whitespace-pre-wrap break-words leading-relaxed text-ink/90">
                   {task}
                 </div>
@@ -233,7 +240,9 @@ export function SubagentPanel({ target, onClose }) {
               {answer ? <SwarmResult answer={answer} streaming={running} /> : null}
               {!answer && !running ? (
                 <div className="text-[12px] text-mute/60">
-                  （这一步没有留下交付物{data?.messages?.length ? '，上面是它跑过的工具' : ''}）
+                  {data?.messages?.length
+                    ? t('（这一步没有留下交付物，上面是它跑过的工具）')
+                    : t('（这一步没有留下交付物）')}
                 </div>
               ) : null}
               {running && assistantMsg.startedAt ? <WorkingStatus startedAt={assistantMsg.startedAt} className="mt-2" /> : null}

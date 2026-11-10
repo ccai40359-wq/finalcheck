@@ -10,6 +10,7 @@ import { spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { t } from '../renderer/i18n/core.mjs';
 
 // 七个合法事件（与 ZCode 完全一致）
 export const HOOK_EVENTS = Object.freeze([
@@ -76,7 +77,7 @@ function normalizeHookList(eventName, list, configTimeoutMs, warnings) {
   if (list == null) return [];
   let entries = list;
   if (!Array.isArray(entries)) {
-    warnings.push(`事件 ${eventName} 的 hooks 必须是数组，已按单项处理`);
+    warnings.push(t('事件 {event} 的 hooks 必须是数组，已按单项处理', { event: eventName }));
     entries = [entries];
   }
   const hooks = [];
@@ -84,19 +85,19 @@ function normalizeHookList(eventName, list, configTimeoutMs, warnings) {
     if (typeof entry === 'string') {
       const command = entry.trim();
       if (!command) {
-        warnings.push(`事件 ${eventName} 的 hook 缺少 command，已忽略`);
+        warnings.push(t('事件 {event} 的 hook 缺少 command，已忽略', { event: eventName }));
         continue;
       }
       hooks.push({ command, timeoutMs: configTimeoutMs, matcher: '' });
       continue;
     }
     if (!isPlainObject(entry)) {
-      warnings.push(`事件 ${eventName} 的 hook 配置无效，已忽略`);
+      warnings.push(t('事件 {event} 的 hook 配置无效，已忽略', { event: eventName }));
       continue;
     }
     const command = typeof entry.command === 'string' ? entry.command.trim() : '';
     if (!command) {
-      warnings.push(`事件 ${eventName} 的 hook 缺少 command，已忽略`);
+      warnings.push(t('事件 {event} 的 hook 缺少 command，已忽略', { event: eventName }));
       continue;
     }
     hooks.push({
@@ -110,13 +111,13 @@ function normalizeHookList(eventName, list, configTimeoutMs, warnings) {
 
 function normalizeConfig(raw, warnings) {
   if (!isPlainObject(raw)) {
-    if (raw !== undefined) warnings.push('hooks 配置必须是 JSON 对象，已按默认关闭处理');
+    if (raw !== undefined) warnings.push(t('hooks 配置必须是 JSON 对象，已按默认关闭处理'));
     return defaultConfig(warnings);
   }
   let enabled = false;
   if (raw.enabled === true) enabled = true;
   else if (raw.enabled !== undefined && raw.enabled !== false) {
-    warnings.push('hooks.enabled 必须是布尔值，已按关闭处理');
+    warnings.push(t('hooks.enabled 必须是布尔值，已按关闭处理'));
   }
 
   const timeoutMs = clampInt(raw.timeoutMs, MIN_TIMEOUT_MS, MAX_TIMEOUT_MS, DEFAULT_TIMEOUT_MS);
@@ -125,11 +126,11 @@ function normalizeConfig(raw, warnings) {
 
   if (raw.events !== undefined) {
     if (!isPlainObject(raw.events)) {
-      warnings.push('hooks.events 必须是对象，已忽略');
+      warnings.push(t('hooks.events 必须是对象，已忽略'));
     } else {
       for (const [name, list] of Object.entries(raw.events)) {
         if (!HOOK_EVENTS.includes(name)) {
-          warnings.push(`未知 hook 事件 "${name}" 已忽略（仅支持 ${HOOK_EVENTS.join(' / ')}）`);
+          warnings.push(t('未知 hook 事件 "{event}" 已忽略（仅支持 {events}）', { event: name, events: HOOK_EVENTS.join(' / ') }));
           continue;
         }
         events[name] = normalizeHookList(name, list, timeoutMs, warnings);
@@ -153,15 +154,15 @@ export function loadHooksConfig(file) {
     text = readFileSync(target, 'utf8');
   } catch (e) {
     warnings.push(e && e.code === 'ENOENT'
-      ? `hooks 配置不存在（${target}），已按默认关闭`
-      : `hooks 配置读取失败（${target}）：${(e && e.message) || e}`);
+      ? t('hooks 配置不存在（{path}），已按默认关闭', { path: target })
+      : t('hooks 配置读取失败（{path}）：{error}', { path: target, error: (e && e.message) || e }));
     return defaultConfig(warnings);
   }
   let raw;
   try {
     raw = JSON.parse(text);
   } catch (e) {
-    warnings.push(`hooks 配置 JSON 解析失败（${target}）：${(e && e.message) || e}`);
+    warnings.push(t('hooks 配置 JSON 解析失败（{path}）：{error}', { path: target, error: (e && e.message) || e }));
     return defaultConfig(warnings);
   }
   return normalizeConfig(raw, warnings);
@@ -210,14 +211,14 @@ function parseHookStdout(stdout, warnings) {
     if (obj.decision === 'allow' || obj.decision === 'deny' || obj.decision === 'ask') {
       out.decision = obj.decision;
     } else {
-      warnings.push(`Hook 返回非法 decision ${JSON.stringify(obj.decision)}，已忽略`);
+      warnings.push(t('Hook 返回非法 decision {value}，已忽略', { value: JSON.stringify(obj.decision) }));
     }
   }
   if (typeof obj.message === 'string' && obj.message.trim()) out.message = obj.message;
   if (typeof obj.context === 'string' && obj.context.trim()) out.context = obj.context;
   if (obj.args !== undefined) {
     if (isPlainObject(obj.args)) out.args = obj.args;
-    else warnings.push('Hook 返回的 args 不是对象，已忽略');
+    else warnings.push(t('Hook 返回的 args 不是对象，已忽略'));
   }
   return out;
 }
@@ -265,7 +266,7 @@ function defaultRunner(command, { input, cwd, timeoutMs, maxOutputBytes } = {}) 
     const limit = clampInt(maxOutputBytes, MIN_OUTPUT_BYTES, MAX_OUTPUT_BYTES, DEFAULT_MAX_OUTPUT_BYTES);
     const timeout = clampInt(timeoutMs, MIN_TIMEOUT_MS, MAX_TIMEOUT_MS, DEFAULT_TIMEOUT_MS);
     if (!cmd.trim()) {
-      resolve({ code: 1, stdout: '', stderr: '', error: '命令为空', ms: 0 });
+      resolve({ code: 1, stdout: '', stderr: '', error: t('命令为空'), ms: 0 });
       return;
     }
 
@@ -328,7 +329,7 @@ function defaultRunner(command, { input, cwd, timeoutMs, maxOutputBytes } = {}) 
         }
       } catch { /* 已退出 */ }
       // 不等子树 close，避免孙进程占住管道导致 hook 调用悬挂（同 shell.mjs 的教训）
-      finish({ code: 124, timedOut: true, error: `超时 ${timeout}ms` });
+      finish({ code: 124, timedOut: true, error: t('超时 {ms}ms', { ms: timeout }) });
     }, timeout);
 
     try {
@@ -353,7 +354,7 @@ export async function runHookEvent(event, payload = {}, { cwd, config, runner } 
   if (!HOOK_EVENTS.includes(eventName)) {
     return {
       ok: true, decision: 'allow', messages: [], outputs: [],
-      warnings: [`未知 hook 事件 "${eventName}"，已忽略`], errors: []
+      warnings: [t('未知 hook 事件 "{event}"，已忽略', { event: eventName })], errors: []
     };
   }
 
@@ -402,7 +403,7 @@ export async function runHookEvent(event, payload = {}, { cwd, config, runner } 
       res = { code: 1, stdout: '', stderr: '', error: String((e && e.message) || e), ms: Date.now() - started };
     }
     if (!isPlainObject(res)) {
-      res = { code: 1, stdout: '', stderr: '', error: 'runner 未返回结果', ms: Date.now() - started };
+      res = { code: 1, stdout: '', stderr: '', error: t('runner 未返回结果'), ms: Date.now() - started };
     }
 
     const rawCode = res.code;
@@ -414,25 +415,25 @@ export async function runHookEvent(event, payload = {}, { cwd, config, runner } 
 
     if (res.error || res.timedOut || code !== 0) {
       const reason = res.timedOut
-        ? `超时（${timeoutMs}ms）已终止`
+        ? t('超时（{ms}ms）已终止', { ms: timeoutMs })
         : res.error
-          ? `执行错误：${res.error}`
-          : `退出码 ${code}`;
-      errors.push(`[${eventName}] ${command}：${reason}`);
+          ? t('执行错误：{error}', { error: res.error })
+          : t('退出码 {code}', { code });
+      errors.push(t('[{event}] {command}：{reason}', { event: eventName, command, reason }));
       if (FAIL_CLOSED_EVENTS.has(eventName)) {
-        messages.push(`Hook 执行失败（fail-closed）：${reason}`);
+        messages.push(t('Hook 执行失败（fail-closed）：{reason}', { reason }));
         decision = 'deny';
         break; // 安全闸失败：不再运行后续 hook
       }
-      warnings.push(`Hook 执行失败（fail-open，已放行）：${reason}`);
+      warnings.push(t('Hook 执行失败（fail-open，已放行）：{reason}', { reason }));
       continue;
     }
 
     if (res.stdoutTruncated) {
-      warnings.push(`Hook 输出超过上限 ${cfg.maxOutputBytes} bytes，已截断`);
+      warnings.push(t('Hook 输出超过上限 {limit} bytes，已截断', { limit: cfg.maxOutputBytes }));
     }
     if (res.stderrTruncated) {
-      warnings.push(`Hook stderr 超过上限 ${cfg.maxOutputBytes} bytes，已截断`);
+      warnings.push(t('Hook stderr 超过上限 {limit} bytes，已截断', { limit: cfg.maxOutputBytes }));
     }
 
     const parsed = parseHookStdout(stdout, warnings);

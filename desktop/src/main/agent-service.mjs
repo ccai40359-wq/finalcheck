@@ -14,6 +14,8 @@ import { SUBAGENT_TOOL_NAMES } from './swarm.mjs';
 // 中断/空回复的确定性 salvage：与 workflow 层共用同一份文案（不调模型、不烧 token）
 import { salvageSubagentContent } from './subagent-salvage.mjs';
 import { extractUsage } from './usage.mjs';
+import { withOutputLanguage } from './lang.mjs';
+import { t } from '../renderer/i18n/core.mjs';
 
 /**
  * 供应商可调字段透传（C 档）：只保留有效值，缺省不写进配置对象。
@@ -70,7 +72,7 @@ export function resolveWorkflowStepModel({ step = {}, providers = [], fallback =
   const wantedModel = typeof step?.model === 'string' ? step.model.trim() : '';
   if (!providerId && !wantedModel) return { override: null, warning: null };
   const list = Array.isArray(providers) ? providers : [];
-  const label = String(step?.id || '(未知)');
+  const label = String(step?.id || t('(未知)'));
   const fallbackOverride = fallback
     && String(fallback.baseUrl || '').trim()
     && String(fallback.model || '').trim()
@@ -78,25 +80,25 @@ export function resolveWorkflowStepModel({ step = {}, providers = [], fallback =
     : null;
   const fail = (reason) => ({
     override: fallbackOverride,
-    warning: `步骤 ${label} ${reason}，已回退全局子代理模型`
+    warning: t('步骤 {label} {reason}，已回退全局子代理模型', { label, reason })
   });
   const fallbackProvider = fallback?.providerId
     ? list.find((p) => p && p.id === fallback.providerId)
     : null;
   const target = providerId ? list.find((p) => p && p.id === providerId) : fallbackProvider;
-  if (providerId && !target) return fail(`指定的 provider ${providerId} 不存在`);
+  if (providerId && !target) return fail(t('指定的 provider {id} 不存在', { id: providerId }));
   if (!providerUsable(target)) {
     return fail(providerId
-      ? `指定的 provider ${providerId} 不可用（被禁用或缺 baseUrl/apiKey/models）`
-      : '无法确定可用供应商');
+      ? t('指定的 provider {id} 不可用（被禁用或缺 baseUrl/apiKey/models）', { id: providerId })
+      : t('无法确定可用供应商'));
   }
   // models 现在可能是字符串，也可能是 {id, contextWindow,...} 对象（model-config 迁移后）
   const models = target.models.map((m) => typeof m === 'string' ? m : String(m?.id || '')).filter(Boolean);
   const chosen = wantedModel || models[0];
   if (wantedModel && !models.includes(wantedModel)) {
-    return fail(`指定的 model ${wantedModel} 不在 provider ${target.id} 的模型列表`);
+    return fail(t('指定的 model {model} 不在 provider {id} 的模型列表', { model: wantedModel, id: target.id }));
   }
-  if (!chosen) return fail(`provider ${target.id} 没有可用模型`);
+  if (!chosen) return fail(t('provider {id} 没有可用模型', { id: target.id }));
   return {
     override: { baseUrl: target.baseUrl, apiKey: target.apiKey, model: chosen, providerId: target.id },
     warning: null
@@ -121,7 +123,7 @@ export function computeCrossFamilyWarnings({ results = [], providers = [], fallb
     const fam = familyOf(r);
     if (!fam) continue;
     const same = finds.find((f) => familyOf(f) === fam);
-    if (same) warnings.push(`跨家族复核未满足：${r.kind}(${String(r.id)})=${fam} 与 find(${String(same.id)})=${fam} 相同`);
+    if (same) warnings.push(t('跨家族复核未满足：{kind}({id})={fam} 与 find({sameId})={fam} 相同', { kind: r.kind, id: String(r.id), fam, sameId: String(same.id) }));
   }
   return warnings;
 }
@@ -149,7 +151,7 @@ export async function runSessionStartHook({ sessionId = null, cwd = null, projec
     out.warnings = [...(hook.warnings || []), ...(hook.errors || [])];
     return out;
   } catch (e) {
-    out.warnings.push('SessionStart hook 异常（已忽略）：' + (e?.message || e));
+    out.warnings.push(t('SessionStart hook 异常（已忽略）：{error}', { error: e?.message || e }));
     return out;
   }
 }
@@ -557,7 +559,7 @@ async function mapLimited(items, limit, worker) {
 // 中断收尾宽限：signal 触发后最多再等 300ms 让正在跑的工具自己返回；
 // run_command 会在自己的 signal 回调里 taskkill 进程树，所以这里超时先回填 cancelled 也不会留孤儿进程。
 const TOOL_ABORT_GRACE_MS = 300;
-const cancelledToolResult = () => ({ error: '已中断', cancelled: true });
+const cancelledToolResult = () => ({ error: t('已中断'), cancelled: true });
 
 function awaitWithAbort(promise, signal, graceMs = TOOL_ABORT_GRACE_MS) {
   if (!signal) return promise;
@@ -576,7 +578,7 @@ function awaitWithAbort(promise, signal, graceMs = TOOL_ABORT_GRACE_MS) {
       // 已中断：工具若在宽限期内返回，用它的结果（保留 stdout/stderr）；否则直接 cancelled
       graceTimer = setTimeout(() => finish(cancelledToolResult()), graceMs);
       promise.then(
-        (v) => finish(v?.cancelled ? v : { ...(v && typeof v === 'object' ? v : {}), error: v?.error || '已中断', cancelled: true }),
+        (v) => finish(v?.cancelled ? v : { ...(v && typeof v === 'object' ? v : {}), error: v?.error || t('已中断'), cancelled: true }),
         () => finish(cancelledToolResult())
       );
     };
@@ -606,7 +608,7 @@ async function runToolCall(tc, tools, onEvent, signal = null) {
   try {
     const args = JSON.parse(argsText || '{}');
     const fn = tools?.[name];
-    if (typeof fn !== 'function') result = { error: '未知工具: ' + name };
+    if (typeof fn !== 'function') result = { error: t('未知工具: {name}', { name }) };
     else if (signal?.aborted) result = cancelledToolResult(); // 解析参数期间被停止
     else result = await awaitWithAbort(Promise.resolve().then(() => fn(args, { signal })), signal);
   } catch (e) {
@@ -628,8 +630,8 @@ async function runToolCall(tc, tools, onEvent, signal = null) {
       traceResult = { truncated: true, spillFile, chars: resultStr.length, preview: resultStr.slice(0, 2000) };
     }
   } catch (e) {
-    modelContent = JSON.stringify({ error: '工具结果无法序列化：' + (e?.message || e) });
-    traceResult = { error: '工具结果无法序列化' };
+    modelContent = JSON.stringify({ error: t('工具结果无法序列化：{error}', { error: e?.message || e }) });
+    traceResult = { error: t('工具结果无法序列化') };
   }
   return { id: tc?.id, trace: { tool: name, args: argsText, result: traceResult }, modelContent };
 }
@@ -664,11 +666,11 @@ async function runToolCalls(toolCalls, { tools, onEvent, toolConcurrency, signal
 export async function runAgentTurn({ config, messages, confirmedHosts = [], onToken, onEvent, tools, toolsSchema = null, systemPrompt: systemPromptOverride = null, forceFirstToolChoice = false, fetchImpl = fetch, summarize, signal, maxTurns = DEFAULT_MAX_TURNS, maxTurnMs: maxTurnMsOpt, maxTurnTokens: maxTurnTokensOpt, retryBaseMs = 600, noLimits = false, hooksConfig = null, hooksRunner = null, sessionId = null, drainSteer = null, cwd = process.cwd() }) {
   if (signal?.aborted) return { cancelled: true, interrupted: true, partialContent: '', answer: '', trace: [] };
   if (!config?.baseUrl || !config?.apiKey) {
-    return { error: '尚未配置网关：请到左下角「模型设置」添加供应商（Base URL / API Key / 模型）并启用', trace: [] };
+    return { error: t('尚未配置网关：请到左下角「模型设置」添加供应商（Base URL / API Key / 模型）并启用'), trace: [] };
   }
-  const CHECKLIST = '请检查：① Base URL 是否含 https:// 与 /v1 结尾 ② 网络/代理是否可达 ③ 到模型设置页点「测试连接」验证';
+  const CHECKLIST = t('请检查：① Base URL 是否含 https:// 与 /v1 结尾 ② 网络/代理是否可达 ③ 到模型设置页点「测试连接」验证');
   // 402 是账单问题，不是 URL/网络问题：给一句能直接照做的说明，别再让人去查 Base URL
-  const BILLING_HINT = '这是网关的付费错误（402 Payment Required）：这个 Key 的余额/额度不足或套餐到期。请到 provider 后台充值，或在「设置 → 模型」里切换到另一个还有额度的 provider';
+  const BILLING_HINT = t('这是网关的付费错误（402 Payment Required）：这个 Key 的余额/额度不足或套餐到期。请到 provider 后台充值，或在「设置 → 模型」里切换到另一个还有额度的 provider');
   // ---- Hooks 接线：配置由 index.mjs 启动/切换项目时加载一次，这里只消费快照 ----
   const hooksOn = !!(hooksConfig && hooksConfig.enabled === true);
   const hookOptions = { cwd, config: hooksConfig ?? undefined, runner: hooksRunner || undefined };
@@ -682,7 +684,7 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
         response: String(result?.answer ?? '')
       }, hookOptions);
       if (hook.decision === 'deny') {
-        return { ...result, hookNotice: hook.messages.join('；') || 'Stop hook 拒绝了本轮结束' };
+        return { ...result, hookNotice: hook.messages.join('；') || t('Stop hook 拒绝了本轮结束') };
       }
     } catch { /* Stop 失败不阻断回答（hooks.mjs 内已 fail-open） */ }
     return result;
@@ -696,7 +698,7 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
     }, hookOptions);
     if (hook.decision === 'deny') {
       return {
-        error: '被 hook 拦截：' + (hook.messages.join('；') || 'UserPromptSubmit hook 拒绝本轮请求'),
+        error: t('被 hook 拦截：{detail}', { detail: hook.messages.join('；') || t('UserPromptSubmit hook 拒绝本轮请求') }),
         hookDenied: true,
         trace: []
       };
@@ -719,7 +721,7 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
       ...(crossTurnBudget ? { budgetTokens: crossTurnBudget } : {})
     })).messages;
   } catch { /* 压缩失败不阻断对话 */ }
-  const convo = [{ role: 'system', content: systemPromptOverride != null ? String(systemPromptOverride) : await getSystemPrompt() }, ...viewMessages];
+  const convo = [{ role: 'system', content: withOutputLanguage(systemPromptOverride != null ? String(systemPromptOverride) : await getSystemPrompt()) }, ...viewMessages];
   // Steer：回合进行中用户从界面注入的消息。每次发起模型请求前 drain，追加为一条 user 消息
   // （不重置已完成的工具结果，直接计入本轮上下文），并推送给渲染层画「已注入」气泡。
   const applySteer = () => {
@@ -764,7 +766,7 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
     : (Number.isFinite(Number(silenceRaw)) && Number(silenceRaw) > 0 ? Math.trunc(Number(silenceRaw)) : 0);
   const RETRY_BASE_MS = positiveNum(retryBaseMs, 600); // 指数退避基数：测试可注入极小值，生产默认 600ms
   const silenceSec = (ms) => Math.max(1, Math.round(ms / 1000));
-  const SILENCE_REASON = `网关静默 ${silenceSec(SILENCE_MS)}s 无任何响应`;
+  const SILENCE_REASON = t('网关静默 {s}s 无任何响应', { s: silenceSec(SILENCE_MS) });
   const maxTurnMs = noLimits ? Number.POSITIVE_INFINITY : positiveNum(maxTurnMsOpt ?? config.maxTurnMs, Number.POSITIVE_INFINITY); // 时间预算默认不限；工具执行时间不计（toolWaitMs）
   const maxTurnTokens = noLimits ? Number.POSITIVE_INFINITY : positiveNum(maxTurnTokensOpt ?? config.maxTurnTokens, Number.POSITIVE_INFINITY); // 累计 prompt+completion；默认不限
   const watchdogSec = (ms) => Math.max(1, Math.round(ms / 1000)); // 看门狗文案用：按实际配置显示秒数
@@ -843,13 +845,13 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
       // 它只杀「连续 N 秒零字节」，不设任何工作时长上限；noLimits（子代理）同样启用。
       const silence = startSilenceWatchdog(SILENCE_MS, {
         abort: () => { silenceHit = true; ctl.abort(); },
-        onHint: () => onEvent?.({ kind: 'activity', label: `网关已静默 ${silenceSec(SILENCE_MS / 2)}s…`, request: turn + 1, attempt })
+        onHint: () => onEvent?.({ kind: 'activity', label: t('网关已静默 {s}s…', { s: silenceSec(SILENCE_MS / 2) }), request: turn + 1, attempt })
       });
       let retryReason = '';
       let res = null;
       try {
         // 新请求开始（上一轮工具/回答已结束）：先提示在等网关；收到首块后切回正常活动文案
-        onEvent?.({ kind: 'activity', label: SILENCE_MS > 0 ? '等待网关响应…' : 'Thinking…', request: turn + 1, attempt });
+        onEvent?.({ kind: 'activity', label: SILENCE_MS > 0 ? t('等待网关响应…') : 'Thinking…', request: turn + 1, attempt });
         onEvent?.({ kind: 'phase', name: 'thinking' });
         const bodyFor = (withUsage, withToolChoice = false) => JSON.stringify({
           model: config.model,
@@ -880,7 +882,7 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
         if (!res.ok && withToolChoice && (res.status === 400 || res.status === 422)) {
           toolChoiceUnsupported = true;
           withToolChoice = false;
-          const msg = `网关不支持 tool_choice（HTTP ${res.status}），已去掉该字段重试`;
+          const msg = t('网关不支持 tool_choice（HTTP {status}），已去掉该字段重试', { status: res.status });
           warnings.push(msg);
           onEvent?.({ kind: 'warning', message: msg });
           console.warn(`[agent-service] ${msg}`);
@@ -902,7 +904,7 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
             retryReason = SILENCE_REASON;
           }
         } else {
-          const keyHint = res.status === 401 || res.status === 403 ? '（API Key 无效或无权限）' : '';
+          const keyHint = res.status === 401 || res.status === 403 ? t('（API Key 无效或无权限）') : '';
           lastErr = `HTTP ${res.status} ${res.statusText || ''}${keyHint}`;
           if (RETRYABLE.has(res.status) && attempt < MAX_ATTEMPTS) {
             onEvent?.({ kind: 'retry', attempt: attempt + 1, max: MAX_ATTEMPTS, reason: lastErr });
@@ -910,14 +912,14 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
             continue;
           }
           onEvent?.({ kind: 'turn-end', ms: Date.now() - turnStart, error: true });
-          if (res.status === 402) return { error: `网关连接失败：${lastErr}。${BILLING_HINT}。`, trace, warnings };
-          return { error: `网关连接失败：${lastErr}${attempt > 1 ? `（已重试 ${attempt - 1} 次）` : ''}。${CHECKLIST}`, trace, warnings };
+          if (res.status === 402) return { error: t('网关连接失败：{err}。{hint}。', { err: lastErr, hint: BILLING_HINT }), trace, warnings };
+          return { error: t('网关连接失败：{err}{retry}。{checklist}', { err: lastErr, retry: attempt > 1 ? t('（已重试 {n} 次）', { n: attempt - 1 }) : '', checklist: CHECKLIST }), trace, warnings };
         }
       } catch (e) {
         if (signal?.aborted) { onEvent?.({ kind: 'turn-end', ms: Date.now() - turnStart, interrupted: true }); return { cancelled: true, interrupted: true, partialContent: '', answer: '', trace, reasoning: reasoningAll || undefined, usage: lastUsage || undefined }; }
         retryReason = silenceHit
           ? SILENCE_REASON
-          : (e?.name === 'TimeoutError' || /abort/i.test(e?.message || '') ? `连接超时（${watchdogSec(WATCHDOG_MS)}s）` : (e?.message || 'fetch failed'));
+          : (e?.name === 'TimeoutError' || /abort/i.test(e?.message || '') ? t('连接超时（{s}s）', { s: watchdogSec(WATCHDOG_MS) }) : (e?.message || 'fetch failed'));
       } finally {
         silence.stop();
         if (watchdog) clearTimeout(watchdog);
@@ -934,16 +936,16 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
         }
         onEvent?.({ kind: 'turn-end', ms: Date.now() - turnStart, error: true });
         // 静默重试用尽：不返回栈，只给人话（网关一个字节都不回 ≠ 活干得久）
-        if (silenceHit) return { error: `${SILENCE_REASON}（已重试 ${MAX_ATTEMPTS} 次）。${CHECKLIST}`, trace, warnings };
-        return { error: `网关连接失败：${retryReason}（已重试 ${MAX_ATTEMPTS} 次）。${CHECKLIST}`, trace, warnings };
+        if (silenceHit) return { error: t('{reason}（已重试 {n} 次）。{checklist}', { reason: SILENCE_REASON, n: MAX_ATTEMPTS, checklist: CHECKLIST }), trace, warnings };
+        return { error: t('网关连接失败：{reason}（已重试 {n} 次）。{checklist}', { reason: retryReason, n: MAX_ATTEMPTS, checklist: CHECKLIST }), trace, warnings };
       }
       // 防御性兜底：既没拿到流也没失败原因（正常不可达）
       onEvent?.({ kind: 'turn-end', ms: Date.now() - turnStart, error: true });
-      return { error: `网关连接失败：${lastErr || '未知错误'}。${CHECKLIST}`, trace, warnings };
+      return { error: t('网关连接失败：{err}。{checklist}', { err: lastErr || t('未知错误'), checklist: CHECKLIST }), trace, warnings };
     }
     if (!streamOut) {
       onEvent?.({ kind: 'turn-end', ms: Date.now() - turnStart, error: true });
-      return { error: `网关连接失败：${lastErr || '未知错误'}。${CHECKLIST}`, trace, warnings };
+      return { error: t('网关连接失败：{err}。{checklist}', { err: lastErr || t('未知错误'), checklist: CHECKLIST }), trace, warnings };
     }
     let { content, reasoning, toolCalls, repetitive, aborted, usage, finishReason } = streamOut;
     if (usage) lastUsage = usage;
@@ -959,7 +961,7 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
     if (reasoning) reasoningAll += (reasoningAll ? '\n' : '') + reasoning;
     if (repetitive) {
       onEvent?.({ kind: 'turn-end', ms: Date.now() - turnStart, error: true });
-      return { error: '检测到模型输出异常循环，已自动中止——这是模型问题不是你的问题。可重试，或到模型设置换一个模型。', reasoning: reasoningAll, trace };
+      return { error: t('检测到模型输出异常循环，已自动中止——这是模型问题不是你的问题。可重试，或到模型设置换一个模型。'), reasoning: reasoningAll, trace };
     }
     if (!toolCalls.length) {
       // 强制首轮工具却只回了话：追加 system 提醒后再请求一次（与旧 runSubagentStep 一致，最多一次）
@@ -976,7 +978,7 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
         retriedForEmpty = true;
         const nudge = '你这一轮没有输出任何正文。请立即基于上面已经跑过的工具结果写出最终结论（结论要带 file:line 证据），不要再调用工具。';
         convo.push({ role: 'user', content: `[系统] ${nudge}` });
-        onEvent?.({ kind: 'activity', label: '补交结论…' });
+        onEvent?.({ kind: 'activity', label: t('补交结论…') });
         continue;
       }
       onEvent?.({ kind: 'turn-end', ms: Date.now() - turnStart });
@@ -995,7 +997,7 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
 
   // 达到轮次上限/budget 上限不丢工作：追加一次「禁止调工具」的收尾请求（fail-soft），让模型就已有证据下结论
   onEvent?.({ kind: 'phase', name: 'finalizing' });
-  onEvent?.({ kind: 'activity', label: SILENCE_MS > 0 ? '等待网关响应…' : 'Thinking…' }); // 收尾请求也是真实请求，WorkingStatus 别停在旧文案
+  onEvent?.({ kind: 'activity', label: SILENCE_MS > 0 ? t('等待网关响应…') : 'Thinking…' }); // 收尾请求也是真实请求，WorkingStatus 别停在旧文案
   const workedMs = () => Date.now() - turnStart;
   // 收尾请求：网关抖动（503/429/5xx）也要重试，别把一小时攒下的证据丢在最后一步
   const FINALIZE_ATTEMPTS = noLimits ? 1 : 3;
@@ -1004,10 +1006,10 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
   let fsilence = null;
   let onFabort = null;
   const stopDesc = budgetStop === 'time'
-    ? `本轮时间预算已用完（模型用了 ${Math.round(Math.max(0, Date.now() - turnStart - toolWaitMs) / 1000)}s，上限 ${Math.round(maxTurnMs / 1000)}s；工具执行时间不计）`
+    ? t('本轮时间预算已用完（模型用了 {used}s，上限 {limit}s；工具执行时间不计）', { used: Math.round(Math.max(0, Date.now() - turnStart - toolWaitMs) / 1000), limit: Math.round(maxTurnMs / 1000) })
     : budgetStop === 'tokens'
-      ? `本轮 token 预算已用完（已用 ${turnTokens}，上限 ${maxTurnTokens}）`
-      : `工具调用轮次已达上限（${maxTurns}）`;
+      ? t('本轮 token 预算已用完（已用 {used}，上限 {limit}）', { used: turnTokens, limit: maxTurnTokens })
+      : t('工具调用轮次已达上限（{n}）', { n: maxTurns });
   const wrap = { role: 'user', content: `[系统] ${stopDesc}。不要再调用任何工具，立即基于以上所有工具结果给出最终结论：已复现什么、没覆盖什么、下一步建议。` };
   applySteer(); // 收尾请求前再 drain 一次，尽量不把用户最后注入的内容留到回合外
   compactNow(); // 收尾请求同样守住上下文预算（token 两级压缩）
@@ -1055,7 +1057,7 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
         }
         ferr = silenceHit
           ? SILENCE_REASON
-          : (/abort/i.test(e?.message || '') || e?.name === 'AbortError' ? `收尾请求超时（${watchdogSec(FINALIZE_WATCHDOG_MS)}s）` : (e?.message || '收尾请求失败'));
+          : (/abort/i.test(e?.message || '') || e?.name === 'AbortError' ? t('收尾请求超时（{s}s）', { s: watchdogSec(FINALIZE_WATCHDOG_MS) }) : (e?.message || t('收尾请求失败')));
         sendFailed = true;
       } finally {
         silence.stop();
@@ -1071,7 +1073,7 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
       if (attemptRes?.ok) { res = attemptRes; break; }
       ferr = `HTTP ${attemptRes?.status ?? '?'}`;
       if (attemptRes && RETRYABLE.has(attemptRes.status) && attempt < FINALIZE_ATTEMPTS) {
-        onEvent?.({ kind: 'retry', attempt: attempt + 1, max: FINALIZE_ATTEMPTS, reason: `收尾请求 ${ferr}` });
+        onEvent?.({ kind: 'retry', attempt: attempt + 1, max: FINALIZE_ATTEMPTS, reason: t('收尾请求 {err}', { err: ferr }) });
         await sleepAbort(RETRY_BASE_MS * 2 ** (attempt - 1), signal);
         continue;
       }
@@ -1079,7 +1081,7 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
     }
     if (!res) {
       onEvent?.({ kind: 'turn-end', ms: workedMs(), error: true });
-      return { error: `${stopDesc}，收尾请求失败：${ferr || '网关无响应'}。本轮已收集的证据在时间线里，可点「继续」让我接着做。`, reasoning: reasoningAll, trace, workedMs: workedMs() };
+      return { error: t('{stop}，收尾请求失败：{err}。本轮已收集的证据在时间线里，可点「继续」让我接着做。', { stop: stopDesc, err: ferr || t('网关无响应') }), reasoning: reasoningAll, trace, workedMs: workedMs() };
     }
     // 流式消费阶段单独挂收尾看门狗（默认不设；发送阶段的 controller 已随每次尝试解绑）
     fctl = new AbortController();
@@ -1109,19 +1111,19 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
     }
     if (fin.aborted) {
       const partial = fin.content || '';
-      const abortLabel = fsilenceHit ? `网关静默 ${silenceSec(SILENCE_MS)}s 无任何响应` : `收尾请求超时（${watchdogSec(FINALIZE_WATCHDOG_MS)}s）`;
+      const abortLabel = fsilenceHit ? t('网关静默 {s}s 无任何响应', { s: silenceSec(SILENCE_MS) }) : t('收尾请求超时（{s}s）', { s: watchdogSec(FINALIZE_WATCHDOG_MS) });
       onEvent?.({ kind: 'turn-end', ms: workedMs(), interrupted: true });
-      return await runStopHook({ answer: (partial ? partial + '\n\n' : '') + `[${abortLabel}，以上为已输出部分；本轮工具证据仍保留]`, reasoning: reasoningAll, trace, workedMs: workedMs(), usage: lastUsage || undefined, usageTotal, finishReason: lastFinishReason, warnings, ...(budgetStop ? { budgetStop } : {}) });
+      return await runStopHook({ answer: (partial ? partial + '\n\n' : '') + t('[{reason}，以上为已输出部分；本轮工具证据仍保留]', { reason: abortLabel }), reasoning: reasoningAll, trace, workedMs: workedMs(), usage: lastUsage || undefined, usageTotal, finishReason: lastFinishReason, warnings, ...(budgetStop ? { budgetStop } : {}) });
     }
-    const names = [...new Set(trace.map((t) => t.tool))].join('、') || '（无）';
-    const answer = fin.content || `${stopDesc}，本轮调用工具：${names}。可以点「继续」让我接着做。`;
+    const names = [...new Set(trace.map((t) => t.tool))].join('、') || t('（无）');
+    const answer = fin.content || t('{stop}，本轮调用工具：{tools}。可以点「继续」让我接着做。', { stop: stopDesc, tools: names });
     onEvent?.({ kind: 'turn-end', ms: workedMs() });
     return await runStopHook({ answer, reasoning: reasoningAll, trace, workedMs: workedMs(), usage: lastUsage || undefined, usageTotal, finishReason: lastFinishReason, warnings, ...(budgetStop ? { budgetStop } : {}) });
   } catch (e) {
     onEvent?.({ kind: 'turn-end', ms: workedMs(), error: true });
     if (signal?.aborted) return { cancelled: true, interrupted: true, partialContent: '', answer: '', reasoning: reasoningAll, trace, workedMs: workedMs(), usage: lastUsage || undefined };
-    const reason = /abort/i.test(e?.message || '') || e?.name === 'AbortError' ? `收尾请求超时（${watchdogSec(FINALIZE_WATCHDOG_MS)}s）` : (e?.message || '收尾请求失败');
-    return { error: `${stopDesc}，${reason}。本轮已收集的证据在时间线里，可点「继续」让我接着做。`, reasoning: reasoningAll, trace, workedMs: workedMs() };
+    const reason = /abort/i.test(e?.message || '') || e?.name === 'AbortError' ? t('收尾请求超时（{s}s）', { s: watchdogSec(FINALIZE_WATCHDOG_MS) }) : (e?.message || t('收尾请求失败'));
+    return { error: t('{stop}，{reason}。本轮已收集的证据在时间线里，可点「继续」让我接着做。', { stop: stopDesc, reason }), reasoning: reasoningAll, trace, workedMs: workedMs() };
   } finally {
     if (fwatch) clearTimeout(fwatch);
     fsilence?.stop();
@@ -1185,7 +1187,7 @@ export async function runSubagentTurn({
     : !!forceFirstToolChoice;
   const startedAt = now();
   const transcript = [
-    { role: 'system', content: String(systemPrompt || '') },
+    { role: 'system', content: withOutputLanguage(String(systemPrompt || '')) },
     { role: 'user', content: String(prompt || '') }
   ];
   let current = null; // 正在流式接收的 assistant 条目
@@ -1352,11 +1354,11 @@ export async function runSubagentTurn({
   let error = out?.error || null;
   const aborted = !!out?.cancelled || !!out?.interrupted || (!!signal?.aborted && !out?.error);
   // 子代理不再按时间/软预算自动收尾：只有用户停止、网关错误、空转/截断等真实失败才置 error
-  if (!error && aborted) error = '子代理被中断';
+  if (!error && aborted) error = t('子代理被中断');
   if (!error) {
     const judged = judgeSubagentOutcome({ kind, content: answer, toolCount, toolCountKnown: true, truncated, requiresTools: requires });
     if (!judged.ok) error = judged.error;
-    else if (!answer) error = '子代理没有返回内容';
+    else if (!answer) error = t('子代理没有返回内容');
   }
   // 失败节点不能只剩一个 error：中断/空回复用 transcript 做确定性 salvage（不调模型），
   // 正文始终回传，子代理面板/报告/续跑都能看到这一步做到哪。

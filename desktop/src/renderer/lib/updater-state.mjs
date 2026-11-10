@@ -103,7 +103,7 @@ export function describeUpdate(state, currentVersion) {
     statusText = `下载中 ${pct}%`;
     tone = 'gold';
   } else if (phase === 'downloaded') {
-    statusText = latest ? `已下载 v${latest}，重启安装` : '已下载，重启安装';
+    statusText = '已下载，重启安装';
     tone = 'jade';
   } else if (phase === 'error') {
     const msg = asText(base.message);

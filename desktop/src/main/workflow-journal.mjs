@@ -3,6 +3,7 @@
 // 本模块只负责 journal 的形状与 I/O，不参与调度，也不依赖 workflow.mjs（避免循环依赖）。
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { t } from '../renderer/i18n/core.mjs';
 
 export const JOURNAL_VERSION = 1;
 
@@ -31,13 +32,13 @@ export function runIdOf({ now = Date.now, random = Math.random } = {}) {
 
 /** 新建一份 v1 journal（steps 为空对象） */
 export function createJournal({ runId = runIdOf(), goal = '', startedAt = Date.now() } = {}) {
-  if (!isValidRunId(runId)) throw new Error(`runId 非法：${runId}`);
-  const t = Number(startedAt);
+  if (!isValidRunId(runId)) throw new Error(t('runId 非法：{runId}', { runId }));
+  const startedAtNum = Number(startedAt);
   return {
     version: JOURNAL_VERSION,
     runId,
     goal: String(goal ?? ''),
-    startedAt: Number.isFinite(t) ? t : Date.now(),
+    startedAt: Number.isFinite(startedAtNum) ? startedAtNum : Date.now(),
     finishedAt: null,
     stopped: false,
     steps: {},
@@ -46,10 +47,10 @@ export function createJournal({ runId = runIdOf(), goal = '', startedAt = Date.n
 
 /** 写一条步骤记录（覆盖同 id）；只接受 success|failed|cancelled 三种状态 */
 export function recordStep(journal, step, patch = {}) {
-  if (!journal || typeof journal !== 'object') throw new Error('journal 必须是对象');
+  if (!journal || typeof journal !== 'object') throw new Error(t('journal 必须是对象'));
   if (!journal.steps || typeof journal.steps !== 'object' || Array.isArray(journal.steps)) journal.steps = {};
   const id = String(patch.id || step?.id || '').trim();
-  if (!id) throw new Error('步骤 id 不能为空');
+  if (!id) throw new Error(t('步骤 id 不能为空'));
   const status = ['success', 'failed', 'cancelled'].includes(patch.status) ? patch.status : 'failed';
   const num = (value, fallback = 0) => {
     const n = Number(value);
@@ -85,9 +86,9 @@ let tmpSeq = 0;
  * @returns {Promise<string>} 最终文件路径
  */
 export async function saveJournal(journal, { dir } = {}) {
-  if (!journal || typeof journal !== 'object') throw new Error('journal 必须是对象');
-  if (!isValidRunId(journal.runId)) throw new Error(`journal.runId 非法：${journal.runId}`);
-  if (typeof dir !== 'string' || !dir.trim()) throw new Error('saveJournal 需要 dir');
+  if (!journal || typeof journal !== 'object') throw new Error(t('journal 必须是对象'));
+  if (!isValidRunId(journal.runId)) throw new Error(t('journal.runId 非法：{runId}', { runId: journal.runId }));
+  if (typeof dir !== 'string' || !dir.trim()) throw new Error(t('saveJournal 需要 dir'));
   await fs.mkdir(dir, { recursive: true });
   const target = path.join(dir, `${journal.runId}.json`);
   const tmp = path.join(dir, `${journal.runId}.json.tmp-${process.pid}-${++tmpSeq}`);
@@ -115,8 +116,8 @@ export async function saveJournal(journal, { dir } = {}) {
 
 /** 读 journal；文件不存在返回 null，损坏或版本不匹配抛错 */
 export async function loadJournal(runId, { dir } = {}) {
-  if (!isValidRunId(runId)) throw new Error(`runId 非法：${runId}`);
-  if (typeof dir !== 'string' || !dir.trim()) throw new Error('loadJournal 需要 dir');
+  if (!isValidRunId(runId)) throw new Error(t('runId 非法：{runId}', { runId }));
+  if (typeof dir !== 'string' || !dir.trim()) throw new Error(t('loadJournal 需要 dir'));
   const file = path.join(dir, `${runId}.json`);
   let text;
   try {
@@ -129,16 +130,16 @@ export async function loadJournal(runId, { dir } = {}) {
   try {
     journal = JSON.parse(text);
   } catch {
-    throw new Error(`journal 文件损坏：${file}`);
+    throw new Error(t('journal 文件损坏：{file}', { file }));
   }
-  if (!journal || journal.version !== JOURNAL_VERSION) throw new Error(`journal 版本不支持：${journal?.version}`);
-  if (journal.runId !== runId) throw new Error(`journal runId 与文件名不一致：${runId}`);
+  if (!journal || journal.version !== JOURNAL_VERSION) throw new Error(t('journal 版本不支持：{version}', { version: journal?.version }));
+  if (journal.runId !== runId) throw new Error(t('journal runId 与文件名不一致：{runId}', { runId }));
   return journal;
 }
 
 /** 列出目录下所有合法 journal，按 startedAt 倒序（供 UI 的断点列表用） */
 export async function listJournals({ dir } = {}) {
-  if (typeof dir !== 'string' || !dir.trim()) throw new Error('listJournals 需要 dir');
+  if (typeof dir !== 'string' || !dir.trim()) throw new Error(t('listJournals 需要 dir'));
   let names;
   try {
     names = await fs.readdir(dir);

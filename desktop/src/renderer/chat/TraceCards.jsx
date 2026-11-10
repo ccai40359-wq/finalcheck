@@ -6,6 +6,7 @@ import { humanizeToolError, summarizeToolArgs, formatToolArgs } from '../lib/hum
 import { errorCodeLabel } from '../../main/swarm.mjs'; // 纯函数（零依赖）：错误码 → 一句人话，与主进程共用同一份映射
 import { RecoverButton } from './RecoverButton.jsx';
 import { buildContinueText } from '../lib/continue-prompt.mjs';
+import { t } from '../i18n/core.mjs';
 
 /** 四色结论横幅（与 AuditPage 一致） */
 const VERDICT_STYLE = {
@@ -53,7 +54,7 @@ function ToolShell({ children }) {
 
 /* 原始文本折叠块：默认收起（金边细线），点开才铺完整栈/JSON。
    label 用中文说明，hint 只放简短元信息（绝不把 JSON 首行铺出来）。 */
-function FoldedRaw({ text, label = '查看详情', hint = '', maxH = 'max-h-56' }) {
+function FoldedRaw({ text, label = t('查看详情'), hint = '', maxH = 'max-h-56' }) {
   const [open, setOpen] = useState(false);
   if (text == null || text === '') return null;
   return (
@@ -75,16 +76,16 @@ function FoldedRaw({ text, label = '查看详情', hint = '', maxH = 'max-h-56' 
 function ReportFindings({ findings }) {
   const [openIdx, setOpenIdx] = useState(null);
   const sorted = [...(findings || [])].sort((a, b) => (SEV_ORDER[a.severity] ?? 9) - (SEV_ORDER[b.severity] ?? 9));
-  if (!sorted.length) return <div className="text-xs text-emerald-400/90 py-1">没有发现，全净</div>;
+  if (!sorted.length) return <div className="text-xs text-emerald-400/90 py-1">{t('没有发现，全净')}</div>;
   return (
     <div className="space-y-1.5">
       {sorted.map((f, i) => (
         <div key={i} className="glass-card rounded-xl overflow-hidden hover:border-goldDeep transition-colors duration-200">
           <button className="w-full text-left px-3 py-2 flex items-start gap-2" onClick={() => setOpenIdx(openIdx === i ? null : i)}>
-            <span className={`badge mt-0.5 shrink-0 text-[11px] ${sevStyle[f.severity] || sevStyle.low}`}>{sevLabel[f.severity] || f.severity}</span>
+            <span className={`badge mt-0.5 shrink-0 text-[11px] ${sevStyle[f.severity] || sevStyle.low}`}>{t(sevLabel[f.severity] || f.severity)}</span>
             <span className="flex-1 min-w-0 text-xs text-ink/90">
-              <span className="font-mono text-goldSoft mr-1.5">{f.checkId}</span>{f.message || f.rule || '(无描述)'}
-              <span className="block text-[11px] text-mute font-mono truncate mt-0.5">{f.file ? `${f.file}${f.line ? ':' + f.line : ''}` : '位置未知'}</span>
+              <span className="font-mono text-goldSoft mr-1.5">{f.checkId}</span>{f.message || f.rule || t('(无描述)')}
+              <span className="block text-[11px] text-mute font-mono truncate mt-0.5">{f.file ? `${f.file}${f.line ? ':' + f.line : ''}` : t('位置未知')}</span>
             </span>
             {f.snippet ? <span className="mt-0.5"><Chevron open={openIdx === i} /></span> : null}
           </button>
@@ -113,15 +114,19 @@ export function ReportCard({ args, result }) {
   const findings = obj?.findings || [];
   const countOf = (sev) => findings.filter((f) => f.severity === sev).length;
   const counts = findings.length
-    ? [countOf('high') ? `高危 ${countOf('high')}` : '', countOf('medium') ? `中危 ${countOf('medium')}` : '', countOf('low') ? `提示 ${countOf('low')}` : ''].filter(Boolean).join(' · ')
+    ? [
+      countOf('high') ? t('高危 {n}', { n: countOf('high') }) : '',
+      countOf('medium') ? t('中危 {n}', { n: countOf('medium') }) : '',
+      countOf('low') ? t('提示 {n}', { n: countOf('low') }) : ''
+    ].filter(Boolean).join(' · ')
     : '';
 
   return (
     <ToolShell>
       <button onClick={() => setOpen(!open)} className="w-full flex items-center gap-2 px-4 py-2.5 text-left hover:bg-white/[0.02] transition-colors duration-200">
-        <span className="badge shrink-0 bg-gold/15 text-goldSoft border border-gold/35 text-[11px]">🩺 体检报告</span>
+        <span className="badge shrink-0 bg-gold/15 text-goldSoft border border-gold/35 text-[11px]">{t('🩺 体检报告')}</span>
         <span className="text-xs font-mono text-mute/80 truncate min-w-0">{a.dir || ''}</span>
-        {vs && <span className={`shrink-0 rounded border px-1.5 py-0.5 text-[10px] ${vs.cls}`}>{verdict}</span>}
+        {vs && <span className={`shrink-0 rounded border px-1.5 py-0.5 text-[10px] ${vs.cls}`}>{t(verdict)}</span>}
         {counts ? <span className="shrink-0 text-[10px] text-mute/45">{counts}</span> : null}
         <span className="ml-auto shrink-0"><Chevron open={open} /></span>
       </button>
@@ -133,7 +138,7 @@ export function ReportCard({ args, result }) {
               <div className="flex items-center gap-2.5">
                 <span className="text-xl">{vs.mark}</span>
                 <div className="min-w-0">
-                  <div className="font-bold leading-tight">{verdict}</div>
+                  <div className="font-bold leading-tight">{t(verdict)}</div>
                   {textReason && <div className="text-xs opacity-90 mt-0.5">{textReason}</div>}
                 </div>
               </div>
@@ -151,7 +156,7 @@ export function ReportCard({ args, result }) {
           ) : (
             <div className="px-4 py-3">
               <button className="inline-flex items-center gap-1.5 text-xs text-mute hover:text-goldSoft transition-colors duration-200" onClick={() => setRawOpen(!rawOpen)}>
-                <Chevron open={rawOpen} /> 报告全文
+                <Chevron open={rawOpen} /> {t('报告全文')}
               </button>
               {rawOpen && (
                 <pre className="mt-2 glass-card rounded-xl p-3 text-[11px] font-mono text-ink/80 whitespace-pre-wrap max-h-72 overflow-y-auto">{String(r)}</pre>
@@ -174,16 +179,16 @@ export function ProbeCard({ args, result }) {
   return (
     <ToolShell>
       <div className="px-4 pt-3">
-        <ToolHeader icon="🛡️" title="渗透探测" subtitle={r?.target || a.url || ''} />
+        <ToolHeader icon="🛡️" title={t('渗透探测')} subtitle={r?.target || a.url || ''} />
       </div>
       <div className="px-4 py-3 space-y-2.5">
         <div className="glass-card rounded-xl overflow-hidden">
           <table className="w-full text-xs">
             <thead>
               <tr className="text-left text-mute border-b border-edge">
-                <th className="px-3 py-2 font-medium">路径</th>
-                <th className="px-3 py-2 font-medium">状态码</th>
-                <th className="px-3 py-2 font-medium">复现</th>
+                <th className="px-3 py-2 font-medium">{t('路径')}</th>
+                <th className="px-3 py-2 font-medium">{t('状态码')}</th>
+                <th className="px-3 py-2 font-medium">{t('复现')}</th>
               </tr>
             </thead>
             <tbody>
@@ -195,35 +200,37 @@ export function ProbeCard({ args, result }) {
                   </td>
                   <td className="px-3 py-1.5 font-mono">
                     {row.status === null
-                      ? <span className="text-mute">不可达</span>
+                      ? <span className="text-mute">{t('不可达')}</span>
                       : <span className={row.status >= 200 && row.status < 400 ? 'text-red-400 font-semibold' : 'text-mute'}>{row.status}</span>}
                   </td>
                   <td className="px-3 py-1.5">{row.reproduced ? '✅' : '❌'}</td>
                 </tr>
               )) : (
-                <tr><td colSpan={3} className="px-3 py-3 text-center text-mute">未探测到无认证可访问的路径</td></tr>
+                <tr><td colSpan={3} className="px-3 py-3 text-center text-mute">{t('未探测到无认证可访问的路径')}</td></tr>
               )}
             </tbody>
           </table>
         </div>
         {cors && (
           <div className="text-xs">
-            <span className="text-mute">CORS：</span>
+            <span className="text-mute">{t('CORS：')}</span>
             {cors.error
-              ? <span className="text-mute">请求失败（{humanizeToolError(cors.error)}）</span>
+              ? <span className="text-mute">{t('请求失败（{reason}）', { reason: humanizeToolError(cors.error) })}</span>
               : cors.reflected
-                ? <span className="text-red-400 font-medium">存在反射：任意 Origin 被允许（allow-origin: {cors.allowOrigin || '*'}）</span>
-                : <span className="text-emerald-400">无反射{cors.allowOrigin ? `（allow-origin: ${cors.allowOrigin}）` : ''}</span>}
+                ? <span className="text-red-400 font-medium">{t('存在反射：任意 Origin 被允许（allow-origin: {origin}）', { origin: cors.allowOrigin || '*' })}</span>
+                : <span className="text-emerald-400">{cors.allowOrigin
+                  ? t('无反射（allow-origin: {origin}）', { origin: cors.allowOrigin })
+                  : t('无反射')}</span>}
           </div>
         )}
         {headers && (
           <div className="text-xs flex flex-wrap items-center gap-1.5">
-            <span className="text-mute">安全头：</span>
+            <span className="text-mute">{t('安全头：')}</span>
             {headers.error
-              ? <span className="text-mute">请求失败（{humanizeToolError(headers.error)}）</span>
+              ? <span className="text-mute">{t('请求失败（{reason}）', { reason: humanizeToolError(headers.error) })}</span>
               : headers.missing?.length
-                ? headers.missing.map((h) => <span key={h} className="badge bg-amber-500/15 text-amber-400 border border-amber-500/30 text-[11px] font-mono">缺失 {h}</span>)
-                : <span className="text-emerald-400">齐全</span>}
+                ? headers.missing.map((h) => <span key={h} className="badge bg-amber-500/15 text-amber-400 border border-amber-500/30 text-[11px] font-mono">{t('缺失 {header}', { header: h })}</span>)
+                : <span className="text-emerald-400">{t('齐全')}</span>}
           </div>
         )}
       </div>
@@ -250,14 +257,14 @@ export function StressCard({ args, result }) {
   return (
     <ToolShell>
       <div className="px-4 pt-3">
-        <ToolHeader icon="⚡" title="压力测试" subtitle={r.url || a.url || ''} />
+        <ToolHeader icon="⚡" title={t('压力测试')} subtitle={r.url || a.url || ''} />
       </div>
       <div className="px-4 py-3">
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-          <StressStat label="平均 RPS" value={r.rpsAvg ?? '—'} unit="req/s" tone="text-goldSoft" />
-          <StressStat label="p97.5 延迟" value={r.p97_5LatencyMs ?? r.p95LatencyMs ?? '—'} unit="ms" tone={(r.p97_5LatencyMs ?? 0) > 500 ? 'text-amber-400' : 'text-ink'} />
-          <StressStat label="错误数" value={r.errors ?? 0} tone={r.errors ? 'text-red-400' : 'text-emerald-400'} />
-          <StressStat label="平均吞吐" value={r.throughputAvgBytes != null ? (r.throughputAvgBytes / 1024).toFixed(1) : '—'} unit="KB/s" />
+          <StressStat label={t('平均 RPS')} value={r.rpsAvg ?? '—'} unit="req/s" tone="text-goldSoft" />
+          <StressStat label={t('p97.5 延迟')} value={r.p97_5LatencyMs ?? r.p95LatencyMs ?? '—'} unit="ms" tone={(r.p97_5LatencyMs ?? 0) > 500 ? 'text-amber-400' : 'text-ink'} />
+          <StressStat label={t('错误数')} value={r.errors ?? 0} tone={r.errors ? 'text-red-400' : 'text-emerald-400'} />
+          <StressStat label={t('平均吞吐')} value={r.throughputAvgBytes != null ? (r.throughputAvgBytes / 1024).toFixed(1) : '—'} unit="KB/s" />
         </div>
         {r.statusCodes && Object.keys(r.statusCodes).length > 0 && (
           <div className="mt-2 flex flex-wrap gap-1.5">
@@ -324,8 +331,8 @@ const stepMsOf = (step) => {
   return 0;
 };
 const fmtWfDur = (ms) => {
-  const t = Math.max(0, Math.round((ms || 0) / 1000));
-  const h = Math.floor(t / 3600); const m = Math.floor((t % 3600) / 60); const s = t % 60;
+  const total = Math.max(0, Math.round((ms || 0) / 1000));
+  const h = Math.floor(total / 3600); const m = Math.floor((total % 3600) / 60); const s = total % 60;
   if (h) return `${h}h ${m}m`;
   if (m) return `${m}m ${s}s`;
   return `${s}s`;
@@ -339,7 +346,7 @@ function SwarmStepMeta({ kind, claims = 0, confirmed = 0, className = '' }) {
   return (
     <span className={`flex items-center gap-1.5 min-w-0 overflow-hidden leading-none ${className}`}>
       {kind ? <span className="shrink-0 text-[8.5px] text-mute/55 tracking-wide">{String(kind)}</span> : null}
-      {nClaims > 0 ? <span className="shrink-0 text-[8.5px] tabular-nums text-mute/50">{nClaims} 条主张</span> : null}
+      {nClaims > 0 ? <span className="shrink-0 text-[8.5px] tabular-nums text-mute/50">{t('{n} 条主张', { n: nClaims })}</span> : null}
       {nConfirmed > 0 ? <span className="shrink-0 text-[8.5px] tabular-nums text-goldSoft/70">✓ {nConfirmed}</span> : null}
     </span>
   );
@@ -347,7 +354,7 @@ function SwarmStepMeta({ kind, claims = 0, confirmed = 0, className = '' }) {
 
 function ReusedMark() {
   return (
-    <span title="来自上次运行，已复用结果"
+    <span title={t('来自上次运行，已复用结果')}
       className="shrink-0 text-[9px] leading-none text-goldSoft/70">↺</span>
   );
 }
@@ -430,11 +437,11 @@ function PhaseLane({
             const phRunning = list.filter((s) => s.status === 'running').length;
             const allDone = list.length > 0 && phDone === list.length;
             const dotCls = phRunning ? 'bg-goldSoft animate-pulse' : phFailed ? 'bg-red-400' : allDone ? 'bg-jade' : 'bg-mute/30';
-            const dotTitle = `${phDone}/${list.length} 完成${phRunning ? ` · ${phRunning} 运行中` : ''}${phFailed ? ` · ${phFailed} 失败` : ''}`;
+            const dotTitle = `${t('{done}/{total} 完成', { done: phDone, total: list.length })}${phRunning ? ` · ${t('{n} 运行中', { n: phRunning })}` : ''}${phFailed ? ` · ${t('{n} 失败', { n: phFailed })}` : ''}`;
             // 单步阶段用步名（不会被重复显示）；多步阶段没有声明名，用「阶段 N」而不是拿第一步冒充
             const phaseName = list.length === 1
-              ? (list[0]?.name || list[0]?.role || `阶段 ${pi + 1}`)
-              : `阶段 ${pi + 1}`;
+              ? (list[0]?.name || list[0]?.role || t('阶段 {n}', { n: pi + 1 }))
+              : t('阶段 {n}', { n: pi + 1 });
             const isLast = pi === phases.length - 1;
             const nextRunning = !isLast && (phases[pi + 1] || []).some((id) => stepsById?.get(id)?.status === 'running');
             return (
@@ -454,7 +461,7 @@ function PhaseLane({
                 <div className="mt-1.5 space-y-1 pr-4">
                   {list.map((s) => {
                     const st = WF_STATUS[s.status] || WF_STATUS.pending;
-                    const label = s.name || s.role || '子代理';
+                    const label = s.name || s.role || t('子代理');
                     const tools = toolsOf(s);
                     const ms = stepMsOf(s);
                     const meta = claimsMetaOf(s, allClaims);
@@ -462,7 +469,7 @@ function PhaseLane({
                     const errLine = s.status === 'failed' && s.error ? humanizeToolError(s.error) : '';
                     // 结构化错误码（HTTP 429 / NO_TOOLS…）：旧快照/旧结果没有该字段时回落到原有人话首行
                     const code = s.status === 'failed' && s.errorCode ? String(s.errorCode) : '';
-                    const codeTip = code ? `状态：失败（${code} · ${errorCodeLabel(code)}）` : '';
+                    const codeTip = code ? t('状态：失败（{code} · {label}）', { code, label: t(errorCodeLabel(code)) }) : '';
                     const rawErr = errLine && String(s.error).trim() && String(s.error).trim() !== errLine
                       ? String(s.error).trim().slice(0, 300)
                       : '';
@@ -471,23 +478,23 @@ function PhaseLane({
                           codeTip,
                           ...(errLine ? [errLine] : []),
                           s.name || s.role,
-                          s.role ? `角色：${s.role}` : '',
-                          ms ? `耗时：${fmtWfDur(ms)}` : '',
-                          tools ? `工具：${tools} 次` : '',
-                          s.reused ? '来自上次运行，已复用结果' : '',
+                          s.role ? t('角色：{role}', { role: s.role }) : '',
+                          ms ? t('耗时：{duration}', { duration: fmtWfDur(ms) }) : '',
+                          tools ? t('工具：{n} 次', { n: tools }) : '',
+                          s.reused ? t('来自上次运行，已复用结果') : '',
                           ...(rawErr ? ['', rawErr] : []),
-                          '点击查看它的上下文'
+                          t('点击查看它的上下文')
                         ].filter((x) => x !== '')
                       : [
                           errLine || (s.name || s.role),
                           ...(errLine ? [s.name || s.role] : []),
-                          s.role ? `角色：${s.role}` : '',
-                          `状态：${st.text}`,
-                          ms ? `耗时：${fmtWfDur(ms)}` : '',
-                          tools ? `工具：${tools} 次` : '',
-                          s.reused ? '来自上次运行，已复用结果' : '',
+                          s.role ? t('角色：{role}', { role: s.role }) : '',
+                          t('状态：{status}', { status: t(st.text) }),
+                          ms ? t('耗时：{duration}', { duration: fmtWfDur(ms) }) : '',
+                          tools ? t('工具：{n} 次', { n: tools }) : '',
+                          s.reused ? t('来自上次运行，已复用结果') : '',
                           ...(rawErr ? ['', rawErr] : []),
-                          '点击查看它的上下文'
+                          t('点击查看它的上下文')
                         ].filter((x) => x !== '');
                     const tip = tipParts.join('\n');
                     const inner = (
@@ -510,7 +517,7 @@ function PhaseLane({
                                 </>
                               )
                               : s.status === 'cancelled' ? <span className="shrink-0 text-[10px] leading-none text-mute/40">–</span>
-                                : <span className={`shrink-0 w-1.5 h-1.5 rounded-full ${st.dot}`} title={st.text} />}
+                                : <span className={`shrink-0 w-1.5 h-1.5 rounded-full ${st.dot}`} title={t(st.text)} />}
                         </span>
                         <SwarmStepMeta kind={s.kind} claims={meta.claims} confirmed={meta.confirmed} className="mt-0.5 pl-[22px]" />
                       </>
@@ -545,8 +552,8 @@ export function WorkflowLiveCard({ data, sessionId = null, providers = [], onOpe
 
   useEffect(() => {
     if (!data?.running) return undefined;
-    const t = setInterval(() => setTick((x) => x + 1), 500); // 运行中让耗时自己走，不用等下一次快照
-    return () => clearInterval(t);
+    const timer = setInterval(() => setTick((x) => x + 1), 500); // 运行中让耗时自己走，不用等下一次快照
+    return () => clearInterval(timer);
   }, [data?.running]);
   useEffect(() => { setPaused(!!data?.paused); }, [data?.paused]);
   useEffect(() => { if (data?.concurrency) setMaxConc(data.concurrency); }, [data?.concurrency]);
@@ -589,7 +596,7 @@ export function WorkflowLiveCard({ data, sessionId = null, providers = [], onOpe
       {/* 头部：折叠 + 图标/标题/目标 + 阶段与子代理计数（暂停/停止/设置收进底栏） */}
       <div className="px-3.5 pt-2.5 flex items-center gap-2 min-w-0">
         <button onClick={() => setExpanded((v) => !v)} aria-expanded={expanded}
-          title={expanded ? '收起工作流' : '展开工作流'}
+          title={expanded ? t('收起工作流') : t('展开工作流')}
           className="shrink-0 -ml-1 h-6 w-6 rounded-md text-mute/60 hover:text-goldSoft hover:bg-white/[0.07] flex items-center justify-center transition-colors">
           <Chevron open={expanded} />
         </button>
@@ -613,25 +620,25 @@ export function WorkflowLiveCard({ data, sessionId = null, providers = [], onOpe
 
       {/* 底栏：进度 / 总耗时 + 暂停继续 / 停止 / 设置（行为与原实现一致） */}
       <div className="px-3.5 pb-2.5 pt-2 flex items-center gap-3 text-[10px] text-mute/40 border-t border-white/[0.06]">
-        <span className="tabular-nums">{done}/{total} 完成</span>
-        {running > 0 ? <span className="text-goldSoft/70 tabular-nums">{running} 运行中</span> : null}
-        {failed ? <span className="text-red-400/80">{failed} 个失败</span> : null}
-        <span>并发上限 {data.concurrency ?? 14}</span>
-        {paused ? <span className="text-goldSoft/80">已暂停 · 不会起新的子代理</span> : data.running ? <span className="text-goldDeep/70">实时刷新</span> : null}
-        <span className="ml-auto shrink-0 tabular-nums text-mute/55">总耗时 {fmtWfDur(elapsed)}</span>
+        <span className="tabular-nums">{t('{done}/{total} 完成', { done, total })}</span>
+        {running > 0 ? <span className="text-goldSoft/70 tabular-nums">{t('{n} 运行中', { n: running })}</span> : null}
+        {failed ? <span className="text-red-400/80">{t('{n} 个失败', { n: failed })}</span> : null}
+        <span>{t('并发上限 {n}', { n: data.concurrency ?? 14 })}</span>
+        {paused ? <span className="text-goldSoft/80">{t('已暂停 · 不会起新的子代理')}</span> : data.running ? <span className="text-goldDeep/70">{t('实时刷新')}</span> : null}
+        <span className="ml-auto shrink-0 tabular-nums text-mute/55">{t('总耗时 {duration}', { duration: fmtWfDur(elapsed) })}</span>
         {canRecover ? (
           <RecoverButton compact onClick={recover}
-            title="恢复这一轮：复用已完成的步骤，只补没跑完的（ZCode recover）" />
+            title={t('恢复这一轮：复用已完成的步骤，只补没跑完的（ZCode recover）')} />
         ) : null}
         {data.running && (
           <>
-            <button onClick={togglePause} title={paused ? '继续' : '暂停（不再起新的子代理）'}
+            <button onClick={togglePause} title={paused ? t('继续') : t('暂停（不再起新的子代理）')}
               className="shrink-0 h-6 w-6 rounded-md text-mute/70 hover:text-goldSoft hover:bg-white/[0.07] flex items-center justify-center transition-colors">
               {paused
                 ? <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>
                 : <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1" /><rect x="14" y="5" width="4" height="14" rx="1" /></svg>}
             </button>
-            <button onClick={() => control('stop')} title="停止工作流"
+            <button onClick={() => control('stop')} title={t('停止工作流')}
               className="shrink-0 h-6 w-6 rounded-md text-mute/70 hover:text-red-300 hover:bg-red-500/10 flex items-center justify-center transition-colors">
               <svg width="10" height="10" viewBox="0 0 12 12" fill="currentColor"><rect x="1.5" y="1.5" width="9" height="9" rx="2" /></svg>
             </button>
@@ -649,7 +656,7 @@ export function WorkflowLiveCard({ data, sessionId = null, providers = [], onOpe
             }
           }
           setCfgOpen((v) => !v);
-        }} title="工作流设置（子代理模型 / 最大并发）"
+        }} title={t('工作流设置（子代理模型 / 最大并发）')}
           className={`shrink-0 h-6 w-6 rounded-md flex items-center justify-center transition-colors ${cfgOpen ? 'text-goldSoft bg-white/[0.08]' : 'text-mute/70 hover:text-goldSoft hover:bg-white/[0.07]'}`}>
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
             <path d="M4 7h10M18 7h2M4 17h4M12 17h8" /><circle cx="16" cy="7" r="2" /><circle cx="10" cy="17" r="2" />
@@ -667,7 +674,7 @@ export function WorkflowLiveCard({ data, sessionId = null, providers = [], onOpe
             <div className="max-h-40 overflow-y-auto rounded-lg bg-black/25 p-1 space-y-0.5">
               <button onClick={() => setSel(null)}
                 className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-[11px] transition-colors ${sel == null ? 'bg-gold/12 text-goldSoft' : 'text-ink/75 hover:bg-white/5'}`}>
-                <span className="truncate">跟随会话模型</span>
+                <span className="truncate">{t('跟随会话模型')}</span>
                 {sel == null ? <span className="ml-auto text-jade">✓</span> : null}
               </button>
               {providers.map((p) => (Array.isArray(p.models) ? p.models : [])
@@ -694,7 +701,7 @@ export function WorkflowLiveCard({ data, sessionId = null, providers = [], onOpe
               </div>
             </div>
             <div className="mt-3 flex items-center justify-end gap-2">
-              <button onClick={() => setCfgOpen(false)} className="text-[11px] text-mute/60 hover:text-ink px-2 py-1">取消</button>
+              <button onClick={() => setCfgOpen(false)} className="text-[11px] text-mute/60 hover:text-ink px-2 py-1">{t('取消')}</button>
               <button onClick={() => {
                 control('config', { maxConcurrency: maxConc, providerId: sel?.providerId || '', model: sel?.model || '' });
                 setCfgOpen(false);
@@ -716,13 +723,13 @@ export function WorkflowCard({ args, result, onOpenStep = null, onRecover = null
   if (r.error) {
     return (
       <ToolShell>
-        <div className="px-4 pt-3"><ToolHeader icon="⧉" title="工作流" subtitle={a.goal || ''} /></div>
+        <div className="px-4 pt-3"><ToolHeader icon="⧉" title={t('工作流')} subtitle={a.goal || ''} /></div>
         <div className="mx-4 my-3 rounded-lg border border-gold/40 bg-gold/[0.06] px-3.5 py-2.5">
           <div className="flex items-start gap-2.5">
             <span className="shrink-0 mt-px text-[13px] leading-none text-goldSoft">⚠</span>
             <div className="min-w-0 flex-1">
               <div className="text-xs leading-relaxed text-ink/85">{humanizeToolError(r.error)}</div>
-              <FoldedRaw text={typeof r.error === 'string' ? r.error : safeJson(r.error)} label="查看详情" hint="原始错误 / 调用栈" />
+              <FoldedRaw text={typeof r.error === 'string' ? r.error : safeJson(r.error)} label={t('查看详情')} hint={t('原始错误 / 调用栈')} />
             </div>
           </div>
         </div>
@@ -740,7 +747,7 @@ export function WorkflowCard({ args, result, onOpenStep = null, onRecover = null
     return {
       ...row,
       id: wid(row?.id ?? `__row${i}`),
-      name: row?.name || meta.name || `子代理 ${i + 1}`,
+      name: row?.name || meta.name || t('子代理 {n}', { n: i + 1 }),
       role: row?.role || meta.role || '',
       status: row?.ok ? 'success' : 'failed',
       tools: Number(row?.tools ?? row?.toolCount) || 0,
@@ -782,7 +789,7 @@ export function WorkflowCard({ args, result, onOpenStep = null, onRecover = null
       {/* 头部：折叠 + 标题/目标 + 阶段与子代理计数（完成态无暂停/停止/并发/设置） */}
       <div className="px-3.5 pt-2.5 flex items-center gap-2 min-w-0">
         <button onClick={() => setExpanded((v) => !v)} aria-expanded={expanded}
-          title={expanded ? '收起工作流' : '展开工作流'}
+          title={expanded ? t('收起工作流') : t('展开工作流')}
           className="shrink-0 -ml-1 h-6 w-6 rounded-md text-mute/60 hover:text-goldSoft hover:bg-white/[0.07] flex items-center justify-center transition-colors">
           <Chevron open={expanded} />
         </button>
@@ -802,17 +809,17 @@ export function WorkflowCard({ args, result, onOpenStep = null, onRecover = null
       {/* 底栏：成功/失败聚合 + 总耗时（完成态不出现运行控制） */}
       <div className="px-3.5 pb-2.5 pt-2 flex items-center gap-3 text-[10px] text-mute/40 border-t border-white/[0.06]">
         <span className="tabular-nums">
-          {okCount}/{steps.length} 成功
-          {failCount ? <span className="text-red-400/80"> · {failCount} 失败</span> : null}
+          {t('{done}/{total} 成功', { done: okCount, total: steps.length })}
+          {failCount ? <span className="text-red-400/80"> · {t('{n} 失败', { n: failCount })}</span> : null}
         </span>
-        {r.stopped ? <span className="text-goldSoft/70">已停止</span> : null}
+        {r.stopped ? <span className="text-goldSoft/70">{t('已停止')}</span> : null}
         {canRecover ? (
           <span className="ml-auto shrink-0">
             <RecoverButton compact onClick={recover}
-              title="恢复这一轮：复用已完成的步骤，只补没跑完的（ZCode recover）" />
+              title={t('恢复这一轮：复用已完成的步骤，只补没跑完的（ZCode recover）')} />
           </span>
         ) : null}
-        <span className={`${canRecover ? '' : 'ml-auto '}shrink-0 tabular-nums text-mute/55`}>总耗时 {fmtWfDur(duration)}</span>
+        <span className={`${canRecover ? '' : 'ml-auto '}shrink-0 tabular-nums text-mute/55`}>{t('总耗时 {duration}', { duration: fmtWfDur(duration) })}</span>
       </div>
     </div>
   );
@@ -829,14 +836,14 @@ function CmdOutBlock({ label, text, tone }) {
   const shown = over && !open ? lines.slice(0, CMD_FOLD_LINES) : lines;
   return (
     <div>
-      <div className="text-[11px] text-mute mb-1 font-mono">{label} · {lines.length} 行</div>
+      <div className="text-[11px] text-mute mb-1 font-mono">{t('{label} · {n} 行', { label, n: lines.length })}</div>
       <pre className={`rounded-lg bg-[#111114] border px-3 py-2 text-[11px] font-mono leading-relaxed overflow-x-auto whitespace-pre-wrap break-words ${tone}`}>
         {shown.join('\n')}
       </pre>
       {over && (
         <button onClick={() => setOpen(!open)}
           className="mt-1 text-[11px] text-mute hover:text-goldSoft transition-colors duration-150">
-          {open ? '收起' : `展开全部 ${lines.length} 行`}
+          {open ? t('收起') : t('展开全部 {n} 行', { n: lines.length })}
         </button>
       )}
     </div>
@@ -852,7 +859,7 @@ export function CommandDetail({ args, result }) {
   const argLines = formatToolArgs('run_command', args);
   const cmdLine = argLines.find((l) => l.label === 'command') || argLines[0] || null;
   // 完整命令原样展示（多行不压平）；解析失败时退回逐行文本的第一行
-  const cmd = cmdLine?.value || '(空命令)';
+  const cmd = cmdLine?.value || t('(空命令)');
   const extraLines = argLines.filter((l) => l.label !== 'command');
   const code = r.code;
   const copy = async () => {
@@ -871,13 +878,13 @@ export function CommandDetail({ args, result }) {
     <div className="space-y-2 text-xs">
       <div className="flex items-start gap-2 rounded-lg bg-[#0d0d10] border border-gold/25 px-3 py-2">
         <span className="shrink-0 select-none font-mono text-xs font-bold text-goldDeep leading-5">$</span>
-        <code className="flex-1 min-w-0 font-mono text-xs text-goldSoft whitespace-pre-wrap break-all leading-5">{cmd || '(空命令)'}</code>
-        <button onClick={copy} title="复制命令"
+        <code className="flex-1 min-w-0 font-mono text-xs text-goldSoft whitespace-pre-wrap break-all leading-5">{cmd || t('(空命令)')}</code>
+        <button onClick={copy} title={t('复制命令')}
           className="shrink-0 badge font-mono text-[10px] bg-gold/10 text-goldSoft border border-gold/30 hover:bg-gold/20 transition-all duration-150">
-          {copied ? '已复制' : '复制'}
+          {copied ? t('已复制') : t('复制')}
         </button>
         {r.blocked ? (
-          <span className="badge shrink-0 bg-red-500/15 text-red-300 border border-red-500/40 text-[10px] font-medium">被安全策略拦截</span>
+          <span className="badge shrink-0 bg-red-500/15 text-red-300 border border-red-500/40 text-[10px] font-medium">{t('被安全策略拦截')}</span>
         ) : code != null ? (
           <span className={`badge shrink-0 font-mono text-[10px] tabular-nums ${code === 0 ? 'bg-jade/15 text-jade border border-jade/40' : 'bg-red-500/10 text-red-400 border border-red-500/40'}`}>
             exit {code}
@@ -896,12 +903,12 @@ export function CommandDetail({ args, result }) {
       ) : null}
       {r.blocked ? (
         <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-300 leading-relaxed">
-          🚫 被安全策略拦截：命令命中灾难性操作规则，未执行
+          {t('🚫 被安全策略拦截：命令命中灾难性操作规则，未执行')}
         </div>
       ) : result == null ? (
-        <div className="text-[11px] text-goldDeep/90 font-mono animate-pulse">执行中…输出结束后补全</div>
+        <div className="text-[11px] text-goldDeep/90 font-mono animate-pulse">{t('执行中…输出结束后补全')}</div>
       ) : r.truncated ? (
-        <CmdOutBlock label="输出（截断预览）" text={r.preview} tone="border-edge text-ink/85" />
+        <CmdOutBlock label={t('输出（截断预览）')} text={r.preview} tone="border-edge text-ink/85" />
       ) : (
         <>
           <CmdOutBlock label="stdout" text={r.stdout} tone="border-edge text-ink/85" />
@@ -927,12 +934,12 @@ export function GenericToolDetail({ name = '', args, result, running }) {
       : (resultText.match(/"[A-Za-z_][\w-]*"\s*:/g) || []).length)
     : 0;
   const hint = looksJson
-    ? `${resultText.length} 字符 · ${keyCount} 个字段`
+    ? t('{n} 字符 · {m} 个字段', { n: resultText.length, m: keyCount })
     : summarizeToolArgs('', String(resultText));
   return (
     <div className="space-y-2 text-[11px]">
       <div>
-        <div className="text-mute mb-1 font-mono">参数</div>
+        <div className="text-mute mb-1 font-mono">{t('参数')}</div>
         <div className="rounded-lg bg-[#0d0d10] border border-edge px-2.5 py-2 space-y-1.5">
           {argLines.length ? argLines.map((line, i) => (
             <div key={i} className="flex items-start gap-2 min-w-0">
@@ -941,20 +948,20 @@ export function GenericToolDetail({ name = '', args, result, running }) {
               ) : null}
               <span className="flex-1 min-w-0 font-mono text-ink/85 whitespace-pre-wrap break-all leading-5">{line.value}</span>
             </div>
-          )) : <div className="font-mono text-mute/40">无参数</div>}
+          )) : <div className="font-mono text-mute/40">{t('无参数')}</div>}
         </div>
       </div>
       {result != null ? (
         <div>
-          <div className="text-mute mb-1 font-mono">结果</div>
+          <div className="text-mute mb-1 font-mono">{t('结果')}</div>
           <FoldedRaw
             text={resultText}
-            label={looksJson ? '已折叠（JSON）' : '已折叠'}
+            label={looksJson ? t('已折叠（JSON）') : t('已折叠')}
             hint={hint}
           />
         </div>
       ) : (
-        <div className="text-goldDeep/90 font-mono animate-pulse">{running ? '执行中…' : ''}</div>
+        <div className="text-goldDeep/90 font-mono animate-pulse">{running ? t('执行中…') : ''}</div>
       )}
     </div>
   );

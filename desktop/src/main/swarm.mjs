@@ -10,6 +10,9 @@
 //   arbitrate             → 按 decisions.final 落地（uncertain 同样落 lead）
 //   lint                  → 缺 evidence 或 confirmed 缺验证者时降 lead
 
+// 双语：错误码人话与 lint 警告是用户可见文案，按当前界面语言输出（zh 原文不变）
+import { t } from '../renderer/i18n/core.mjs';
+
 export const STEP_KINDS = ['recon', 'find', 'verify', 'arbitrate', 'report'];
 
 /**
@@ -549,7 +552,7 @@ export function lintClaims(claims) {
 
     const evidence = str(claim.evidence).trim();
     if (!evidence) {
-      warnings.push(`claim ${claim.id} 缺少 evidence，已降级为 lead`);
+      warnings.push(t('claim {id} 缺少 evidence，已降级为 lead', { id: claim.id }));
       claim.status = 'lead';
       claim.lint = [...(Array.isArray(claim.lint) ? claim.lint : []), 'missing-evidence'];
     }
@@ -560,7 +563,7 @@ export function lintClaims(claims) {
         || (vb && typeof vb === 'object' && str(vb.model).trim())
         || str(claim.model).trim();
       if (!hasVerifier) {
-        warnings.push(`claim ${claim.id} 标为 confirmed 但缺少 verifiedBy/model，已降级为 lead`);
+        warnings.push(t('claim {id} 标为 confirmed 但缺少 verifiedBy/model，已降级为 lead', { id: claim.id }));
         claim.status = 'lead';
         claim.lint = [...(Array.isArray(claim.lint) ? claim.lint : []), 'missing-verifier'];
       }
@@ -611,20 +614,20 @@ function isNoneBody(body) {
 export function lintReport(md, { holes = [] } = {}) {
   const warnings = [];
   const { sections, order } = parseReportSections(md);
-  if (!sections.size) warnings.push('报告为空：缺少全部五个段落');
+  if (!sections.size) warnings.push(t('报告为空：缺少全部五个段落'));
   for (const name of REPORT_SECTIONS) {
     if (!sections.has(name)) {
-      warnings.push(`缺少段落 ## ${name}`);
+      warnings.push(t('缺少段落 ## {name}', { name }));
       continue;
     }
     const body = sections.get(name).trim();
     if (!body) {
-      warnings.push(`段落 ## ${name} 为空（空段必须写 None）`);
+      warnings.push(t('段落 ## {name} 为空（空段必须写 None）', { name }));
       continue;
     }
     if (name === 'Skipped' && !isNoneBody(body)) {
       const hasReason = /原因|因为|由于|reason|because|：|:|—|-/.test(body);
-      if (!hasReason) warnings.push('段落 ## Skipped 未写明跳过原因');
+      if (!hasReason) warnings.push(t('段落 ## Skipped 未写明跳过原因'));
     }
   }
   // 失败/中断节点必须在 Not covered 点名：这是「没找到」与「根本没看」的分界线。
@@ -643,12 +646,12 @@ export function lintReport(md, { holes = [] } = {}) {
       if (id && name && id !== name) return `${name}（${id}）`;
       return name || id;
     });
-    warnings.push(`段落 ## Not covered 未点名失败节点：${labels.join('、')}（有失败节点时缺一个即 lint 失败）`);
+    warnings.push(t('段落 ## Not covered 未点名失败节点：{labels}（有失败节点时缺一个即 lint 失败）', { labels: labels.join('、') }));
   }
   const present = order.filter((name) => REPORT_SECTIONS.includes(name));
   const expected = REPORT_SECTIONS.filter((name) => present.includes(name));
   if (present.length === expected.length && present.some((name, i) => name !== expected[i])) {
-    warnings.push(`段落顺序不对，应为 ${REPORT_SECTIONS.map((n) => `## ${n}`).join(' → ')}`);
+    warnings.push(t('段落顺序不对，应为 {order}', { order: REPORT_SECTIONS.map((n) => `## ${n}`).join(' → ') }));
   }
   return warnings;
 }
@@ -726,9 +729,9 @@ const ERROR_CODE_LABELS = new Map([
   ['GATE_FAIL', '程序闸失败'],
 ]);
 
-/** 错误码 → 一句中文人话；没有映射的码（含未知 HTTP 码）一律「步骤失败」。 */
+/** 错误码 → 一句人话；没有映射的码（含未知 HTTP 码）一律「步骤失败」。 */
 export function errorCodeLabel(code) {
   const key = String(code || '').trim();
-  if (!key) return '步骤失败';
-  return ERROR_CODE_LABELS.get(key) || '步骤失败';
+  if (!key) return t('步骤失败');
+  return t(ERROR_CODE_LABELS.get(key) || '步骤失败');
 }

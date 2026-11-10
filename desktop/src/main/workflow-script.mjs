@@ -29,6 +29,7 @@ import { appendVerifyConclusions, buildUpstreamOnlyVerifyPrompt, clipStoredConte
 import { audit } from '../../../src/audit.mjs';
 import { checkQuality } from '../../../src/checks/quality.mjs';
 import { reviewDiff } from '../../../src/review-diff.mjs';
+import { t } from '../renderer/i18n/core.mjs';
 
 export const SCRIPT_MAX_NODES = 200;
 export const SCRIPT_MAX_FANOUT = 50;
@@ -72,29 +73,29 @@ function refArray(value, field, opId) {
     const refs = [];
     for (const item of value) {
       if (typeof item !== 'string' || !item.trim()) {
-        return { error: `${opId} 的 ${field} 必须是字符串或非空字符串数组` };
+        return { error: t('{opId} 的 {field} 必须是字符串或非空字符串数组', { opId, field }) };
       }
       refs.push(item.trim());
     }
     return { refs };
   }
-  return { error: `${opId} 缺少 ${field}（上游节点引用）` };
+  return { error: t('{opId} 缺少 {field}（上游节点引用）', { opId, field }) };
 }
 
 function validateWhen(value, label) {
-  if (!isObj(value)) return { error: `${label} 必须是对象` };
+  if (!isObj(value)) return { error: t('{label} 必须是对象', { label }) };
   const ref = text(value.ref);
-  if (!ref) return { error: `${label}.ref 不能为空` };
-  if (!isObj(value.test)) return { error: `${label}.test 必须是对象` };
+  if (!ref) return { error: t('{label}.ref 不能为空', { label }) };
+  if (!isObj(value.test)) return { error: t('{label}.test 必须是对象', { label }) };
   const keys = Object.keys(value.test);
-  if (!keys.length) return { error: `${label}.test 至少要有 contains / equals / notEmpty 之一` };
+  if (!keys.length) return { error: t('{label}.test 至少要有 contains / equals / notEmpty 之一', { label }) };
   for (const key of keys) {
-    if (!['contains', 'equals', 'notEmpty'].includes(key)) return { error: `${label}.test 含未知字段：${key}` };
+    if (!['contains', 'equals', 'notEmpty'].includes(key)) return { error: t('{label}.test 含未知字段：{key}', { label, key }) };
     const item = value.test[key];
     if (key === 'notEmpty') {
-      if (typeof item !== 'boolean') return { error: `${label}.test.notEmpty 必须是布尔值` };
+      if (typeof item !== 'boolean') return { error: t('{label}.test.notEmpty 必须是布尔值', { label }) };
     } else if (!['string', 'number', 'boolean'].includes(typeof item)) {
-      return { error: `${label}.test.${key} 必须是字符串/数字/布尔值` };
+      return { error: t('{label}.test.{key} 必须是字符串/数字/布尔值', { label, key }) };
     }
   }
   return { when: { ref, test: { ...value.test } } };
@@ -111,7 +112,7 @@ function knownRef(ref, ctx) {
 
 function checkRefs(refs, ctx, opId, field) {
   for (const ref of refs) {
-    if (!knownRef(ref, ctx)) return `${opId} 的 ${field} 指向不存在的节点：${ref}`;
+    if (!knownRef(ref, ctx)) return t('{opId} 的 {field} 指向不存在的节点：{ref}', { opId, field, ref });
   }
   return null;
 }
@@ -131,7 +132,7 @@ function noteExternalRefs(refs, ctx) {
 }
 
 function claimNodeId(ctx, id) {
-  if (ctx.allIds.has(id)) return `节点 id 重复：${id}`;
+  if (ctx.allIds.has(id)) return t('节点 id 重复：{id}', { id });
   ctx.allIds.add(id);
   return null;
 }
@@ -144,14 +145,14 @@ function claimResultId(ctx, id, opId) {
 function countNode(ctx) {
   ctx.nodesCounted.n += 1;
   if (ctx.nodesCounted.n > SCRIPT_MAX_NODES) {
-    return `脚本节点最多 ${SCRIPT_MAX_NODES} 个（当前 ${ctx.nodesCounted.n}）`;
+    return t('脚本节点最多 {max} 个（当前 {n}）', { max: SCRIPT_MAX_NODES, n: ctx.nodesCounted.n });
   }
   return null;
 }
 
 function setBodyAlias(ctx, opId, nodeId) {
   if (!ctx.forceDerived) return null;
-  if (ctx.bodyAliases.has(opId)) return `循环/递归 body 内 op id 重复：${opId}`;
+  if (ctx.bodyAliases.has(opId)) return t('循环/递归 body 内 op id 重复：{opId}', { opId });
   ctx.bodyAliases.set(opId, nodeId);
   ctx.bodyNodeIds.add(nodeId);
   return null;
@@ -251,7 +252,7 @@ export function injectScriptAdversarialVerify(norm) {
     id = `${ADVERSARIAL_VERIFY_ID}${n}`;
   }
   if (norm.nodes.length + 1 > SCRIPT_MAX_NODES) {
-    return { error: `脚本节点最多 ${SCRIPT_MAX_NODES} 个（自动补验后会超限）` };
+    return { error: t('脚本节点最多 {max} 个（自动补验后会超限）', { max: SCRIPT_MAX_NODES }) };
   }
   const rawOp = { op: 'verify', id, from, auto: true };
   const node = makeSimpleNode({
@@ -303,7 +304,7 @@ export function injectScriptAdversarialVerify(norm) {
  */
 export function normalizeScript(script) {
   if (!Array.isArray(script) || script.length === 0) {
-    return { error: 'script 不能为空：至少 1 条 op' };
+    return { error: t('script 不能为空：至少 1 条 op') };
   }
   const ctx = {
     topLevel: true,
@@ -328,21 +329,21 @@ export function normalizeScript(script) {
 }
 
 function walkOps(ops, ctx, outItems, outNodes) {
-  if (!Array.isArray(ops)) return `${ctx.label} 必须是 op 数组`;
+  if (!Array.isArray(ops)) return t('{label} 必须是 op 数组', { label: ctx.label });
   for (let i = 0; i < ops.length; i += 1) {
     const raw = ops[i];
-    if (!isObj(raw)) return `${ctx.label}[${i}] 必须是对象`;
+    if (!isObj(raw)) return t('{label}[{i}] 必须是对象', { label: ctx.label, i });
     const op = text(raw.op);
     if (!OP_KINDS.has(op)) {
-      return `未知脚本 op：${op || '(空)'}（只支持 ${SCRIPT_OPS.join('/')}）`;
+      return t('未知脚本 op：{op}（只支持 {kinds}）', { op: op || t('(空)'), kinds: SCRIPT_OPS.join('/') });
     }
     const opId = text(raw.id);
-    if (!opId) return `${ctx.label}[${i}] 缺少 id`;
-    if (!ID_RE.test(opId)) return `脚本 id 非法（只允许字母数字-_，最长 32）：${opId}`;
+    if (!opId) return t('{label}[{i}] 缺少 id', { label: ctx.label, i });
+    if (!ID_RE.test(opId)) return t('脚本 id 非法（只允许字母数字-_，最长 32）：{opId}', { opId });
     if (ctx.forceDerived) {
-      if (ctx.bodyAliases.has(opId)) return `循环/递归 body 内 op id 重复：${opId}`;
+      if (ctx.bodyAliases.has(opId)) return t('循环/递归 body 内 op id 重复：{opId}', { opId });
     } else {
-      if (ctx.allIds.has(opId)) return `脚本 id 重复：${opId}`;
+      if (ctx.allIds.has(opId)) return t('脚本 id 重复：{opId}', { opId });
       ctx.allIds.add(opId);
     }
     // 分支/循环体节点 id 按规格派生；顶层节点用显式 id
@@ -352,17 +353,17 @@ function walkOps(ops, ctx, outItems, outNodes) {
 
     if (op === 'step') {
       const prompt = text(raw.prompt);
-      if (!prompt) return `节点 ${baseId} 缺少 prompt`;
-      if (prompt.length > MAX_PROMPT_CHARS) return `节点 ${baseId} 的 prompt 过长（>${MAX_PROMPT_CHARS} 字符）`;
+      if (!prompt) return t('节点 {id} 缺少 prompt', { id: baseId });
+      if (prompt.length > MAX_PROMPT_CHARS) return t('节点 {id} 的 prompt 过长（>{max} 字符）', { id: baseId, max: MAX_PROMPT_CHARS });
       if (raw.depends_on !== undefined && raw.depends_on !== null && !Array.isArray(raw.depends_on)) {
-        return `节点 ${baseId} 的 depends_on 必须是数组`;
+        return t('节点 {id} 的 depends_on 必须是数组', { id: baseId });
       }
       const originalDeps = Array.isArray(raw.depends_on) ? raw.depends_on.map((d) => text(d)).filter(Boolean) : [];
       const refError = checkRefs(originalDeps, ctx, baseId, 'depends_on');
       if (refError) return refError;
       noteExternalRefs(originalDeps, ctx);
       const dependsOn = originalDeps.map((d) => mapWalkRef(d, ctx));
-      if (dependsOn.includes(baseId)) return `节点 ${baseId} 不能依赖自己`;
+      if (dependsOn.includes(baseId)) return t('节点 {id} 不能依赖自己', { id: baseId });
       const node = makeSimpleNode({
         id: baseId, name, role, prompt, depends_on: dependsOn, opType: 'step', rawOp: raw,
       });
@@ -384,31 +385,31 @@ function walkOps(ops, ctx, outItems, outNodes) {
       let originalOverRef = null;
       if (Array.isArray(over)) {
         if (over.length > SCRIPT_MAX_FANOUT) {
-          return `fanout ${baseId} 的 over 最多 ${SCRIPT_MAX_FANOUT} 项（当前 ${over.length}）`;
+          return t('fanout {id} 的 over 最多 {max} 项（当前 {n}）', { id: baseId, max: SCRIPT_MAX_FANOUT, n: over.length });
         }
         for (const entry of over) {
-          if (typeof entry !== 'string') return `fanout ${baseId} 的 over 里每项必须是字符串`;
+          if (typeof entry !== 'string') return t('fanout {id} 的 over 里每项必须是字符串', { id: baseId });
         }
         overItems = over.map((entry) => String(entry));
       } else if (typeof over === 'string' && over.trim()) {
         originalOverRef = over.trim();
         if (!originalOverRef.startsWith('${') && !knownRef(originalOverRef, ctx)) {
-          return `fanout ${baseId} 的 over 指向不存在的节点：${originalOverRef}`;
+          return t('fanout {id} 的 over 指向不存在的节点：{ref}', { id: baseId, ref: originalOverRef });
         }
       } else if (isObj(over) && typeof over.ref === 'string' && over.ref.trim()) {
         originalOverRef = over.ref.trim();
-        if (!knownRef(originalOverRef, ctx)) return `fanout ${baseId} 的 over 指向不存在的节点：${originalOverRef}`;
+        if (!knownRef(originalOverRef, ctx)) return t('fanout {id} 的 over 指向不存在的节点：{ref}', { id: baseId, ref: originalOverRef });
       } else {
-        return `fanout ${baseId} 缺少 over（字符串数组或节点引用）`;
+        return t('fanout {id} 缺少 over（字符串数组或节点引用）', { id: baseId });
       }
       const asName = text(raw.as);
-      if (!VAR_RE.test(asName)) return `fanout ${baseId} 的 as 非法（只允许字母数字_，且不能以数字开头）：${asName || '(空)'}`;
-      if (!isObj(raw.step)) return `fanout ${baseId} 缺少 step 对象`;
+      if (!VAR_RE.test(asName)) return t('fanout {id} 的 as 非法（只允许字母数字_，且不能以数字开头）：{as}', { id: baseId, as: asName || t('(空)') });
+      if (!isObj(raw.step)) return t('fanout {id} 缺少 step 对象', { id: baseId });
       const subPrompt = text(raw.step.prompt);
-      if (!subPrompt) return `fanout ${baseId} 的子步骤缺少 prompt`;
-      if (subPrompt.length > MAX_PROMPT_CHARS) return `fanout ${baseId} 的子步骤 prompt 过长（>${MAX_PROMPT_CHARS} 字符）`;
+      if (!subPrompt) return t('fanout {id} 的子步骤缺少 prompt', { id: baseId });
+      if (subPrompt.length > MAX_PROMPT_CHARS) return t('fanout {id} 的子步骤 prompt 过长（>{max} 字符）', { id: baseId, max: MAX_PROMPT_CHARS });
       if (ctx.depth > SCRIPT_MAX_IF_FANOUT_DEPTH) {
-        return `if 分支内套 fanout 最多 ${SCRIPT_MAX_IF_FANOUT_DEPTH} 层（${baseId}）`;
+        return t('if 分支内套 fanout 最多 {max} 层（{id}）', { max: SCRIPT_MAX_IF_FANOUT_DEPTH, id: baseId });
       }
       const overRef = originalOverRef ? mapWalkRef(originalOverRef, ctx) : null;
       if (originalOverRef) noteExternalRefs([originalOverRef], ctx);
@@ -451,14 +452,14 @@ function walkOps(ops, ctx, outItems, outNodes) {
     }
 
     if (op === 'if') {
-      const validated = validateWhen(raw.when, `if ${opId} 的 when`);
+      const validated = validateWhen(raw.when, t('if {opId} 的 when', { opId }));
       if (validated.error) return validated.error;
       const originalRef = validated.when.ref;
-      if (!knownRef(originalRef, ctx)) return `if ${opId} 的 when.ref 指向不存在的节点：${originalRef}`;
+      if (!knownRef(originalRef, ctx)) return t('if {opId} 的 when.ref 指向不存在的节点：{ref}', { opId, ref: originalRef });
       noteExternalRefs([originalRef], ctx);
-      if (!Array.isArray(raw.then) || raw.then.length === 0) return `if ${opId} 的 then 必须是非空 op 数组`;
-      if (raw.else !== undefined && raw.else !== null && !Array.isArray(raw.else)) return `if ${opId} 的 else 必须是 op 数组`;
-      if (ctx.depth + 1 > SCRIPT_MAX_DEPTH) return `if 嵌套超过 ${SCRIPT_MAX_DEPTH} 层（${opId}）`;
+      if (!Array.isArray(raw.then) || raw.then.length === 0) return t('if {opId} 的 then 必须是非空 op 数组', { opId });
+      if (raw.else !== undefined && raw.else !== null && !Array.isArray(raw.else)) return t('if {opId} 的 else 必须是 op 数组', { opId });
+      if (ctx.depth + 1 > SCRIPT_MAX_DEPTH) return t('if 嵌套超过 {max} 层（{id}）', { max: SCRIPT_MAX_DEPTH, id: opId });
       // 普通 if 分支沿用显式 ifId；循环/递归 body 里的 if 用派生 id 以隔离每一轮
       const containerId = ctx.forceDerived ? baseId : opId;
       if (ctx.forceDerived) {
@@ -507,11 +508,11 @@ function walkOps(ops, ctx, outItems, outNodes) {
     if (op === 'gate') {
       const tool = text(raw.tool);
       if (!GATE_TOOL_NAMES.has(tool)) {
-        return `gate ${baseId} 的 tool 不支持：${tool || '(空)'}（只支持 ${SCRIPT_GATE_TOOLS.join('/')}）`;
+        return t('gate {id} 的 tool 不支持：{tool}（只支持 {tools}）', { id: baseId, tool: tool || t('(空)'), tools: SCRIPT_GATE_TOOLS.join('/') });
       }
       let args = {};
       if (raw.args !== undefined && raw.args !== null) {
-        if (!isObj(raw.args)) return `gate ${baseId} 的 args 必须是对象`;
+        if (!isObj(raw.args)) return t('gate {id} 的 args 必须是对象', { id: baseId });
         args = { ...raw.args };
       }
       const serialized = JSON.stringify(args).slice(0, MAX_PROMPT_CHARS);
@@ -569,7 +570,7 @@ function walkOps(ops, ctx, outItems, outNodes) {
       noteExternalRefs(from.refs, ctx);
       const dependsOn = from.refs.map((d) => mapWalkRef(d, ctx));
       const ask = text(raw.ask) || '把上游结果汇总成一份最终交付报告（结论 / 发现 / 未验证 / 未覆盖）。';
-      if (ask.length > MAX_PROMPT_CHARS) return `report ${baseId} 的 ask 过长（>${MAX_PROMPT_CHARS} 字符）`;
+      if (ask.length > MAX_PROMPT_CHARS) return t('report {id} 的 ask 过长（>{max} 字符）', { id: baseId, max: MAX_PROMPT_CHARS });
       const node = makeSimpleNode({
         id: baseId,
         name,
@@ -596,12 +597,12 @@ function walkOps(ops, ctx, outItems, outNodes) {
     if (op === 'loop') {
       const maxRounds = Number(raw.maxRounds);
       if (!Number.isInteger(maxRounds) || maxRounds < 1 || maxRounds > SCRIPT_LOOP_MAX_ROUNDS) {
-        return `loop ${baseId} 的 maxRounds 必须是 1..${SCRIPT_LOOP_MAX_ROUNDS} 的整数`;
+        return t('loop {id} 的 maxRounds 必须是 1..{max} 的整数', { id: baseId, max: SCRIPT_LOOP_MAX_ROUNDS });
       }
-      if (!Array.isArray(raw.body) || raw.body.length === 0) return `loop ${baseId} 的 body 必须是非空 op 数组`;
-      const until = validateWhen(raw.until, `loop ${baseId} 的 until`);
+      if (!Array.isArray(raw.body) || raw.body.length === 0) return t('loop {id} 的 body 必须是非空 op 数组', { id: baseId });
+      const until = validateWhen(raw.until, t('loop {id} 的 until', { id: baseId }));
       if (until.error) return until.error;
-      if (ctx.depth + 1 > SCRIPT_MAX_DEPTH) return `嵌套超过 ${SCRIPT_MAX_DEPTH} 层（${baseId}）`;
+      if (ctx.depth + 1 > SCRIPT_MAX_DEPTH) return t('嵌套超过 {max} 层（{id}）', { max: SCRIPT_MAX_DEPTH, id: baseId });
       const claimError = claimResultId(ctx, baseId, opId);
       if (claimError) return claimError;
       const countError = countNode(ctx);
@@ -626,7 +627,7 @@ function walkOps(ops, ctx, outItems, outNodes) {
         if (roundError) return roundError;
         const untilRef = until.when.ref;
         if (!roundCtx.bodyAliases.has(untilRef) && !knownRef(untilRef, roundCtx)) {
-          return `loop ${baseId} 的 until.ref 指向不存在的节点：${untilRef}`;
+          return t('loop {id} 的 until.ref 指向不存在的节点：{ref}', { id: baseId, ref: untilRef });
         }
         noteExternalRefs([untilRef], roundCtx);
         rounds.push({ round, items: roundItems, aliases: roundCtx.bodyAliases });
@@ -654,31 +655,31 @@ function walkOps(ops, ctx, outItems, outNodes) {
     if (op === 'recurse') {
       const maxDepth = Number(raw.maxDepth);
       if (!Number.isInteger(maxDepth) || maxDepth < 1 || maxDepth > SCRIPT_RECURSE_MAX_DEPTH) {
-        return `recurse ${baseId} 的 maxDepth 必须是 1..${SCRIPT_RECURSE_MAX_DEPTH} 的整数`;
+        return t('recurse {id} 的 maxDepth 必须是 1..{max} 的整数', { id: baseId, max: SCRIPT_RECURSE_MAX_DEPTH });
       }
-      if (!Array.isArray(raw.body) || raw.body.length === 0) return `recurse ${baseId} 的 body 必须是非空 op 数组`;
+      if (!Array.isArray(raw.body) || raw.body.length === 0) return t('recurse {id} 的 body 必须是非空 op 数组', { id: baseId });
       const over = raw.over;
       let overItems = null;
       let originalOverRef = null;
       if (Array.isArray(over)) {
         for (const entry of over) {
-          if (typeof entry !== 'string') return `recurse ${baseId} 的 over 里每项必须是字符串`;
+          if (typeof entry !== 'string') return t('recurse {id} 的 over 里每项必须是字符串', { id: baseId });
         }
         overItems = over.map((entry) => String(entry));
       } else if (typeof over === 'string' && over.trim()) {
         originalOverRef = over.trim();
         if (!originalOverRef.startsWith('${') && !knownRef(originalOverRef, ctx)) {
-          return `recurse ${baseId} 的 over 指向不存在的节点：${originalOverRef}`;
+          return t('recurse {id} 的 over 指向不存在的节点：{ref}', { id: baseId, ref: originalOverRef });
         }
       } else if (isObj(over) && typeof over.ref === 'string' && over.ref.trim()) {
         originalOverRef = over.ref.trim();
-        if (!knownRef(originalOverRef, ctx)) return `recurse ${baseId} 的 over 指向不存在的节点：${originalOverRef}`;
+        if (!knownRef(originalOverRef, ctx)) return t('recurse {id} 的 over 指向不存在的节点：{ref}', { id: baseId, ref: originalOverRef });
       } else {
-        return `recurse ${baseId} 缺少 over（字符串数组或节点引用）`;
+        return t('recurse {id} 缺少 over（字符串数组或节点引用）', { id: baseId });
       }
       const asName = text(raw.as);
-      if (!VAR_RE.test(asName)) return `recurse ${baseId} 的 as 非法（只允许字母数字_，且不能以数字开头）：${asName || '(空)'}`;
-      if (ctx.depth + 1 > SCRIPT_MAX_DEPTH) return `嵌套超过 ${SCRIPT_MAX_DEPTH} 层（${baseId}）`;
+      if (!VAR_RE.test(asName)) return t('recurse {id} 的 as 非法（只允许字母数字_，且不能以数字开头）：{as}', { id: baseId, as: asName || t('(空)') });
+      if (ctx.depth + 1 > SCRIPT_MAX_DEPTH) return t('嵌套超过 {max} 层（{id}）', { max: SCRIPT_MAX_DEPTH, id: baseId });
       const claimError = claimResultId(ctx, baseId, opId);
       if (claimError) return claimError;
       const countError = countNode(ctx);
@@ -709,11 +710,11 @@ function walkOps(ops, ctx, outItems, outNodes) {
       if (probeError) return probeError;
       let stopWhen = null;
       if (raw.stopWhen !== undefined && raw.stopWhen !== null) {
-        const validatedStop = validateWhen(raw.stopWhen, `recurse ${baseId} 的 stopWhen`);
+        const validatedStop = validateWhen(raw.stopWhen, t('recurse {id} 的 stopWhen', { id: baseId }));
         if (validatedStop.error) return validatedStop.error;
         const stopRef = validatedStop.when.ref;
         if (!probeCtx.bodyAliases.has(stopRef) && !knownRef(stopRef, probeCtx)) {
-          return `recurse ${baseId} 的 stopWhen.ref 指向不存在的节点：${stopRef}`;
+          return t('recurse {id} 的 stopWhen.ref 指向不存在的节点：{ref}', { id: baseId, ref: stopRef });
         }
         noteExternalRefs([stopRef], probeCtx);
         stopWhen = { ref: stopRef, test: { ...validatedStop.when.test } };
@@ -779,13 +780,13 @@ function walkOps(ops, ctx, outItems, outNodes) {
       noteExternalRefs(from.refs, ctx);
       const by = text(raw.by);
       if (!AGGREGATE_KEYS.has(by)) {
-        return `aggregate ${baseId} 的 by 不支持：${by || '(空)'}（只支持 ${SCRIPT_AGGREGATE_BY.join('/')}）`;
+        return t('aggregate {id} 的 by 不支持：{by}（只支持 {keys}）', { id: baseId, by: by || t('(空)'), keys: SCRIPT_AGGREGATE_BY.join('/') });
       }
       let top = SCRIPT_AGGREGATE_TOP_DEFAULT;
       if (raw.top !== undefined && raw.top !== null) {
         const n = Number(raw.top);
         if (!Number.isInteger(n) || n < 1 || n > SCRIPT_AGGREGATE_TOP_MAX) {
-          return `aggregate ${baseId} 的 top 必须是 1..${SCRIPT_AGGREGATE_TOP_MAX} 的整数`;
+          return t('aggregate {id} 的 top 必须是 1..{max} 的整数', { id: baseId, max: SCRIPT_AGGREGATE_TOP_MAX });
         }
         top = n;
       }
@@ -812,7 +813,7 @@ function walkOps(ops, ctx, outItems, outNodes) {
       continue;
     }
 
-    return `未知脚本 op：${op}`;
+    return t('未知脚本 op：{op}', { op });
   }
   return null;
 }
@@ -894,7 +895,7 @@ export async function runGateDefault(tool, args = {}, { projectPath = null } = {
     const result = await reviewDiff(dir, { base: args?.base });
     return { dir, ...result };
   }
-  return { error: `不支持的程序闸工具：${tool}` };
+  return { error: t('不支持的程序闸工具：{tool}', { tool }) };
 }
 
 function abortScript(message) {
@@ -978,7 +979,7 @@ export async function runScriptWorkflow({
   startedAt = Date.now(),
 } = {}) {
   const goalText = text(goal);
-  if (!goalText) return { error: 'goal 不能为空（整个工作流要达成的目标）' };
+  if (!goalText) return { error: t('goal 不能为空（整个工作流要达成的目标）') };
   const norm = normalizeScript(script);
   if (norm.error) return { error: norm.error };
 
@@ -1311,12 +1312,12 @@ export async function runScriptWorkflow({
         }
       } catch (e) {
         if (e?.scriptAbort) throw e;
-        out = { error: e?.message || '程序节点执行失败' };
+        out = { error: e?.message || t('程序节点执行失败') };
       }
     } else {
       built = buildScriptPrompt(node, vars);
       if (typeof callStep !== 'function') {
-        out = { error: '当前通道不支持子代理调用' };
+        out = { error: t('当前通道不支持子代理调用') };
       } else {
         try {
           out = await callStep({
@@ -1333,7 +1334,7 @@ export async function runScriptWorkflow({
             blind: node.kind === 'verify' ? true : null,
           });
         } catch (e) {
-          out = { error: e?.message || '子代理调用失败' };
+          out = { error: e?.message || t('子代理调用失败') };
         }
       }
     }
@@ -1371,7 +1372,7 @@ export async function runScriptWorkflow({
     let requiresTools = false;
     if (node.program) {
       ok = !out?.error && !!content;
-      error = out?.error || (content ? null : '程序节点没有返回结果');
+      error = out?.error || (content ? null : t('程序节点没有返回结果'));
     } else {
       requiresTools = needsEvidence({
         kind: node.kind || null,
@@ -1389,8 +1390,8 @@ export async function runScriptWorkflow({
       });
       // 中断/空回复即使 salvage 出了正文，也必须失败（ok 不能翻绿）
       ok = !out?.error && !originalEmpty && judged.ok && !aborted;
-      error = out?.error || judged.error || (originalEmpty ? '子代理没有返回内容' : null);
-      if (aborted) error = out?.error || '子代理被中断';
+      error = out?.error || judged.error || (originalEmpty ? t('子代理没有返回内容') : null);
+      if (aborted) error = out?.error || t('子代理被中断');
     }
     // 结构化错误码：只在失败节点上产出（成功节点为 null），随快照/结果行/报告透传给 UI 与主 agent
     const errorCode = ok ? null : (
@@ -1491,7 +1492,7 @@ export async function runScriptWorkflow({
       const parsed = parseAgentJson(String(value || ''));
       if (parsed?.error || !Array.isArray(parsed)) return null;
       for (const item of parsed) {
-        if (typeof item !== 'string') throw abortScript(`${label} 的 over 里每项必须是字符串`);
+        if (typeof item !== 'string') throw abortScript(t('{label} 的 over 里每项必须是字符串', { label }));
       }
       return parsed;
     };
@@ -1501,11 +1502,11 @@ export async function runScriptWorkflow({
       const direct = parseItems(interpolated);
       if (direct) return direct;
       target = resolveSingle(interpolated);
-      if (!target) throw abortScript(`${label} 的 over 引用不存在：${interpolated}`);
+      if (!target) throw abortScript(t('{label} 的 over 引用不存在：{ref}', { label, ref: interpolated }));
     }
-    if (!target) throw abortScript(`${label} 的 over 引用不存在：${rawRef}`);
+    if (!target) throw abortScript(t('{label} 的 over 引用不存在：{ref}', { label, ref: rawRef }));
     const parsed = parseItems(target.content);
-    if (!parsed) throw abortScript(`${label} 的 over 引用 ${rawRef} 未解析出 JSON 字符串数组`);
+    if (!parsed) throw abortScript(t('{label} 的 over 引用 {ref} 未解析出 JSON 字符串数组', { label, ref: rawRef }));
     return parsed;
   };
 
@@ -1516,7 +1517,7 @@ export async function runScriptWorkflow({
     }
     const items = container.overRef ? resolveOverList(`fanout ${container.id}`, container.overRef) : (container.overItems || []);
     if (items.length > SCRIPT_MAX_FANOUT) {
-      throw abortScript(`fanout ${container.id} 的 over 最多 ${SCRIPT_MAX_FANOUT} 项（当前 ${items.length}）`);
+      throw abortScript(t('fanout {id} 的 over 最多 {max} 项（当前 {n}）', { id: container.id, max: SCRIPT_MAX_FANOUT, n: items.length }));
     }
     let children;
     if (container.overItems) {
@@ -1525,14 +1526,14 @@ export async function runScriptWorkflow({
       const existingIds = new Set(allNodes.map((x) => x.id));
       children = items.map((item, index) => {
         const child = makeFanoutChild(container, item, index);
-        if (existingIds.has(child.id)) throw abortScript(`节点 id 重复：${child.id}`);
+        if (existingIds.has(child.id)) throw abortScript(t('节点 id 重复：{id}', { id: child.id }));
         existingIds.add(child.id);
         knownNode(child);
         return child;
       });
     }
     if (allNodes.length > SCRIPT_MAX_NODES) {
-      throw abortScript(`脚本节点最多 ${SCRIPT_MAX_NODES} 个（当前 ${allNodes.length}）`);
+      throw abortScript(t('脚本节点最多 {max} 个（当前 {n}）', { max: SCRIPT_MAX_NODES, n: allNodes.length }));
     }
     // 子节点之间互不依赖：并发跑（秒级池），别把每个子代理的 2-6 分钟串行相加。
     // phaseIds 在「起跑时」按 index 顺序占位，所以阶段轨道顺序稳定、alias 仍取最后一个子节点；
@@ -1602,7 +1603,7 @@ export async function runScriptWorkflow({
     const error = walkOps(node.bodyOp, ctx, items, nodes);
     if (error) throw abortScript(error);
     if (ctx.nodesCounted.n > SCRIPT_MAX_NODES) {
-      throw abortScript(`脚本节点最多 ${SCRIPT_MAX_NODES} 个（当前 ${ctx.nodesCounted.n}）`);
+      throw abortScript(t('脚本节点最多 {max} 个（当前 {n}）', { max: SCRIPT_MAX_NODES, n: ctx.nodesCounted.n }));
     }
     for (const child of nodes) allNodes.push(child);
     return { items, aliases: ctx.bodyAliases };
@@ -1692,10 +1693,10 @@ export async function runScriptWorkflow({
       }
     }
     if (stopped || ctl.aborted) {
-      return { error: '工作流已停止', rounds: roundsRun, matched: false, maxRounds: node.maxRounds };
+      return { error: t('工作流已停止'), rounds: roundsRun, matched: false, maxRounds: node.maxRounds };
     }
     if (!matched) {
-      return { error: '循环达到上限仍不满足条件', rounds: roundsRun, matched: false, maxRounds: node.maxRounds };
+      return { error: t('循环达到上限仍不满足条件'), rounds: roundsRun, matched: false, maxRounds: node.maxRounds };
     }
     return { rounds: roundsRun, matched: true, maxRounds: node.maxRounds };
   };
@@ -1710,7 +1711,7 @@ export async function runScriptWorkflow({
     }
     if (node.programType === 'loop') return runLoopNode(node, phaseIds, vars);
     if (node.programType === 'recurse') return runRecurseNode(node, phaseIds, vars);
-    return { error: `未知程序节点类型：${node.programType}` };
+    return { error: t('未知程序节点类型：{type}', { type: node.programType }) };
   };
 
   const runItem = async (item, phaseIds, vars = {}) => {
@@ -1764,7 +1765,7 @@ export async function runScriptWorkflow({
       if (stopped) break;
     }
   } catch (e) {
-    fatal = e?.scriptAbort ? String(e.message || e) : `脚本执行失败：${e?.message || e}`;
+    fatal = e?.scriptAbort ? String(e.message || e) : t('脚本执行失败：{message}', { message: e?.message || e });
     if (ctl.aborted) stopped = true;
   }
   // 用户点了停止就算「已停止」：即使中断发生在单个节点跑到一半（那一步会记 failed/已中断）
@@ -1836,11 +1837,11 @@ export async function runScriptWorkflow({
     claimsFile,
     delivered: delivered.slice(),
     summary: ordered.map((r) => {
-      if (r.ok) return `${r.id} ${r.name}: 完成`;
+      if (r.ok) return t('{id} {name}: 完成', { id: r.id, name: r.name });
       // 失败行带结构化错误码 + 一句人话（HTTP 429 · 网关限流…）；旧结果没有 errorCode 时回落到原始 error
       return r.errorCode
-        ? `${r.id} ${r.name}: 失败（${r.errorCode} · ${errorCodeLabel(r.errorCode)}）`
-        : `${r.id} ${r.name}: 失败（${r.error}）`;
+        ? t('{id} {name}: 失败（{code} · {label}）', { id: r.id, name: r.name, code: r.errorCode, label: errorCodeLabel(r.errorCode) })
+        : t('{id} {name}: 失败（{error}）', { id: r.id, name: r.name, error: r.error });
     }).join('\n'),
   };
 }

@@ -114,7 +114,7 @@ test('downloaded：已下载，重启安装；只露安装按钮', () => {
   const state = reduceUpdateEvent(initialUpdateState, { type: 'downloaded', version: '0.2.0' });
   const view = describeUpdate(state, CURRENT);
   assert.equal(view.phase, 'downloaded');
-  assert.equal(view.statusText, '已下载 v0.2.0，重启安装');
+  assert.equal(view.statusText, '已下载，重启安装');
   assert.equal(view.tone, 'jade');
   assert.equal(view.showInstall, true);
   assert.equal(view.showCheck, false);
@@ -127,7 +127,8 @@ test('downloaded 缺版本号：沿用 available 的版本', () => {
   const available = reduceUpdateEvent(initialUpdateState, { type: 'available', version: '0.2.1' });
   const state = reduceUpdateEvent(available, { type: 'downloaded' });
   const view = describeUpdate(state, CURRENT);
-  assert.equal(view.statusText, '已下载 v0.2.1，重启安装');
+  assert.equal(view.statusText, '已下载，重启安装');
+  assert.equal(view.latestText, 'v0.2.1');
   assertClean(view);
 });
 

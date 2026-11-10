@@ -8,6 +8,8 @@
 //  - 工具结果只取第一行、最多 200 字，防止把 16KB 的 JSON 整段复制进报告上下文；
 //  - 失败节点的 salvage 正文会作为「洞」进入 report prompt 与 ## Not covered 校验。
 import { errorCodeLabel } from './swarm.mjs';
+// 双语：salvage 正文会直接显示在子代理面板里，跟随界面语言（zh 下仍是原文）
+import { t } from '../renderer/i18n/core.mjs';
 
 export const SALVAGE_ABORTED_HEADER = '【未完成·已中断】';
 export const SALVAGE_EMPTY_HEADER = '【未完成·无最终结论】';
@@ -33,10 +35,10 @@ function firstLine(value, max = RESULT_LINE_MAX) {
 
 /** 单个工具结果的可读摘要：首行 + 200 字上限；pending/无输出给明确占位。 */
 function toolResultSummary(entry) {
-  if (entry?.cancelled) return '（已中断，未拿到结果）';
-  if (entry?.pending) return '（中断时仍在运行，无结果）';
+  if (entry?.cancelled) return t('（已中断，未拿到结果）');
+  if (entry?.pending) return t('（中断时仍在运行，无结果）');
   const summary = firstLine(entry?.content);
-  return summary || '（无结果输出）';
+  return summary || t('（无结果输出）');
 }
 
 /** 统计真实工具调用：优先 reported toolCount，transcript 行数只作兜底/下限。 */
@@ -95,10 +97,10 @@ export function salvageSubagentContent({
   error = '',
 } = {}) {
   const aborted = reason === 'aborted';
-  const header = aborted ? SALVAGE_ABORTED_HEADER : SALVAGE_EMPTY_HEADER;
-  const reasonText = aborted
+  const header = t(aborted ? SALVAGE_ABORTED_HEADER : SALVAGE_EMPTY_HEADER);
+  const reasonText = t(aborted
     ? '运行被中断（用户停止或父级中止），未走到最终交付'
-    : '模型结束但没有返回最终结论（空回复/收尾为空）';
+    : '模型结束但没有返回最终结论（空回复/收尾为空）');
   const count = countToolCalls(transcript, toolCount);
   const tools = (Array.isArray(transcript) ? transcript : []).filter((m) => m?.role === 'tool');
   const partial = lastPartial(transcript, partialContent);
@@ -106,24 +108,24 @@ export function salvageSubagentContent({
 
   const lines = [
     header,
-    `原因：${reasonText}。`,
-    `已调用工具：${count} 次。`,
+    t('原因：{reason}。', { reason: reasonText }),
+    t('已调用工具：{n} 次。', { n: count }),
   ];
-  if (error) lines.push(`失败原因：${firstLine(error, 300)}`);
+  if (error) lines.push(t('失败原因：{error}', { error: firstLine(error, 300) }));
   if (tools.length) {
-    lines.push('最后 5 次工具（名称 → 结果首行，最多 200 字）：');
-    for (const t of tools.slice(-5)) {
-      lines.push(`- ${String(t.name || 'tool').trim() || 'tool'} → ${toolResultSummary(t)}`);
+    lines.push(t('最后 5 次工具（名称 → 结果首行，最多 200 字）：'));
+    for (const tool of tools.slice(-5)) {
+      lines.push(`- ${String(tool.name || 'tool').trim() || 'tool'} → ${toolResultSummary(tool)}`);
     }
   } else {
-    lines.push('最后 5 次工具：无（中断前尚未产生工具调用）。');
+    lines.push(t('最后 5 次工具：无（中断前尚未产生工具调用）。'));
   }
-  if (reasoning) lines.push(`最后一段模型推理（前 200 字）：${reasoning}`);
+  if (reasoning) lines.push(t('最后一段模型推理（前 200 字）：{text}', { text: reasoning }));
   if (partial) {
-    lines.push(`中断前已有正文（前 600 字，未完成、不能当最终结论）：`);
+    lines.push(t('中断前已有正文（前 600 字，未完成、不能当最终结论）：'));
     lines.push(partial);
   }
-  lines.push('交付状态：未完成。缺少最终结论/证据总表；本步按「洞」处理，下游报告必须在 ## Not covered 点名本步并说明未覆盖范围。');
+  lines.push(t('交付状态：未完成。缺少最终结论/证据总表；本步按「洞」处理，下游报告必须在 ## Not covered 点名本步并说明未覆盖范围。'));
   return lines.join('\n');
 }
 
@@ -184,5 +186,7 @@ export function buildHolesPromptSection(holes = []) {
 /** 文本是否已经是 salvage 正文（避免 workflow 层重复包装）。 */
 export function isSalvageText(content) {
   const head = String(content || '').trimStart();
-  return head.startsWith(SALVAGE_ABORTED_HEADER) || head.startsWith(SALVAGE_EMPTY_HEADER);
+  // 两种语言都认：中途切语言后，旧语言写下的 salvage 正文仍要能被识别
+  return head.startsWith(SALVAGE_ABORTED_HEADER) || head.startsWith(SALVAGE_EMPTY_HEADER)
+    || head.startsWith(t(SALVAGE_ABORTED_HEADER)) || head.startsWith(t(SALVAGE_EMPTY_HEADER));
 }

@@ -8,6 +8,7 @@
 //  - 本模块不 import electron（可被 node:test 直测）：给 UI 的 emit 由主进程注入
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { t } from '../renderer/i18n/core.mjs';
 
 const VALID_DECISIONS = new Set(['allowed-once', 'always-session', 'rejected']);
 const APPROVAL_EVENT = 'finalcheck:approval-request'; // 常量仅作文档；emit 由 index.mjs 注入
@@ -172,9 +173,9 @@ export function confirmHost(host) {
 /** fail-closed 校验：本机默认放行，其余必须在台账 */
 export function assertHost(host) {
   const h = normalizeHost(host);
-  if (!h) throw new Error('无效主机名');
+  if (!h) throw new Error(t('无效主机名'));
   if (LOCAL_HOSTS.has(h) || confirmedHosts.has(h)) return h;
-  throw new Error(`目标 ${h} 不在已确认名单：请先在动态测试页确认该目标（或使用 localhost）`);
+  throw new Error(t('目标 {host} 不在已确认名单：请先在动态测试页确认该目标（或使用 localhost）', { host: h }));
 }
 
 // ---- 目录台账 ----
@@ -195,7 +196,7 @@ export function confirmDir(dir) {
 /** fail-closed 校验目录：必须在台账（相对路径先归一为绝对路径） */
 export function assertDir(dir) {
   const d = normalizeDir(dir);
-  if (!d || !confirmedDirs.has(d)) throw new Error('目录不在已确认名单：请先确认该目录');
+  if (!d || !confirmedDirs.has(d)) throw new Error(t('目录不在已确认名单：请先确认该目录'));
   return d;
 }
 
@@ -206,8 +207,8 @@ export function assertDir(dir) {
  */
 export function noteTarget(urlStr) {
   let u;
-  try { u = new URL(String(urlStr || '')); } catch { throw new Error('无效 URL'); }
-  if (!/^https?:$/.test(u.protocol)) throw new Error('仅允许 http/https');
+  try { u = new URL(String(urlStr || '')); } catch { throw new Error(t('无效 URL')); }
+  if (!/^https?:$/.test(u.protocol)) throw new Error(t('仅允许 http/https'));
   confirmedHosts.add(u.hostname); // 只记账不拦截
   return u;
 }

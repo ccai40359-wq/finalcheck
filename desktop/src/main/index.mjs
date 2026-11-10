@@ -27,6 +27,9 @@ import {
 } from './session-projects.mjs';
 import { planProjectSwitch } from './project-switch.mjs';
 import { humanizeUpdateError } from '../renderer/lib/updater-state.mjs';
+// 双语：主进程与渲染层共用同一份英文词典（main 自己按 config.language 设置语言）
+import { setLanguage, resolveLanguage, t } from '../renderer/i18n/core.mjs';
+import { withOutputLanguage, isEnglish } from './lang.mjs';
 
 // 会话读写按「会话所属项目」解析目录（未登记则回退当前项目目录）
 sessions.setSessionDirResolver((id) => getSessionDir(id));
@@ -94,6 +97,8 @@ const normalizeConfig = async (raw) => {
   });
   const out = { ...cfg, providers: providers.map(normProvider) };
   out.permissionMode = cfg.permissionMode === 'full' ? 'full' : 'ask'; // 权限模式（仿 ZCode Full access）
+  // 界面语言：auto 跟随系统（中文系统→中文，其余→英文）；也接受旧配置缺省为 auto
+  out.language = cfg.language === 'en' || cfg.language === 'zh' ? cfg.language : 'auto';
   out.activeModel = typeof cfg.activeModel === 'string' ? cfg.activeModel : '';
   out.thinkingEffort = ['low', 'medium', 'high', 'max', 'default'].includes(cfg.thinkingEffort) ? cfg.thinkingEffort : 'max';
   delete out.baseUrl; delete out.apiKey; delete out.model; // 旧形状已迁移进 providers
@@ -110,10 +115,25 @@ const sandboxAllowPathsOf = (cfg) => (
   Array.isArray(cfg?.sandboxAllowPaths) ? cfg.sandboxAllowPaths.filter((x) => typeof x === 'string') : []
 );
 
-const loadConfig = async () => {
-  try { return await normalizeConfig(JSON.parse(await readFile(configFile(), 'utf8'))); } catch { return await normalizeConfig({}); }
+// 语言跟随配置：auto 用 Electron 的系统 locale（中文系统→中文，其余→英文）
+const applyLanguage = (cfg) => {
+  let systemLang = '';
+  try { systemLang = app.getLocale?.() || ''; } catch { /* app ready 之前取不到 locale，按 auto→英文 */ }
+  setLanguage(resolveLanguage(cfg?.language, systemLang));
 };
-const saveConfig = async (cfg) => { await writeFile(configFile(), JSON.stringify(await normalizeConfig(cfg), null, 2), 'utf8'); return true; };
+
+const loadConfig = async () => {
+  let cfg;
+  try { cfg = await normalizeConfig(JSON.parse(await readFile(configFile(), 'utf8'))); } catch { cfg = await normalizeConfig({}); }
+  applyLanguage(cfg); // 任何读取配置的地方都同步主进程语言（提示词/错误文案都依赖它）
+  return cfg;
+};
+const saveConfig = async (cfg) => {
+  const next = await normalizeConfig(cfg);
+  await writeFile(configFile(), JSON.stringify(next, null, 2), 'utf8');
+  applyLanguage(next);
+  return true;
+};
 
 // 对话使用的供应商：enabled 且被选中（选中者被禁用时回退到第一个 enabled）
 const pickActiveProvider = (cfg) => {
@@ -140,7 +160,9 @@ async function summarizeWithProvider(prov, text, { maxChars = 30000, maxTokens =
       headers: { 'content-type': 'application/json', authorization: 'Bearer ' + prov.apiKey },
       body: JSON.stringify({
         model: firstModelId(prov),
-        messages: [{ role: 'user', content: '请把以下对话历史压缩成中文要点摘要，保留关键结论、路径与数字，直接输出摘要本身：\n\n' + String(text).slice(0, maxChars) }],
+        messages: [{ role: 'user', content: (isEnglish()
+          ? 'Summarize the following conversation history into concise English bullet points. Keep key conclusions, paths and numbers. Output only the summary:\n\n'
+          : '请把以下对话历史压缩成中文要点摘要，保留关键结论、路径与数字，直接输出摘要本身：\n\n') + String(text).slice(0, maxChars) }],
         max_tokens: maxTokens,
         stream: false
       }),
@@ -149,7 +171,7 @@ async function summarizeWithProvider(prov, text, { maxChars = 30000, maxTokens =
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const j = await res.json();
     const s = j.choices?.[0]?.message?.content;
-    if (!s || !String(s).trim()) throw new Error('空摘要');
+    if (!s || !String(s).trim()) throw new Error(t('空摘要'));
     return String(s).trim();
   } finally { clearTimeout(timer); }
 }
@@ -165,7 +187,9 @@ async function generateSessionTitle(prov, { user, assistant } = {}) {
       body: JSON.stringify({
         model: firstModelId(prov),
         messages: [
-          { role: 'system', content: '你负责给对话起标题：不超过 12 个汉字（英文不超过 6 个单词），概括用户要做什么；只输出标题本身，不要引号、不要句号、不要解释。' },
+          { role: 'system', content: isEnglish()
+            ? 'You title conversations: at most 6 English words, describing what the user wants to do. Output only the title, no quotes, no period, no explanation.'
+            : '你负责给对话起标题：不超过 12 个汉字（英文不超过 6 个单词），概括用户要做什么；只输出标题本身，不要引号、不要句号、不要解释。' },
           { role: 'user', content: `用户：${String(user || '').slice(0, 600)}\n\n助手：${String(assistant || '').slice(0, 600)}` }
         ],
         max_tokens: 200, // 推理模型会先把预算烧在思考上，给足才拿得到正文标题
@@ -397,7 +421,9 @@ function setupUpdater() {
     au.autoDownload = false;          // 发现更新只提示，用户点「下载更新」才下载
     au.autoInstallOnAppQuit = true;   // 已下载的更新在退出时自动安装
 
-    au.on('checking-for-update', () => sendUpdateEvent({ type: 'checking' }));
+    au.on('checking-for-update', () => {
+      if (!updateSilent) sendUpdateEvent({ type: 'checking' });
+    });
     au.on('update-available', (info = {}) => sendUpdateEvent({
       type: 'available',
       version: String(info.version || ''),
@@ -504,7 +530,7 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle('finalcheck:projects:select', async (_e, id) => {
     const p = await projects.getProject(id);
-    if (!p) throw new Error('项目不存在');
+    if (!p) throw new Error(t('项目不存在'));
     await selectProjectEnv(p);
     return p;
   });
@@ -573,8 +599,8 @@ app.whenReady().then(async () => {
     const name = String(payload.name || 'attachment').replace(/[^\w.\-\u4e00-\u9fa5]/g, '_').slice(-80);
     const b64 = String(payload.dataBase64 || '').replace(/^data:[^;]+;base64,/, '');
     const buf = Buffer.from(b64, 'base64');
-    if (!buf.length) throw new Error('附件为空');
-    if (buf.length > 20 * 1024 * 1024) throw new Error('附件过大（上限 20MB）');
+    if (!buf.length) throw new Error(t('附件为空'));
+    if (buf.length > 20 * 1024 * 1024) throw new Error(t('附件过大（上限 20MB）'));
     await mkdir(attachDir(), { recursive: true });
     const file = path.join(attachDir(), `${Date.now()}-${randomUUID().slice(0, 6)}-${name}`);
     await writeFile(file, buf);
@@ -585,18 +611,18 @@ app.whenReady().then(async () => {
     let st;
     try { st = await stat(abs); } catch (e) {
       // 产物可能在会话之后被移动/删除（agent 的临时文件很常见）：给可读提示，不把 ENOENT 原样抛给渲染层
-      if (e && (e.code === 'ENOENT' || e.code === 'ENOTDIR')) return { kind: 'missing', path: abs, name: path.basename(abs), error: '文件已不存在（可能已被删除或移动）' };
+      if (e && (e.code === 'ENOENT' || e.code === 'ENOTDIR')) return { kind: 'missing', path: abs, name: path.basename(abs), error: t('文件已不存在（可能已被删除或移动）') };
       throw e;
     }
-    if (!st.isFile()) return { kind: 'missing', path: abs, name: path.basename(abs), error: '不是文件' };
-    if (st.size > 15 * 1024 * 1024) throw new Error('文件过大（上限 15MB）');
+    if (!st.isFile()) return { kind: 'missing', path: abs, name: path.basename(abs), error: t('不是文件') };
+    if (st.size > 15 * 1024 * 1024) throw new Error(t('文件过大（上限 15MB）'));
     const ext = path.extname(abs).toLowerCase();
     const mime = IMAGE_MIME[ext];
     if (mime) return { kind: 'image', path: abs, name: path.basename(abs), size: st.size, dataUrl: `data:${mime};base64,${(await readFile(abs)).toString('base64')}` };
     if (ext === '.html' || ext === '.htm') return { kind: 'html', path: abs, name: path.basename(abs), size: st.size, content: await readFile(abs, 'utf8') };
     if (ext === '.pdf') return { kind: 'pdf', path: abs, name: path.basename(abs), size: st.size, dataUrl: `data:application/pdf;base64,${(await readFile(abs)).toString('base64')}` };
     if (['.txt', '.md', '.json', '.js', '.mjs', '.css', '.csv', '.log', '.xml', '.yml', '.yaml'].includes(ext)) return { kind: 'text', path: abs, name: path.basename(abs), size: st.size, content: await readFile(abs, 'utf8') };
-    throw new Error('不支持预览的类型：' + ext);
+    throw new Error(t('不支持预览的类型：{ext}', { ext }));
   });
   ipcMain.handle('finalcheck:artifact:open', async (_e, p) => shell.openPath(path.resolve(String(p || ''))));
   ipcMain.handle('finalcheck:clipboard:write', (_e, text) => { clipboard.writeText(String(text || '')); return true; });
@@ -609,20 +635,20 @@ app.whenReady().then(async () => {
   ipcMain.handle('finalcheck:compact-session', async (_e, sessionId) => {
     const cfg = await loadConfig();
     const prov = pickActiveProvider(cfg);
-    if (!prov) return { error: '尚未配置模型供应商' };
+    if (!prov) return { error: t('尚未配置模型供应商') };
     const s = await sessions.loadSession(sessionId);
     const text = (s.messages || [])
       .filter((m) => m.role === 'user' || m.role === 'assistant')
       .map((m) => `[${m.role}] ${String(m.content || '')}`)
       .join('\n').slice(-30000);
-    if (!text.trim()) return { error: '没有可压缩的对话' };
+    if (!text.trim()) return { error: t('没有可压缩的对话') };
     try {
       const summary = await summarizeWithProvider(prov, text);
       await sessions.saveSummary(sessionId, summary);
-      await sessions.appendNotice(sessionId, `上下文已压缩：${text.length} 字符 → 摘要 ${summary.length} 字符；后续请求只带摘要 + 最近 6 条。`, 'compact');
+      await sessions.appendNotice(sessionId, t('上下文已压缩：{before} 字符 → 摘要 {after} 字符；后续请求只带摘要 + 最近 6 条。', { before: text.length, after: summary.length }), 'compact');
       return { ok: true, summary, before: text.length, after: summary.length };
     } catch (e) {
-      return { error: '压缩失败：' + e.message };
+      return { error: t('压缩失败：{msg}', { msg: e.message }) };
     }
   });
 
@@ -664,7 +690,7 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle('finalcheck:stress', async (_e, baseUrl, { duration = 10, connections = 10 } = {}) => {
     permissions.noteTarget(baseUrl);
-    if (duration > 60 || connections > 50) throw new Error('超过温和上限（60s / 50 连接），请分批进行');
+    if (duration > 60 || connections > 50) throw new Error(t('超过温和上限（60s / 50 连接），请分批进行'));
     const { stressTarget } = await import(engineUrl('src/dynamic/stress.mjs'));
     return stressTarget(baseUrl, { duration, connections });
   });
@@ -719,7 +745,7 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle('finalcheck:sessions:move', async (_e, id, targetProjectId) => {
     const p = await projects.getProject(targetProjectId);
-    if (!p) throw new Error('目标项目不存在');
+    if (!p) throw new Error(t('目标项目不存在'));
     const targetDir = projects.sessionDirOf(p.path);
     const r = await sessions.moveSessionTo(id, targetDir);
     registerSessionDir(id, targetDir); // 移动后会话归目标项目（后续 append 走新目录）
@@ -735,12 +761,12 @@ app.whenReady().then(async () => {
   const sessionUsage = new Map();      // sessionId → 最后一次请求的真实 usage（服务端口径，含工具输出）
   const steerBuffers = new Map();      // sessionId → 待注入当前回合的 Steer 文本（FIFO，每次模型请求前 drain）
   ipcMain.handle('finalcheck:agent-steer', (_e, sessionId = null, text = '') => {
-    const t = String(text ?? '').trim();
-    if (!t) return { error: 'Steer 内容为空' };
+    const steerText = String(text ?? '').trim();
+    if (!steerText) return { error: t('Steer 内容为空') };
     // 只有该会话的回合真的在跑才收：否则渲染层保留队列并提示，而不是石沉大海
-    if (!sessionId || !activeChats.has(sessionId)) return { error: '当前没有运行中的回合，无法 Steer' };
+    if (!sessionId || !activeChats.has(sessionId)) return { error: t('当前没有运行中的回合，无法 Steer') };
     const list = steerBuffers.get(sessionId) || [];
-    list.push(t);
+    list.push(steerText);
     steerBuffers.set(sessionId, list);
     return { ok: true, queued: list.length };
   });
@@ -760,7 +786,7 @@ app.whenReady().then(async () => {
   // 工作流控制台：暂停/继续/停止 + 改最大并发/子代理模型（运行中即时生效）
   ipcMain.handle('finalcheck:workflow-control', (_e, sessionId, payload = {}) => {
     const wf = sessionId ? workflowControls.get(sessionId) : null;
-    if (!wf) return { error: '当前会话没有正在运行的工作流' };
+    if (!wf) return { error: t('当前会话没有正在运行的工作流') };
     const action = payload?.action;
     if (action === 'pause') wf.paused = true;
     else if (action === 'resume') wf.paused = false;
@@ -769,7 +795,7 @@ app.whenReady().then(async () => {
       if (payload.maxConcurrency != null) wf.maxConcurrency = Math.max(1, Math.min(14, Number(payload.maxConcurrency) || wf.maxConcurrency));
       if (payload.providerId !== undefined) wf.providerId = payload.providerId || null;
       if (payload.model !== undefined) wf.model = payload.model || null;
-    } else return { error: '未知操作：' + action };
+    } else return { error: t('未知操作：{action}', { action }) };
     return { ok: true, paused: wf.paused, maxConcurrency: wf.maxConcurrency, providerId: wf.providerId, model: wf.model };
   });
   ipcMain.handle('finalcheck:workflow-step', async (_e, sessionId, stepId) => {
@@ -801,13 +827,13 @@ app.whenReady().then(async () => {
     const wanted = mc.providerId ? (cfg.providers || []).find((p) => p.id === mc.providerId) : null;
     const prov = (wanted && wanted.enabled && wanted.baseUrl && wanted.apiKey && wanted.models?.length) ? wanted : pickActiveProvider(cfg);
     if (!prov) {
-      return { error: '尚未配置可用的模型供应商：请到左下角「模型设置」添加供应商（Base URL / API Key / 模型）并启用', trace: [] };
+      return { error: t('尚未配置可用的模型供应商：请到左下角「模型设置」添加供应商（Base URL / API Key / 模型）并启用'), trace: [] };
     }
     if (prov.apiFormat !== 'chat-completions') {
-      return { error: `供应商「${prov.name}」的 API 格式（${prov.apiFormat}）暂未支持，请在模型设置中改用 chat-completions`, trace: [] };
+      return { error: t('供应商「{name}」的 API 格式（{format}）暂未支持，请在模型设置中改用 chat-completions', { name: prov.name, format: prov.apiFormat }), trace: [] };
     }
     if (!prov.models.length) {
-      return { error: `供应商「${prov.name}」还没有模型：请到「模型设置」为它添加至少一个模型`, trace: [] };
+      return { error: t('供应商「{name}」还没有模型：请到「模型设置」为它添加至少一个模型', { name: prov.name }), trace: [] };
     }
     // 项目档案记忆：用户消息中出现已建档路径（或其子路径）→ 在 messages 前注入一条 system 档案摘要；无命中不注入
     let contextMessages = messages;
@@ -963,7 +989,7 @@ app.whenReady().then(async () => {
           sessionId,
           commandIdleMs: cfg.commandIdleMs
         });
-        const systemPrompt = `你是 FinalCheck 工作流中的子代理${role ? `（角色：${role}）` : ''}。你可以调用工具（读文件 / 跑命令 / 体检 / 下载闸 / 探测 / 压测 / 读方法论 / 改代码）：需要证据就自己去跑，不要凭空断言。规则：任务里提到工具或路径时，第一条回复必须是真的工具调用，禁止用「我现在开始…」「我将运行…」这类话代替调用；拿到结果后再给交付物（结论/清单/证据），不要寒暄、不要复述任务。改文件前先 read_file，改完在交付里说明改了哪些文件。\n\n${DELIVERY_DISCIPLINE}`;
+        const systemPrompt = withOutputLanguage(`你是 FinalCheck 工作流中的子代理${role ? `（角色：${role}）` : ''}。你可以调用工具（读文件 / 跑命令 / 体检 / 下载闸 / 探测 / 压测 / 读方法论 / 改代码）：需要证据就自己去跑，不要凭空断言。规则：任务里提到工具或路径时，第一条回复必须是真的工具调用，禁止用「我现在开始…」「我将运行…」这类话代替调用；拿到结果后再给交付物（结论/清单/证据），不要寒暄、不要复述任务。改文件前先 read_file，改完在交付里说明改了哪些文件。\n\n${DELIVERY_DISCIPLINE}`);
         transcript = [{ role: 'system', content: systemPrompt }, { role: 'user', content: prompt }];
         saveTranscript();
         // 取证步骤：首轮强制 tool_choice=required + 空转提醒重试（与 workflow.mjs 同一份 needsEvidence）
@@ -1026,12 +1052,16 @@ app.whenReady().then(async () => {
       } catch (e) {
         // catch 分支同样不能交白卷：用已落盘的 transcript 做确定性 salvage
         const aborted = e?.name === 'AbortError' || ctl.signal.aborted;
-        const error = aborted ? '子代理被中断' : (e?.message || '子代理调用失败');
+        const error = aborted ? t('子代理被中断') : (e?.message || t('子代理调用失败'));
         let content = '';
         if (salvage) {
           content = salvage({ transcript, toolCount, reason: aborted ? 'aborted' : 'empty', error });
         } else if (transcript.length) {
-          content = `【未完成·${aborted ? '已中断' : '无最终结论'}】\n原因：${error}。\n已调用工具：${toolCount} 次。\n交付状态：未完成，下游报告必须在 ## Not covered 点名本步。`;
+          content = t('【未完成·{state}】\n原因：{error}。\n已调用工具：{count} 次。\n交付状态：未完成，下游报告必须在 ## Not covered 点名本步。', {
+            state: aborted ? t('已中断') : t('无最终结论'),
+            error,
+            count: toolCount
+          });
         }
         return {
           error,
@@ -1139,7 +1169,7 @@ app.whenReady().then(async () => {
           });
           const runGate = async (tool, gateArgs) => {
             const fn = gateTools[tool];
-            if (typeof fn !== 'function') return { error: `不支持的程序闸工具：${tool}` };
+            if (typeof fn !== 'function') return { error: t('不支持的程序闸工具：{tool}', { tool }) };
             const argsWithDir = { ...(gateArgs || {}) };
             if (!argsWithDir.dir) argsWithDir.dir = turnProjectPath;
             return fn(argsWithDir);
@@ -1274,7 +1304,7 @@ app.whenReady().then(async () => {
     const now = new Date();
     const stamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
     const r = await dialog.showSaveDialog(win, {
-      title: '导出诊断包',
+      title: t('导出诊断包'),
       defaultPath: path.join(DATA_ROOT, `FinalCheck-diagnostics-${stamp}.json`),
       filters: [{ name: 'JSON', extensions: ['json'] }]
     });
@@ -1309,10 +1339,10 @@ app.whenReady().then(async () => {
     const demo = path.join(REPO_ROOT, 'src', 'fixtures', 'demo-project');
     try {
       const st = await stat(demo);
-      if (!st.isDirectory()) return { error: '示例项目路径不是目录：' + demo };
+      if (!st.isDirectory()) return { error: t('示例项目路径不是目录：{path}', { path: demo }) };
       return demo;
     } catch {
-      return { error: '示例项目不存在：' + demo };
+      return { error: t('示例项目不存在：{path}', { path: demo }) };
     }
   });
 
@@ -1331,11 +1361,11 @@ app.whenReady().then(async () => {
   ipcMain.handle('finalcheck:update:check', async () => {
     const currentVersion = app.getVersion();
     if (!app.isPackaged) {
-      return { ok: false, currentVersion, error: '开发模式不检查更新；安装版才会连接 GitHub Release。' };
+      return { ok: false, currentVersion, error: t('开发模式不检查更新；安装版才会连接 GitHub Release。') };
     }
     try {
       const au = await ensureUpdater();
-      if (!au) return { ok: false, currentVersion, error: '更新模块不可用，请重新安装应用。' };
+      if (!au) return { ok: false, currentVersion, error: t('更新模块不可用，请重新安装应用。') };
       updateSilent = false; // 手动检查：错误必须可见
       const result = await au.checkForUpdates();
       const latestVersion = result?.updateInfo?.version ? String(result.updateInfo.version) : undefined;
@@ -1346,10 +1376,10 @@ app.whenReady().then(async () => {
     }
   });
   ipcMain.handle('finalcheck:update:download', async () => {
-    if (!app.isPackaged) return { ok: false, error: '开发模式不可下载更新。' };
+    if (!app.isPackaged) return { ok: false, error: t('开发模式不可下载更新。') };
     try {
       const au = await ensureUpdater();
-      if (!au) return { ok: false, error: '更新模块不可用，请重新安装应用。' };
+      if (!au) return { ok: false, error: t('更新模块不可用，请重新安装应用。') };
       sendUpdateEvent({ type: 'progress', percent: 0 }); // 立刻进入「下载中」，不等首个进度事件
       await au.downloadUpdate();
       return { ok: true };
@@ -1358,10 +1388,10 @@ app.whenReady().then(async () => {
     }
   });
   ipcMain.handle('finalcheck:update:install', async () => {
-    if (!app.isPackaged) return { ok: false, error: '开发模式不可安装更新。' };
+    if (!app.isPackaged) return { ok: false, error: t('开发模式不可安装更新。') };
     try {
       const au = await ensureUpdater();
-      if (!au) return { ok: false, error: '更新模块不可用，请重新安装应用。' };
+      if (!au) return { ok: false, error: t('更新模块不可用，请重新安装应用。') };
       // 先让 IPC 响应回到渲染层，再退出并启动安装器
       setImmediate(() => { try { au.quitAndInstall(false, true); } catch { /* 安装失败由更新模块日志记录 */ } });
       return { ok: true };

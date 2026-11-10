@@ -1,8 +1,9 @@
 import React from 'react';
+import { t } from '../i18n/core.mjs';
 
 // ZCode 的 recover 键：只在中断/失败的工作流卡片底栏出现（输入框那一排不再有它）。
 // 抽成组件是为了能在独立 harness 里真实渲染 + 点击验证（视觉自检由主会话做）。
-export function RecoverButton({ onClick, disabled = false, title = '恢复上一回合：带着已有证据继续，不重复跑过的步骤', compact = false }) {
+export function RecoverButton({ onClick, disabled = false, title = t('恢复上一回合：带着已有证据继续，不重复跑过的步骤'), compact = false }) {
   return (
     <button data-testid="recover-btn" onClick={onClick} disabled={disabled}
       title={title}

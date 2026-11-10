@@ -10,6 +10,7 @@
 import React, { useMemo, useState } from 'react';
 import { renderMarkdown } from './md.jsx';
 import { stripBareJson } from '../lib/humanize.js';
+import { t } from '../i18n/core.mjs';
 
 // 只有「{ 后面跟 " 或 {」/「[ 后面跟 " 或 {」才当 JSON 起点；
 // 避免 markdown 的 `[链接](...)`、任务列表 `[ ]` 被误判成 JSON。
@@ -41,10 +42,10 @@ const VERDICT_CLS = {
 };
 
 const SECTION_META = {
-  targets: { key: 'targets', label: '侦察目标', icon: '◎', unit: '个目标', Row: TargetRow },
-  findings: { key: 'findings', label: '取证发现', icon: '▣', unit: '条发现', Row: FindingRow },
-  verdicts: { key: 'verdicts', label: '验证裁决', icon: '⚖', unit: '条裁决', Row: VerdictRow },
-  decisions: { key: 'decisions', label: '仲裁决定', icon: '◈', unit: '条决定', Row: DecisionRow }
+  targets: { key: 'targets', label: '侦察目标', icon: '◎', count: '{n} 个目标', Row: TargetRow },
+  findings: { key: 'findings', label: '取证发现', icon: '▣', count: '{n} 条发现', Row: FindingRow },
+  verdicts: { key: 'verdicts', label: '验证裁决', icon: '⚖', count: '{n} 条裁决', Row: VerdictRow },
+  decisions: { key: 'decisions', label: '仲裁决定', icon: '◈', count: '{n} 条决定', Row: DecisionRow }
 };
 
 /** 去掉整段输出外面的 ``` 围栏（带或不带 json 标签、单行或多行） */
@@ -194,10 +195,10 @@ export function extractPartialSections(text) {
 
 /** 普通回答里是否夹着明显的一段裸 JSON（用来决定要不要附原始输出折叠区） */
 export function hasObviousJson(text) {
-  const t = String(text ?? '');
-  if (t.length < 240) return false;
-  if (!/(?:^|\n)\s*[\[{]\s*"/.test(t)) return false;
-  const keys = t.match(/"[A-Za-z_][\w-]*"\s*:/g) || [];
+  const src = String(text ?? '');
+  if (src.length < 240) return false;
+  if (!/(?:^|\n)\s*[\[{]\s*"/.test(src)) return false;
+  const keys = src.match(/"[A-Za-z_][\w-]*"\s*:/g) || [];
   return keys.length >= 3;
 }
 
@@ -239,7 +240,7 @@ function TargetRow({ item }) {
     <div className="flex items-start gap-2 px-3.5 py-2.5">
       <span className={`badge shrink-0 mt-px text-[10px] ${SEV_CLS[risk] || SEV_CLS.low}`}>{risk}</span>
       <div className="min-w-0 flex-1">
-        <div className="font-mono text-[12px] leading-relaxed text-goldSoft break-all">{path || '(缺少路径)'}</div>
+        <div className="font-mono text-[12px] leading-relaxed text-goldSoft break-all">{path || t('(缺少路径)')}</div>
         {reason ? <div className="mt-0.5 text-[11px] leading-relaxed text-mute/65 break-words">{reason}</div> : null}
       </div>
       {id ? <span className="shrink-0 font-mono text-[10px] text-mute/40">{id}</span> : null}
@@ -263,7 +264,7 @@ function FindingRow({ item }) {
         className={`w-full text-left px-3.5 py-2.5 flex items-start gap-2 transition-colors ${canOpen ? 'hover:bg-white/[0.03]' : 'cursor-default'}`}>
         <span className={`badge shrink-0 mt-px text-[10px] ${SEV_CLS[sev] || SEV_CLS.low}`}>{sev}</span>
         <span className="min-w-0 flex-1">
-          <span className="block text-xs leading-relaxed text-ink/90 break-words">{claim || '(无结论)'}</span>
+          <span className="block text-xs leading-relaxed text-ink/90 break-words">{claim || t('(无结论)')}</span>
           {where ? (
             <span className="mt-0.5 block font-mono text-[10.5px] text-mute/50 truncate" title={where}>{where}</span>
           ) : null}
@@ -287,7 +288,7 @@ function VerdictRow({ item }) {
     <div className="px-3.5 py-2.5">
       <div className="flex items-center gap-2 min-w-0">
         <span className={`badge shrink-0 text-[10px] ${VERDICT_CLS[verdict] || VERDICT_CLS.uncertain}`}>{verdict}</span>
-        <span className="font-mono text-[11px] text-goldSoft/80 truncate">{claimId || '(缺少条目编号)'}</span>
+        <span className="font-mono text-[11px] text-goldSoft/80 truncate">{claimId || t('(缺少条目编号)')}</span>
       </div>
       {evidence ? (
         <pre className="mt-1.5 rounded-lg bg-black/20 border border-white/[0.05] px-2.5 py-1.5 text-[10.5px] font-mono leading-relaxed text-mute/70 whitespace-pre-wrap break-words max-h-48 overflow-y-auto">{evidence}</pre>
@@ -306,7 +307,7 @@ function DecisionRow({ item }) {
     <div className="px-3.5 py-2.5">
       <div className="flex items-center gap-2 min-w-0">
         <span className={`badge shrink-0 text-[10px] ${VERDICT_CLS[final] || VERDICT_CLS.uncertain}`}>{final}</span>
-        <span className="font-mono text-[11px] text-goldSoft/80 truncate">{claimId || '(缺少条目编号)'}</span>
+        <span className="font-mono text-[11px] text-goldSoft/80 truncate">{claimId || t('(缺少条目编号)')}</span>
       </div>
       {quote ? (
         <blockquote className="mt-1.5 border-l-2 border-gold/30 pl-2.5 font-mono text-[10.5px] leading-relaxed text-ink/75 whitespace-pre-wrap break-words">{quote}</blockquote>
@@ -317,7 +318,7 @@ function DecisionRow({ item }) {
 }
 
 /** 原始输出折叠区：默认收起，展开后限高 + 内部滚动（裸 JSON 永远不进面板主干） */
-function RawOutput({ text, label = '查看原始输出' }) {
+function RawOutput({ text, label = t('查看原始输出') }) {
   const [open, setOpen] = useState(false);
   const body = useMemo(() => (typeof text === 'string' ? text : stringifyJson(text)), [text]);
   return (
@@ -345,15 +346,15 @@ function SwarmCards({ sections, rawText }) {
         return (
           <section key={key} className={si ? 'border-t border-white/[0.06]' : ''}>
             <div className="px-3.5 pt-2.5 pb-1.5 flex items-center gap-2 min-w-0">
-              <span className="badge shrink-0 bg-gold/15 text-goldSoft border border-gold/35 text-[11px]">{meta.icon} {meta.label}</span>
-              <span className="text-[11px] tabular-nums text-mute/55">{list.length} {meta.unit}</span>
+              <span className="badge shrink-0 bg-gold/15 text-goldSoft border border-gold/35 text-[11px]">{meta.icon} {t(meta.label)}</span>
+              <span className="text-[11px] tabular-nums text-mute/55">{t(meta.count, { n: list.length })}</span>
             </div>
             {list.length ? (
               <div className="divide-y divide-white/[0.06] border-t border-white/[0.06]">
                 {list.map((item, i) => <Row key={i} item={item} />)}
               </div>
             ) : (
-              <div className="px-3.5 pb-2.5 text-[11px] text-mute/45">没有条目</div>
+              <div className="px-3.5 pb-2.5 text-[11px] text-mute/45">{t('没有条目')}</div>
             )}
           </section>
         );
@@ -370,8 +371,8 @@ function TruncatedAnswer({ sections, count, text }) {
     <div className="mt-2.5">
       <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11.5px] leading-relaxed text-amber-300/90">
         {count > 0
-          ? `子代理输出被截断，以下 ${count} 条可能不完整`
-          : '子代理输出不是完整 JSON，已收进原始输出'}
+          ? t('子代理输出被截断，以下 {n} 条可能不完整', { n: count })
+          : t('子代理输出不是完整 JSON，已收进原始输出')}
       </div>
       {hasRows ? (
         <SwarmCards sections={sections} rawText={text} />
@@ -388,7 +389,7 @@ function TruncatedAnswer({ sections, count, text }) {
 function UnknownJson({ text }) {
   return (
     <div className="mt-2.5 rounded-xl border border-white/[0.09] bg-[#0d0d10] overflow-hidden">
-      <div className="px-3.5 pt-2 pb-1 text-[11px] text-mute/50">JSON 输出（结构未识别）</div>
+      <div className="px-3.5 pt-2 pb-1 text-[11px] text-mute/50">{t('JSON 输出（结构未识别）')}</div>
       <RawOutput text={text} />
     </div>
   );
@@ -407,7 +408,7 @@ function MarkdownAnswer({ text, hasJson = false }) {
       {visible ? (
         <div className="md text-sm" dangerouslySetInnerHTML={{ __html: html }} />
       ) : (
-        <div className="text-[11px] text-mute/50">（正文只有 JSON，已收进原始输出）</div>
+        <div className="text-[11px] text-mute/50">{t('（正文只有 JSON，已收进原始输出）')}</div>
       )}
       {showRaw ? (
         <div className="mt-2 rounded-xl border border-white/[0.09] bg-[#0d0d10] overflow-hidden">
