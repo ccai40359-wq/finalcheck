@@ -37,9 +37,11 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      # --ignore-scripts：postinstall 会按 Electron ABI 下载 better-sqlite3 预编译二进制；
+      # CI 只需要编译 JS（打包/运行原生模块在本地做），避免把下载网络变成 CI 的失败点。
       - name: Install desktop dependencies
         working-directory: desktop
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       # 只验证构建产物，不跑 electron-builder 打包（太重）
       - name: Build desktop

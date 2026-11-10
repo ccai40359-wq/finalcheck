@@ -10,7 +10,7 @@
     "finalcheck-mcp": "./bin/finalcheck-mcp.js"
   },
   "scripts": {
-    "test": "node --test \"tests/*.test.mjs\"",
+    "test": "node scripts/run-tests.mjs",
     "lint": "eslint .",
     "smoke:agent": "node scripts/agent-live-smoke.mjs"
   },
