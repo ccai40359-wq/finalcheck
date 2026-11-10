@@ -24,6 +24,7 @@ export default [
       'desktop/release*/**',
       'desktop/dist-staging/**',
       'desktop/_recon/**',
+      'desktop/.tmp/**', // 临时构建/UI 自检产物（git 已忽略 .tmp/），不该进 lint
       'playbooks/**',
       'src/fixtures/**',
       'tests/fixtures/**',

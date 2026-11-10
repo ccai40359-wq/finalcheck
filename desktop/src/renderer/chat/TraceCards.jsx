@@ -423,6 +423,8 @@ function topologyPhases(steps) {
 }
 
 /* ---------- 工作流阶段轨道（运行卡 / 完成卡共用） ---------- */
+const PHASE_STEP_PREVIEW = 4; // 每个阶段默认最多露出 4 个步骤，其余收进 Show more
+
 function PhaseLane({
   phases,
   stepsById,
@@ -431,6 +433,14 @@ function PhaseLane({
   onOpenStep = null
 }) {
   const scrollRef = React.useRef(null);
+  // 展开状态是卡片本地 state（按阶段下标），不持久化：重开/刷新后回到默认 4 行
+  const [openPhases, setOpenPhases] = useState(() => new Set());
+  const togglePhase = (pi) => setOpenPhases((prev) => {
+    const next = new Set(prev);
+    if (next.has(pi)) next.delete(pi);
+    else next.add(pi);
+    return next;
+  });
   // 滚轮 → 左右丝滑滑动
   const onWheel = (e) => {
     const el = scrollRef.current;
@@ -459,6 +469,10 @@ function PhaseLane({
               : t('阶段 {n}', { n: pi + 1 });
             const isLast = pi === phases.length - 1;
             const nextRunning = !isLast && (phases[pi + 1] || []).some((id) => stepsById?.get(id)?.status === 'running');
+            // 阶段内步骤超过 4 行就折叠：只渲染前 4 个 + Show more（本地展开，不持久化）
+            const folded = list.length > PHASE_STEP_PREVIEW && !openPhases.has(pi);
+            const shown = folded ? list.slice(0, PHASE_STEP_PREVIEW) : list;
+            const hidden = list.length - shown.length;
             return (
               <div key={pi} className="relative shrink-0 w-[196px]">
                 {/* 阶段头：圆点 + 短名 + 完成数/总数；非末列右侧接细连线 */}
@@ -474,7 +488,7 @@ function PhaseLane({
                 </div>
                 {/* 该阶段的子代理芯片：纵向堆叠 */}
                 <div className="mt-1.5 space-y-1 pr-4">
-                  {list.map((s) => {
+                  {shown.map((s) => {
                     const st = WF_STATUS[s.status] || WF_STATUS.pending;
                     const label = s.name || s.role || t('子代理');
                     const tools = toolsOf(s);
@@ -544,6 +558,14 @@ function PhaseLane({
                       </button>
                     );
                   })}
+                  {list.length > PHASE_STEP_PREVIEW ? (
+                    <button onClick={() => togglePhase(pi)} aria-expanded={!folded}
+                      className="w-full text-left rounded-lg px-2 py-1 text-[10px] text-mute/60 hover:text-goldSoft hover:bg-white/[0.07] transition-colors">
+                      {folded
+                        ? t('Show more（还有 {n} 个）', { n: hidden })
+                        : t('收起')}
+                    </button>
+                  ) : null}
                 </div>
               </div>
             );

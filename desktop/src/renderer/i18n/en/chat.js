@@ -144,6 +144,7 @@ export const EN_CHAT = {
   '耗时：{duration}': 'Time: {duration}',
   '工具：{n} 次': 'Tools: {n}',
   '点击查看它的上下文': 'Click to view its context',
+  'Show more（还有 {n} 个）': 'Show more ({n} more)',
   '状态：{status}': 'Status: {status}',
   '状态：失败（{code} · {label}）': 'Status: failed ({code} · {label})',
   '{done}/{total} 完成': '{done}/{total} done',
@@ -208,5 +209,11 @@ export const EN_CHAT = {
   '(未命名任务)': '(untitled task)',
   '(未写验收标准)': '(no acceptance criteria)',
   '验收：{acceptance}': 'Acceptance: {acceptance}',
-  '证据：{evidence}': 'Evidence: {evidence}'
+  '证据：{evidence}': 'Evidence: {evidence}',
+  '完成': 'Done',
+  '跳过': 'Skipped',
+  '{n} 已完成': '{n} completed',
+  '全部完成': 'All done',
+  '展开已完成条目': 'Show completed items',
+  '收起已完成条目': 'Hide completed items'
 };

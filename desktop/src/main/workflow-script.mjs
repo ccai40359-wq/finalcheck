@@ -1146,6 +1146,136 @@ function parseStringList(content) {
   return parsed;
 }
 
+/* ---------- over 引用：JSON 之外的「文本列表」兜底解析 ----------
+   子代理经常不按 JSON 输出：它写成「- 入口 /api/a.php」「1. 登录」「| 文件 | 说明 |」。
+   引擎以前只认 JSON 字符串数组，直接中止整条工作流；现在按以下顺序解析：
+   ① JSON（数组或 { items: [...] }）；② 代码块里的 JSON（parseAgentJson 已覆盖围栏）；
+   ③ 逐行文本提取（项目符号 / 编号 / 表格首列 / 独立成行的 URL·路径）；④ 仍为空才报错。
+   文本提取是启发式，必然有误提取风险：命中时带 overParsedFrom='text' 并写 warning。 */
+
+const OVER_TEXT_EXTS = 'jsx|tsx|mjs|cjs|php|js|ts|py|rb|go|java|cs|html|json|md|yml|yaml|toml|sql|sh|vue|svelte|astro|css|scss|txt|xml';
+const OVER_LEAD_TOKEN_RE = new RegExp(
+  `^(?:\`([^\`\\n]+)\`|((?:https?:\\/\\/|\\.{0,2}\\/)?[^\\s\`，。；、：:（）()]+?\\.(?:${OVER_TEXT_EXTS})(?::\\d+)?))(?=$|[\\s，。；、：:（）(),*_~—–\\-])`,
+  'i'
+);
+const OVER_TABLE_SEP_RE = /^\|?\s*:?-{2,}:?\s*(?:\|\s*:?-{2,}:?\s*)+\|?$/;
+
+/** 清理单个文本条目：去 markdown 强调/反引号/复选框，行首是路径或行内代码时只取那个 token。 */
+function cleanOverTextItem(raw) {
+  let s = String(raw == null ? '' : raw).trim();
+  if (!s) return '';
+  s = s.replace(/^\[[ xX]\]\s+/, '');
+  s = s.replace(/^[*_~]+|[*_~]+$/g, '').trim();
+  const lead = s.match(OVER_LEAD_TOKEN_RE);
+  if (lead) s = String(lead[1] || lead[2] || '').trim();
+  s = s.replace(/^[`"'“”‘’]+|[`"'“”‘’]+$/g, '').trim();
+  s = s.replace(/[：:]+$/, '').trim();
+  return s;
+}
+
+/** 文本里「明说的数量」（共 8 个 / 8 项 / total: 8）——用于判断提取数是否偏离意图。 */
+function declaredOverCount(source) {
+  const src = String(source || '');
+  const patterns = [
+    /(?:共|总计|合计|一共|共计|总共)\s*[:：]?\s*(\d{1,4})/,
+    /(\d{1,4})\s*(?:个|项|条|处|只|份)\s*(?:入口|文件|页面|接口|路由|端点|参数|漏洞|问题|目标|项)/,
+    /\b(?:total|count)\b\s*[:：]?\s*(\d{1,4})/i,
+  ];
+  for (const re of patterns) {
+    const m = src.match(re);
+    if (m) {
+      const n = Number(m[1]);
+      if (Number.isFinite(n) && n > 0) return n;
+    }
+  }
+  return null;
+}
+
+/**
+ * 从人话正文里提取列表项：项目符号、编号、表格首列、独立成行的 URL/路径。
+ * @returns {{items:string[], declaredCount:number|null}} items 已 trim/去重/丢弃 <2 字符
+ */
+function extractOverItemsFromText(content) {
+  const source = String(content == null ? '' : content).replace(/\r\n?/g, '\n');
+  const found = [];
+  let lastLineWasTableRow = false;
+  let hasNumbered = false;
+  let maxNumbered = 0;
+  const pushRaw = (raw) => {
+    const item = cleanOverTextItem(raw);
+    if (item) found.push(item);
+  };
+  for (const line of source.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('```')) {
+      lastLineWasTableRow = false;
+      continue;
+    }
+    // 表格：首列才是条目；分隔行说明上一行是表头，丢掉那条
+    if (trimmed.startsWith('|')) {
+      if (OVER_TABLE_SEP_RE.test(trimmed)) {
+        if (lastLineWasTableRow && found.length) found.pop();
+        lastLineWasTableRow = false;
+        continue;
+      }
+      const cells = trimmed.replace(/^\|/, '').replace(/\|$/, '').split('|');
+      pushRaw(cells[0] || '');
+      lastLineWasTableRow = true;
+      continue;
+    }
+    lastLineWasTableRow = false;
+    const bullet = trimmed.match(/^[-*+•·]\s+(.+)$/);
+    if (bullet) {
+      pushRaw(bullet[1]);
+      continue;
+    }
+    const numbered = trimmed.match(/^(\d{1,3})[.)、]\s+(.+)$/);
+    if (numbered) {
+      hasNumbered = true;
+      maxNumbered = Math.max(maxNumbered, Number(numbered[1]) || 0);
+      pushRaw(numbered[2]);
+      continue;
+    }
+    // 独立成行（整行没有空白）的 URL / 路径 / 带扩展名的文件
+    if (!/\s/.test(trimmed)) {
+      const bare = trimmed.replace(/^[`"'“”‘’]+|[`"'“”‘’]+$/g, '');
+      const looksPath = /^https?:\/\//i.test(bare)
+        || /^\/[^\s]*$/.test(bare)
+        || /^\.{1,2}\//.test(bare)
+        || new RegExp(`\\.(?:${OVER_TEXT_EXTS})$`, 'i').test(bare);
+      if (looksPath) pushRaw(bare);
+    }
+  }
+  const items = [];
+  const seen = new Set();
+  for (const item of found) {
+    const s = item.trim();
+    if (s.length < 2 || seen.has(s)) continue;
+    seen.add(s);
+    items.push(s);
+  }
+  let declared = declaredOverCount(source);
+  // 编号列表本身就是「意图数量」：1..N 编了号却只提取到更少条目，说明有行没吃进来
+  if (declared == null && hasNumbered && maxNumbered > items.length) declared = maxNumbered;
+  return { items, declaredCount: declared };
+}
+
+/** ① JSON（数组 / {items:[...]}）② 代码块 JSON 统一走 parseAgentJson；返回 null 表示不是 JSON 列表。 */
+function parseOverJsonItems(value, label) {
+  const parsed = parseAgentJson(String(value || ''));
+  if (parsed?.error) return null;
+  let list = null;
+  if (Array.isArray(parsed)) list = parsed;
+  else if (isObj(parsed) && Array.isArray(parsed.items)) list = parsed.items;
+  if (!list) return null;
+  for (const item of list) {
+    if (typeof item !== 'string') {
+      throw abortScript(t('{label} 的 over 里每项必须是字符串', { label }));
+    }
+  }
+  return list;
+}
+
 /** 从上游结果里抽 findings / claims / results 数组（也识别 JSON 正文） */
 function aggregateItemsOf(result) {
   if (!result || typeof result !== 'object') return [];
@@ -1235,6 +1365,24 @@ export async function runScriptWorkflow({
   // 它是「报告必须点名未覆盖项」的数据源，随 out.fanoutTruncations 暴露给 UI/主 agent。
   const truncations = [];
   const truncationWarnings = [];
+  // 运行期降级产生的洞（节点/扇出跑到一半出错，被记为 failed 后 run 继续）：
+  // 这些必须在 out.warnings 里出现一次，不能只躺在结果行里。
+  const runtimeHoleWarnings = [];
+  // over 引用不是 JSON、靠文本逐行提取出来的：这是启发式，必须让用户看到「解析出几项」。
+  const overWarnings = [];
+  const noteOverParsedFromText = (label, resolution) => {
+    if (!resolution || resolution.parsedFrom !== 'text') return null;
+    const n = resolution.items.length;
+    const declared = Number(resolution.declaredCount);
+    const mismatch = Number.isFinite(declared) && declared > 0 && declared !== n
+      ? t('；文本里写到 {declared} 项，数量对不上', { declared })
+      : '';
+    const warning = t('从 {ref} 的文本里解析出 {n} 项（{label} 的 over 不是 JSON 字符串数组，按项目符号/编号/表格首列提取，可能含误提取{extra}）', {
+      ref: resolution.ref || '?', n, label, extra: mismatch,
+    });
+    if (!overWarnings.includes(warning)) overWarnings.push(warning);
+    return warning;
+  };
   const recordTruncation = (rec) => {
     if (!rec || !(rec.skipped > 0)) return;
     if (!truncations.some((x) => x.id === rec.id)) truncations.push(rec);
@@ -1525,6 +1673,72 @@ export async function runScriptWorkflow({
     queueJournalSave();
   };
 
+  // 运行期降级：某个节点/扇出出错时记成「洞」（failed + hole），让 run 继续跑完其余节点。
+  // 之前的行为是 throw abortScript → 整条 run 立刻结束，用户只看到一句错误、前面的结果全白跑。
+  // 洞会被 collectHoles 收进 report prompt，报告闸要求在 ## Not covered 点名，不会静默跳过。
+  const degradeToHole = (node, { error, errorCode = 'STEP_FAIL', phaseIds = null } = {}) => {
+    const id = String(node?.id || '').trim();
+    if (!id) return null;
+    const message = String(error || t('节点执行失败'));
+    const known = allNodes.find((x) => x.id === id);
+    if (!known) {
+      // 容器（fanout/if）本身不是节点：补一条可见的失败条目，快照/报告里才看得到
+      allNodes.push({
+        id,
+        name: node?.name || id,
+        role: node?.role || '',
+        prompt: '',
+        depends_on: Array.isArray(node?.depends_on) ? node.depends_on.slice() : [],
+        program: true, // 引擎降级：不再交给模型判定
+        opType: node?.opType || node?.kind || null,
+        programType: node?.programType || null,
+      });
+    }
+    const startedAtMs = Date.now();
+    const result = {
+      id,
+      name: (known || node)?.name || id,
+      role: (known || node)?.role || '',
+      depends_on: Array.isArray(node?.depends_on) ? node.depends_on.slice() : [],
+      ok: false,
+      error: message,
+      errorCode,
+      content: '',
+      ms: 0,
+      tools: 0,
+      toolCount: 0,
+      truncated: false,
+      warnings: [message],
+      reused: false,
+      kind: (known || node)?.kind || null,
+      model: null,
+      providerId: null,
+      op: (known || node)?.opType || node?.opType || null,
+      hole: true,
+      degraded: true, // 引擎侧降级（不是模型失败）：UI 可据此区分
+    };
+    results.set(id, result);
+    if (!executionOrder.includes(id)) executionOrder.push(id);
+    setState(id, {
+      status: 'failed',
+      reused: false,
+      startedAt: startedAtMs,
+      ms: 0,
+      error: message,
+      errorCode,
+      tools: 0,
+      toolCount: 0,
+      warnings: [message],
+      hole: true,
+      degraded: true,
+    });
+    if (Array.isArray(phaseIds) && !phaseIds.includes(id)) phaseIds.push(id);
+    if (!runtimeHoleWarnings.includes(message)) runtimeHoleWarnings.push(message);
+    try { recordNode(known || node, result, startedAtMs); } catch { /* journal 记录失败不影响继续跑 */ }
+    notify(true);
+    return result;
+  };
+
   const executeNode = async (node, { vars = {}, phaseIds = [], deferOrder = false } = {}) => {
     if (ctl.aborted) {
       stopped = true;
@@ -1751,26 +1965,33 @@ export async function runScriptWorkflow({
   };
 
   const resolveOverList = (label, rawRef) => {
-    const parseItems = (value) => {
-      const parsed = parseAgentJson(String(value || ''));
-      if (parsed?.error || !Array.isArray(parsed)) return null;
-      for (const item of parsed) {
-        if (typeof item !== 'string') throw abortScript(t('{label} 的 over 里每项必须是字符串', { label }));
+    const resolveFromContent = (content) => {
+      const json = parseOverJsonItems(content, label);
+      if (json) return { items: json, parsedFrom: 'json' };
+      const extracted = extractOverItemsFromText(content);
+      if (extracted.items.length) {
+        return { items: extracted.items, parsedFrom: 'text', declaredCount: extracted.declaredCount };
       }
-      return parsed;
+      return null;
     };
-    let target = resolveSingle(rawRef);
-    if (!target && rawRef.includes('${')) {
-      const interpolated = interpolateScriptText(rawRef, {}, results);
-      const direct = parseItems(interpolated);
-      if (direct) return direct;
+    const raw = String(rawRef ?? '');
+    let target = resolveSingle(raw);
+    if (!target && raw.includes('${')) {
+      const interpolated = interpolateScriptText(raw, {}, results);
+      const direct = resolveFromContent(interpolated);
+      if (direct) return { ...direct, ref: raw };
       target = resolveSingle(interpolated);
       if (!target) throw abortScript(t('{label} 的 over 引用不存在：{ref}', { label, ref: interpolated }));
     }
-    if (!target) throw abortScript(t('{label} 的 over 引用不存在：{ref}', { label, ref: rawRef }));
-    const parsed = parseItems(target.content);
-    if (!parsed) throw abortScript(t('{label} 的 over 引用 {ref} 未解析出 JSON 字符串数组', { label, ref: rawRef }));
-    return parsed;
+    if (!target) throw abortScript(t('{label} 的 over 引用不存在：{ref}', { label, ref: raw }));
+    const resolved = resolveFromContent(target.content);
+    if (!resolved) {
+      const op = String(label).trim().split(/\s+/)[0] || 'fanout';
+      throw abortScript(t('over 引用 {ref} 没有解析出列表：让 {ref} 输出 JSON 字符串数组（或每行一项），或在 {op} 里直接写 over:[...]', {
+        ref: raw, op,
+      }));
+    }
+    return { ...resolved, ref: raw };
   };
 
   const runFanout = async (container, phaseIds, vars) => {
@@ -1778,7 +1999,12 @@ export async function runScriptWorkflow({
       stopped = true;
       return;
     }
-    const allItems = container.overRef ? resolveOverList(`fanout ${container.id}`, container.overRef) : (container.overItems || []);
+    const overResolution = container.overRef
+      ? resolveOverList(`fanout ${container.id}`, container.overRef)
+      : { items: container.overItems || [], parsedFrom: 'script' };
+    const allItems = overResolution.items;
+    const overTextWarning = noteOverParsedFromText(`fanout ${container.id}`, overResolution);
+    const overParsedFrom = overResolution.parsedFrom === 'text' ? 'text' : null;
     if (allItems.length > SCRIPT_MAX_FANOUT) {
       throw abortScript(t('fanout {id} 的 over 最多 {max} 项（当前 {n}）', { id: container.id, max: SCRIPT_MAX_FANOUT, n: allItems.length }));
     }
@@ -1848,6 +2074,20 @@ export async function runScriptWorkflow({
       }
     }
     aliasNodes.set(container.id, childIds);
+    // over 是文本解析出来的：每个子节点结果/快照都带 overParsedFrom，UI/主 agent 能看出
+    // 「这些条目不是上游给的 JSON」，同时把「解析出 N 项」的 warning 挂到子节点上。
+    if (overParsedFrom) {
+      for (const id of childIds) {
+        const row = results.get(id);
+        if (row && !row.overParsedFrom) row.overParsedFrom = overParsedFrom;
+        const st = state.get(id) || EMPTY_STATE;
+        const list = Array.isArray(st.warnings) ? st.warnings : [];
+        setState(id, {
+          overParsedFrom,
+          ...(overTextWarning && !list.includes(overTextWarning) ? { warnings: [...list, overTextWarning] } : {}),
+        });
+      }
+    }
     // 截断事实同时挂到每个子节点结果与快照上：UI 卡片就能看到「共 32、只跑 20」，
     // 不必等整轮结束去翻 out.warnings。
     if (truncation) {
@@ -1942,9 +2182,11 @@ export async function runScriptWorkflow({
 
   const runRecurseNode = async (node, phaseIds, vars) => {
     const summary = { branches: 0, stopWhenMatched: 0, depthLimited: 0, maxDepth: node.maxDepth };
-    const items = node.overRef
+    const overResolution = node.overRef
       ? resolveOverList(`recurse ${node.id}`, node.overRef)
-      : (node.overItems || []);
+      : { items: node.overItems || [], parsedFrom: 'script' };
+    noteOverParsedFromText(`recurse ${node.id}`, overResolution);
+    const items = overResolution.items;
     const seq = new Map();
     seq.set(1, items.length);
     const seqOfDepth = (depth) => {
@@ -2048,7 +2290,19 @@ export async function runScriptWorkflow({
       }
       const phaseIds = [];
       phases.push(phaseIds);
-      await runItem(item, phaseIds, {});
+      try {
+        await runItem(item, phaseIds, {});
+      } catch (e) {
+        // 结构性校验（未知 op / 缺 id / 终局缺失 / 字面列表超限）在 normalizeScript 阶段已拦；
+        // 跑到这里的错误都是「运行期」的（上游数据形状不对、动态递归体、节点上限…），
+        // 一律降级为洞并继续跑后面的 op —— 一条分支出问题不该让整条 run 白跑。
+        const target = item.kind === 'node' ? item.node : item;
+        degradeToHole(target, {
+          error: e?.message || t('节点执行失败'),
+          errorCode: 'STEP_FAIL',
+          phaseIds,
+        });
+      }
       if (!phaseIds.length) phases.pop(); // 自动补验被跳过时不留下空阶段
       if (stopped) break;
     }
@@ -2077,7 +2331,7 @@ export async function runScriptWorkflow({
   claimsStore.length = 0;
   claimsStore.push(...adversarialGate.claims);
   const claimWarnings = linted.warnings;
-  const warnings = [...truncationWarnings, ...claimWarnings, ...adversarialGate.warnings];
+  const warnings = [...truncationWarnings, ...overWarnings, ...runtimeHoleWarnings, ...claimWarnings, ...adversarialGate.warnings];
   let claimsFile = null;
   if (dir && claimsStore.length) {
     try {

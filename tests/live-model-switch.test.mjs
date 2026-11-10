@@ -5,14 +5,19 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import os from 'node:os';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { mkdtemp, rm } from 'node:fs/promises';
 
 const sessionsDir = await mkdtemp(path.join(os.tmpdir(), 'fc-live-model-'));
 process.env.FINALCHECK_SESSIONS_DIR = sessionsDir;
+// 回合结束会写用量账本：指向临时文件，避免污染真实 %APPDATA%
+process.env.FINALCHECK_USAGE_FILE = path.join(sessionsDir, 'usage.json');
+
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 const { runWorkflow } = await import('../desktop/src/main/workflow.mjs');
 const { runAgentTurn, resolveWorkflowStepModel } = await import('../desktop/src/main/agent-service.mjs');
-const { createLiveModelResolver } = await import('../desktop/src/main/ipc/ipc-agent.mjs');
+const { createLiveModelResolver, registerAgentIpc } = await import('../desktop/src/main/ipc/ipc-agent.mjs');
 const { resolveTurnTarget } = await import('../desktop/src/main/model-config.mjs');
 const sessions = await import('../desktop/src/main/sessions.mjs');
 
@@ -203,4 +208,91 @@ test('set-model 落盘后重读能拿到新值（重开 App 仍生效）', async
   // 未给的字段沿用旧值（select 只改模型，不把供应商清掉）
   await sessions.setModelConfig(s.id, { model: 'model-b2' });
   assert.equal((await sessions.getModelConfig(s.id)).providerId, 'p-b');
+});
+
+// ---- P0 回归：直接跑 agent-chat handler（v0.1.7 每发必失败：const model 用在前、声明在后 → TDZ） ----
+// 之前所有用例都只测 resolver / runAgentTurn 等下层函数，没有一条真正进入 IPC handler，
+// 所以「initial: { provider: prov, model } 早于 const model 声明」这种顺序错误测试全绿、装机必炸。
+function makeChatHarness({ providers, activeProviderId, activeModel, sessionProjectPathOf = () => null }) {
+  const handlers = new Map();
+  const ipcMain = { handle: (channel, fn) => handlers.set(channel, fn) };
+  const cfg = { providers, activeProviderId, activeModel, permissionMode: 'ask' };
+  const store = {
+    loadConfig: async () => cfg,
+    pickActiveProvider: (c) => c.providers.find((p) => p.id === c.activeProviderId && p.enabled !== false) || null,
+    modelIdsOf: (p) => p.models,
+    sandboxModeOf: () => 'workspace',
+    sandboxAllowPathsOf: () => [],
+    summarizeWithProvider: async () => '',
+    generateSessionTitle: async () => null
+  };
+  const state = {
+    activeChats: new Map(),
+    steerBuffers: new Map(),
+    workflowTranscripts: new Map(),
+    workflowControls: new Map(),
+    sessionUsage: new Map(),
+    hookSessionContext: new Map()
+  };
+  registerAgentIpc({
+    ipcMain,
+    getWin: () => null,
+    getHooksConfig: () => ({}),
+    getDataRoot: () => sessionsDir,
+    engineUrl: (rel) => pathToFileURL(path.join(REPO_ROOT, rel)).href,
+    repoRoot: REPO_ROOT,
+    imageMime: { '.png': 'image/png' },
+    sessionProjectPathOf,
+    store,
+    state
+  });
+  const chat = handlers.get('finalcheck:agent-chat');
+  assert.equal(typeof chat, 'function', 'agent-chat handler 必须已注册');
+  return { chat, state };
+}
+
+// 假网关：记录请求体，回一条普通回答（不用真网络；跑到第一次模型请求即可暴露 TDZ）
+function stubFetchOnce(t, reply = '收到') {
+  const bodies = [];
+  const auths = [];
+  const prev = globalThis.fetch;
+  globalThis.fetch = async (_url, opts = {}) => {
+    if (opts.body) bodies.push(JSON.parse(opts.body));
+    auths.push(opts.headers?.authorization);
+    return answer(reply);
+  };
+  t.after(() => { globalThis.fetch = prev; });
+  return { bodies, auths };
+}
+
+test('P0 回归：无 override 的普通发送（无会话模型）能跑到第一次请求，不抛 ReferenceError', async (t) => {
+  const { bodies } = stubFetchOnce(t);
+  const { chat } = makeChatHarness({ providers: [pA()], activeProviderId: 'p-a', activeModel: 'model-a1' });
+  // handler 若在 TDZ 上炸，这里会直接 reject（ReferenceError: Cannot access 'model' before initialization）
+  const out = await chat({ sender: null }, [{ role: 'user', content: '你好' }], [], null);
+  assert.equal(out?.error, undefined, JSON.stringify(out));
+  assert.equal(out.answer, '收到');
+  assert.equal(bodies.length, 1, '应恰好发出一次模型请求');
+  assert.equal(bodies[0].model, 'model-a1', '无 override 时用全局 activeModel');
+});
+
+test('P0 回归：有 override（会话指定供应商+模型）路径同样不抛 ReferenceError，请求按会话模型发出', async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'fc-live-model-override-'));
+  const prevDir = process.env.FINALCHECK_SESSIONS_DIR;
+  process.env.FINALCHECK_SESSIONS_DIR = dir;
+  t.after(async () => {
+    process.env.FINALCHECK_SESSIONS_DIR = prevDir;
+    await rm(dir, { recursive: true, force: true });
+  });
+  const s = await sessions.newSession('p0-override');
+  await sessions.setModelConfig(s.id, { providerId: 'p-b', model: 'model-b1' });
+
+  const { bodies, auths } = stubFetchOnce(t);
+  const { chat } = makeChatHarness({ providers: [pA(), pB()], activeProviderId: 'p-a', activeModel: 'model-a1' });
+  const out = await chat({ sender: null }, [{ role: 'user', content: '你好' }], [], s.id);
+  assert.equal(out?.error, undefined, JSON.stringify(out));
+  assert.equal(out.answer, '收到');
+  assert.equal(bodies.length, 1, '应恰好发出一次模型请求');
+  assert.equal(bodies[0].model, 'model-b1', '会话 override 的模型生效');
+  assert.equal(auths[0], 'Bearer key-b', '会话 override 的供应商 key 也生效');
 });

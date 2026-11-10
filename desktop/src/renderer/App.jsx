@@ -44,6 +44,16 @@ const moveToInput = (list, id) => {
 };
 /* QUEUE-HELPERS-END */
 
+// 主进程 error-guard 的失败返回体（{ error, code:'IPC_FAILED' }）→ 抛成异常：
+// 调用点已有的 catch 就能给出可见提示，而不是把错误对象当数据继续渲染（= 界面空白/卡住）。
+// 其他业务对象里的 .error（如 /compact 的 { error }）保持原样，由各调用点自己判断。
+const unwrapIpc = (r) => {
+  if (r && typeof r === 'object' && !Array.isArray(r) && r.code === 'IPC_FAILED' && typeof r.error === 'string') {
+    throw new Error(r.error);
+  }
+  return r;
+};
+
 export default function App() {
   const y = api(); // window.finalcheck（浏览器直开时为空 → 仅壳）
   useLanguage(); // 订阅语言状态：设置页切换语言后整棵界面重渲染（t() 读的是最新语言）
@@ -176,7 +186,7 @@ export default function App() {
   const refreshSessions = async (projectId = activeProjectIdRef.current) => {
     if (!y) return [];
     try {
-      const list = await y.sessions.list();
+      const list = unwrapIpc(await y.sessions.list());
       // IPC 期间用户切走了：sessions.list() 读的是主进程「那一刻」的当前项目，
       // 不能把它写进旧项目的缓存；按只读 IPC 重新核对一次归属。
       if (projectId && projectId !== activeProjectIdRef.current) {
@@ -194,7 +204,7 @@ export default function App() {
     if (!y || !projectId) return [];
     if (projectId === activeProjectIdRef.current) return refreshSessions(projectId);
     try {
-      const list = y.projects?.sessions ? await y.projects.sessions(projectId) : [];
+      const list = y.projects?.sessions ? unwrapIpc(await y.projects.sessions(projectId)) : [];
       cacheProjectSessions(projectId, list);
       return list;
     } catch { return []; }
@@ -208,7 +218,7 @@ export default function App() {
     if (loadingProjectsRef.current.has(projectId)) return projectSessionsRef.current[projectId] || [];
     loadingProjectsRef.current.add(projectId);
     try {
-      const list = await y.projects.sessions(projectId);
+      const list = unwrapIpc(await y.projects.sessions(projectId));
       cacheProjectSessions(projectId, list);
       return projectSessionsRef.current[projectId];
     } catch {
@@ -239,7 +249,7 @@ export default function App() {
 
   const refreshProjects = async () => {
     if (!y?.projects) return [];
-    try { const list = await y.projects.list(); setProjects(list); return list; } catch { return []; }
+    try { const list = unwrapIpc(await y.projects.list()); setProjects(list); return list; } catch { return []; }
   };
 
   // 「自动打开」只挑未归档会话：归档的默认看不见，也就不该被打开；
@@ -277,7 +287,13 @@ export default function App() {
   // 切项目只切 UI 视角（ZCode 语义）：不中断任何在跑的回合，runsRef 里的后台流原样保留
   const switchProject = async (p) => {
     if (!p) return;
-    await y.projects.select(p.id);
+    // 失败必须可见：以前这里没有 catch，主进程一拒就是一整条未处理的 Promise + 界面毫无反应
+    try {
+      unwrapIpc(await y.projects.select(p.id));
+    } catch (e) {
+      setMessages((prev) => [...prev, { role: 'notice', content: t('切换项目失败：{msg}', { msg: e?.message || e }) }]);
+      return;
+    }
     activateProject(p.id);
     rememberSessionProject(p.id); // 项目里没有可打开的会话时，空白草稿也属于这个项目
     setArtifact(null);
@@ -313,11 +329,11 @@ export default function App() {
     const dir = await y.pickDirectory();
     if (!dir) return;
     try {
-      const p = await y.projects.add(dir);
+      const p = unwrapIpc(await y.projects.add(dir));
       await refreshProjects();
       await switchProject(p);
     } catch (e) {
-      setMessages((prev) => [...prev, { role: 'notice', content: t('添加项目失败：{msg}', { msg: e.message }) }]);
+      setMessages((prev) => [...prev, { role: 'notice', content: t('添加项目失败：{msg}', { msg: e?.message || e }) }]);
     }
   };
 
@@ -359,12 +375,12 @@ export default function App() {
     setRowMenu(null);
     setMoveOpen(false);
     try {
-      await y.sessions.move(s.id, targetProjectId);
+      unwrapIpc(await y.sessions.move(s.id, targetProjectId));
       await refreshProjectSessions(sourceProjectId || projectIdOfSession(s.id) || activeProjectIdRef.current);
       await refreshProjectSessions(targetProjectId); // 目标项目缓存同步（未展开也保持最新）
       await refreshProjects();
       if (activeIdRef.current === s.id) rememberSessionProject(targetProjectId); // 当前会话被移动：归属跟着走
-    } catch (e) { setMessages((prev) => [...prev, { role: 'notice', content: t('移动失败：{msg}', { msg: e.message }) }]); }
+    } catch (e) { setMessages((prev) => [...prev, { role: 'notice', content: t('移动失败：{msg}', { msg: e?.message || e }) }]); }
   };
   const saveRename = async () => {
     if (!renameBox) return;
@@ -381,7 +397,7 @@ export default function App() {
   const openSession = async (id, projectId = null) => {
     if (!y) return;
     try {
-      const s = await y.sessions.open(id);
+      const s = unwrapIpc(await y.sessions.open(id));
       // 归属：调用方传入的项目 → 会话缓存里的目录登记 → 当前项目（老会话/未登记时兜底）
       rememberSessionProject(projectId || projectIdOfSession(s.id) || activeProjectIdRef.current);
       setActiveId(s.id);
@@ -406,7 +422,11 @@ export default function App() {
       setStepView(null); // 面板属于某个会话的某一步：切会话就收起，别留着上一条的上下文
       setPage('chat');
       refreshSessions(projectId || activeProjectIdRef.current); // markRead 已在主进程清掉 unread → 绿点消失
-    } catch { refreshSessions(projectId || activeProjectIdRef.current); }
+    } catch (e) {
+      // 会话打不开（文件损坏/被外部删掉）：明确说一句，别让用户以为「点了没反应」
+      setMessages((prev) => [...prev, { role: 'notice', content: t('打开会话失败：{msg}', { msg: e?.message || e }) }]);
+      refreshSessions(projectId || activeProjectIdRef.current);
+    }
   };
 
   // 点某个 Workspace 下的会话：不属于当前项目 → 先切到它所属项目（模型/权限/New Session 跟着走），再打开
@@ -578,25 +598,39 @@ export default function App() {
     return () => clearTimeout(t);
   }, [messages, activeId, cfg]);
 
+  // 全局提示气泡：主进程进程级异常（sessionId=null 的 notice）与回合 warning 都要看得见。
+  // 插在流式助手气泡之前，保持「最后一条是 assistant」的约定（token 归约依赖它）。
+  const pushNotice = (content) => {
+    const text = String(content || '').trim();
+    if (!text) return;
+    setMessages((prev) => {
+      const last = prev[prev.length - 1];
+      if (last?.role === 'assistant' && last.streaming) return [...prev.slice(0, -1), { role: 'notice', content: text }, last];
+      return [...prev, { role: 'notice', content: text }];
+    });
+  };
+
   // 流式 token：按 sessionId 路由（多会话可同时跑；看不到的会话先攒在 runsRef 里）
   useEffect(() => {
     if (!y?.onAgentToken) return undefined;
     return y.onAgentToken((p) => {
-      const sid = p && typeof p === 'object' ? p.sessionId : null;
-      const txt = p && typeof p === 'object' ? p.text : '';
-      if (!sid || typeof txt !== 'string' || !txt) return;
-      const run = runsRef.current.get(sid);
-      if (run) run.content += txt;
-      if (activeIdRef.current !== sid) return;
-      setMessages((prev) => {
-        const next = [...prev];
-        const last = next[next.length - 1];
-        if (last?.role !== 'assistant' || last.error) return prev;
-        if (last.streaming) next[next.length - 1] = { ...last, content: last.content + txt };
-        // 已手动停止：只补内容，绝不把消息变回 streaming
-        else if (stoppedRef.current.has(sid) && last.interrupted) next[next.length - 1] = { ...last, content: (last.content || '') + txt, streaming: false };
-        return next;
-      });
+      try {
+        const sid = p && typeof p === 'object' ? p.sessionId : null;
+        const txt = p && typeof p === 'object' ? p.text : '';
+        if (!sid || typeof txt !== 'string' || !txt) return;
+        const run = runsRef.current.get(sid);
+        if (run) run.content += txt;
+        if (activeIdRef.current !== sid) return;
+        setMessages((prev) => {
+          const next = [...prev];
+          const last = next[next.length - 1];
+          if (last?.role !== 'assistant' || last.error) return prev;
+          if (last.streaming) next[next.length - 1] = { ...last, content: last.content + txt };
+          // 已手动停止：只补内容，绝不把消息变回 streaming
+          else if (stoppedRef.current.has(sid) && last.interrupted) next[next.length - 1] = { ...last, content: (last.content || '') + txt, streaming: false };
+          return next;
+        });
+      } catch { /* 单个 token 异常不能让后续 token 全部丢失（否则界面停在半句） */ }
     });
   }, [y]);
 
@@ -606,45 +640,58 @@ export default function App() {
     return y.onAgentEvent((p) => {
       const sid = p && typeof p === 'object' ? p.sessionId : null;
       const ev = p && typeof p === 'object' ? p.ev : p;
-      if (!sid || !ev) return;
-      const run = runsRef.current.get(sid);
-      if (run) {
-        run.events = [...(run.events || []), ev];
-        // 工作流快照单独存一份：切走再切回来时卡片要能原样恢复（只存 events 会丢卡片）
-        if (ev.kind === 'workflow') run.workflow = ev;
-        if (ev.kind === 'workflow-start') run.workflowStarting = true;
+      if (!ev) return;
+      // 主进程 notice（进程级异常兜底，sessionId 可能为 null）与回合 warning：
+      // 以前这些事件被 reducer 的 default 分支丢掉，用户完全看不到「主进程出事了」。
+      if (ev.kind === 'notice' || ev.kind === 'warning') {
+        const message = String(ev.message || (ev.kind === 'warning' ? ev.text : '') || '').trim();
+        if (message) pushNotice(sid && activeIdRef.current !== sid ? t('（后台会话）{msg}', { msg: message }) : message);
+        if (!sid) return;
       }
-      if (ev.kind === 'turn-end') {
-        setStoppingIds((prev) => { if (!prev[sid]) return prev; const n = { ...prev }; delete n[sid]; return n; });
-        stoppingRef.current.delete(sid);
-      }
-      if (activeIdRef.current !== sid) return;
-      // Steer：用户中途注入当前回合。插在流式助手消息之前，画一条带徽标的用户气泡；
-      // 它不属于会话历史（主进程只把它并进本轮上下文），所以不参与编辑/回退。
-      if (ev.kind === 'steer') {
-        const bubble = { role: 'user', content: String(ev.text || ''), steer: true };
+      if (!sid) return;
+      try {
+        const run = runsRef.current.get(sid);
+        if (run) {
+          run.events = [...(run.events || []), ev];
+          // 工作流快照单独存一份：切走再切回来时卡片要能原样恢复（只存 events 会丢卡片）
+          if (ev.kind === 'workflow') run.workflow = ev;
+          if (ev.kind === 'workflow-start') run.workflowStarting = true;
+        }
+        if (ev.kind === 'turn-end') {
+          setStoppingIds((prev) => { if (!prev[sid]) return prev; const n = { ...prev }; delete n[sid]; return n; });
+          stoppingRef.current.delete(sid);
+        }
+        if (activeIdRef.current !== sid) return;
+        // Steer：用户中途注入当前回合。插在流式助手消息之前，画一条带徽标的用户气泡；
+        // 它不属于会话历史（主进程只把它并进本轮上下文），所以不参与编辑/回退。
+        if (ev.kind === 'steer') {
+          const bubble = { role: 'user', content: String(ev.text || ''), steer: true };
+          setMessages((prev) => {
+            const i = prev.length - 1;
+            if (i >= 0 && prev[i]?.role === 'assistant' && prev[i]?.streaming) return [...prev.slice(0, i), bubble, prev[i]];
+            return [...prev, bubble];
+          });
+          return;
+        }
         setMessages((prev) => {
           const i = prev.length - 1;
-          if (i >= 0 && prev[i]?.role === 'assistant' && prev[i]?.streaming) return [...prev.slice(0, i), bubble, prev[i]];
-          return [...prev, bubble];
-        });
-        return;
-      }
-      setMessages((prev) => {
-        const i = prev.length - 1;
-        if (i < 0 || prev[i]?.role !== 'assistant') return prev;
-        if (stoppedRef.current.has(sid)) {
-          // 手动停止后：只接受 turn-end 收尾耗时，其余迟到事件一律不套用，防止消息重新变回 streaming
-          if (ev.kind !== 'turn-end') return prev;
+          if (i < 0 || prev[i]?.role !== 'assistant') return prev;
+          if (stoppedRef.current.has(sid)) {
+            // 手动停止后：只接受 turn-end 收尾耗时，其余迟到事件一律不套用，防止消息重新变回 streaming
+            if (ev.kind !== 'turn-end') return prev;
+            const next = [...prev];
+            next[i] = { ...applyAgentEvent(prev[i], ev), streaming: false, interrupted: true };
+            return next;
+          }
+          if (!prev[i].streaming) return prev;
           const next = [...prev];
-          next[i] = { ...applyAgentEvent(prev[i], ev), streaming: false, interrupted: true };
+          next[i] = applyAgentEvent(prev[i], ev);
           return next;
-        }
-        if (!prev[i].streaming) return prev;
-        const next = [...prev];
-        next[i] = applyAgentEvent(prev[i], ev);
-        return next;
-      });
+        });
+      } catch {
+        // 单个畸形事件不能让整条事件流失效（否则后面的 turn-end 收不到 → 界面一直「运行中」）
+        pushNotice(t('有一个过程事件渲染失败（已跳过，不影响本轮结果）'));
+      }
     });
   }, [y]);
 
@@ -858,7 +905,18 @@ export default function App() {
   };
 
   // send(override)：override = 队首消息（自动发送时使用，不改动输入框里的草稿）
+  // 发送入口：内部对「可预期失败」各自 catch（建会话/落盘/agent-chat）；
+  // 这里只兜住意外异常，保证不会出现「点了发送、界面既没消息也没提示」。
   const send = async (override = null) => {
+    try {
+      await sendOnce(override);
+    } catch (e) {
+      setMessages((prev) => [...prev, { role: 'notice', content: t('发送失败：{msg}（消息未发出，可直接重试）', { msg: e?.message || e }) }]);
+    } finally {
+      pumpingRef.current = false; // 任何分支都要释放队列泵，否则排队消息永远不发出
+    }
+  };
+  const sendOnce = async (override = null) => {
     const sendProjectId = activeProjectIdRef.current; // 本轮新建会话的归属：之后切项目也不串桶
     const queued = !!override;
     const typedRaw = String(queued ? (override.text || '') : input).trim();
@@ -926,7 +984,7 @@ export default function App() {
     let sid = activeId;
     if (!sid) { // 无会话时自动补建，保证每轮落盘
       try {
-        const s = await y.sessions.create(t('新会话'));
+        const s = unwrapIpc(await y.sessions.create(t('新会话')));
         sid = s.id;
         setActiveId(sid);
         activeIdRef.current = sid;
@@ -936,9 +994,13 @@ export default function App() {
         else setSessions((prev) => [fresh, ...prev]);
         setMessages([]);
         refreshProjects();
-      } catch { /* 忽略 */ }
+      } catch (e) {
+        // 输入框在上面已经清空了：这里必须把文字放回去 + 明确提示，否则用户会以为「点了没反应、字也没了」
+        if (!queued) setInput(typedRaw);
+        setMessages((prev) => [...prev, { role: 'notice', content: t('新建会话失败，消息未发送：{msg}', { msg: e?.message || e }) }]);
+      }
     }
-    if (!sid) { pumpingRef.current = false; return; }
+    if (!sid) return;
     // 手动发送 / 新会话首次发送：把当前会话的模型配置落盘（主进程按它选模型）。
     // 排队消息出队时不回写：出队执行的回合由主进程在回合开始重读盘上最新配置，
     // 这条路径若拿入队时的状态回写，反而会把运行中刚改的新模型覆盖回旧值。

@@ -156,9 +156,24 @@ export function registerAgentIpc({
   });
 
   ipcMain.handle('finalcheck:agent-chat', async (_e, messages, _legacyConfirmedHosts = [], sessionId = null) => {
-    const { runAgentTurn, injectSessionHookContext, resolveWorkflowStepModel, computeCrossFamilyWarnings } = await import(engineUrl('desktop/src/main/agent-service.mjs'));
     const chatAbort = new AbortController();
     if (sessionId) state.activeChats.set(sessionId, chatAbort);
+    try {
+      return await runAgentChat({ messages, sessionId, chatAbort });
+    } catch (e) {
+      // 回合级异常（配置读失败 / 引擎模块导入失败 / 初始化顺序错误…）：
+      // 必须清掉运行态，否则下一回合会被判「仍在运行」→ 发送被入队、Steer 被拒，界面像卡死。
+      // 错误本身交给 index.mjs 的 IPC 安全层转成 { error }（界面能看见，且不带栈）。
+      if (sessionId && state.activeChats.get(sessionId) === chatAbort) state.activeChats.delete(sessionId);
+      state.steerBuffers.delete(sessionId);
+      try { console.warn('[agent-chat] 回合异常终止（已清理运行态）：' + (e?.stack || e)); } catch { /* 忽略 */ }
+      throw e;
+    }
+  });
+
+  // agent-chat 的实现：注册在上面（异常清理包在外层），这里只负责一个回合的正文
+  const runAgentChat = async ({ messages, sessionId, chatAbort }) => {
+    const { runAgentTurn, injectSessionHookContext, resolveWorkflowStepModel, computeCrossFamilyWarnings } = await import(engineUrl('desktop/src/main/agent-service.mjs'));
     // 本回合的项目上下文快照：按「会话所属项目」，之后无论 UI 切到哪个项目都不再重读全局
     const turnProjectPath = sessionProjectPathOf(sessionId);
     permissions.setMode((await store.loadConfig()).permissionMode); // 每轮按当前配置应用权限模式（全局审批模式，非项目策略）
@@ -212,6 +227,12 @@ export function registerAgentIpc({
         }, ...contextMessages];
       }
     } catch { /* 项目记忆读取失败不阻断对话 */ }
+    // 本回合的模型解析必须先于「运行期解析器」：resolver 的 initial 就是这里的 model 快照。
+    // （声明顺序敏感：不要把这四行移回 liveModels 之后，否则 const model 会落进 TDZ）
+    const modelIds = store.modelIdsOf(prov);
+    const model = (mc.model && modelIds.includes(mc.model))
+      ? mc.model
+      : ((cfg.activeModel && modelIds.includes(cfg.activeModel)) ? cfg.activeModel : modelIds[0]);
     // 运行期模型解析器：主 agent 的每次模型请求、工作流的每一步开始时都重新读配置（不是回合启动快照）
     const liveModels = createLiveModelResolver({ store, sessionsStore: sessions, sessionId, initial: { provider: prov, model } });
     let liveFallbackWarned = false; // 回退 warning 每回合最多一条，不刷屏
@@ -232,10 +253,6 @@ export function registerAgentIpc({
       if (hookCtx) contextMessages = injectSessionHookContext(contextMessages, hookCtx);
     }
     contextMessages = await attachImagesToLastUser(contextMessages, imageMime);
-    const modelIds = store.modelIdsOf(prov);
-    const model = (mc.model && modelIds.includes(mc.model))
-      ? mc.model
-      : ((cfg.activeModel && modelIds.includes(cfg.activeModel)) ? cfg.activeModel : modelIds[0]);
     // 本轮窗口/输出预留按实际解析到的模型走（model > provider > 默认 1M/32k），跨轮预算用同一对值推导
     const modelEntry = resolveModel(prov, model);
     const contextWindow = effectiveWindow(modelEntry, prov);
@@ -750,5 +767,5 @@ export function registerAgentIpc({
       }
     }
     return out;
-  });
+  };
 }

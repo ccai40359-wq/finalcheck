@@ -124,6 +124,8 @@ export default function Composer({
       try {
         const dataBase64 = await readBase64(f);
         const saved = await y.saveAttachment({ name: f.name || 'pasted.png', dataBase64 });
+        // 主进程失败时返回 { error }（IPC 安全层）：不能把它当附件加进去，否则发送时会带上 "- undefined"
+        if (!saved || saved.error || !saved.path) throw new Error(saved?.error || t('附件保存失败'));
         let preview = null;
         if (String(f.type || '').startsWith('image/')) {
           // 主路径：从落盘文件回读（切会话/重开仍可显示）；大图在 previewFromPath 内缩到 ≤480px

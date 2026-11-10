@@ -20,6 +20,7 @@ import { registerAgentIpc } from './ipc/ipc-agent.mjs';
 import { registerSystemIpc } from './ipc/ipc-system.mjs';
 import { registerDiagnosticsIpc } from './ipc/ipc-diagnostics.mjs';
 import { registerUpdaterIpc } from './ipc/ipc-updater.mjs';
+import { appendLogLine, installProcessGuards, installSafeIpc } from './error-guard.mjs';
 
 // 会话读写按「会话所属项目」解析目录（未登记则回退当前项目目录）
 sessions.setSessionDirResolver((id) => getSessionDir(id));
@@ -163,6 +164,13 @@ if (!gotLock) {
 }
 
 let win = null;
+
+// ---- 进程级错误边界：未捕获异常/未处理 Promise 只记日志 + 给界面一条 notice，不静默死 ----
+// 装得越早越好（启动阶段就崩时也要有记录）；日志文件路径在 whenReady 里按平台确定。
+let logFile = null;
+const writeLog = (line) => { if (logFile) void appendLogLine(logFile, line); };
+installProcessGuards({ proc: process, getWin: () => win, log: writeLog });
+
 function createWindow() {
   win = new BrowserWindow({
     width: 1280, height: 820, minWidth: 980,
@@ -207,6 +215,14 @@ app.whenReady().then(async () => {
   process.env.FINALCHECK_SPILL_DIR ||= path.join(DATA_ROOT, 'spill');
   process.env.FINALCHECK_PROJECTS_FILE ||= path.join(DATA_ROOT, 'projects.json');
   await mkdir(DATA_ROOT, { recursive: true });
+  // 崩溃/未捕获异常日志：与诊断包读的是同一个 main.log（app.getPath('logs')，拿不到就回落 DATA_ROOT）
+  try {
+    logFile = path.join(app.getPath('logs'), 'main.log');
+  } catch {
+    logFile = path.join(DATA_ROOT, 'logs', 'main.log');
+  }
+  // 所有 IPC handler 统一错误边界：抛错 → { error, code: 'IPC_FAILED' }（不再把栈丢给用户）
+  installSafeIpc(ipcMain, { log: writeLog });
 
   // 项目文件夹：默认项目（D:\finalcheck 或 C:\Users\...\finalcheck），旧全局会话迁入；
   // 启动时恢复上次选中的项目
