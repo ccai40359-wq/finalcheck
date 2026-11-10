@@ -31,17 +31,21 @@ jobs:
       - name: Install root dependencies
         run: npm ci
 
+      # 会话存储的测试要真的打开 SQLite，所以 desktop 依赖（含 better-sqlite3 预编译二进制）
+      # 必须排在 Test 之前。安装脚本跳过，改用显式的 setup:sqlite 让失败原因一目了然。
+      - name: Install desktop dependencies
+        working-directory: desktop
+        run: npm ci --ignore-scripts
+
+      - name: Prepare better-sqlite3 binding (Electron + Node ABI)
+        working-directory: desktop
+        run: npm run setup:sqlite
+
       - name: Test
         run: npm test
 
       - name: Lint
         run: npm run lint
-
-      # --ignore-scripts：postinstall 会按 Electron ABI 下载 better-sqlite3 预编译二进制；
-      # CI 只需要编译 JS（打包/运行原生模块在本地做），避免把下载网络变成 CI 的失败点。
-      - name: Install desktop dependencies
-        working-directory: desktop
-        run: npm ci --ignore-scripts
 
       # 只验证构建产物，不跑 electron-builder 打包（太重）
       - name: Build desktop
