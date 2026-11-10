@@ -1,3 +1,7 @@
+<img src="docs/assets/cover.png" alt="FinalCheck 终检" width="100%">
+
+[English](README.md) · **简体中文**
+
 # FinalCheck · 终检
 
 > **人看不懂的代码，跑之前先过闸。**

@@ -1,3 +1,7 @@
+<img src="docs/assets/cover.png" alt="FinalCheck — pre-flight check for code" width="100%">
+
+**English** · [简体中文](README.zh-CN.md)
+
 # FinalCheck
 
 > **Don't run code you can't read. Check it first.**
