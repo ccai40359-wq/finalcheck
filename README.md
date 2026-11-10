@@ -66,6 +66,8 @@ npm run dev                  # launch the desktop app
 
 To package a Windows build: `cd desktop && npm run dist`.
 
+To smoke-test the built artifacts locally: `npm run smoke:e2e` (from the repo root, after `desktop/out` exists). It opens a real window against an isolated temp profile, so it never touches your real FinalCheck data.
+
 ## Language
 
 The UI ships in Chinese and English.

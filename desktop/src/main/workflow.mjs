@@ -1,3 +1,4 @@
+// @ts-check
 // 多 agent 工作流（对齐 ZCode dynamic-workflows 的最小可用版）：
 // 主 agent 自己写 steps（角色/任务/依赖），引擎按 depends_on 拓扑分层、同层并行（并发默认 14，上限 32），
 // 上游结果自动注入下游 prompt。每个 step = 一次独立上下文的子代理调用（由调用方注入 callStep）。
@@ -17,6 +18,219 @@ import { runScriptWorkflow, SCRIPT_DEFAULT_CONCURRENCY, SCRIPT_MAX_CONCURRENCY }
 import { withOutputLanguage } from './lang.mjs';
 // 双语：失败原因/警告/摘要会显示在聊天与工作流卡里（zh 下 t() 原样返回源串）
 import { t } from '../renderer/i18n/core.mjs';
+
+/**
+ * 步骤预算（normalizeSteps 校验/clamp 后原样透传给 callStep）。
+ * @typedef {object} StepBudget
+ * @property {number} [maxTurns] 模型轮次上限
+ * @property {number} [maxTools] 工具调用上限
+ * @property {number} [maxMs] 单步软预算（毫秒）
+ * @property {number} [maxStepMs] 单步墙钟（0 = 不限制）
+ */
+
+/**
+ * 规范化后的工作流步骤（normalizeSteps 输出；无 kind 的旧步骤保持原行为）。
+ * @typedef {object} WorkflowStep
+ * @property {string} id 只允许字母数字-_，最长 32
+ * @property {string} name 展示名
+ * @property {string} role 子代理角色
+ * @property {string} prompt 交给子代理的具体任务
+ * @property {string[]} depends_on 依赖步骤 id（拓扑分层依据）
+ * @property {StepBudget} [budget]
+ * @property {string} [kind] swarm 协议类型 recon|find|verify|arbitrate|report
+ * @property {boolean} [blind]
+ * @property {string} [model]
+ * @property {string} [providerId]
+ * @property {string} [targetsFrom]
+ * @property {boolean} [autoInserted] 引擎自动补的对抗复核节点
+ * @property {boolean} [program] gate/aggregate 等程序节点
+ * @property {string} [scriptOp] 脚本模式原始 op JSON（参与 stepHash）
+ */
+
+/**
+ * normalizeSteps 的结果：成功带 steps/levels/byId，失败带 error。
+ * @typedef {object} NormalizedWorkflow
+ * @property {WorkflowStep[]} [steps]
+ * @property {string[][]} [levels] 拓扑层级（同层可并行）
+ * @property {Map<string, WorkflowStep>} [byId]
+ * @property {string} [error]
+ */
+
+/**
+ * callStep 的入参：每个步骤一次独立上下文的子代理调用。
+ * @typedef {object} CallStepContext
+ * @property {string} id
+ * @property {string} name
+ * @property {string} role
+ * @property {string} prompt 已注入上游结果的最终提示词
+ * @property {string[]} depends_on
+ * @property {StepBudget} [budget] 缺省为 { maxStepMs: 0 }（不设墙钟）
+ * @property {string|null} [kind]
+ * @property {string|null} [model]
+ * @property {string|null} [providerId]
+ * @property {boolean|null} [blind]
+ * @property {string} [runId] 子代理 transcript 按 run 落盘
+ * @property {AbortSignal} [signal] 用户停止/显式墙钟中断信号
+ */
+
+/**
+ * callStep 的返回（上层执行器的最小契约）。
+ * @typedef {object} CallStepResult
+ * @property {string} [content]
+ * @property {string} [error]
+ * @property {string} [errorCode]
+ * @property {number} [toolCount]
+ * @property {boolean} [truncated]
+ * @property {string[]} [warnings]
+ * @property {string} [model]
+ * @property {string} [providerId]
+ * @property {boolean} [cancelled]
+ * @property {boolean} [interrupted]
+ * @property {boolean} [salvaged]
+ * @property {any[]} [transcript]
+ * @property {string} [partialContent]
+ */
+
+/**
+ * @typedef {(ctx: CallStepContext) => Promise<CallStepResult>} CallStepFunction
+ */
+
+/**
+ * 一个步骤的执行结果（runWorkflow 返回 results 的一项；swarm/script 附加字段可缺席）。
+ * @typedef {object} WorkflowStepResult
+ * @property {string} id
+ * @property {string} name
+ * @property {string} role
+ * @property {string[]} depends_on
+ * @property {boolean} ok
+ * @property {string|null} error
+ * @property {string|null} errorCode
+ * @property {string} content
+ * @property {number} ms
+ * @property {number} tools
+ * @property {boolean} [truncated]
+ * @property {string[]} [warnings]
+ * @property {boolean} reused
+ * @property {string|null} kind
+ * @property {string|null} model
+ * @property {string|null} providerId
+ * @property {string} [fullOutputPath] 完整正文落盘路径
+ * @property {boolean} [autoInserted]
+ * @property {boolean} [salvaged]
+ * @property {string|null} [salvageReason]
+ * @property {boolean} [hole]
+ * @property {import('./swarm.mjs').SwarmClaim[]} [claims]
+ * @property {import('./swarm.mjs').SwarmVerdictInput[]} [verdicts]
+ * @property {import('./swarm.mjs').SwarmDecision[]} [decisions]
+ * @property {any[]} [targets]
+ * @property {string} [parseError]
+ * @property {string[]} [unmatchedVerdicts]
+ * @property {string[]} [unmatchedDecisions]
+ * @property {string[]} [holes]
+ * @property {string[]} [reportWarnings]
+ * @property {boolean} [reportLintOk]
+ * @property {boolean} [delivered]
+ * @property {boolean} [claimsEmpty]
+ * @property {boolean} [verdictsEmpty]
+ */
+
+/**
+ * 步骤运行态（快照/收尾补齐用）。
+ * @typedef {object} WorkflowStepState
+ * @property {string} status pending | running | success | failed | cancelled
+ * @property {boolean} reused
+ * @property {number|null} startedAt
+ * @property {number|null} ms
+ * @property {string|null} error
+ * @property {string|null} [errorCode]
+ * @property {number} tools
+ * @property {boolean} [skipped]
+ * @property {boolean} [truncated]
+ * @property {string[]} [warnings]
+ * @property {boolean} [salvaged]
+ * @property {string|null} [salvageReason]
+ * @property {boolean} [hole]
+ */
+
+/**
+ * 运行控制台（UI 可改，引擎每轮读取）。
+ * @typedef {object} RunControl
+ * @property {boolean} [paused]
+ * @property {boolean} [aborted]
+ * @property {number} [maxConcurrency]
+ */
+
+/**
+ * journal 里一条步骤记录（断点恢复的复用判定依据）。
+ * @typedef {object} WorkflowJournalStep
+ * @property {string} name
+ * @property {string} role
+ * @property {string} hash 步骤指纹（stepHash）
+ * @property {string[]} depends_on
+ * @property {'success'|'failed'|'cancelled'} status
+ * @property {string} content
+ * @property {string|null} error
+ * @property {string|null} errorCode
+ * @property {number} ms
+ * @property {number} tools
+ * @property {number} startedAt
+ * @property {number} finishedAt
+ */
+
+/**
+ * 一次工作流运行的 journal（<journalDir>/<runId>.json）。
+ * @typedef {object} WorkflowJournal
+ * @property {number} version
+ * @property {string} runId
+ * @property {string} goal
+ * @property {number} startedAt
+ * @property {number|null} finishedAt
+ * @property {boolean} stopped
+ * @property {Record<string, WorkflowJournalStep>} steps
+ */
+
+/**
+ * 实时快照（onUpdate 推送，UI 用来展示多 agent 进度）。
+ * @typedef {object} WorkflowSnapshot
+ * @property {string} kind
+ * @property {string} runId
+ * @property {string} goal
+ * @property {boolean} running
+ * @property {boolean} paused
+ * @property {number} startedAt
+ * @property {number} ms
+ * @property {number} concurrency
+ * @property {string[][]} phases
+ * @property {Array<object>} steps
+ */
+
+/**
+ * runWorkflow 的最终返回。
+ * @typedef {object} WorkflowRunResult
+ * @property {string} runId
+ * @property {string} goal
+ * @property {Array<object>} steps
+ * @property {WorkflowStepResult[]} results
+ * @property {boolean} ok
+ * @property {boolean} stopped
+ * @property {number} ms
+ * @property {import('./swarm.mjs').SwarmClaim[]} claims
+ * @property {string[]} claimWarnings
+ * @property {string[]} warnings
+ * @property {string|null} claimsFile
+ * @property {string} summary
+ */
+
+/**
+ * 非流式子代理步进执行器（runSubagentStep）的返回。
+ * @typedef {object} SubagentStepResult
+ * @property {string} [content]
+ * @property {string} [error]
+ * @property {number} toolCount
+ * @property {boolean} truncated
+ * @property {string[]} warnings
+ * @property {string|null} [finishReason]
+ */
 
 export const DEFAULT_MAX_STEPS = 14;
 export const MAX_STEPS_CAP = 64;
@@ -63,17 +277,26 @@ function durationText(ms) {
   return n >= 1000 ? `${Math.round(n / 1000)}s` : `${Math.round(n)}ms`;
 }
 
-/** 显式墙钟到点时的文案（失败步骤必须有可读原因，不能是空字符串） */
+/** 显式墙钟到点时的文案（失败步骤必须有可读原因，不能是空字符串）
+ * @param {number} [ms]
+ * @returns {string}
+ */
 export function stepTimeoutText(ms) {
   return t('单步超时（{duration}）：已中断，产出可能不完整', { duration: durationText(ms) });
 }
 
-/** 历史软预算文案（仅保留给旧调用/测试引用；流式子代理已不再按时间强制收尾） */
+/** 历史软预算文案（仅保留给旧调用/测试引用；流式子代理已不再按时间强制收尾）
+ * @param {number} [ms]
+ * @returns {string}
+ */
 export function softBudgetText(ms) {
   return t('工具预算用尽（{duration}），已强制收尾', { duration: durationText(ms) });
 }
 
-/** 解析单步墙钟上限：budget.maxStepMs 显式正数才生效；缺省/非法/0 = 不限制（返回 0） */
+/** 解析单步墙钟上限：budget.maxStepMs 显式正数才生效；缺省/非法/0 = 不限制（返回 0）
+ * @param {StepBudget|null} [budget]
+ * @returns {number}
+ */
 export function resolveMaxStepMs(budget) {
   return clampInt(budget?.maxStepMs, 0, 600000, 0);
 }
@@ -85,6 +308,9 @@ export function resolveMaxStepMs(budget) {
  * - 父级/用户停止（options.signal）永远立即 abort，不等待任何计时器。
  * 正常完成时行为完全不变（timer 清理，结果原样透传）。
  * steps 模式与 script 模式走同一个包装，保证两条链路语义一致。
+ * @param {Function} callStep
+ * @param {{abortGraceMs?:number, signal?:AbortSignal|null}} [opts]
+ * @returns {Function}
  */
 export function withStepDeadline(callStep, { abortGraceMs = STEP_ABORT_GRACE_MS, signal: outerSignal = null } = {}) {
   if (typeof callStep !== 'function') return callStep;
@@ -156,6 +382,9 @@ export function withStepDeadline(callStep, { abortGraceMs = STEP_ABORT_GRACE_MS,
 /**
  * 步骤指纹：goal + id + prompt + role + depends_on 的稳定序列化 sha1。
  * budget / name 刻意不参与（改预算或展示名不应让缓存结果失效）。
+ * @param {string} [goal]
+ * @param {WorkflowStep} [step]
+ * @returns {string}
  */
 export function stepHash(goal, step) {
   const payload = {
@@ -179,7 +408,11 @@ export function stepHash(goal, step) {
   return createHash('sha1').update(JSON.stringify(payload)).digest('hex');
 }
 
-/** 纯函数：校验并规范化 steps；返回 { steps, levels, byId } 或 { error } */
+/** 纯函数：校验并规范化 steps；返回 { steps, levels, byId } 或 { error }
+ * @param {any[]} steps
+ * @param {{maxSteps?: number}} [opts]
+ * @returns {NormalizedWorkflow}
+ */
 export function normalizeSteps(steps, { maxSteps = DEFAULT_MAX_STEPS } = {}) {
   const stepLimit = clampInt(maxSteps, 1, MAX_STEPS_CAP, DEFAULT_MAX_STEPS);
   if (!Array.isArray(steps) || steps.length === 0) return { error: t('steps 不能为空：至少 1 个步骤') };
@@ -264,6 +497,9 @@ export const normalizeWorkflow = normalizeSteps;
 /**
  * 复用判定：journal 里 status=success + hash 与当前步骤一致 + content 非空 + 所有传递依赖可复用。
  * 依赖被改/失败会级联失效。
+ * @param {any} journal resume journal（旧格式/损坏时按无记录处理）
+ * @param {NormalizedWorkflow|null} norm normalizeSteps 的结果
+ * @param {string} goal 当前总目标
  * @returns {{reusable: Set<string>, reasons: Record<string,string>}}
  */
 export function computeReuse(journal, norm, goal) {
@@ -325,6 +561,13 @@ export function computeReuse(journal, norm, goal) {
   return { reusable, reasons };
 }
 
+/**
+ * steps 模式（非 swarm）的提示词：总目标 + 角色 + 任务 + 上游结果。
+ * @param {string} goal
+ * @param {WorkflowStep} step
+ * @param {Map<string, WorkflowStepResult>} results 已完成步骤的结果
+ * @returns {string}
+ */
 export function buildPrompt(goal, step, results) {
   const upstream = step.depends_on
     .map((d) => {
@@ -368,6 +611,9 @@ function messageText(msg) {
  * - 超限 → 从最老的开始，只裁 role:'tool' 且 content 超过 minChars 的结果，保留头 keepHead / 尾 keepTail；
  *   不动 system/user/assistant 正文。裁到预算内即停（仍超限说明工具结果都太短，保持原样）。
  * 注意：这里只改发给模型的副本，右侧 transcript 由调用方保留原文。
+ * @param {any[]} msgs chat/completions 的 messages 数组
+ * @param {{maxChars?:number, keepHead?:number, keepTail?:number, minChars?:number}} [opts]
+ * @returns {any[]}
  */
 export function trimToolResults(msgs, {
   maxChars = SUBAGENT_CONTEXT_MAX_CHARS,
@@ -461,7 +707,8 @@ function makeAdversarialVerifyStep(id, evidenceIds) {
 /**
  * steps 模式：原地补一个对抗复核节点（幂等；已有任何 kind=verify 时不动）。
  * 插在最后一个证据步骤之后、第一个 report 之前；report 步骤补依赖 __verify__ 保证先复核再汇总。
- * @returns {{injected:boolean,id:string|null}}
+ * @param {NormalizedWorkflow} norm
+ * @returns {{injected:boolean,id:string|null,error?:string}}
  */
 export function injectAdversarialVerify(norm) {
   if (!norm || norm.error || !Array.isArray(norm.steps)) return { injected: false, id: null };
@@ -513,6 +760,10 @@ function strOrEmpty(v) {
 /**
  * 报告闸（fail-closed）：复核缺失/失败/未覆盖的 claim 不得 confirmed。
  * 只降级 confirmed（pending 保持 pending，报告里按「未复核」标注），返回 warnings 与未复核 claim id。
+ * @param {object} [opts]
+ * @param {import('./swarm.mjs').SwarmClaim[]} [opts.claims]
+ * @param {WorkflowStepResult[]} [opts.results]
+ * @param {WorkflowStep[]} [opts.verifySteps]
  * @returns {{claims:Array, warnings:string[], unreviewed:string[]}}
  */
 export function applyAdversarialGate({ claims = [], results = [], verifySteps = [] } = {}) {
@@ -558,6 +809,9 @@ export function applyAdversarialGate({ claims = [], results = [], verifySteps = 
 /**
  * 报告正文兜底：只要还有未复核 claim，就在报告尾部追加一条确定性脚注（含「未经对抗复核」字样）。
  * 只追加，不改模型正文；没有未复核 claim 时原样返回。
+ * @param {string} [content]
+ * @param {string[]} [unreviewed]
+ * @returns {string}
  */
 export function appendAdversarialReportNote(content, unreviewed = []) {
   const text = String(content || '');
@@ -580,6 +834,13 @@ function applyReportNotes(results, unreviewed) {
  *   toolCountKnown=false 时（调用方没有测过工具次数，如旧测试的 mock）不做该项硬闸。
  * - report 允许 0 次工具调用，但正文至少 80 字，否则「汇总为空」。
  * - find/verify 的输出被 finish_reason=length 截断且 JSON 无法解析 → 取证不完整，失败。
+ * @param {object} [opts]
+ * @param {string|null} [opts.kind]
+ * @param {string} [opts.content]
+ * @param {number} [opts.toolCount]
+ * @param {boolean} [opts.toolCountKnown]
+ * @param {boolean} [opts.truncated]
+ * @param {boolean} [opts.requiresTools]
  * @returns {{ok:boolean, error:string|null}}
  */
 export function judgeSubagentOutcome({ kind = null, content = '', toolCount = 0, toolCountKnown = true, truncated = false, requiresTools = false } = {}) {
@@ -608,7 +869,31 @@ export function judgeSubagentOutcome({ kind = null, content = '', toolCount = 0,
  * 网关兼容：tool_choice 触发 400/422 → 去掉该字段重试一次并记 warning。
  * 截断：finish_reason=length → truncated=true + warning；find/verify 且 JSON 解析失败 → failed。
  *
- * @returns {Promise<{content?:string,error?:string,toolCount:number,truncated:boolean,warnings:string[],finishReason?:string|null}>}
+ * @param {object} [opts]
+ * @param {string} [opts.baseUrl] chat/completions 的 base URL
+ * @param {string} [opts.apiKey]
+ * @param {string} [opts.model]
+ * @param {string} [opts.name] 步骤展示名（needsEvidence 判定用）
+ * @param {string} [opts.role]
+ * @param {string} [opts.systemPrompt]
+ * @param {string} [opts.prompt]
+ * @param {string|null} [opts.kind] swarm 步骤类型（report/find/verify…）
+ * @param {any[]} [opts.tools] OpenAI tools 定义
+ * @param {((name:string, args:any)=>Promise<any>)|null} [opts.executeTool]
+ * @param {boolean|null} [opts.requiresTools] 不传时走 needsEvidence
+ * @param {number} [opts.maxTurns]
+ * @param {number} [opts.maxTools]
+ * @param {number} [opts.stepBudgetMs]
+ * @param {number} [opts.maxOutputTokens]
+ * @param {number} [opts.temperature]
+ * @param {AbortSignal|null} [opts.signal]
+ * @param {typeof fetch} [opts.fetchImpl] 测试可注入 fake provider
+ * @param {()=>number} [opts.now]
+ * @param {Function|null} [opts.onSystem] system 提醒事件
+ * @param {Function|null} [opts.onAssistant] assistant 文本/工具调用事件
+ * @param {Function|null} [opts.onToolStart]
+ * @param {Function|null} [opts.onToolEnd]
+ * @returns {Promise<SubagentStepResult>}
  */
 export async function runSubagentStep({
   baseUrl,
@@ -662,6 +947,7 @@ export async function runSubagentStep({
   };
   // 一次模型请求；tool_choice 被网关拒绝（400/422）时自动去掉该字段重试一次
   const chat = async (msgs, toolChoice, { withTools = true } = {}) => {
+    /** @type {any} */
     const body = {
       model,
       messages: msgs,
@@ -798,20 +1084,21 @@ export async function runSubagentStep({
 }
 
 /**
- * 执行工作流。
- * @param {object} opts
- * @param {string} opts.goal 总目标
- * @param {Array} opts.steps 步骤（与 script 互斥）
- * @param {Array} [opts.script] 受限脚本 DSL（与 steps 互斥）：step/fanout/if/gate/verify/report/loop/recurse/aggregate
- * @param {Function} [opts.runGate] 程序闸执行器（gate/aggregate 用；默认直接走 src 引擎）
- * @param {string} [opts.projectPath] 程序闸未显式给 dir 时的默认项目目录
- * @param {(ctx:{id:string,name:string,role:string,prompt:string,depends_on:string[],budget?:object,kind?:string|null})=>Promise<{content?:string,error?:string,toolCount?:number,truncated?:boolean,warnings?:string[]}>} opts.callStep 子代理调用
- * @param {number} [opts.concurrency] 并发上限（默认 14，clamp 1..32）
+ * 执行工作流（steps 模式或受限脚本 DSL 模式，二者互斥）。
+ * @param {object} [opts]
+ * @param {string} [opts.goal] 总目标
+ * @param {any[]} [opts.steps] 步骤（与 script 互斥）
+ * @param {any[]} [opts.script] 受限脚本 DSL（与 steps 互斥）：step/fanout/if/gate/verify/report/loop/recurse/aggregate
+ * @param {CallStepFunction|null} [opts.callStep] 子代理调用
+ * @param {number|null} [opts.concurrency] 并发上限（默认 14，clamp 1..32）
  * @param {number} [opts.maxSteps] 步骤上限（默认 14，clamp 1..64）
- * @param {object} [opts.control] 运行中控制台 {paused, aborted, maxConcurrency}
- * @param {(snapshot:object)=>void} [opts.onUpdate] 每次状态变化推一份快照（给 UI 实时展示多 agent 进度）
- * @param {object|string} [opts.resumeFrom] 断点 journal 对象，或 journalDir 下的 runId
- * @param {string} [opts.journalDir] journal 落盘目录；不传则不落盘（旧行为）
+ * @param {RunControl|null} [opts.control] 运行中控制台 {paused, aborted, maxConcurrency}
+ * @param {(snapshot: WorkflowSnapshot)=>void} [opts.onUpdate] 每次状态变化推一份快照
+ * @param {object|string|null} [opts.resumeFrom] 断点 journal 对象，或 journalDir 下的 runId
+ * @param {string|null} [opts.journalDir] journal 落盘目录；不传则不落盘（旧行为）
+ * @param {Function|null} [opts.runGate] 程序闸执行器（gate/aggregate 用）
+ * @param {string|null} [opts.projectPath] 程序闸未显式给 dir 时的默认项目目录
+ * @returns {Promise<WorkflowRunResult|{error:string}>}
  */
 export async function runWorkflow({
   goal,
@@ -862,6 +1149,7 @@ export async function runWorkflow({
 
   const startedAt = Date.now();
   const runId = resumeJournal && isValidRunId(resumeJournal.runId) ? resumeJournal.runId : runIdOf();
+  /** @type {WorkflowJournal|null} */
   let journal = null;
   if (dir) {
     if (resumeJournal) {
@@ -880,6 +1168,7 @@ export async function runWorkflow({
     }
   }
 
+  /** @type {RunControl} */
   const ctl = control && typeof control === 'object' ? control : {};
   // 父级停止信号：control.aborted（用户点「停止」）时立即中断所有在跑的子代理；
   // 不设任何墙钟超时，signal 只用于用户停止 / 显式 budget.maxStepMs。
@@ -900,7 +1189,7 @@ export async function runWorkflow({
     const startLimit = clampInt(ctl.maxConcurrency, 1, SCRIPT_MAX_CONCURRENCY,
       clampInt(concurrency, 1, SCRIPT_MAX_CONCURRENCY, SCRIPT_DEFAULT_CONCURRENCY));
     try {
-      return await runScriptWorkflow({
+      return await (/** @type {any} */ (runScriptWorkflow))({
         goal: goalText,
         script,
         callStep: stepCall,
@@ -926,13 +1215,17 @@ export async function runWorkflow({
 
   // ---- 可复用步骤：直接置 success，不调用 callStep ----
   const reuseInfo = resumeJournal ? computeReuse(resumeJournal, norm, goalText) : { reusable: new Set(), reasons: {} };
+  /** @type {Map<string, WorkflowStepResult>} */
   const results = new Map();
+  /** @type {Map<string, WorkflowStepState>} */
   const state = new Map(norm.steps.map((s) => [s.id, { status: 'pending', reused: false, startedAt: null, ms: null, error: null, tools: 0 }]));
   const finished = new Set();
   const journalDone = new Set(); // 本次 run 已经写进 journal（或复用了旧且 hash 匹配记录）的步骤
 
   // ---- swarm claim 池：find 产出，verify/arbitrate 改状态 ----
+  /** @type {import('./swarm.mjs').SwarmClaim[]} */
   const claimsStore = [];
+  /** @param {WorkflowStep} step @returns {import('./swarm.mjs').SwarmClaim[]} */
   const claimsForStep = (step) => {
     if (!step?.kind) return [];
     if (step.targetsFrom) return claimsStore.filter((c) => c.sourceStep === step.targetsFrom);
@@ -943,6 +1236,7 @@ export async function runWorkflow({
     }
     return claimsStore.slice();
   };
+  /** @param {import('./swarm.mjs').SwarmClaim[]} updated */
   const mergeClaimUpdates = (updated) => {
     for (const c of updated) {
       const idx = claimsStore.findIndex((x) => x.id === c.id);
@@ -950,6 +1244,7 @@ export async function runWorkflow({
     }
   };
   // 解析并落地一个 swarm 步骤的输出；解析失败不判步骤失败，只记 parseError
+  /** @param {WorkflowStep} step @param {WorkflowStepResult} result @param {string} content */
   const ingestStep = (step, result, content) => {
     if (!step?.kind || !content) return;
     if (step.kind === 'report') {
@@ -1097,6 +1392,7 @@ export async function runWorkflow({
     if (step.kind !== 'find') ingestStep(step, results.get(step.id), results.get(step.id).content);
   }
 
+  /** @param {boolean} running @returns {WorkflowSnapshot} */
   const snapshot = (running) => ({
     kind: 'workflow',
     runId,
@@ -1126,6 +1422,7 @@ export async function runWorkflow({
 
   // ---- journal 调度外写盘：串行化写入，失败只 warning，绝不影响调度 ----
   let finalized = false;
+  /** @type {Promise<any>} */
   let saveChain = Promise.resolve();
   const warnJournal = (e) => {
     try { console.warn('[workflow] journal 写入失败：' + (e?.message || e)); } catch { /* 忽略 */ }
@@ -1139,6 +1436,7 @@ export async function runWorkflow({
   const runningMap = new Map(); // id → promise
   let stopped = false;
 
+  /** @param {string} id */
   const runOne = async (id) => {
     const step = norm.byId.get(id);
     if (step.autoInserted && String(step.kind || '').toLowerCase() === 'verify') {
@@ -1356,7 +1654,7 @@ export async function runWorkflow({
     finalized = true; // 之后仍在飞的 runOne 不再改 journal（本次 run 已经返回）
     for (const s of norm.steps) {
       if (journalDone.has(s.id)) continue;
-      const st = state.get(s.id) || {};
+      const st = /** @type {WorkflowStepState} */ (state.get(s.id) || {});
       const status = st.status === 'success' ? 'success' : (st.status === 'failed' ? 'failed' : 'cancelled');
       recordStep(journal, s, {
         hash: stepHash(goalText, s),

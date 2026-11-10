@@ -15,6 +15,7 @@ export const EN_APP = {
   '恢复会话': 'Restore session',
   '归档会话（历史与记忆保留，在 Archived 里可找回）': 'Archive session (history and memory kept; restorable under Archived)',
   '从列表移除项目（不删磁盘目录）': 'Remove workspace from list (keeps the folder on disk)',
+  '在这个项目里新建对话': 'New session in this workspace',
   '有新版本 v{v}': 'Update v{v} available',
   '有新版本': 'Update available',
   'IPC 已连接': 'IPC connected',

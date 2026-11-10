@@ -1,27 +1,29 @@
 // DeepSeek 式对话主界面：左栏品牌 + 会话列表，中央聊天流（工具调用渲染富卡片）
 // 仅两个视图：「对话」（默认）与「模型设置」（左下角齿轮进入）
+// 拆分后 App 只保留状态 / effects / handler 与编排；展示与弹层在 components/ 下按职责分开。
 import React, { useEffect, useRef, useState } from 'react';
 import SettingsPage from './pages/SettingsPage.jsx';
 import { api } from './lib/ui.jsx';
 import { mergeRunningRun } from './lib/session-restore.mjs';
-import { TraceBlock, WorkflowLiveCard } from './chat/TraceCards.jsx';
-import { ProcessTimeline, WorkingStatus, applyAgentEvent, mergeTraceIntoEvents } from './chat/ProcessTimeline.jsx';
-import { ArtifactPanel, ArtifactChips, collectArtifacts } from './chat/ArtifactPanel.jsx';
+import { applyAgentEvent, mergeTraceIntoEvents } from './chat/ProcessTimeline.jsx';
+import { ArtifactPanel } from './chat/ArtifactPanel.jsx';
 import { SubagentPanel } from './chat/SubagentPanel.jsx';
-import { renderMarkdown } from './chat/md.jsx';
 // 双语：t() 在英文模式查词典、中文模式原样返回；useLanguage() 只负责切换语言时触发重渲染
 import { t, setLanguage, resolveLanguage } from './i18n/core.mjs';
 import { useLanguage } from './i18n/index.jsx';
-
-const SESSION_PREVIEW = 5; // 每个工作区默认露出几条会话，其余走 Show more
-
-// 模型条目兼容 string 与 { id, contextWindow, maxOutputTokens, vision }：
-// 模型设置保存的是对象，而会话配置/菜单只认 string 的 id（否则会把对象当 React child 渲染）
-const modelId = (m) => (typeof m === 'string' ? m.trim() : String(m?.id ?? '').trim());
-const modelIdsOf = (p) => (Array.isArray(p?.models) ? p.models : []).map(modelId).filter(Boolean);
-const modelEntriesOf = (p) => (Array.isArray(p?.models) ? p.models : [])
-  .map((m) => (typeof m === 'string' ? { id: m.trim() } : (m && typeof m === 'object' ? { ...m, id: modelId(m) } : { id: '' })))
-  .filter((m) => m.id);
+import {
+  modelIdsOf, nextQueueId, nextPasteId, countLines, needsFirstRunSetup, prettyTitle, baseName, expandSkill
+} from './lib/app-helpers.mjs';
+import TitleBar from './components/TitleBar.jsx';
+import Sidebar from './components/Sidebar.jsx';
+import ChatHeader from './components/ChatHeader.jsx';
+import MessageList from './components/MessageList.jsx';
+import EmptyState from './components/EmptyState.jsx';
+import Composer from './components/Composer.jsx';
+import Dialogs from './components/Dialogs.jsx';
+// 兼容原来的模块出口（外部若按旧路径取这两个函数/组件仍可用）
+export { needsFirstRunSetup, formatDemoAuditSummary } from './lib/app-helpers.mjs';
+export { default as FirstRunCard } from './components/FirstRunCard.jsx';
 
 // ---- 排队（AI 回合进行中还能继续发消息）的纯函数 ----
 // 注释段 + BEGIN/END 标记供 tests/queue-steer.test.mjs 提取单测：这里不要写副作用、不要依赖 React/JSX。
@@ -42,295 +44,6 @@ const moveToInput = (list, id) => {
 };
 /* QUEUE-HELPERS-END */
 
-const nextQueueId = () => `q-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-const nextPasteId = () => `p-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-const countLines = (text) => String(text || '').replace(/\r\n?/g, '\n').replace(/\n$/, '').split('\n').length;
-// 长粘贴阈值（照 ZCode）：≥8 行或 ≥1000 字符 → 收成「粘贴文本块」卡片，不直接塞进输入框
-const isLongPaste = (text) => {
-  const t = String(text || '');
-  if (!t.trim()) return false;
-  return countLines(t) >= 8 || t.length >= 1000;
-};
-
-// 空态能力卡：直接对应我们自己的功能，不写死任何目录/端口
-const CAPABILITIES = [
-  { id: 'audit', title: '代码体检', en: 'Audit', icon: 'shield', desc: '对当前项目跑 L1/L2/L3，结论带文件:行证据',
-    prompt: '对当前项目做一次 L2 安全体检：先给目录概览，再按检查项跑，结论要带文件:行证据。' },
-  { id: 'pentest', title: '渗透测试', en: 'Pentest', icon: 'radar', desc: '先侦察再按方法论跑最小验证集，不爆破',
-    prompt: `我要做渗透测试，目标 URL 是：
-（把目标地址补在这行后面）
-先侦察端口/指纹，再按方法论跑最小验证集，不要爆破。` },
-  { id: 'download', title: '下载闸安检', en: 'Download gate', icon: 'download', desc: '安装脚本、投毒、外呼、README 注入',
-    prompt: '对当前项目做下载闸安检：安装脚本、投毒、外呼、README 注入。' },
-  { id: 'workflow', title: '多 Agent 工作流', en: 'Workflow', icon: 'flow', desc: '分头查多个方向，最后汇总成一份结论',
-    prompt: '用工作流分头查这个项目的三个方向：依赖与供应链、鉴权与越权、动态探测；最后汇总成一份结论。' },
-  { id: 'report', title: '生成报告', en: 'Report', icon: 'report', desc: '跑体检并生成可预览的完整报告',
-    prompt: '对当前项目跑一次体检，并生成可预览的完整报告。' },
-  { id: 'explore', title: '自由执行', en: 'Free run', icon: 'terminal', desc: '看目录、读代码、跑命令，像 coding agent 一样',
-    prompt: '先看一下当前项目的目录结构和 README，再用三句话告诉我这是个什么项目。' }
-];
-const CAP_ICON = { shield: IconShield, radar: IconRadar, download: IconDownload, flow: IconFlow, report: IconReport, terminal: IconTerminal, play: IconPlay };
-
-// 首次使用判定：没有供应商，或所有供应商都被禁用（enabled === false）
-export const needsFirstRunSetup = (cfg) => !(Array.isArray(cfg?.providers) ? cfg.providers : []).some((p) => p?.enabled !== false);
-
-// 示例体检结果 → 展示摘要（verdict + 发现数 + 前 3 条）
-export function formatDemoAuditSummary(result, dir) {
-  const verdict = result?.conclusion?.verdict || result?.verdict || t('未给出结论');
-  const reason = result?.conclusion?.reason || result?.reason || '';
-  const findings = Array.isArray(result?.findings) ? result.findings : [];
-  const SEV_LABEL = { high: t('高危'), medium: t('中危'), low: t('低危') };
-  const lines = findings.slice(0, 3).map((f) => {
-    const sev = SEV_LABEL[f?.severity] || t('提示');
-    const where = f?.file ? t('（{where}）', { where: `${baseName(f.file)}${f?.line ? `:${f.line}` : ''}` }) : '';
-    return `- [${sev}] ${f?.checkId ? `${f.checkId} · ` : ''}${f?.message || f?.rule || t('未命名问题')}${where}`;
-  });
-  return [
-    t('### 示例体检完成（L2）'),
-    `${t('**结论：{verdict}**', { verdict })}${reason ? ` · ${reason}` : ''}`,
-    t(findings.length > 3 ? '发现 **{n}** 条，先列前 3 条' : '发现 **{n}** 条', { n: findings.length }),
-    lines.length ? lines.join('\n') : t('没有发现明显问题。'),
-    t('> 示例目录：`{dir}`', { dir })
-  ].join('\n\n');
-}
-
-// 用户消息里的附件块（发送时由 renderer 追加，模型可见；UI 显示成文件 chips）
-const splitAttachmentBlock = (content) => {
-  const s = String(content || '');
-  const m = s.match(/\n\n\[附件\]\n((?:- .+\n?)+)$/);
-  if (!m) return { text: s, files: [] };
-  return {
-    text: s.slice(0, m.index),
-    files: m[1].split('\n').filter((l) => l.startsWith('- ')).map((l) => l.slice(2).trim())
-  };
-};
-const baseName = (p) => String(p || '').split(/[\\/]/).pop();
-
-// /workflow 会展开成一段工程指令发给模型；聊天里只显示「Workflow + 任务」，原始指令折叠可查
-const WF_PROMPT_PREFIX = '请用 run_workflow 组织一次多 agent 工作流';
-const parseWorkflowPrompt = (content) => {
-  const s = String(content || '');
-  if (!s.startsWith(WF_PROMPT_PREFIX)) return null;
-  const m = s.match(/\n任务：([\s\S]*)$/);
-  return { task: (m?.[1] || '').trim() };
-};
-
-// 会话标题展示：把技能/工作流的内部指令原文折成可读形式（老会话也立即变干净）
-const prettyTitle = (text) => {
-  const s = String(text || '').replace(/\n\n\[附件\][\s\S]*$/, '').trim();
-  const skill = s.match(/^\[技能\]\s*([^（(]+)/);
-  if (skill) return `✦ ${skill[1].trim().slice(0, 24)}`;
-  if (s.startsWith(WF_PROMPT_PREFIX)) {
-    const task = s.match(/\n任务：([^\n]+)/);
-    return `Workflow · ${(task?.[1] || t('多 agent 工作流')).trim().slice(0, 24)}`;
-  }
-  return s;
-};
-
-// ---- 技能展开段（纯函数，便于单测） ----
-// expandSkill() 会把用户输入的 /ssrf 展开成固定句式（发给模型）：
-//   [技能] <中文名>（playbook <id>）—— 请先调用 read_playbook(topic="<id>") 加载方法论，再严格按手册执行。
-// 聊天里不该露这段内部指令，所以在这里解析回「名称 + id」并把它从正文里摘掉。
-// 正则说明：名称可含中文/空格/括号，故名称用惰性 [\s\S]*? 并锚定「（playbook 」；
-// id 优先取 topic="..." 引号内的值（比括号里的 id 更可靠，名称里的括号不会污染它）；
-// 段首空白一并吃掉，段后空白留给后续正文，最后再规整一次空白（不动普通消息）。
-const SKILL_SEGMENT_RE = /[ \t]*\[技能\]\s*([\s\S]*?)（playbook\s+([^）]*?)）——\s*请先调用\s*read_playbook\(topic="([^"]*)"\)\s*加载方法论，再严格按手册执行。/g;
-const buildSkillSegment = (s) => `[技能] ${s.cn}（playbook ${s.id}）—— 请先调用 read_playbook(topic="${s.id}") 加载方法论，再严格按手册执行。`;
-
-const tidySkillRemoval = (s) => String(s || '')
-  .replace(/[ \t]{2,}/g, ' ')
-  .replace(/[ \t]+\n/g, '\n')
-  .replace(/\n[ \t]+/g, '\n')
-  .replace(/\n{3,}/g, '\n\n')
-  .trim();
-
-const parseSkillSegments = (content) => {
-  const source = String(content || '');
-  const skills = [];
-  // String.replace 每次从 lastIndex 0 开始，这里显式归零，避免全局正则被外部复用时串状态
-  SKILL_SEGMENT_RE.lastIndex = 0;
-  const stripped = source.replace(SKILL_SEGMENT_RE, (full, name, idInParen, topic) => {
-    const id = String(topic || idInParen || '').trim();
-    skills.push({ name: String(name || '').trim() || id, id });
-    return ' ';
-  });
-  if (!skills.length) return { skills, text: source, tokenText: source };
-  SKILL_SEGMENT_RE.lastIndex = 0;
-  // tokenText：把展开段还原成 /id，供复制/编辑用；重发时再由 expandSkill 展开
-  const tokenText = tidySkillRemoval(source.replace(SKILL_SEGMENT_RE, (full, name, idInParen, topic) => ` /${String(topic || idInParen || '').trim()} `));
-  return { skills, text: tidySkillRemoval(stripped), tokenText };
-};
-
-// 技能 chip：金色符号 + 名称，细底无边框（不是药丸）；title 只在 hover 时暴露 playbook id
-function SkillChips({ skills }) {
-  if (!skills?.length) return null;
-  return (
-    <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
-      {skills.map((s, k) => (
-        <span key={`${s.id}-${k}`} title={`playbook ${s.id}`}
-          className="inline-flex items-center gap-1 whitespace-nowrap rounded-[5px] bg-gold/[0.10] px-1.5 py-[1px] text-[12.5px] leading-relaxed text-goldSoft shadow-[inset_0_1px_0_rgba(255,255,255,0.07)]">
-          <span aria-hidden="true" className="text-[10px] leading-none text-gold">✦</span>
-          <span className="font-kai tracking-[0.03em]">{s.name}</span>
-        </span>
-      ))}
-    </div>
-  );
-}
-const IMG_EXT_RE = /\.(png|jpe?g|gif|webp|svg|bmp)$/i;
-
-// 图片预览统一入口：磁盘路径 → artifactRead 拿 dataURL（不依赖内存 File/blob 生命周期），
-// 展示前用 canvas 把最长边压到 ≤480px，避免把 20MB 原图 base64 塞进 React state。
-const MAX_PREVIEW_DIM = 480;
-function shrinkImageDataUrl(dataUrl, maxDim = MAX_PREVIEW_DIM) {
-  return new Promise((resolve) => {
-    try {
-      const img = new Image();
-      img.onload = () => {
-        try {
-          const w = img.naturalWidth || img.width || 0;
-          const h = img.naturalHeight || img.height || 0;
-          if (!w || !h || Math.max(w, h) <= maxDim) return resolve(dataUrl);
-          const scale = maxDim / Math.max(w, h);
-          const cw = Math.max(1, Math.round(w * scale));
-          const ch = Math.max(1, Math.round(h * scale));
-          const canvas = document.createElement('canvas');
-          canvas.width = cw;
-          canvas.height = ch;
-          const ctx = canvas.getContext('2d');
-          if (!ctx) return resolve(dataUrl);
-          ctx.drawImage(img, 0, 0, cw, ch);
-          resolve(canvas.toDataURL('image/jpeg', 0.85));
-        } catch { resolve(dataUrl); }
-      };
-      img.onerror = () => resolve(dataUrl); // 解码失败交给调用方决定占位/重试
-      img.src = dataUrl;
-    } catch { resolve(dataUrl); }
-  });
-}
-
-async function previewFromPath(y, p) {
-  if (!p || !IMG_EXT_RE.test(String(p))) return null;
-  try {
-    const r = await y?.artifactRead?.(p);
-    if (!r?.dataUrl) return null;
-    return await shrinkImageDataUrl(r.dataUrl);
-  } catch { return null; }
-}
-
-// 输入框里的附件 chip：图片直接显示缩略图（无 preview 时按路径读），文件名 + 移除
-function AttachmentChip({ item, onRemove }) {
-  const y = api();
-  const [src, setSrc] = useState(item.preview || null);
-  const triedRef = useRef(false);
-  const retriedRef = useRef(false);
-  useEffect(() => { setSrc(item.preview || null); triedRef.current = false; retriedRef.current = false; }, [item.preview, item.path]);
-  useEffect(() => {
-    let alive = true;
-    if (src || triedRef.current || !IMG_EXT_RE.test(item.path || '')) return undefined;
-    triedRef.current = true;
-    (async () => {
-      const url = await previewFromPath(y, item.path);
-      if (alive && url) setSrc(url);
-    })();
-    return () => { alive = false; };
-  }, [item.path, src, item.preview]);
-  // 图片加载失败：先撤下破图（立刻回 ▤ 占位），再按路径用主进程重读一次 data URL
-  const handleImgError = () => {
-    setSrc(null);
-    if (retriedRef.current || !item.path) return;
-    retriedRef.current = true;
-    previewFromPath(y, item.path).then((url) => { if (url) setSrc(url); }).catch(() => {});
-  };
-  // 图片附件只显示缩略图（不写文件名），删除按钮悬停浮出；非图片仍保留文件名 chip
-  const isImage = !!src || IMG_EXT_RE.test(item.path || '') || IMG_EXT_RE.test(item.name || '');
-  if (isImage) {
-    return (
-      <div className="group relative shrink-0">
-        {src
-          ? <img src={src} alt={item.name || ''} title={item.name || ''} className="h-9 w-9 rounded-lg object-cover border border-edge/60 hover:border-gold/50 transition-colors" onError={handleImgError} />
-          : <span title={item.name || ''} className="h-9 w-9 rounded-lg bg-white/[0.04] border border-edge/60 flex items-center justify-center text-goldDeep">▤</span>}
-        <button onClick={onRemove} title={t('移除附件')}
-          className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-black/80 border border-edge text-[9px] leading-none text-mute/80 opacity-0 group-hover:opacity-100 hover:text-red-400 transition-opacity">✕</button>
-      </div>
-    );
-  }
-  return (
-    <div className="group inline-flex items-center gap-2 rounded-xl bg-white/[0.04] border border-edge/60 pl-1.5 pr-2 py-1 text-[11px] transition-colors duration-200 hover:border-edge">
-      <span className="h-7 w-7 rounded-lg bg-white/[0.04] flex items-center justify-center text-goldDeep">▤</span>
-      <span className="max-w-[170px] truncate text-ink/80">{item.name}</span>
-      <button onClick={onRemove} title={t('移除附件')} className="text-mute/50 hover:text-red-400 transition-colors duration-200">✕</button>
-    </div>
-  );
-}
-
-// 用户消息里的附件：图片直接出缩略图（点开右侧预览），其它类型保留文件名 chip
-function UserAttachments({ files, onOpen }) {
-  const y = api();
-  const [loaded, setLoaded] = useState({});
-  const retriedRef = useRef(new Set());
-  const key = (files || []).join('|');
-  useEffect(() => {
-    let alive = true;
-    retriedRef.current = new Set();
-    (async () => {
-      for (const p of (files || []).filter((f) => IMG_EXT_RE.test(f))) {
-        const url = await previewFromPath(y, p);
-        if (alive && url) setLoaded((s) => ({ ...s, [p]: url }));
-      }
-    })();
-    return () => { alive = false; };
-  }, [key]);
-  // data URL 也加载失败（文件损坏/已删除）：先回 ▤ 占位，再按路径重读一次；仍失败保持占位，不显示破图
-  const handleImgError = (p) => {
-    setLoaded((s) => { if (!s[p]) return s; const n = { ...s }; delete n[p]; return n; });
-    if (retriedRef.current.has(p)) return;
-    retriedRef.current.add(p);
-    previewFromPath(y, p).then((url) => { if (url) setLoaded((s) => ({ ...s, [p]: url })); }).catch(() => {});
-  };
-  if (!files?.length) return null;
-  return (
-    <div className="mt-1.5 flex flex-wrap justify-end gap-1.5">
-      {files.map((p) => loaded[p] ? (
-        <button key={p} onClick={() => onOpen?.(p)} title={p}
-          className="w-28 h-20 rounded-lg overflow-hidden border border-gold/30 hover:border-gold/70 bg-[#0d0d10] transition-colors">
-          <img src={loaded[p]} alt={baseName(p)} className="w-full h-full object-cover" onError={() => handleImgError(p)} />
-        </button>
-      ) : (
-        <button key={p} onClick={() => onOpen?.(p)} title={p}
-          className="inline-flex items-center gap-1 rounded-md border border-gold/30 bg-gold/10 px-2 py-1 text-[10px] font-mono text-goldSoft/90 hover:border-gold/60">
-          <span>▤</span><span className="max-w-[180px] truncate">{baseName(p)}</span>
-        </button>
-      ))}
-    </div>
-  );
-}
-const fmtTokens = (n) => {
-  const v = Number(n) || 0;
-  if (v >= 1e6) return `${(v / 1e6).toFixed(v >= 1e7 ? 0 : 1)}M`;
-  if (v >= 1000) return `${(v / 1000).toFixed(v >= 1e5 ? 0 : 1)}K`;
-  return String(Math.round(v));
-};
-
-// 用户消息里的粘贴文本块：纯文本 + 等宽字体，不做 markdown/着色/链接识别；内部滚动、深色底
-function PastedTextBlock({ text }) {
-  return (
-    <pre data-testid="pasted-text-block"
-      className="mt-1.5 max-h-[280px] overflow-auto whitespace-pre-wrap break-words rounded-lg border border-edge bg-[#0a0a0c] px-3 py-2 font-mono text-[12px] leading-6 text-ink/80 select-text">
-      {String(text || '')}
-    </pre>
-  );
-}
-
-const relTime = (ts) => {
-  if (!ts) return '';
-  const d = Date.now() - ts;
-  if (d < 60e3) return t('刚刚');
-  if (d < 3600e3) return `${Math.floor(d / 60e3)}m`;
-  if (d < 86400e3) return `${Math.floor(d / 3600e3)}h`;
-  if (d < 7 * 86400e3) return `${Math.floor(d / 86400e3)}d`;
-  return new Date(ts).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' });
-};
-
 export default function App() {
   const y = api(); // window.finalcheck（浏览器直开时为空 → 仅壳）
   useLanguage(); // 订阅语言状态：设置页切换语言后整棵界面重渲染（t() 读的是最新语言）
@@ -338,6 +51,9 @@ export default function App() {
   const [sessions, setSessions] = useState([]);       // 当前项目的会话 [{id,title,updatedAt,turns}]
   const [projects, setProjects] = useState([]);       // [{id,name,path,isDefault,sessionCount}]
   const [activeProjectId, setActiveProjectId] = useState(null);
+  // 当前「所在会话/草稿」所属的项目：顶部 New Session 默认开在这里，
+  // 不跟着侧栏展开/收起别的 Workspace 漂移；openSession / 新建草稿 / 切项目时写入。
+  const [activeSessionProjectId, setActiveSessionProjectId] = useState(null);
   // 每个项目的会话缓存：{ [projectId]: sessions[] }。展开 Workspace 时按需拉一次；
   // 当前项目的刷新（发消息/归档/重命名/删除）同步写回这里的当前项目桶。
   const [projectSessions, setProjectSessions] = useState({});
@@ -353,6 +69,7 @@ export default function App() {
   const [effortPos, setEffortPos] = useState(null); // 拖动中的连续位置（0-4，可为小数；松手后按最近档位落库）
   const activeIdRef = useRef(null);   // 供异步回调判断「现在看的是哪个会话」
   const activeProjectIdRef = useRef(null); // 同上：异步回调里判断「当前项目」
+  const activeSessionProjectIdRef = useRef(null); // 同上：当前会话/草稿的项目归属
   const runsRef = useRef(new Map());  // sid → { content, events, startedAt }（后台会话的实时流）
   const stoppedRef = useRef(new Set()); // 手动停止过的会话：屏蔽迟到的流式事件把消息变回 streaming
   const stoppingRef = useRef(new Set()); // 已发出停止请求的会话：阻止重复点击
@@ -423,11 +140,6 @@ export default function App() {
       return { providerId: prev.providerId || d.providerId, model: prev.model || d.model, effort: prev.effort || d.effort };
     });
   }, [cfg]);
-  const changeMode = async (m) => {
-    setPermMode(m);
-    setMenu(null);
-    try { const c = await y.getConfig(); const nc = { ...c, permissionMode: m }; await y.setConfig(nc); setCfg(nc); } catch { /* 忽略 */ }
-  };
   const [booted, setBooted] = useState(false);
   const scrollRef = useRef(null);
   const inputRef = useRef(null);
@@ -451,15 +163,6 @@ export default function App() {
     setShowJump(false);
   };
   useEffect(autoScroll, [messages]);
-  // 一键回到底部：平滑滚动，立刻隐藏按钮（滚动事件里会再兜底校正）
-  const jumpToBottom = () => {
-    stickRef.current = true;
-    jumpingRef.current = true;
-    setShowJump(false);
-    const el = scrollRef.current;
-    if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
-    setTimeout(() => { jumpingRef.current = false; }, 500);
-  };
 
   const cacheProjectSessions = (projectId, list) => {
     if (!projectId) return;
@@ -561,11 +264,20 @@ export default function App() {
     setActiveProjectId(id || null);
   };
 
+  // 记录「当前所在会话/草稿」的项目归属；顶栏 New Session 的默认归属靠它，
+  // 即使侧栏只是展开/收起其它 Workspace（不切当前项目）也不会跟着漂。
+  const rememberSessionProject = (projectId) => {
+    const id = projectId || null;
+    activeSessionProjectIdRef.current = id;
+    setActiveSessionProjectId(id);
+  };
+
   // 切项目只切 UI 视角（ZCode 语义）：不中断任何在跑的回合，runsRef 里的后台流原样保留
   const switchProject = async (p) => {
     if (!p) return;
     await y.projects.select(p.id);
     activateProject(p.id);
+    rememberSessionProject(p.id); // 项目里没有可打开的会话时，空白草稿也属于这个项目
     setArtifact(null);
     setAttachments([]);
     setInput('');
@@ -624,6 +336,7 @@ export default function App() {
       setProjectSessions(restCache);
       setExpandedProjects((s) => { if (!(p.id in s)) return s; const n = { ...s }; delete n[p.id]; return n; });
       const list = await refreshProjects();
+      if (activeSessionProjectIdRef.current === p.id) rememberSessionProject(null); // 当前会话的项目已移除：归属先清空
       if (activeProjectId === p.id) {
         const next = list[0] || r.projects?.[0];
         if (next) await switchProject(next);
@@ -648,6 +361,7 @@ export default function App() {
       await refreshProjectSessions(sourceProjectId || projectIdOfSession(s.id) || activeProjectIdRef.current);
       await refreshProjectSessions(targetProjectId); // 目标项目缓存同步（未展开也保持最新）
       await refreshProjects();
+      if (activeIdRef.current === s.id) rememberSessionProject(targetProjectId); // 当前会话被移动：归属跟着走
     } catch (e) { setMessages((prev) => [...prev, { role: 'notice', content: t('移动失败：{msg}', { msg: e.message }) }]); }
   };
   const saveRename = async () => {
@@ -660,13 +374,14 @@ export default function App() {
       await refreshProjectSessions(renameBox.projectId || projectIdOfSession(session.id) || activeProjectIdRef.current);
     } catch { /* 忽略 */ }
   };
-
   // 切项目不再走「先停掉所有回合」：主进程按会话所属项目继续跑，切 Workspace 只换 UI 视角
   // projectId：这条会话所属项目（跨项目点会话时先 select 再 open，刷新缓存也落到该项目）
   const openSession = async (id, projectId = null) => {
     if (!y) return;
     try {
       const s = await y.sessions.open(id);
+      // 归属：调用方传入的项目 → 会话缓存里的目录登记 → 当前项目（老会话/未登记时兜底）
+      rememberSessionProject(projectId || projectIdOfSession(s.id) || activeProjectIdRef.current);
       setActiveId(s.id);
       activeIdRef.current = s.id;
       applySessionCfg(s);
@@ -702,13 +417,8 @@ export default function App() {
     await openSession(s.id, p.id);
   };
 
-  // dsh 语义：New Session 只是「开一张空白草稿」，不落盘；
-  // 真正创建会话文件是在第一次发送消息那一刻（send() 里 sid 为空时 create）
-  const newSession = async () => {
-    if (!y) { setActiveId(null); setMessages([]); setPage('chat'); return; }
-    if (!activeProjectId && projects[0]) {
-      try { await y.projects.select(projects[0].id); activateProject(projects[0].id); } catch { /* 忽略 */ }
-    }
+  // 清空「草稿页」的界面状态：不读取任何「当前项目」，项目归属由调用方决定
+  const resetDraftState = () => {
     setActiveId(null);
     activeIdRef.current = null;
     stickRef.current = true;
@@ -716,11 +426,46 @@ export default function App() {
     setEditing(null);
     setAttachments([]);
     setInput('');
+    setPastedBlocks([]);
     setArtifact(null);
     setStepView(null); // 新建草稿时必须收起子代理面板：否则会把上一条会话的子代理对话留在右边栏
     setSessCfg(cfgDefaults());
     setPage('chat');
     requestAnimationFrame(() => inputRef.current?.focus());
+  };
+
+  // dsh 语义：New Session 只是「开一张空白草稿」，不落盘；
+  // 真正创建会话文件是在第一次发送消息那一刻（send() 里 sid 为空时 create）
+  // 默认归属顺序：当前打开会话/草稿的项目 → 当前激活项目 → 第一个项目（已删除的跳过）
+  const newSession = async () => {
+    if (!y) { resetDraftState(); return; }
+    const target = [activeSessionProjectIdRef.current, activeProjectIdRef.current]
+      .map((id) => projects.find((p) => p.id === id))
+      .find(Boolean) || projects[0] || null;
+    if (target) {
+      if (target.id !== activeProjectIdRef.current) {
+        try { await y.projects.select(target.id); } catch { /* 项目已失效：仍按 UI 归属开草稿 */ }
+        activateProject(target.id);
+        await refreshProjectSessions(target.id); // 换到新项目后侧栏会话列表就位
+      }
+      rememberSessionProject(target.id); // 连续 New Session 留在同一个项目
+    } else {
+      rememberSessionProject(null);
+    }
+    resetDraftState();
+  };
+
+  // 项目行 hover 的 ＋：在该项目里开一个新对话（不触发行本身的展开/收起）
+  const newSessionInProject = async (p) => {
+    if (!p) return;
+    if (y?.projects?.select) {
+      try { await y.projects.select(p.id); } catch { /* 项目已失效：仍按 UI 归属开草稿 */ }
+    }
+    activateProject(p.id);
+    rememberSessionProject(p.id);
+    setExpandedProjects((s) => ({ ...s, [p.id]: true })); // 点 ＋ 后项目保持展开
+    resetDraftState();
+    await refreshProjectSessions(p.id); // 拉一次该项目的会话列表
   };
 
   const archiveSession = async (s, projectId = null) => {
@@ -971,93 +716,7 @@ export default function App() {
   };
   const closeArtifact = () => { setArtifact(null); setArtifactError(''); setArtifactLoading(false); };
 
-  // ---- 附件：粘贴截图 / 拖拽文件 / 加号选择 ----
-  const readBase64 = (file) => new Promise((resolve, reject) => {
-    const r = new FileReader();
-    r.onload = () => resolve(String(r.result || '').split(',')[1] || '');
-    r.onerror = () => reject(r.error);
-    r.readAsDataURL(file);
-  });
-  // 粘贴/拖入的图片直接转 data URL（blob: URL 会随源 File 生命周期失效，导致 chip 显示破图）
-  const fileToDataUrl = (file) => new Promise((resolve, reject) => {
-    const r = new FileReader();
-    r.onload = () => resolve(String(r.result || ''));
-    r.onerror = () => reject(r.error || new Error('读取图片失败'));
-    r.readAsDataURL(file);
-  });
-  const addFiles = async (files) => {
-    if (!y?.saveAttachment) return;
-    for (const f of Array.from(files || [])) {
-      if (f.size > 20 * 1024 * 1024) continue;
-      try {
-        const dataBase64 = await readBase64(f);
-        const saved = await y.saveAttachment({ name: f.name || 'pasted.png', dataBase64 });
-        let preview = null;
-        if (String(f.type || '').startsWith('image/')) {
-          // 主路径：从落盘文件回读（切会话/重开仍可显示）；大图在 previewFromPath 内缩到 ≤480px
-          preview = await previewFromPath(y, saved.path);
-          // 极端情况（落盘文件暂不可读）：退回内存 File 转 dataURL，仍缩到预览尺寸
-          if (!preview) {
-            try { preview = await shrinkImageDataUrl(await fileToDataUrl(f)); } catch { /* 保持 ▤ 占位 */ }
-          }
-        }
-        setAttachments((prev) => [...prev, { ...saved, preview }]);
-      } catch { /* 单个附件失败不阻断 */ }
-    }
-  };
-  const pickAttachFiles = async () => {
-    if (!y?.pickFiles) return;
-    try {
-      const paths = await y.pickFiles();
-      setAttachments((prev) => [...prev, ...(paths || []).map((p) => ({ path: p, name: baseName(p), size: 0, preview: null }))]);
-    } catch { /* 用户取消 */ }
-  };
-  const removeAttachment = (idx) => setAttachments((prev) => prev.filter((_, i) => i !== idx));
-
-  // ---- 长粘贴文本块：≥8 行或 ≥1000 字符收成卡片（内容不进输入框，发送时并入正文） ----
-  const addPastedBlock = (text) => {
-    const body = String(text || '').replace(/\r\n?/g, '\n');
-    if (!isLongPaste(body)) return false;
-    setPastedBlocks((prev) => [...prev, { id: nextPasteId(), text: body, lines: countLines(body), expanded: false }]);
-    return true;
-  };
-  const togglePasted = (id) => setPastedBlocks((prev) => prev.map((b) => (b.id === id ? { ...b, expanded: !b.expanded } : b)));
-  const removePasted = (id) => setPastedBlocks((prev) => prev.filter((b) => b.id !== id));
-
-  // ---- 模型 / 思考强度（按会话保存，不再改全局默认） ----
-  const persistSessionCfg = async (patch, { close = true } = {}) => {
-    const next = { ...sessCfg, ...patch };
-    setSessCfg(next);
-    if (close) setMenu(null);
-    if (activeId && y?.sessions?.setModel) {
-      try { await y.sessions.setModel(activeId, next); } catch { /* 保存失败仅影响下次打开 */ }
-    }
-  };
-  const chooseModel = (providerId, model) => persistSessionCfg({ providerId, model });
-  const chooseEffort = (thinkingEffort, opts) => persistSessionCfg({ effort: thinkingEffort }, opts);
-  const pickProvider = (p) => {
-    const next = { ...sessCfg, providerId: p.id, model: modelIdsOf(p)[0] || '' };
-    setSessCfg(next);
-    setProviderMenu(false);
-    if (activeId && y?.sessions?.setModel) { try { y.sessions.setModel(activeId, next); } catch { /* 忽略 */ } }
-  };
-
   // ---- / 技能（dsh 式：文字后面空格 + / 就能唤起，命令/技能可嵌在正文里） ----
-  const skillOf = (name) => skills.find((s) => String(s.name).toLowerCase() === String(name).toLowerCase());
-  const expandSkill = (text) => {
-    const raw = String(text || '');
-    // /workflow 出现在任意位置都生效：把命令本身拿掉，剩下的全文当任务
-    if (/(^|\s)\/workflow(?=\s|$)/i.test(raw)) {
-      const task = raw.replace(/(^|\s)\/workflow(?=\s|$)/gi, ' ').replace(/\s+/g, ' ').trim();
-      return `请用 run_workflow 组织一次多 agent 工作流：先自己设计 2-8 个步骤（id/name/role/prompt/depends_on），互不依赖的步骤会并行执行；每步 prompt 必须自包含（要做什么、输入是什么、交付什么），上游结果引擎会自动附上。拿到各步结果后再汇总成一份结论——不要只列计划，也不要用文字模拟并行。${task ? `\n任务：${task}` : ''}`;
-    }
-    // 技能 token 可以嵌在正文里：逐个展开成 read_playbook 指令，保留其它文字
-    return raw.replace(/(^|\s)\/([a-z0-9][a-z0-9-]*)(?=\s|$)/gi, (full, space, name) => {
-      const s = skillOf(name);
-      if (!s) return full;
-      return `${space}${buildSkillSegment(s)}`;
-    });
-  };
   const runCompact = async () => {
     if (!y?.compactSession || busy || compacting) return;
     setCompacting(true);
@@ -1193,7 +852,7 @@ export default function App() {
       setEditing(null);
     }
     // 技能展开只作用于手输文本；粘贴块原样进入上下文（避免误把粘贴内容里的 /token 当技能）
-    const typedText = expandSkill(typedRaw);
+    const typedText = expandSkill(typedRaw, skills);
     const text = [typedText, ...pastedTexts].filter((x) => String(x || '').trim()).join('\n\n');
     const files = queued ? (override.previews || []) : attachments;
     const attachBlock = files.length
@@ -1214,6 +873,7 @@ export default function App() {
         sid = s.id;
         setActiveId(sid);
         activeIdRef.current = sid;
+        if (sendProjectId) rememberSessionProject(sendProjectId); // 草稿落盘后：会话归属与创建它的项目一致
         const fresh = { id: s.id, title: s.title, createdAt: s.createdAt, updatedAt: s.updatedAt, turns: 0 };
         if (sendProjectId) patchSessionsOf(sendProjectId, (list) => [fresh, ...list]);
         else setSessions((prev) => [fresh, ...prev]);
@@ -1383,34 +1043,6 @@ export default function App() {
     try { await y?.cancelChat(sid); } catch { /* 忽略 */ }
   };
 
-  const pickSuggestion = (s) => {
-    setInput(s);
-    requestAnimationFrame(() => inputRef.current?.focus());
-  };
-
-  // 示例一键演示：demoPath() → 现有 audit IPC（L2）→ 把摘要作为一条本地 assistant 消息展示
-  const pushNotice = (content) => setMessages((prev) => [...prev, { role: 'notice', content }]);
-  const runDemoAudit = async () => {
-    if (!y || demoBusy) return;
-    if (!y.demoPath) { pushNotice(t('示例项目未随包发布')); return; }
-    setDemoBusy(true);
-    let phase = 'demo';
-    try {
-      const p = await y.demoPath();
-      const dir = typeof p === 'string' ? p : (p && typeof p === 'object' && !p.error ? (p.path || p.dir || null) : null);
-      if (!dir) { pushNotice(t('示例项目未随包发布')); return; }
-      if (!y.audit) { pushNotice(t('当前版本不支持体检调用')); return; }
-      phase = 'audit';
-      const r = await y.audit(dir, { tier: 'L2', interactive: true });
-      setMessages((prev) => [...prev, { role: 'assistant', content: formatDemoAuditSummary(r, dir), trace: [], local: true }]);
-    } catch (e) {
-      if (phase === 'demo') pushNotice(t('示例项目未随包发布'));
-      else pushNotice(t('示例体检失败：{msg}', { msg: e?.message || String(e) }));
-    } finally {
-      setDemoBusy(false);
-    }
-  };
-
   // 编辑历史用户消息：回填输入框；发送时先把会话回退到该条之前
   const startEdit = (index, text, keepTurns, files = []) => {
     setEditing({ index, keepTurns, prevAttachments: attachments, prevPasted: pastedBlocks });
@@ -1426,199 +1058,41 @@ export default function App() {
     setEditing(null);
     setInput('');
   };
+  // 消息区的「编辑并从这条重开」：粘贴块也要一起回填（先回填正文与附件，再放粘贴块）
+  const editMessage = (index, text, keepTurns, files, pasted) => {
+    if (pasted) {
+      startEdit(index, text, keepTurns, files);
+      setPastedBlocks(pasted.map((x) => ({ id: nextPasteId(), text: x, lines: countLines(x), expanded: false })));
+    } else {
+      startEdit(index, text, keepTurns, files);
+    }
+  };
+  const openStep = (s) => setStepView({ sessionId: activeId, stepId: s.id, name: s.name, role: s.role, kind: s.kind || null, opType: s.opType || s.op || null, key: Date.now() });
 
   const hasMsgs = messages.length > 0;
-  const activeProject = projects.find((p) => p.id === activeProjectId) || null;
-  const activeTitle = prettyTitle(sessions.find((s) => s.id === activeId)?.title) || (activeId ? activeProject?.name : 'New Session');
-
-  // ---- 输入框下方的模型 / 思考强度 / 技能菜单（按当前会话的配置显示） ----
-  const allProviders = cfg?.providers || [];
-  const providers = allProviders.filter((p) => p.enabled !== false);
-  const activeProv = allProviders.find((p) => p.id === sessCfg.providerId) || providers[0] || null;
-  const activeModelIds = modelIdsOf(activeProv);
-  const activeModel = (sessCfg.model && activeModelIds.includes(sessCfg.model)) ? sessCfg.model : (activeModelIds[0] || '');
-  const activeModelEntries = modelEntriesOf(activeProv);
-  const effort = sessCfg.effort || cfg?.thinkingEffort || 'max';
-  const EFFORTS = [
-    { v: 'default', label: 'Default', desc: '跟随模型默认' },
-    { v: 'low', label: 'Low', desc: '更快，思考更少' },
-    { v: 'medium', label: 'Medium', desc: '平衡' },
-    { v: 'high', label: 'High', desc: '更深入' },
-    { v: 'max', label: 'Max', desc: '最大思考强度（默认）' }
-  ];
-  const effortIndex = Math.max(0, EFFORTS.findIndex((x) => x.v === effort));
-  const sliderPos = effortPos ?? effortIndex;
-  const effortLabel = EFFORTS[Math.round(sliderPos)]?.label || 'Max';
-  const COMMANDS = [
-    { type: 'command', id: 'compact', name: 'compact', cn: '压缩上下文', description: '把当前对话压成摘要，后续只带摘要 + 最近 6 条' },
-    { type: 'command', id: 'workflow', name: 'workflow', cn: '多 agent 工作流', description: '你自己写步骤，引擎按依赖并行调度多个子代理' }
-  ];
-  const skillItems = skills.map((s) => ({ type: 'skill', id: s.id, name: s.name, cn: s.cn, description: s.description || '' }));
-  const slashMatch = input.match(/(^|\s)\/([a-z0-9-]*)$/i);
-  const slashQ = (slashMatch?.[2] || '').toLowerCase();
-  const slashItems = [...COMMANDS, ...skillItems]
-    .filter((i) => !slashQ || String(i.name).toLowerCase().includes(slashQ) || String(i.cn).toLowerCase().includes(slashQ) || String(i.description).toLowerCase().includes(slashQ))
-    .slice(0, 50);
-  const slashOpen = !!slashMatch;
-
-  const onComposerKeyDown = (e) => {
-    if (slashOpen && slashItems.length) {
-      if (e.key === 'ArrowDown') { e.preventDefault(); setSlashIndex((v) => (v + 1) % slashItems.length); return; }
-      if (e.key === 'ArrowUp') { e.preventDefault(); setSlashIndex((v) => (v - 1 + slashItems.length) % slashItems.length); return; }
-      if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); chooseSlash(slashItems[Math.min(slashIndex, slashItems.length - 1)]); return; }
-      if (e.key === 'Escape') { e.preventDefault(); setInput(''); return; }
-    }
-    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send(); }
-  };
+  const providers = (cfg?.providers || []).filter((p) => p.enabled !== false);
+  const activeProv = (cfg?.providers || []).find((p) => p.id === sessCfg.providerId) || providers[0] || null;
+  const activeModel = (sessCfg.model && modelIdsOf(activeProv).includes(sessCfg.model)) ? sessCfg.model : (modelIdsOf(activeProv)[0] || '');
 
   return (
     <div className="app-root h-full flex flex-col bg-base text-ink">
       {/* 液态玻璃的底：两团极暗的金色/青色光晕（玻璃要有东西可以折射） */}
       <div className="app-ambient" aria-hidden="true" />
-      {/* 自定义标题栏（frame:false，用户嫌原生标题栏丑）：可拖拽 + 自绘最小化/最大化/关闭 */}
-      <div className="relative z-[1] shrink-0 h-9 flex items-center justify-between border-b border-white/[0.06] bg-white/[0.025] backdrop-blur-2xl select-none" style={{ WebkitAppRegion: 'drag' }}>
-        <div className="flex items-center gap-2 pl-3">
-          <span className="w-4 h-4 rounded-[4px] bg-gold/15 border border-gold/50 flex items-center justify-center text-[9px] font-bold text-goldSoft">FC</span>
-          <span className="text-[12px] tracking-widest text-mute">FinalCheck</span>
-        </div>
-        <div className="flex items-center h-full" style={{ WebkitAppRegion: 'no-drag' }}>
-          <button onClick={() => y?.windowCtl('minimize')} className="h-full px-3.5 text-mute hover:text-ink hover:bg-white/5 transition-colors" title={t('最小化')}>─</button>
-          <button onClick={() => y?.windowCtl('maximize')} className="h-full px-3.5 text-mute hover:text-ink hover:bg-white/5 transition-colors" title={t('最大化')}>▢</button>
-          <button onClick={() => y?.windowCtl('close')} className="h-full px-3.5 text-mute hover:text-red-300 hover:bg-red-500/15 transition-colors" title={t('关闭')}>✕</button>
-        </div>
-      </div>
+      <TitleBar y={y} />
       <div className="relative z-[1] flex-1 min-h-0 flex text-ink">
       {/* ---- 左栏（液态玻璃）：设置/用量页改全屏布局，不露会话侧栏 ---- */}
-      {page === 'chat' && <aside className="glass-side w-[212px] shrink-0 flex flex-col">
-        {/* 最上面一条：New Session（居中、全英文，仿 ZCode） */}
-        <div className="px-2 pt-2.5 pb-1">
-          <button onClick={newSession} disabled={!y || !activeProjectId}
-            className="glass-row w-full flex items-center justify-center gap-2 rounded-xl px-2.5 h-9 text-[13px] text-ink/90 hover:text-ink disabled:opacity-35">
-            <IconPlusCircle /> New Session
-          </button>
-        </div>
-
-        {/* Workspaces 标题 + 新建项目文件夹（右边这个图标） */}
-        <div className="px-3.5 pt-3.5 pb-1 flex items-center justify-between">
-          <span className="text-[10px] tracking-[0.16em] text-mute/45 select-none">Workspaces</span>
-          <button onClick={addProject} title={t('新建项目文件夹（会话与记忆存到该目录 .finalcheck/）')}
-            className="h-6 w-6 -mr-1 rounded-lg text-mute/55 hover:text-goldSoft hover:bg-white/[0.07] transition-colors flex items-center justify-center">
-            <IconFolderPlus />
-          </button>
-        </div>
-
-        {/* 工作区列表：每个 Workspace 独立展开/收起（可同时展开多个，ZCode 语义）；默认 5 条，多的 Show more */}
-        <div className="flex-1 min-h-0 overflow-y-auto px-2 pb-2">
-          {!y && <div className="text-xs text-mute/70 px-2 py-3">{t('浏览器直开：项目/会话不可用')}</div>}
-          {y && booted && projects.length === 0 && <div className="text-xs text-mute/70 px-2 py-3">No workspaces yet</div>}
-          {projects.map((p) => {
-            const isActive = p.id === activeProjectId;
-            const open = isProjectExpanded(p);
-            const cached = isActive ? sessions : projectSessions[p.id];
-            const loading = open && !isActive && projectSessions[p.id] === undefined;
-            const list = open ? (cached || []) : [];
-            const live = list.filter((x) => !x.archived);   // 归档的默认不出现（文件、历史、记忆都还在磁盘上）
-            const arch = list.filter((x) => x.archived);
-            const headerCount = cached ? live.length : (p.sessionCount || 0);
-            const expanded = !!showAllSessions[p.id];
-            const archOpen = !!showArchived[p.id];
-            const shown = expanded ? live : live.slice(0, SESSION_PREVIEW);
-
-            // 一行会话：hover 的动作是归档（不删任何数据）；归档过的行 hover 变成恢复
-            const renderSessionRow = (s) => {
-              const sActive = s.id === activeId && page === 'chat';
-              const running = !!runningIds[s.id];
-              return (
-                <div key={s.id} onClick={() => openProjectSession(p, s)}
-                  onContextMenu={(e) => { e.preventDefault(); setMoveOpen(false); setRowMenu({ x: e.clientX, y: e.clientY, session: s, project: p }); }}
-                  title={`${prettyTitle(s.title)} · ${new Date(s.updatedAt).toLocaleString('zh-CN')}${s.turns ? ` · ${t('{n} 轮', { n: s.turns })}` : ''}`}
-                  className={`group relative flex items-center gap-1.5 rounded-lg pl-2 pr-1.5 py-1.5 cursor-pointer transition-colors ${s.archived ? 'opacity-45' : ''} ${
-                    sActive ? 'bg-white/[0.09] text-goldSoft' : 'text-ink/85 hover:bg-white/[0.06] hover:text-ink'}`}>
-                  {s.pinned ? <span className="text-goldDeep/70 text-[9px] shrink-0">▴</span> : null}
-                  {/* 状态槽：跑的时候转圈，跑完才是绿点 */}
-                  <span className="w-3 shrink-0 flex items-center justify-center">
-                    {running
-                      ? <Spinner size={13} className="text-ink/65" title={t('运行中')} />
-                      : s.unread ? <span title={t('已完成')} className="w-1.5 h-1.5 rounded-full bg-jade" /> : null}
-                  </span>
-                  <span className="flex-1 min-w-0 truncate text-[12px]">{prettyTitle(s.title)}</span>
-                  <span className="shrink-0 text-[10px] text-mute/60 tabular-nums group-hover:opacity-0 transition-opacity">{relTime(s.updatedAt)}</span>
-                  <button title={s.archived ? t('恢复会话') : t('归档会话（历史与记忆保留，在 Archived 里可找回）')}
-                    onClick={(e) => { e.stopPropagation(); archiveSession(s, p.id); }}
-                    className="absolute right-1 top-1/2 -translate-y-1/2 p-1 rounded-md text-mute/40 opacity-0 group-hover:opacity-100 hover:text-goldSoft hover:bg-white/[0.08] transition-opacity">
-                    {s.archived ? <IconUnarchive /> : <IconArchive />}
-                  </button>
-                </div>
-              );
-            };
-            return (
-              <div key={p.id} className="mb-0.5">
-                <div onClick={() => toggleProject(p)} title={p.path}
-                  className={`group relative flex items-center gap-1 rounded-lg pl-1 pr-1.5 py-1.5 cursor-pointer transition-colors ${
-                    isActive ? 'text-goldSoft bg-white/[0.045]' : 'text-ink/80 hover:bg-white/[0.05] hover:text-ink'}`}>
-                  <span role="button" tabIndex={-1}
-                    onClick={(e) => { e.stopPropagation(); toggleProject(p); }}
-                    className="shrink-0 p-0.5 rounded text-mute/45 hover:text-ink transition-colors">
-                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"
-                      className={`transition-transform duration-300 ${open ? '' : '-rotate-90'}`}><path d="M6 9l6 6 6-6" /></svg>
-                  </span>
-                  <IconFolder active={isActive} />
-                  <span className={`flex-1 min-w-0 truncate text-[13px] ${isActive ? 'font-medium' : ''}`}>{p.name}</span>
-                  <span className="shrink-0 text-[10px] text-mute/55 tabular-nums group-hover:opacity-0 transition-opacity">{headerCount}</span>
-                  <button title={t('从列表移除项目（不删磁盘目录）')} onClick={(e) => { e.stopPropagation(); removeProject(p); }}
-                    className="absolute right-1 top-1/2 -translate-y-1/2 p-1 rounded-md text-mute/40 opacity-0 group-hover:opacity-100 hover:text-red-400 hover:bg-red-500/10 transition-opacity">
-                    <IconTrash />
-                  </button>
-                </div>
-
-                {open && (
-                  <div className="mt-0.5 mb-1 ml-[13px] pl-2 border-l border-white/[0.06]">
-                    {loading ? (
-                      <div className="px-2 py-1 text-[10px] text-mute/30">{t('加载中…')}</div>
-                    ) : (
-                      <>
-                        {list.length === 0 && <div className="px-2 py-1 text-[10px] text-mute/30">No sessions</div>}
-                        {shown.map((s) => renderSessionRow(s))}
-                        {live.length > SESSION_PREVIEW && (
-                          <button onClick={() => setShowAllSessions((v) => ({ ...v, [p.id]: !v[p.id] }))}
-                            className="mt-0.5 w-full text-left px-2 py-1 rounded-lg text-[11px] text-mute/55 hover:text-goldSoft hover:bg-white/[0.045] transition-colors">
-                            {expanded ? 'Show less' : 'Show more'}
-                          </button>
-                        )}
-                        {arch.length > 0 && (
-                          <>
-                            <button onClick={() => setShowArchived((v) => ({ ...v, [p.id]: !v[p.id] }))}
-                              className="mt-0.5 w-full text-left px-2 py-1 rounded-lg text-[11px] text-mute/45 hover:text-ink hover:bg-white/[0.045] transition-colors flex items-center gap-1.5">
-                              <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"
-                                className={`transition-transform duration-300 ${archOpen ? '' : '-rotate-90'}`}><path d="M6 9l6 6 6-6" /></svg>
-                              Archived <span className="text-mute/30 tabular-nums">{arch.length}</span>
-                            </button>
-                            {archOpen && arch.map((s) => renderSessionRow(s))}
-                          </>
-                        )}
-                      </>
-                    )}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-
-        {/* 底部：Settings + 连接状态点 */}
-        <div className="px-2 py-2 border-t border-white/[0.06] flex items-center gap-1">
-          <button onClick={() => setPage('settings')}
-            className={`flex-1 flex items-center gap-2 rounded-lg px-2 py-1.5 text-[13px] transition-colors ${
-              page === 'settings' ? 'bg-white/[0.06] text-goldSoft' : 'text-mute hover:text-ink hover:bg-white/[0.045]'}`}>
-            <IconGear active={page === 'settings'} />Settings
-            {updateVersion ? (
-              <span title={updateVersion ? t('有新版本 v{v}', { v: updateVersion }) : t('有新版本')}
-                className="ml-auto w-1.5 h-1.5 rounded-full bg-red-400 shrink-0" />
-            ) : null}
-          </button>
-          <span title={y ? t('IPC 已连接') : t('IPC 不可用')} className={`w-1.5 h-1.5 rounded-full ${y ? 'bg-jade' : 'bg-red-400/70'}`} />
-        </div>
-      </aside>}
+      {page === 'chat' && <Sidebar
+        y={y} booted={booted} page={page} projects={projects} activeProjectId={activeProjectId}
+        activeId={activeId} sessions={sessions} projectSessions={projectSessions}
+        showAllSessions={showAllSessions} showArchived={showArchived}
+        runningIds={runningIds} updateVersion={updateVersion} isProjectExpanded={isProjectExpanded}
+        setShowAllSessions={setShowAllSessions} setShowArchived={setShowArchived}
+        onNewSession={newSession} onAddProject={addProject} onToggleProject={toggleProject}
+        onOpenSession={openProjectSession} onNewSessionInProject={newSessionInProject}
+        onRemoveProject={removeProject} onArchiveSession={archiveSession}
+        onOpenRowMenu={(x, y2, s, p) => { setMoveOpen(false); setRowMenu({ x, y: y2, session: s, project: p }); }}
+        onSettings={() => setPage('settings')}
+      />}
 
       {/* ---- 主区 + 右侧产物预览 ---- */}
       <div className="flex-1 min-w-0 flex min-h-0">
@@ -1631,579 +1105,42 @@ export default function App() {
 
         {page === 'chat' ? (
           <>
-            {/* 顶栏：当前会话标题 */}
-            <div className="shrink-0 h-10 flex items-center px-5 border-b border-edge/60">
-              <span className="font-kai text-sm text-goldSoft truncate">{activeTitle || 'FinalCheck'}</span>
-              {(() => { const cur = sessions.find((x) => x.id === activeId); return cur?.archived ? (
-                <button onClick={() => archiveSession(cur, activeProjectId)} title={t('这条会话已归档（历史和记忆都还在），点一下恢复')}
-                  className="ml-2 shrink-0 rounded-full border border-white/10 px-2 py-0.5 text-[10px] text-mute/70 hover:text-goldSoft hover:border-gold/40 transition-colors">{t('归档')}</button>
-              ) : null; })()}
-              {busy && <span className="ml-3 text-[11px] text-mute">{t('思考中…')}</span>}
-            </div>
-
-            {showSetup && (
-              <div className="shrink-0 px-5 pt-4">
-                <FirstRunCard y={y} cfg={cfg} onSaved={finishSetup} onSkip={skipSetup} />
-              </div>
-            )}
+            <ChatHeader
+              sessions={sessions} activeId={activeId} activeProjectId={activeProjectId} projects={projects}
+              busy={busy} showSetup={showSetup} y={y} cfg={cfg}
+              onArchiveSession={archiveSession} onSaved={finishSetup} onSkip={skipSetup}
+            />
 
             {hasMsgs ? (
-              <div className="relative flex-1 min-h-0">
-                <div ref={scrollRef} className="h-full overflow-y-auto px-5 py-4"
-                  onScroll={(e) => {
-                    const el = e.currentTarget;
-                    const stuck = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-                    stickRef.current = stuck;
-                    if (jumpingRef.current) { if (stuck) setShowJump(false); }
-                    else setShowJump(!stuck);
-                  }}>
-                  {/* 全宽文档式排版：消息/输入区同宽（≥90% 容器宽） */}
-                  <div className="w-full max-w-[96%] mx-auto space-y-4">
-                    {messages.map((m, i) => (
-                    m.role === 'notice' ? (
-                      <div key={i} className="flex items-center gap-3 py-1 text-[11px] text-mute/60">
-                        <span className="h-px flex-1 bg-edge" />
-                        <span className="max-w-[80%] text-center whitespace-pre-wrap">{m.content}</span>
-                        <span className="h-px flex-1 bg-edge" />
-                      </div>
-                    ) : m.role === 'user' ? (() => {
-                      const u = splitAttachmentBlock(m.content);
-                      const wf = parseWorkflowPrompt(u.text);
-                      const wfText = wf ? (`/workflow ${wf.task}`.trim()) : null;
-                      // 技能段：展示时摘掉内部 read_playbook 指令，只剩 chip；复制/编辑还原成 /id token
-                      const sk = parseSkillSegments(u.text);
-                      const typedSk = m.pasted?.length ? parseSkillSegments(m.typed || '') : null;
-                      const hasSkills = !wf && sk.skills.length > 0;
-                      const restoreText = m.pasted?.length
-                        ? [typedSk?.tokenText, ...(m.pasted || [])].filter((x) => String(x || '').trim()).join('\n\n')
-                        : (wf ? wfText : (sk.skills.length ? sk.tokenText : u.text));
-                      const keepTurns = messages.slice(0, i).filter((x) => x.role === 'user' && !x.steer).length;
-                      // Steer 气泡：不是会话历史，只展示「已注入当前回合」；不给编辑/回退入口
-                      if (m.steer) {
-                        return (
-                          <div key={i} className="flex flex-col items-start gap-1 border-l-2 border-gold/70 pl-3" data-testid="steer-bubble">
-                            <div className="inline-flex items-center gap-1.5">
-                              <span className="badge bg-gold/20 text-goldSoft border border-gold/50">Steer</span>
-                              <span className="text-[10px] text-mute/60">{t('已注入当前回合')}</span>
-                            </div>
-                            <div className="max-w-[75%] whitespace-pre-wrap break-words rounded-2xl rounded-bl-md border border-gold/25 bg-gold/[0.06] px-3.5 py-2 text-sm leading-relaxed text-ink/90">
-                              {m.content}
-                            </div>
-                          </div>
-                        );
-                      }
-                      return (
-                        <div key={i} className="group flex flex-col items-end">
-                          <div className={`glass-bubble max-w-[75%] rounded-2xl rounded-br-md px-3.5 py-2 text-sm break-words leading-relaxed ${wf || m.pasted?.length || hasSkills ? '' : 'whitespace-pre-wrap'}`}>
-                            {m.pasted?.length ? (
-                              <div className="min-w-0">
-                                {m.typed ? (typedSk.skills.length ? (
-                                  <div className="min-w-0">
-                                    <SkillChips skills={typedSk.skills} />
-                                    {typedSk.text ? <div className="mt-2 whitespace-pre-wrap break-words">{typedSk.text}</div> : null}
-                                  </div>
-                                ) : <div className="whitespace-pre-wrap">{m.typed}</div>) : null}
-                                {m.pasted.map((t, k) => <PastedTextBlock key={k} text={t} />)}
-                              </div>
-                            ) : wf ? (
-                              // Workflow：金色符号 + 标题，正文另起一行；不用药丸/边框，原始指令折叠区低调内滚
-                              <div className="min-w-0">
-                                <div className="flex items-center gap-1.5">
-                                  <span aria-hidden="true" className="text-[12px] leading-none text-goldSoft/90 [text-shadow:0_0_10px_rgba(227,197,107,0.35)]">✦</span>
-                                  <span className="font-kai text-[15px] font-semibold leading-none tracking-[0.14em] text-goldSoft">Workflow</span>
-                                </div>
-                                <div className="mt-2 text-[13.5px] leading-relaxed text-ink/90 break-words">{wf.task || t('多 agent 并行执行')}</div>
-                                {openWorkflowRaw === i ? (
-                                  <div className="mt-2.5 max-h-36 overflow-y-auto border-t border-gold/15 pt-2 pr-1 text-[11px] leading-relaxed text-mute/70 whitespace-pre-wrap break-words">
-                                    {u.text}
-                                  </div>
-                                ) : null}
-                              </div>
-                            ) : hasSkills ? (
-                              <div className="min-w-0">
-                                <SkillChips skills={sk.skills} />
-                                {sk.text ? <div className="mt-2 whitespace-pre-wrap break-words">{sk.text}</div> : null}
-                              </div>
-                            ) : u.text}
-                          </div>
-                          <UserAttachments files={u.files} onOpen={openArtifact} />
-                          <div className="mt-1 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                            {wf ? (
-                              <button title={openWorkflowRaw === i ? t('收起原始指令') : t('查看原始指令')}
-                                onClick={() => setOpenWorkflowRaw((v) => (v === i ? null : i))}
-                                className="p-1.5 rounded-md text-mute/55 hover:text-goldSoft hover:bg-white/5 transition-colors"><IconChevron /></button>
-                            ) : null}
-                            <button title={t('复制')} onClick={() => y?.copyText?.(restoreText)}
-                              className="p-1.5 rounded-md text-mute/55 hover:text-goldSoft hover:bg-white/5 transition-colors"><IconCopy /></button>
-                            <button title={t('编辑并从这条重开')}
-                              onClick={() => {
-                                if (m.pasted?.length) {
-                                  startEdit(i, typedSk?.tokenText || m.typed || '', keepTurns, u.files);
-                                  setPastedBlocks(m.pasted.map((t) => ({ id: nextPasteId(), text: t, lines: countLines(t), expanded: false })));
-                                } else {
-                                  startEdit(i, restoreText, keepTurns, u.files);
-                                }
-                              }}
-                              className="p-1.5 rounded-md text-mute/55 hover:text-goldSoft hover:bg-white/5 transition-colors"><IconEdit /></button>
-                          </div>
-                        </div>
-                      );
-                    })() : (
-                      /* AI 回答去气泡：无底色卡片，仅左侧金竖线（错误消息换红线）区分 */
-                      <div key={i} className={`w-full border-l-2 pl-4 transition-all duration-200 ${m.error ? 'border-red-500/50' : m.interrupted ? 'border-gold/25' : 'border-gold/45'}`}>
-                        <ProcessTimeline msg={m} />
-                        {m.streaming && m.workflow ? <WorkflowLiveCard data={m.workflow} sessionId={activeId} providers={providers}
-                          onRecover={(text) => send({ text, pasted: [] })}
-                          onOpenStep={(s) => setStepView({ sessionId: activeId, stepId: s.id, name: s.name, role: s.role, kind: s.kind || null, opType: s.opType || s.op || null, key: Date.now() })} /> : null}
-                        {m.interrupted && !m.error && (
-                          <div className="mb-1.5 inline-flex items-center gap-1.5 text-[11px] text-mute/80">
-                            <span className="inline-block w-2.5 h-2.5 rounded-[2px] bg-gold/70" />
-                            {t('已停止 · 输出已保留')}
-                          </div>
-                        )}
-                        {m.content && <div className="md text-sm" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.content) }} />}
-                        {m.streaming && (
-                          m.startedAt
-                            ? <WorkingStatus startedAt={m.startedAt} label={m.activityLabel} tone={m.activityTone || 'activity'} className="mt-2" />
-                            : (
-                              <span className="inline-flex gap-1 items-center h-4 mt-1">
-                                <span className="w-1.5 h-1.5 rounded-full bg-goldSoft animate-bounce" style={{ animationDelay: '0ms' }} />
-                                <span className="w-1.5 h-1.5 rounded-full bg-goldSoft animate-bounce" style={{ animationDelay: '150ms' }} />
-                                <span className="w-1.5 h-1.5 rounded-full bg-goldSoft animate-bounce" style={{ animationDelay: '300ms' }} />
-                              </span>
-                            )
-                        )}
-                        {m.error && (
-                          <div className="text-red-300">
-                            <div className="font-medium mb-1">{t('出错了')}</div>
-                            <div className="text-xs leading-relaxed">{m.error}</div>
-                            {/* 恢复键在工作流卡片底栏（只在中断/失败时出现）；这里只留说明文字 */}
-                          </div>
-                        )}
-                        {/* 出错的回合也可能是「工作流跑完了、总结被打断」：trace 照样要渲染（否则卡片/证据全看不到） */}
-                        {!m.streaming && m.trace?.length > 0 && <TraceBlock trace={m.trace} onRecover={(text) => send({ text, pasted: [] })} onOpenStep={(s) => setStepView({ sessionId: activeId, stepId: s.id, name: s.name, role: s.role, kind: s.kind || null, opType: s.opType || s.op || null, key: Date.now() })} />}
-                        <ArtifactChips artifacts={collectArtifacts(m.trace)} activePath={artifact?.path} onOpen={openArtifact} />
-                      </div>
-                    )
-                  ))}
-                  </div>
-                </div>
-                {/* 不在底部时：底部居中的回到底部箭头（不挡输入框、不压 WorkingStatus） */}
-                {showJump && (
-                  <button type="button" data-testid="scroll-bottom" onClick={jumpToBottom} title={t('回到底部')}
-                    className="absolute bottom-2 left-1/2 z-20 flex h-[30px] w-[30px] -translate-x-1/2 items-center justify-center rounded-full border border-gold/45 bg-[#141210]/80 text-goldSoft shadow-lg backdrop-blur-md transition-all duration-200 hover:border-gold hover:bg-gold/20 hover:text-ink">
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12l7 7 7-7" /></svg>
-                  </button>
-                )}
-              </div>
+              <MessageList
+                messages={messages} activeId={activeId} providers={providers} artifactPath={artifact?.path}
+                openWorkflowRaw={openWorkflowRaw} setOpenWorkflowRaw={setOpenWorkflowRaw}
+                scrollRef={scrollRef} stickRef={stickRef} jumpingRef={jumpingRef}
+                showJump={showJump} setShowJump={setShowJump} y={y}
+                onSendRecover={(text) => send({ text, pasted: [] })}
+                onOpenArtifact={openArtifact} onEditMessage={editMessage} onOpenStep={openStep}
+              />
             ) : (
-              /* 空态：能力卡（直接对应产品功能，不硬编码路径） */
-              <div className="flex-1 min-h-0 overflow-y-auto px-6">
-                <div className="min-h-full flex flex-col items-center justify-center py-10">
-                  <div className="font-kai text-5xl text-goldSoft mb-3 tracking-[0.04em]">FinalCheck</div>
-                  <p className="text-sm text-mute mb-8 tracking-wide">{t('体检 · 渗透 · 下载闸 · 工作流 —— 选一个，或直接说')}</p>
-                  <div className="w-full max-w-2xl grid grid-cols-2 gap-2.5">
-                    {CAPABILITIES.map((c) => {
-                      const Icon = CAP_ICON[c.icon] || IconSparkle;
-                      const isDemo = c.id === 'demo';
-                      return (
-                        <button key={c.id} onClick={() => (isDemo ? runDemoAudit() : pickSuggestion(c.prompt))}
-                          disabled={isDemo && demoBusy}
-                          className="glass-row group flex items-start gap-3 rounded-2xl px-4 py-3.5 text-left disabled:opacity-50">
-                          <span className="mt-0.5 text-goldSoft/85 group-hover:text-goldSoft transition-colors"><Icon /></span>
-                          <span className="min-w-0 flex-1">
-                            <span className="flex items-baseline gap-2">
-                              <span className="text-[13px] text-ink/90">{t(c.title)}</span>
-                              <span className="text-[10px] font-mono text-mute/40">{c.en}</span>
-                            </span>
-                            <span className="mt-1 block text-[11px] leading-relaxed text-mute/80">
-                              {isDemo && demoBusy ? t('体检中…示例项目 L2 正在跑') : t(c.desc)}
-                            </span>
-                          </span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              </div>
+              <EmptyState y={y} demoBusy={demoBusy} setDemoBusy={setDemoBusy}
+                setMessages={setMessages} setInput={setInput} inputRef={inputRef} />
             )}
 
             {/* 输入区（与消息区同宽） */}
-            <div className="shrink-0 px-5 pb-3 pt-1">
-              <div className="w-full max-w-[96%] mx-auto">
-                {/* 权限确认条：agent 请求执行敏感操作（run_command）时弹出，三选一回传主进程 */}
-                {approval && (
-                  <div data-testid="approval-bar"
-                    className="mb-2.5 rounded-xl border border-gold/50 bg-gold/10 px-4 py-3 animate-[fadeIn_.2s_ease]">
-                    <div className="flex items-center gap-2 text-xs font-medium text-goldSoft">
-                      <IconShield />
-                      <span>{t(approval.tool === 'edit_file' ? 'Agent 请求修改文件，需要你的授权' : approval.tool === 'write_file' ? 'Agent 请求写入文件，需要你的授权' : 'Agent 请求执行命令，需要你的授权')}</span>
-                      <span className="ml-auto text-[11px] font-normal text-mute/70">{t('120 秒内未处理将自动拒绝')}</span>
-                    </div>
-                    <div data-testid="approval-summary"
-                      className="glass-card mt-2 rounded-xl px-3 py-2 font-mono text-xs text-ink/90 break-all whitespace-pre-wrap max-h-28 overflow-y-auto">
-                      {approval.summary || t('(空命令)')}
-                    </div>
-                    <div className="mt-2.5 flex items-center gap-2">
-                      <button data-testid="approval-allow-once" onClick={() => decideApproval('allowed-once')}
-                        className="btn-primary px-3 py-1.5 text-xs">{t('允许一次')}</button>
-                      <button data-testid="approval-allow-session" onClick={() => decideApproval('always-session')}
-                        className="btn-ghost px-3 py-1.5 text-xs !text-goldSoft !border-gold/40 hover:!bg-gold/10">{t('本会话总是允许')}</button>
-                      <button data-testid="approval-reject" onClick={() => decideApproval('rejected')}
-                        className="ml-auto rounded-lg border border-red-500/40 px-3 py-1.5 text-xs text-red-300 hover:bg-red-500/10 transition-all duration-200">{t('拒绝')}</button>
-                    </div>
-                  </div>
-                )}
-                {/* 排队卡片（当前回合进行中还能继续发消息）：FIFO，回合结束后自动发队首 */}
-                {queueItems.length > 0 && (
-                  <div className="mb-2.5 space-y-1.5" data-testid="queue-list">
-                    <div className="flex items-center gap-2 px-1">
-                      <span className="badge bg-gold/15 text-goldSoft border border-gold/35">{t('排队 {n}', { n: queueItems.length })}</span>
-                      <span className="text-[10px] text-mute/55">{t('当前回合结束后自动发送（Steer 可注入本回合）')}</span>
-                    </div>
-                    {queueItems.map((item, idx) => (
-                      <div key={item.id} data-testid="queue-item"
-                        className="glass-card flex items-center gap-2 rounded-xl border border-gold/20 px-3 py-2">
-                        <span className="shrink-0 font-mono text-[10px] text-goldSoft/60">{idx + 1}</span>
-                        <span className="min-w-0 flex-1 truncate text-xs text-ink/85"
-                          title={[item.text, ...(item.pasted || [])].filter(Boolean).join('\n\n') || 'Pasted text'}>
-                          {item.text || (item.pasted?.length
-                            ? t('Pasted text · {n} 行', { n: item.pasted.reduce((n, t) => n + countLines(t), 0) })
-                            : t('(空)'))}
-                        </span>
-                        {item.previews?.length ? <span className="shrink-0 text-[10px] text-mute/50">{t('附件 {n}', { n: item.previews.length })}</span> : null}
-                        <button type="button" data-testid="queue-steer" onClick={() => steerQueueItem(item)}
-                          title={busy && !stopping ? t('注入当前回合（下一次模型请求前生效）') : t('当前回合未在运行，无法 Steer')}
-                          className="shrink-0 rounded-md border border-gold/40 px-2 py-0.5 text-[10px] text-goldSoft hover:bg-gold/15 transition-colors">Steer</button>
-                        <button type="button" data-testid="queue-edit" onClick={() => moveQueueItemToInput(item.id)}
-                          title={t('取回编辑（从队列移除，内容放回输入框）')}
-                          className="shrink-0 rounded-md p-1 text-mute/55 hover:text-goldSoft hover:bg-white/5 transition-colors">
-                          <IconEdit />
-                        </button>
-                        <button type="button" data-testid="queue-remove" onClick={() => removeQueueItem(item.id)}
-                          title={t('移除此条')}
-                          className="shrink-0 rounded-md p-1 text-mute/55 hover:text-red-300 hover:bg-red-500/10 transition-colors">
-                          <IconTrash />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                <div
-                  className={`glass-composer relative z-30 rounded-[20px] ${dragging ? 'fc-drag' : ''}`}
-                  onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
-                  onDragLeave={() => setDragging(false)}
-                  onDrop={async (e) => { e.preventDefault(); setDragging(false); await addFiles(e.dataTransfer?.files); }}
-                >
-                  {editing && (
-                    <div className="flex items-center gap-2 px-3 pt-2.5 text-[11px]">
-                      <span className="badge bg-gold/15 text-goldSoft border border-gold/35">{t('编辑中')}</span>
-                      <span className="text-mute/60">{t('发送后将从这条消息重开，后面的对话会被丢弃')}</span>
-                      <button onClick={cancelEdit} className="ml-auto text-mute/60 hover:text-ink transition-colors">{t('取消')}</button>
-                    </div>
-                  )}
-                  {attachments.length > 0 && (
-                    <div className="flex flex-wrap gap-1.5 px-3 pt-2.5">
-                      {attachments.map((a, i) => (
-                        <AttachmentChip key={a.path} item={a} onRemove={() => removeAttachment(i)} />
-                      ))}
-                    </div>
-                  )}
-                  {/* 长粘贴：收成「Pasted text」卡片（默认折叠，点击展开纯文本全文） */}
-                  {pastedBlocks.length > 0 && (
-                    <div className="space-y-1.5 px-3 pt-2.5">
-                      {pastedBlocks.map((b) => (
-                        <div key={b.id} data-testid="pasted-card"
-                          className="overflow-hidden rounded-xl border border-edge bg-white/[0.035]">
-                          <div role="button" tabIndex={0}
-                            onClick={() => togglePasted(b.id)}
-                            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); togglePasted(b.id); } }}
-                            title={b.expanded ? t('收起粘贴文本') : t('展开粘贴文本')}
-                            className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left cursor-pointer hover:bg-white/5 transition-colors">
-                            <IconPaste />
-                            <span className="shrink-0 text-[11px] text-goldSoft">Pasted text</span>
-                            <span className="shrink-0 text-[10px] text-mute/55">{t('{n} 行', { n: b.lines })}</span>
-                            <span className="min-w-0 flex-1 truncate text-[11px] text-mute/70">{b.text.split('\n')[0]}</span>
-                            <button type="button" title={t('删除粘贴文本')}
-                              onClick={(e) => { e.stopPropagation(); removePasted(b.id); }}
-                              className="shrink-0 rounded-md p-1 text-mute/45 hover:text-red-300 hover:bg-red-500/10 transition-colors">
-                              <IconTrash />
-                            </button>
-                            <span className={`shrink-0 text-[10px] text-mute/40 transition-transform duration-200 ${b.expanded ? 'rotate-180' : ''}`}>▾</span>
-                          </div>
-                          {b.expanded && (
-                            <pre data-testid="pasted-text-full"
-                              className="max-h-[40vh] overflow-auto whitespace-pre-wrap break-words border-t border-edge bg-[#0a0a0c] px-3 py-2 font-mono text-[12px] leading-6 text-ink/80">
-                              {b.text}
-                            </pre>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  <div className="px-3.5 pt-3">
-                    <textarea
-                      ref={inputRef}
-                      rows={1}
-                      value={input}
-                      onChange={(e) => {
-                        setInput(e.target.value);
-                        e.target.style.height = 'auto';
-                        e.target.style.height = Math.min(e.target.scrollHeight, 160) + 'px';
-                      }}
-                      onPaste={(e) => {
-                        const files = Array.from(e.clipboardData?.files || []);
-                        if (files.length) { e.preventDefault(); addFiles(files); return; }
-                        // 长文本不直接塞进输入框：收成「Pasted text」卡片（短文本保持原样粘贴）
-                        const pasted = e.clipboardData?.getData('text/plain') || '';
-                        if (isLongPaste(pasted)) { e.preventDefault(); addPastedBlock(pasted); }
-                      }}
-                      onKeyDown={onComposerKeyDown}
-                      placeholder={y ? (busy ? t('输入消息排队，回合结束后自动发送（Enter 入队）…') : t('输入消息，/ 唤起技能，Enter 发送…')) : t('IPC 不可用（浏览器直开）')}
-                      disabled={!y}
-                      className="w-full bg-transparent outline-none resize-none text-sm leading-6 placeholder:text-mute/45 disabled:opacity-50"
-                    />
-                  </div>
-
-                  {/* 底部工具条：只有图标与文字，没有边框（对齐 ZCode） */}
-                  <div className="flex items-center gap-0.5 px-2 pb-2">
-                    <button onClick={pickAttachFiles} title={t('添加文件（也可直接粘贴截图 / 拖拽文件）')}
-                      className="shrink-0 h-7 w-7 rounded-lg text-mute/70 hover:text-goldSoft hover:bg-white/[0.06] transition-colors flex items-center justify-center">
-                      <IconPlus />
-                    </button>
-                    <div className="relative">
-                      <button onClick={() => setMenu(menu === 'perm' ? null : 'perm')}
-                        className={`inline-flex items-center gap-1.5 text-[11px] rounded-lg px-2 py-1.5 transition-colors hover:bg-white/[0.06] ${permMode === 'full' ? 'text-goldSoft' : 'text-mute hover:text-ink'}`}>
-                        <IconShield />
-                        {permMode === 'full' ? t('完全权限') : t('标准审批')}
-                        <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M6 9l6 6 6-6" /></svg>
-                      </button>
-                      {menu === 'perm' && (
-                        <div className="glass-pop absolute bottom-full mb-1.5 left-0 w-60 rounded-2xl p-1.5 z-40">
-                          <button onClick={() => changeMode('ask')} className={`w-full text-left px-2.5 py-2 rounded-lg transition-colors text-xs ${permMode === 'ask' ? 'bg-gold/10 text-goldSoft' : 'hover:bg-white/5'}`}>
-                            {t('标准审批')}<span className="block text-[10px] text-mute mt-0.5">{t('执行命令前每次确认（默认）')}</span>
-                          </button>
-                          <button onClick={() => changeMode('full')} className={`w-full text-left px-2.5 py-2 rounded-lg transition-colors text-xs ${permMode === 'full' ? 'bg-gold/10 text-goldSoft' : 'hover:bg-white/5'}`}>
-                            {t('完全权限')}<span className="block text-[10px] text-mute mt-0.5">{t('不再询问；灾难命令仍会被拦截')}</span>
-                          </button>
-                        </div>
-                      )}
-                    </div>
-
-                    <span className="text-[10px] text-mute/35 select-none pl-1">{compacting ? t('压缩中…') : t('输入 / 选技能')}</span>
-
-                    <div className="ml-auto flex items-center gap-1.5">
-                      <div className="relative">
-                        <button
-                          onMouseEnter={() => setMenu('context')}
-                          onMouseLeave={() => setMenu((m) => (m === 'context' ? null : m))}
-                          onClick={() => setMenu(menu === 'context' ? null : 'context')}
-                          title={t('上下文使用情况')}
-                          className="p-1 rounded-full hover:bg-white/5 transition-colors">
-                          <ContextRing percent={ctxStats?.measured?.prompt ? Math.min(100, (ctxStats.measured.prompt / ctxStats.window) * 100) : (ctxStats?.percent || 0)} />
-                        </button>
-                        {menu === 'context' && (
-                          <div onMouseEnter={() => setMenu('context')} onMouseLeave={() => setMenu((m) => (m === 'context' ? null : m))}
-                            className="glass-pop absolute bottom-full mb-2 right-0 w-[352px] rounded-2xl p-3 z-50">
-                            {(() => {
-                              // 实测 = 服务端 usage.prompt_tokens（本轮最后一次请求，含工具输出）；估算 = 下一轮会发出去的内容
-                              const measured = ctxStats?.measured || null;
-                              const pct = measured?.prompt ? Math.min(100, (measured.prompt / ctxStats.window) * 100) : (ctxStats?.percent || 0);
-                              const shownTokens = measured?.prompt || ctxStats?.used || 0;
-                              return (
-                                <>
-                                  <div className="flex items-baseline justify-between">
-                                    <span className="text-xs text-ink/85">Context windows</span>
-                                    <span className="text-[11px] font-mono text-mute/60">
-                                      {ctxStats ? `${fmtTokens(shownTokens)}/${fmtTokens(ctxStats.window)}` : '—'}
-                                    </span>
-                                  </div>
-                                  <div className="mt-1 flex items-center gap-1.5 text-[11px] text-mute/60">
-                                    {measured?.prompt ? (
-                                      <>
-                                        <span>{t('实测 {pct}%', { pct: pct.toFixed(1) })}</span>
-                                        <span className="text-mute/25">·</span>
-                                        <span className="text-mute/45">{t('下一轮估算 {tokens}（{pct}%）', { tokens: fmtTokens(ctxStats.used), pct: ctxStats.percent.toFixed(1) })}</span>
-                                      </>
-                                    ) : (
-                                      <span>{busy ? t('估算 {pct}%（下一轮请求） · 本轮进行中，暂无实测', { pct: pct.toFixed(1) }) : t('估算 {pct}%（下一轮请求）', { pct: pct.toFixed(1) })}</span>
-                                    )}
-                                  </div>
-                                  <div className="mt-1.5 h-1.5 rounded-full bg-white/10 overflow-hidden">
-                                    <div className="h-full rounded-full bg-goldSoft transition-all duration-300" style={{ width: `${pct}%` }} />
-                                  </div>
-                                  <div className="mt-1 text-[10px] leading-relaxed text-mute/40">
-                                    {measured?.prompt ? t('实测＝本轮最后一次请求（含工具输出）；估算只算下一轮要发的内容（不含历史工具输出）') : t('估算＝下一轮要发的内容（不含历史工具输出）')}
-                                  </div>
-                                </>
-                              );
-                            })()}
-                            <div className="mt-2.5 mb-1 text-[10px] text-mute/40">{t('下一轮构成（按估算）')}</div>
-                            <div className="space-y-1.5">
-                              {[
-                                ['Messages', 'messages', 'bg-goldSoft'],
-                                ['System tools', 'systemTools', 'bg-[#7aa2ff]'],
-                                ['MCP tools', 'mcpTools', 'bg-[#9b8cff]'],
-                                ['Meta context', 'metaContext', 'bg-[#6fd3c7]'],
-                                ['Skills', 'skills', 'bg-[#c6d36f]'],
-                                ['System prompt', 'systemPrompt', 'bg-[#d38f6f]']
-                              ].map(([label, key, color]) => {
-                                const v = ctxStats?.breakdown?.[key] || 0;
-                                const pct = ctxStats?.used ? (v / ctxStats.used) * 100 : 0;
-                                return (
-                                  <div key={key} className="flex items-center gap-2 text-[11px]">
-                                    <span className={`w-2 h-2 rounded-full ${color}`} />
-                                    <span className="text-mute/70">{label}</span>
-                                    <span className="ml-auto font-mono text-mute/50">{pct.toFixed(1)}%</span>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                            <div className="mt-2.5 pt-2 border-t border-edge/70 flex items-center justify-between text-[11px]">
-                              <span className="text-mute/60">Last request cache hit</span>
-                              <span className="font-mono text-mute/70">{ctxStats?.cacheHit != null ? `${ctxStats.cacheHit.toFixed(1)}%` : t('—（网关未返回缓存字段）')}</span>
-                            </div>
-                            <div className="mt-1.5 text-[10px] text-mute/35 leading-relaxed">{t('估算口径：CJK 1 字≈1 token、4 字符≈1 token；上下文上限在模型设置里改。')}</div>
-                          </div>
-                        )}
-                      </div>
-                      <div className="relative" ref={modelMenuRef}>
-                        <button onClick={() => { setMenu(menu === 'model' ? null : 'model'); setProviderMenu(false); }}
-                          className="inline-flex items-center gap-1.5 max-w-[280px] text-[11px] px-1 py-1 text-mute hover:text-goldSoft transition-colors duration-200">
-                          <span className="truncate">{activeModel || t('未配置模型')}</span>
-                          <span className="text-mute/45">{effortLabel}</span>
-                          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M6 9l6 6 6-6" /></svg>
-                        </button>
-                        {menu === 'model' && (
-                          <div className="glass-pop absolute bottom-full mb-2 right-0 w-[300px] rounded-2xl z-50 pop-in">
-                            {/* 供应商头：点一下切到供应商列表 */}
-                            <button onClick={() => setProviderMenu(!providerMenu)}
-                              className="w-full flex items-center gap-2 px-3 py-2.5 hover:bg-white/5 transition-colors text-left">
-                              <span className="w-5 h-5 rounded-md bg-gold/15 border border-gold/40 flex items-center justify-center text-[11px] text-goldSoft">⌬</span>
-                              <span className="text-[13px] text-ink/90 truncate">{activeProv?.name || t('未配置供应商')}</span>
-                              <span className="text-[9px] px-1 py-0.5 rounded border border-edge text-mute/55">API</span>
-                              <svg className="ml-auto shrink-0 text-mute/50" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 18l6-6-6-6" /></svg>
-                            </button>
-
-                            <div className="px-3 pt-2 pb-1 text-[10px] text-mute/50">Models</div>
-                            <div className="max-h-56 overflow-y-auto px-1.5 pb-1">
-                              {activeModelEntries.map((m) => (
-                                <button key={m.id} onClick={() => chooseModel(activeProv.id, m.id)}
-                                  className={`w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-xs font-mono transition-colors ${m.id === activeModel ? 'bg-white/[0.06] text-ink' : 'text-ink/75 hover:bg-white/5'}`}>
-                                  <span className="truncate">{m.id}</span>
-                                  {(m.vision || /vision|vl\b/i.test(m.id)) ? <span className="text-[9px] px-1.5 py-0.5 rounded-full border border-edge text-mute/60 font-sans shrink-0">Vision</span> : null}
-                                  {m.id === activeModel ? <span className="ml-auto text-jade shrink-0">✓</span> : null}
-                                </button>
-                              ))}
-                              {activeModelEntries.length === 0 && (
-                                <div className="px-2.5 py-3 text-[11px] text-mute">
-                                  {t('该供应商还没有模型')}
-                                  <button onClick={() => { setMenu(null); setPage('settings'); }} className="ml-2 text-goldSoft hover:underline underline-offset-2">{t('去添加')}</button>
-                                </div>
-                              )}
-                            </div>
-                            <div className="border-t border-edge/70 px-3 py-2.5">
-                              <div className="flex items-center gap-2 text-[11px]">
-                                <span className="text-mute">Effort</span>
-                                <span className="text-ink/85">{effortLabel}</span>
-                                <span className="ml-auto text-[10px] text-mute/40">Ctrl+T</span>
-                              </div>
-                              <input type="range" min="0" max="4" step="0.01" value={sliderPos}
-                                onChange={(e) => {
-                                  const v = Number(e.target.value);
-                                  setEffortPos(v);
-                                  const lvl = EFFORTS[Math.round(v)]?.v;
-                                  if (lvl && lvl !== effort) chooseEffort(lvl, { close: false });
-                                }}
-                                onMouseUp={() => setEffortPos(null)}
-                                onTouchEnd={() => setEffortPos(null)}
-                                className="effort-slider w-full mt-2" />
-                            </div>
-
-                            {/* 供应商列表：浮在面板左侧，切换不用跳去模型设置 */}
-                            {providerMenu && (
-                              <div className="glass-pop absolute right-full top-0 mr-2 w-56 rounded-2xl p-1.5 z-[60] pop-in">
-                                <div className="px-2.5 py-1.5 text-[10px] text-mute/50">{t('供应商（{n}）', { n: providers.length })}</div>
-                                {providers.length === 0 && <div className="px-2.5 py-3 text-[11px] text-mute">{t('还没有供应商，请到「模型设置」添加')}</div>}
-                                {providers.map((p) => (
-                                  <button key={p.id} onClick={() => pickProvider(p)}
-                                    className={`w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-xs transition-colors ${p.id === activeProv?.id ? 'bg-white/[0.06] text-ink' : 'text-ink/75 hover:bg-white/5'}`}>
-                                    <span className="truncate">{p.name}</span>
-                                    <span className="text-[9px] px-1 py-0.5 rounded border border-edge text-mute/50">API</span>
-                                    {(p.models || []).length === 0 ? <span className="text-[9px] text-amber-400/80">{t('无模型')}</span> : null}
-                                    {p.id === activeProv?.id ? <span className="ml-auto text-jade">✓</span> : null}
-                                  </button>
-                                ))}
-                                <button onClick={() => { setMenu(null); setPage('settings'); }}
-                                  className="w-full text-left px-2.5 py-2 mt-1 rounded-lg text-xs text-mute hover:text-goldSoft hover:bg-white/5 border-t border-edge/60">
-                                  Manage models
-                                </button>
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                    {/* 发送键：金色方块（busy 时变成停止 + 可选「排队发送」；已点停止则变为「停止中…」且禁用重复点击） */}
-                    {busy || stopping ? (
-                      <>
-                        {/* 注意：这里必须转布尔。input 为空时 ('' || 0) 是数字 0，
-                            React 的 {0 && <x/>} 会把「0」当成文本渲染出来（就是那个多余的 0） */}
-                        {!!(input.trim() || pastedBlocks.length) && (
-                          <button onClick={() => send()} data-testid="queue-send"
-                            title={t('排队发送（当前回合结束后自动发送）')}
-                            className="ml-1.5 shrink-0 h-7 w-7 rounded-[9px] flex items-center justify-center border border-gold/45 text-goldSoft hover:bg-gold/15 transition-colors duration-200">
-                            <IconSend />
-                          </button>
-                        )}
-                        <button onClick={stop} disabled={stopping} title={stopping ? t('正在中断，请稍候') : t('停止本回合')}
-                          className={`ml-1.5 shrink-0 h-7 rounded-[9px] flex items-center justify-center gap-1 transition-colors duration-200 ${stopping ? 'px-2 bg-gold/60 text-[#0a0a0c] cursor-not-allowed' : 'w-7 bg-gold hover:bg-goldSoft text-[#0a0a0c]'}`}>
-                          {stopping ? (
-                            <>
-                              <svg className="animate-spin" width="10" height="10" viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="6" r="4.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeDasharray="6 4" /></svg>
-                              <span className="text-[10px] font-medium leading-none">{t('停止中…')}</span>
-                            </>
-                          ) : (
-                            <svg width="10" height="10" viewBox="0 0 12 12"><rect x="1" y="1" width="10" height="10" rx="2" fill="currentColor" /></svg>
-                          )}
-                        </button>
-                      </>
-                    ) : (
-                      <button onClick={() => send()} disabled={!y || (!input.trim() && !pastedBlocks.length)} title={t('发送')}
-                        className="ml-1.5 shrink-0 h-7 w-7 rounded-[9px] flex items-center justify-center bg-gold text-[#141008] hover:bg-goldSoft disabled:opacity-60 transition-colors duration-200">
-                        <IconSend />
-                      </button>
-                    )}
-                  </div>
-
-                  {/* / 技能菜单（命令 + 40 类方法论） */}
-                  {slashOpen && (
-                    <div className="glass-pop absolute bottom-full mb-2 left-0 right-0 rounded-2xl overflow-hidden z-50 pop-in">
-                      <div className="max-h-80 overflow-y-auto p-1.5">
-                        {slashItems.length === 0 ? (
-                          <div className="px-3 py-4 text-[11px] text-mute">{t('没有匹配的命令或技能')}</div>
-                        ) : slashItems.map((item, idx) => (
-                          <button key={item.type + item.id}
-                            onMouseDown={(e) => e.preventDefault()}
-                            onClick={() => chooseSlash(item)}
-                            onMouseEnter={() => setSlashIndex(idx)}
-                            className={`w-full flex items-center gap-2 px-2.5 py-[7px] rounded-lg transition-colors ${idx === Math.min(slashIndex, slashItems.length - 1) ? 'bg-gold/12' : 'hover:bg-white/5'}`}>
-                            <span className={`shrink-0 font-mono text-[12px] ${item.type === 'command' ? 'text-goldSoft' : 'text-jade'}`}>/{item.name}</span>
-                            <span className="min-w-0 flex-1 truncate text-[11px] text-ink/70">{t(item.cn)}</span>
-                            <span className={`shrink-0 text-[9px] px-1.5 py-0.5 rounded-full ${item.type === 'command' ? 'text-goldDeep/80 bg-gold/10' : 'text-mute/50 bg-white/[0.05]'}`}>
-                              {item.type === 'command' ? t('命令') : t('技能')}
-                            </span>
-                          </button>
-                        ))}
-                        <div className="px-3 py-1.5 text-[10px] text-mute/35 border-t border-white/[0.06] mt-1">
-                          {t('↑↓ 选择 · Enter 确认 · Esc 关闭')}
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
+            <Composer
+              y={y} input={input} setInput={setInput} attachments={attachments} setAttachments={setAttachments}
+              pastedBlocks={pastedBlocks} setPastedBlocks={setPastedBlocks}
+              editing={editing} dragging={dragging} busy={busy} stopping={stopping} compacting={compacting}
+              approval={approval} queueItems={queueItems} menu={menu} providerMenu={providerMenu}
+              permMode={permMode} ctxStats={ctxStats} skills={skills} cfg={cfg} sessCfg={sessCfg}
+              effortPos={effortPos} activeId={activeId} slashIndex={slashIndex} setSlashIndex={setSlashIndex}
+              inputRef={inputRef} modelMenuRef={modelMenuRef}
+              setDragging={setDragging} setMenu={setMenu} setProviderMenu={setProviderMenu} setEffortPos={setEffortPos}
+              setSessCfg={setSessCfg} setCfg={setCfg} setPermMode={setPermMode}
+              cancelEdit={cancelEdit} chooseSlash={chooseSlash} decideApproval={decideApproval}
+              steerQueueItem={steerQueueItem} moveQueueItemToInput={moveQueueItemToInput}
+              removeQueueItem={removeQueueItem} send={send} stop={stop}
+              onGoSettings={() => setPage('settings')}
+            />
           </>
         ) : (
           <SettingsPage onBack={() => setPage('chat')} initialSection={page === 'usage' ? 'usage' : 'models'} />
@@ -2223,407 +1160,21 @@ export default function App() {
       )}
       </div>
       </div>
-      {/* 会话右键菜单（ZCode 式） */}
-      {rowMenu && (
-        <div className="fixed inset-0 z-[60]" onClick={() => { setRowMenu(null); setMoveOpen(false); }} onContextMenu={(e) => { e.preventDefault(); setRowMenu(null); }}>
-          <div ref={rowMenuRef} className="glass-pop absolute w-56 rounded-2xl py-1 text-[12px]"
-            style={{ left: Math.min(rowMenu.x, (window.innerWidth || 1200) - 250), top: Math.min(rowMenu.y, (window.innerHeight || 800) - 430) }}
-            onClick={(e) => e.stopPropagation()}>
-            <button onClick={() => setMoveOpen((v) => !v)} className="w-full text-left px-3 py-1.5 text-mute hover:text-ink hover:bg-white/5 flex items-center">
-              Move to group <span className="ml-auto text-mute/50">▸</span>
-            </button>
-            {moveOpen && (
-              <div className="mx-2 mb-1 border-l border-edge pl-1">
-                {projects.filter((x) => x.id !== rowMenu.project.id).map((x) => (
-                  <button key={x.id} onClick={() => moveSession(rowMenu.session, x.id, rowMenu.project.id)}
-                    className="w-full text-left px-2 py-1 rounded-md text-[11px] text-mute hover:text-goldSoft hover:bg-white/5 truncate">{x.name}</button>
-                ))}
-                {projects.length < 2 && <div className="px-2 py-1 text-[10px] text-mute/40">{t('只有当前项目')}</div>}
-              </div>
-            )}
-            <button onClick={() => patchFlags(rowMenu.session, { pinned: !rowMenu.session.pinned }, rowMenu.project.id)} className="w-full text-left px-3 py-1.5 text-mute hover:text-ink hover:bg-white/5">{rowMenu.session.pinned ? 'Unpin task' : 'Pin task'}</button>
-            <button onClick={() => { setRenameBox({ session: rowMenu.session, value: rowMenu.session.title, projectId: rowMenu.project.id }); setRowMenu(null); }} className="w-full text-left px-3 py-1.5 text-mute hover:text-ink hover:bg-white/5">Rename task</button>
-            <button onClick={() => patchFlags(rowMenu.session, { archived: !rowMenu.session.archived }, rowMenu.project.id)} className="w-full text-left px-3 py-1.5 text-mute hover:text-ink hover:bg-white/5">{rowMenu.session.archived ? 'Unarchive task' : 'Archive task'}</button>
-            <button onClick={() => { const s = rowMenu.session; setRowMenu(null); removeSession(s, rowMenu.project.id); }} className="w-full text-left px-3 py-1.5 text-mute hover:text-red-300 hover:bg-red-500/10">{t('Delete task（不可恢复）')}</button>
-            <button onClick={() => patchFlags(rowMenu.session, { unread: true }, rowMenu.project.id)} className="w-full text-left px-3 py-1.5 text-mute hover:text-ink hover:bg-white/5">Mark as unread</button>
-            <div className="my-1 border-t border-edge/70" />
-            <button onClick={() => { y?.artifactOpen?.(rowMenu.project.path); setRowMenu(null); }} className="w-full text-left px-3 py-1.5 text-mute hover:text-ink hover:bg-white/5">Open in File Explorer</button>
-            <button onClick={() => { copyText(rowMenu.project.path); setRowMenu(null); }} className="w-full text-left px-3 py-1.5 text-mute hover:text-ink hover:bg-white/5">Copy path</button>
-            <button onClick={() => { copyText(rowMenu.session.path || ''); setRowMenu(null); }} className="w-full text-left px-3 py-1.5 text-mute hover:text-ink hover:bg-white/5">Copy task path</button>
-            <button onClick={() => { copyText(rowMenu.session.path || ''); setRowMenu(null); }} className="w-full text-left px-3 py-1.5 text-mute hover:text-ink hover:bg-white/5">Copy log path</button>
-            <button onClick={() => { copyText(rowMenu.session.id); setRowMenu(null); }} className="w-full text-left px-3 py-1.5 text-mute hover:text-ink hover:bg-white/5">Copy session ID</button>
-            <div className="my-1 border-t border-edge/70" />
-            <button onClick={() => { setRowMenu(null); setPage('settings'); }} className="w-full text-left px-3 py-1.5 text-mute hover:text-ink hover:bg-white/5">Go to config</button>
-            <button onClick={() => { const s = rowMenu.session; setRowMenu(null); if (s.path) openArtifact(s.path); }} className="w-full text-left px-3 py-1.5 text-mute hover:text-ink hover:bg-white/5">View model trajectory</button>
-            <button onClick={() => {
-              copyText(`${t('FinalCheck 问题反馈')}\n${t('项目')}: ${rowMenu.project.path}\n${t('会话')}: ${rowMenu.session.title}\n${t('会话文件')}: ${rowMenu.session.path}\n${t('模型')}: ${activeModel}\n${t('上下文')}: ${ctxStats ? `${fmtTokens(ctxStats.used)}/${fmtTokens(ctxStats.window)}` : '—'}`);
-              setRowMenu(null);
-              setMessages((prev) => [...prev, { role: 'notice', content: t('已复制诊断信息，可粘贴到反馈里。') }]);
-            }} className="w-full text-left px-3 py-1.5 text-mute hover:text-ink hover:bg-white/5">Report issue</button>
-          </div>
-        </div>
-      )}
-
-      {/* 重命名会话 */}
-      {renameBox && (
-        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60" onClick={() => setRenameBox(null)}>
-          <div className="glass-pop w-[380px] rounded-2xl p-4" onClick={(e) => e.stopPropagation()}>
-            <div className="text-sm text-goldSoft mb-2">{t('重命名会话')}</div>
-            <input autoFocus value={renameBox.value}
-              onChange={(e) => setRenameBox({ ...renameBox, value: e.target.value })}
-              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); saveRename(); } if (e.key === 'Escape') setRenameBox(null); }}
-              className="input w-full" />
-            <div className="mt-3 flex justify-end gap-2">
-              <button onClick={() => setRenameBox(null)} className="btn-ghost px-3 py-1.5 text-xs">{t('取消')}</button>
-              <button onClick={saveRename} className="btn-primary px-3 py-1.5 text-xs">{t('保存')}</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* 自定义黑金确认框 */}
-      {confirmBox && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-[2px]" onClick={() => confirmBox.resolve(false)}>
-          <div className="glass-pop w-[380px] rounded-2xl p-5" onClick={(e) => e.stopPropagation()}>
-            <div className="font-kai text-goldSoft text-base tracking-wider">{t('确认操作')}</div>
-            <div className="mt-2.5 text-sm text-ink/90 leading-relaxed">{confirmBox.text}</div>
-            <div className="mt-4 flex justify-end gap-2">
-              <button onClick={() => confirmBox.resolve(false)} className="btn-ghost px-3.5 py-1.5 text-xs">{t('取消')}</button>
-              <button onClick={() => confirmBox.resolve(true)} className="rounded-lg bg-red-500/90 hover:bg-red-500 px-3.5 py-1.5 text-xs text-white transition-colors">{t('确定删除')}</button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* 会话右键菜单 / 重命名 / 确认框（顺序与拆分前一致） */}
+      <Dialogs
+        y={y} rowMenu={rowMenu} moveOpen={moveOpen} renameBox={renameBox} confirmBox={confirmBox}
+        projects={projects} activeModel={activeModel} ctxStats={ctxStats} rowMenuRef={rowMenuRef}
+        onCloseRowMenu={() => setRowMenu(null)}
+        onDismissRowMenu={() => { setRowMenu(null); setMoveOpen(false); }}
+        onToggleMove={() => setMoveOpen((v) => !v)}
+        onMoveSession={moveSession} onPatchFlags={patchFlags}
+        onStartRename={(session, projectId) => { setRenameBox({ session, value: session.title, projectId }); setRowMenu(null); }}
+        onRemoveSession={removeSession} onCopyText={copyText}
+        onOpenArtifact={openArtifact} onGoSettings={() => setPage('settings')}
+        onNotice={(content) => setMessages((prev) => [...prev, { role: 'notice', content }])}
+        onRenameChange={(value) => setRenameBox({ ...renameBox, value })}
+        onSaveRename={saveRename} onCloseRename={() => setRenameBox(null)}
+      />
     </div>
-  );
-}
-
-/* ---- 首次使用向导：没有可用供应商时显示一张卡片，填 Base URL / Key / 模型即可开始 ---- */
-export function FirstRunCard({ y, cfg, onSaved, onSkip }) {
-  const [baseUrl, setBaseUrl] = useState('');
-  const [apiKey, setApiKey] = useState('');
-  const [model, setModel] = useState('');
-  const [name, setName] = useState('My Provider');
-  const [testing, setTesting] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [testRes, setTestRes] = useState(null);
-  const [err, setErr] = useState('');
-  const canSubmit = !!(baseUrl.trim() && apiKey.trim() && model.trim());
-
-  const test = async () => {
-    if (!canSubmit || testing) return;
-    if (!y?.testProvider) { setTestRes({ ok: false, reason: t('当前版本没有 testProvider IPC') }); return; }
-    setTesting(true);
-    setTestRes(null);
-    try {
-      const r = await y.testProvider({ baseUrl: baseUrl.trim(), apiKey: apiKey.trim(), model: model.trim() });
-      setTestRes(r && typeof r === 'object' ? r : { ok: false, reason: t('测试接口没有返回结果') });
-    } catch (e) {
-      setTestRes({ ok: false, reason: e?.message || String(e) });
-    } finally { setTesting(false); }
-  };
-
-  const save = async () => {
-    if (!canSubmit || saving) return;
-    setSaving(true);
-    setErr('');
-    try {
-      if (!y?.setConfig) throw new Error(t('当前版本不能写入配置（请在 Electron 中运行）'));
-      const cur = (await y.getConfig?.()) || cfg || {};
-      const providers = Array.isArray(cur.providers) ? [...cur.providers] : [];
-      const id = `p-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
-      const provider = {
-        id,
-        name: name.trim() || 'My Provider',
-        baseUrl: baseUrl.trim(),
-        apiFormat: 'chat-completions',
-        apiKey: apiKey.trim(),
-        models: [model.trim()],
-        contextWindow: 1000000,
-        enabled: true
-      };
-      const next = { ...cur, providers: [...providers, provider], activeProviderId: id, activeModel: model.trim() };
-      await y.setConfig(next);
-      onSaved?.(next, provider);
-    } catch (e) {
-      setErr(t('保存失败：{reason}', { reason: e?.message || t('请检查配置是否可写') }));
-    } finally { setSaving(false); }
-  };
-
-  return (
-    <div className="glass-card max-w-3xl mx-auto rounded-2xl border border-gold/30 px-5 py-4">
-      <div className="flex items-start gap-3">
-        <span className="mt-0.5 h-9 w-9 rounded-xl bg-gold/10 border border-gold/35 flex items-center justify-center text-goldSoft shrink-0">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M12 2v4M12 18v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M2 12h4M18 12h4M4.9 19.1l2.8-2.8M16.3 7.7l2.8-2.8" />
-          </svg>
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <span className="text-[10px] tracking-[0.18em] uppercase text-goldDeep">{t('首次使用')}</span>
-            <span className="h-px flex-1 bg-gold/20" />
-          </div>
-          <div className="mt-1 font-kai text-base text-goldSoft tracking-wider">{t('连接 OpenAI 兼容网关')}</div>
-          <p className="mt-1 text-[11px] text-mute leading-relaxed">
-            {t('FinalCheck 需要连接一个 OpenAI 兼容网关（Base URL + API Key + 模型名）才能对话、跑体检和工作流。Key 只存本机 config.json。')}
-          </p>
-        </div>
-      </div>
-
-      <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <label className="sm:col-span-2 block">
-          <span className="mb-1 block text-[11px] text-mute">Base URL</span>
-          <input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} disabled={saving}
-            placeholder="https://api.example.com/v1" autoFocus
-            className="input font-mono" />
-        </label>
-        <label className="block">
-          <span className="mb-1 block text-[11px] text-mute">API Key</span>
-          <input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} disabled={saving}
-            placeholder="sk-…" autoComplete="new-password" className="input font-mono" />
-        </label>
-        <label className="block">
-          <span className="mb-1 block text-[11px] text-mute">{t('模型名')}</span>
-          <input value={model} onChange={(e) => setModel(e.target.value)} disabled={saving}
-            placeholder="glm-4.6 / deepseek-v4.1-flash"
-            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); save(); } }}
-            className="input font-mono" />
-        </label>
-        <label className="block sm:col-span-2">
-          <span className="mb-1 block text-[11px] text-mute">{t('供应商名称')} <span className="text-mute/45">{t('（可选）')}</span></span>
-          <input value={name} onChange={(e) => setName(e.target.value)} disabled={saving}
-            placeholder="My Provider" className="input" />
-        </label>
-      </div>
-
-      {testRes && (testRes.ok ? (
-        <div className="mt-3 rounded-xl border border-jade/40 bg-jade/10 px-3.5 py-2.5 text-[11px] text-jade">
-          {t('已连通 · 模型已回复')}
-          {testRes.reply ? <span className="ml-2 text-ink/75">{t('“{reply}”', { reply: String(testRes.reply).slice(0, 120) })}</span> : null}
-        </div>
-      ) : (
-        <div className="mt-3 rounded-xl border border-red-500/40 bg-red-500/10 px-3.5 py-2.5 text-[11px] text-red-300">
-          {t('连接失败：{reason}', { reason: testRes.reason || t('未知原因') })}
-          {testRes.hint ? <span className="mt-1 block text-mute">{testRes.hint}</span> : null}
-        </div>
-      ))}
-      {err && <div className="mt-3 rounded-xl border border-red-500/40 bg-red-500/10 px-3.5 py-2.5 text-[11px] text-red-300">{err}</div>}
-
-      <div className="mt-4 flex flex-wrap items-center gap-2">
-        <button onClick={test} disabled={!canSubmit || testing || saving} className="btn-ghost text-xs px-3 py-1.5">
-          {testing ? t('测试中…') : t('测试连接')}
-        </button>
-        <button onClick={save} disabled={!canSubmit || saving || testing} className="btn-primary text-xs px-3.5 py-1.5">
-          {saving ? t('保存中…') : t('保存并开始')}
-        </button>
-        <button onClick={onSkip} disabled={saving} className="ml-auto text-[11px] text-mute/55 hover:text-ink transition-colors px-2 py-1">
-          {t('稍后配置')}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-/* ---- 品牌标：assets/logo.png 存在则用图，加载失败回退「检」字金印 ---- */
-// 会话「正在跑」的转圈（苹果式 8 段 spinner）
-function Spinner({ size = 11, className = '', ...rest }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" className={`fc-spin ${className}`} aria-hidden="true" {...rest}>
-      {[0, 1, 2, 3, 4, 5, 6, 7].map((i) => (
-        <rect key={i} x="11" y="2.4" width="2" height="5.6" rx="1" fill="currentColor"
-          opacity={0.15 + i * 0.106} transform={`rotate(${i * 45} 12 12)`} />
-      ))}
-    </svg>
-  );
-}
-
-// 新建会话：圆圈加号（ZCode 的 New Session 图标）
-function IconPlusCircle() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="12" cy="12" r="9" />
-      <path d="M12 8v8M8 12h8" />
-    </svg>
-  );
-}
-
-// 添加项目文件夹：方框 + 右上角加号（对齐 ZCode workspace 图标）
-function IconFolderPlus() {
-  return (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M20 13.5V19a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h5.5" />
-      <path d="M18 3v6M15 6h6" />
-    </svg>
-  );
-}
-
-/* ---- 内联图标（stroke 继承 currentColor） ---- */
-function IconPlus() {
-  return (
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-      <path d="M12 5v14M5 12h14" />
-    </svg>
-  );
-}
-
-// 上下文用量：只有一个小圆圈（hover 看明细）；颜色按占用率变化
-function ContextRing({ percent = 0 }) {
-  const p = Math.max(0, Math.min(100, Number(percent) || 0));
-  const r = 7.5;
-  const c = 2 * Math.PI * r;
-  const color = p >= 85 ? '#f87171' : p >= 60 ? '#fbbf24' : '#34d399';
-  return (
-    <svg width="20" height="20" viewBox="0 0 20 20" className="block">
-      <circle cx="10" cy="10" r={r} fill="none" stroke="#3a3a42" strokeWidth="2.5" />
-      <circle cx="10" cy="10" r={r} fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round"
-        strokeDasharray={`${Math.max(0.6, (p / 100) * c)} ${c}`} transform="rotate(-90 10 10)" />
-    </svg>
-  );
-}
-
-function IconCopy() {  return (
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <rect x="9" y="9" width="11" height="11" rx="2" />
-      <path d="M5 15V5a2 2 0 0 1 2-2h10" />
-    </svg>
-  );
-}
-
-function IconChevron() {
-  return (
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M9 18l6-6-6-6" />
-    </svg>
-  );
-}
-
-function IconEdit() {
-  return (
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M12 20h9" />
-      <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
-    </svg>
-  );
-}
-
-function IconFolder({ active }) {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"
-      className={`shrink-0 ${active ? 'text-goldSoft' : 'text-mute/60'}`}>
-      <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />
-    </svg>
-  );
-}
-function IconArchive() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
-      <polyline points="21 8 21 21 3 21 3 8" />
-      <rect x="1" y="3" width="22" height="5" rx="1" />
-      <polyline points="10 12.5 12 14.5 14 12.5" />
-    </svg>
-  );
-}
-function IconUnarchive() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
-      <polyline points="21 8 21 21 3 21 3 8" />
-      <rect x="1" y="3" width="22" height="5" rx="1" />
-      <path d="M12 18.5v-6" />
-      <polyline points="9.5 15 12 12.5 14.5 15" />
-    </svg>
-  );
-}
-// 粘贴文本块图标（剪贴板）：小号、灰色，不抢金色语义
-function IconPaste() {
-  return (
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"
-      className="shrink-0 text-mute/55">
-      <rect x="8" y="3" width="8" height="3" rx="1" />
-      <path d="M16 5h2a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h2" />
-      <path d="M8 11h8M8 15h5" />
-    </svg>
-  );
-}
-function IconTrash() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <polyline points="3 6 5 6 21 6" />
-      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
-      <path d="M10 11v6" /><path d="M14 11v6" />
-      <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-    </svg>
-  );
-}
-function IconSparkle() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" className="text-goldSoft shrink-0">
-      <path d="M12 2l2.4 7.6L22 12l-7.6 2.4L12 22l-2.4-7.6L2 12l7.6-2.4z" />
-    </svg>
-  );
-}
-function IconShield() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
-      <path d="M12 22s8-3.5 8-10V5l-8-3-8 3v7c0 6.5 8 10 8 10z" />
-      <polyline points="9 11.5 11.2 13.7 15.5 9.5" />
-    </svg>
-  );
-}
-function IconSend() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M12 19.5V5" /><path d="M5.8 11.2 12 5l6.2 6.2" />
-    </svg>
-  );
-}
-function IconRadar() {
-  return (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="12" cy="12" r="9" /><circle cx="12" cy="12" r="4.5" /><path d="M12 12l6.5-6.5" /><circle cx="12" cy="12" r="1" fill="currentColor" />
-    </svg>
-  );
-}
-function IconDownload() {
-  return (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M12 3v11" /><path d="M7.5 10.5 12 15l4.5-4.5" /><path d="M4 19h16" />
-    </svg>
-  );
-}
-function IconFlow() {
-  return (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <rect x="3" y="3" width="6" height="6" rx="1.5" /><rect x="15" y="15" width="6" height="6" rx="1.5" />
-      <path d="M9 6h4a2 2 0 0 1 2 2v4a2 2 0 0 0 2 2h1" /><path d="M6 9v6a2 2 0 0 0 2 2h4" />
-    </svg>
-  );
-}
-function IconReport() {
-  return (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M6 3h8l4 4v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z" /><path d="M14 3v5h5" /><path d="M8.5 13h7M8.5 17h5" />
-    </svg>
-  );
-}
-function IconTerminal() {
-  return (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <rect x="3" y="4" width="18" height="16" rx="2.5" /><path d="M7 9.5l3 2.5-3 2.5" /><path d="M13 15h4" />
-    </svg>
-  );
-}
-function IconPlay() {
-  return (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M7 4.5v15l11-7.5z" />
-    </svg>
-  );
-}
-function IconGear({ active }) {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={active ? 'text-goldSoft' : ''}>
-      <circle cx="12" cy="12" r="3" />
-      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-    </svg>
   );
 }

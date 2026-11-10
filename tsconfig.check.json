@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    // 逐文件 opt-in：三个目标文件顶部用 // @ts-check 开启检查。
+    // 若全局 checkJs:true，TypeScript 会把被 import 的同级模块（workflow-script 等）
+    // 一起纳入检查（include 限制不了 import 闭包），产生大量与本次范围无关的错误。
+    "checkJs": false,
+    "noEmit": true,
+    "strict": false,
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "skipLibCheck": true,
+    "types": ["node"]
+  },
+  "include": [
+    "desktop/src/main/sessions.mjs",
+    "desktop/src/main/swarm.mjs",
+    "desktop/src/main/workflow.mjs"
+  ]
+}

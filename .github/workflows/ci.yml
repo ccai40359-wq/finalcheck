@@ -47,7 +47,39 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      # 主进程关键模块的类型契约（tsc --noEmit，只检查 3 个 .mjs）
+      - name: Typecheck
+        run: npm run typecheck
+
       # 只验证构建产物，不跑 electron-builder 打包（太重）
       - name: Build desktop
         working-directory: desktop
         run: npx electron-vite build
+
+      # 冒烟脚本用 Python 标准库 sqlite3 只读校验落盘（不依赖 better-sqlite3 的 ABI）；
+      # windows-latest 自带多版本 Python，但不保证 `python` 在 PATH，显式 setup 一步。
+      - name: Setup Python (sqlite assertion)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      # 冒烟脚本直接跑 desktop/node_modules/electron；CI 的 desktop 依赖用 --ignore-scripts 安装，
+      # Electron 二进制不会随 npm ci 下载，这里显式补齐（已安装时 install.js 会直接跳过）。
+      - name: Ensure Electron runtime binary
+        working-directory: desktop
+        run: node node_modules/electron/install.js
+
+      # 打包产物端到端冒烟：真实窗口 + 临时隔离数据目录，验证渲染层 / preload IPC / SQLite 落盘。
+      # GitHub Windows runner 跑在无交互桌面会话（Session 0），GUI 窗口能否起来尚无 CI 实证；
+      # 本地已实测通过，故先 continue-on-error，失败不把主流水变永久红，截图/日志 artifact 照常上传。
+      - name: E2E smoke (built out/, isolated temp profile)
+        run: npm run smoke:e2e
+        continue-on-error: true
+
+      - name: Upload E2E smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-smoke
+          path: e2e-artifacts/
+          if-no-files-found: warn

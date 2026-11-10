@@ -1,3 +1,4 @@
+// @ts-check
 // 对抗验证协议（swarm）：
 // 把「侦察 → 取证 → 盲验 → 仲裁 → 报告」落成可被 workflow 引擎调用的纯函数集合。
 // 本模块不调度、不调模型，只负责提示词、JSON 解析、claim 状态流转与 lint。
@@ -12,6 +13,150 @@
 
 // 双语：错误码人话与 lint 警告是用户可见文案，按当前界面语言输出（zh 原文不变）
 import { t } from '../renderer/i18n/core.mjs';
+
+/**
+ * 原始 swarm 步骤输入（steps 模式里用户/模型给的字段，全部可缺席）。
+ * @typedef {object} SwarmStepInput
+ * @property {string} [kind] recon | find | verify | arbitrate | report
+ * @property {string} [model]
+ * @property {string} [providerId]
+ * @property {string} [prompt] 子代理任务文本（原样保留，只 trim）
+ * @property {string} [role] 子代理角色
+ * @property {boolean|number|string} [blind] 是否屏蔽上游正文；verify/arbitrate 默认 true
+ * @property {string} [targetsFrom] 只消费该步骤产出的 claims
+ */
+
+/**
+ * normalizeSwarmStep 的返回：kind 必填，其余字段缺席即保持旧格式。
+ * @typedef {object} SwarmStep
+ * @property {string} kind
+ * @property {string} [model]
+ * @property {string} [providerId]
+ * @property {string} [prompt]
+ * @property {string} [role]
+ * @property {boolean} blind
+ * @property {string} [targetsFrom]
+ */
+
+/**
+ * verify 步骤的一条 verdict 输入（模型 JSON 或测试构造）。
+ * @typedef {object} SwarmVerdictInput
+ * @property {string} [claimId]
+ * @property {string} [id] claimId 的别名
+ * @property {string} [verdict] confirmed | rejected | uncertain
+ * @property {string} [evidence]
+ * @property {string|null} [note]
+ */
+
+/**
+ * 落进 claim.verdicts 的一条历史裁决记录。
+ * @typedef {object} SwarmVerdictRecord
+ * @property {string} verdict
+ * @property {string} [evidence]
+ * @property {string|null} [note]
+ * @property {string|null} [stepId]
+ * @property {string|null} [model]
+ * @property {string|null} [providerId]
+ */
+
+/**
+ * 复核者标识（verify/arbitrate 落地时写入）。
+ * @typedef {object} SwarmVerifier
+ * @property {string|null} model
+ * @property {string|null} providerId
+ * @property {string|null} stepId
+ */
+
+/**
+ * 一条可复核结论（claim）的完整状态。find 产出 status='pending'，
+ * verify/arbitrate 改 confirmed/rejected/lead，lint 可把缺证据/缺复核者的降级。
+ * @typedef {object} SwarmClaim
+ * @property {string} id
+ * @property {string} claim
+ * @property {string} evidence
+ * @property {string} severity high | medium | low
+ * @property {string|null} file
+ * @property {number|null} line
+ * @property {boolean} reproduced
+ * @property {string} status pending | lead | confirmed | rejected
+ * @property {string|null} sourceStep
+ * @property {SwarmVerifier|null} verifiedBy
+ * @property {SwarmVerdictRecord[]} verdicts
+ * @property {string|null} note
+ * @property {boolean} arbitrated
+ * @property {string|null} [verifiedEvidence]
+ * @property {SwarmVerifier} [rejectedBy]
+ * @property {SwarmVerifier} [reviewedBy]
+ * @property {boolean} [conflict]
+ * @property {string[]} [lint]
+ * @property {string[]} [gate]
+ * @property {string} [model]
+ * @property {{final:string, quote:string, reason:string, stepId:string, downgraded?:string}} [arbitration]
+ */
+
+/**
+ * find 步骤的一条原始 finding（模型输出 JSON 的一项）。
+ * @typedef {object} SwarmFinding
+ * @property {string} [id]
+ * @property {string} [claimId]
+ * @property {string} [claim]
+ * @property {string} [evidence]
+ * @property {string} [severity]
+ * @property {string|null} [file]
+ * @property {number|string|null} [line]
+ * @property {boolean} [reproduced]
+ */
+
+/**
+ * arbitrate 步骤的一条最终决定（模型输出 JSON 的一项）。
+ * @typedef {object} SwarmDecision
+ * @property {string} [claimId]
+ * @property {string} [id]
+ * @property {string} [final] confirmed | rejected | uncertain
+ * @property {string} [quote]
+ * @property {string} [reason]
+ */
+
+/**
+ * 上游步骤结果里 swarm 会读取的字段（workflow results Map 的一项子集）。
+ * @typedef {object} SwarmUpstreamResult
+ * @property {string} [id]
+ * @property {string} [name]
+ * @property {string} [kind]
+ * @property {boolean} [ok]
+ * @property {string} [error]
+ * @property {string} [content]
+ * @property {string} [fullOutputPath]
+ * @property {any[]} [targets]
+ * @property {SwarmClaim[]} [claims]
+ * @property {SwarmVerdictInput[]} [verdicts]
+ */
+
+/**
+ * 报告 lint 的失败节点（洞）：Not covered 必须逐条点名。
+ * @typedef {object} ReportHole
+ * @property {string} [id]
+ * @property {string} [name]
+ */
+
+/**
+ * claim lint 的返回。
+ * @typedef {object} ClaimLintResult
+ * @property {SwarmClaim[]} claims
+ * @property {string[]} warnings
+ */
+
+/**
+ * deriveNodeErrorCode 的输入：一次失败节点执行的摘要。
+ * @typedef {object} NodeErrorInput
+ * @property {boolean} [program] gate/aggregate 等程序节点
+ * @property {string} [errorText] callStep 返回的 error 文本
+ * @property {string} [content] 子代理正文
+ * @property {number} [toolCount]
+ * @property {boolean} [toolCountKnown]
+ * @property {boolean} [truncated]
+ * @property {boolean} [requiresTools]
+ */
 
 export const STEP_KINDS = ['recon', 'find', 'verify', 'arbitrate', 'report'];
 
@@ -44,6 +189,10 @@ export const SUBAGENT_TOOL_DENIED = ['run_workflow', 'remember_project'];
  * - 其余步骤：prompt 里点名了可用工具，或出现盘符绝对路径（D:\ / C:/）。
  * - report 汇总步骤明确允许 0 次工具调用（由调用方传 requiresTools=false）。
  * 注意 Windows 路径必须同时匹配反斜杠：旧正则只匹配 `D:/`，漏掉了 `D:\`。
+ * @param {string|null} [kind]
+ * @param {string|null} [prompt]
+ * @param {string[]} [toolNames]
+ * @returns {boolean}
  */
 export function stepRequiresToolEvidence(kind, prompt, toolNames = SUBAGENT_TOOL_NAMES) {
   const k = String(kind || '').trim().toLowerCase();
@@ -97,6 +246,8 @@ function normalizeBool(value, fallback, name) {
  * 未知 kind / 类型不对直接抛错（由 normalizeSteps 转成 { error }）。
  * prompt / role 是子代理的任务文本与角色，必须原样保留（只 trim），否则 buildSwarmPrompt 只剩空任务。
  * blind：verify / arbitrate 默认 true，其余默认 false。
+ * @param {SwarmStepInput} [step]
+ * @returns {SwarmStep}
  */
 export function normalizeSwarmStep(step = {}) {
   if (!step || typeof step !== 'object' || Array.isArray(step)) throw new Error('步骤必须是对象');
@@ -130,7 +281,7 @@ export function normalizeSwarmStep(step = {}) {
     const trimmed = step.targetsFrom.trim();
     if (trimmed) out.targetsFrom = trimmed;
   }
-  return out;
+  return /** @type {SwarmStep} */ (out);
 }
 
 function upstreamList(upstream) {
@@ -241,6 +392,12 @@ const OUTPUT_RULE = '只输出一个 JSON 对象，不要 markdown 围栏，不�
 /**
  * 按 kind 生成对抗验证提示词。
  * verify / arbitrate 默认 blind=true：上游 content 一律不注入，只给 claims JSON 与证据指针。
+ * @param {object} [opts]
+ * @param {string} [opts.goal] 整个工作流的总目标
+ * @param {SwarmStepInput|SwarmStep} [opts.step] 本步骤（内部会再 normalize 一次）
+ * @param {Iterable<SwarmUpstreamResult>|SwarmUpstreamResult[]} [opts.upstream] 上游步骤结果
+ * @param {SwarmClaim[]} [opts.claims] 待验证/待汇总的 claim 池
+ * @returns {string}
  */
 export function buildSwarmPrompt({ goal, step, upstream = [], claims = [] } = {}) {
   const s = normalizeSwarmStep(step || {});
@@ -387,6 +544,8 @@ function firstJsonValue(text) {
 /**
  * 解析子代理输出里的 JSON：先去 ```json / ``` 围栏，再取第一个完整 JSON。
  * 失败返回 { error }，绝不抛错。
+ * @param {string} text 子代理原始输出
+ * @returns {any} 解析出的 JSON 对象/数组，或 { error: string }
  */
 export function parseAgentJson(text) {
   if (typeof text !== 'string') return { error: '内容不是字符串' };
@@ -445,6 +604,8 @@ function uniqueId(taken, base, sourceStep) {
  * 汇总多步产出里的 findings。
  * results 可以是 workflow 的 results Map，也可以是数组；优先用 result.claims，没有则从 content 解析。
  * 返回的 claim 全部 status='pending'，并带 sourceStep。
+ * @param {Iterable<SwarmUpstreamResult>|Map<string, SwarmUpstreamResult>|SwarmUpstreamResult[]} [results]
+ * @returns {SwarmClaim[]}
  */
 export function collectClaims(results) {
   const list = results instanceof Map
@@ -476,6 +637,10 @@ export function collectClaims(results) {
  * confirmed → status='confirmed'（记录 verifiedBy）；
  * uncertain → status='lead'；rejected → status='rejected'。
  * 没有 verdict 覆盖的 claim 保持原状（find 默认 pending）。
+ * @param {SwarmClaim[]} claims
+ * @param {SwarmVerdictInput[]} verdicts
+ * @param {{model?: string|null, providerId?: string|null, stepId?: string|null}} [opts]
+ * @returns {SwarmClaim[]}
  */
 export function applyVerdicts(claims, verdicts, { model = null, providerId = null, stepId = null } = {}) {
   const list = Array.isArray(claims) ? claims : [];
@@ -537,6 +702,8 @@ export function applyVerdicts(claims, verdicts, { model = null, providerId = nul
 /**
  * claim lint：缺 evidence → 降 lead；confirmed 但没有 verifiedBy/model → 降 lead。
  * 返回 { claims, warnings }，不抛错。
+ * @param {SwarmClaim[]} claims
+ * @returns {ClaimLintResult}
  */
 export function lintClaims(claims) {
   const warnings = [];
@@ -607,8 +774,9 @@ function isNoneBody(body) {
  * 有失败节点（holes）时，## Not covered 必须逐条点名；缺一个即 lint 失败（写入 warnings，
  * 调用方据此把 reportLintOk 置 false，不能靠放宽本函数让测试过）。
  * 返回 warnings 数组，不抛错。
- * @param {string} md
- * @param {{holes?: Array<{id?:string,name?:string}>}} [opts]
+ * @param {string} md 报告 Markdown
+ * @param {{holes?: ReportHole[]}} [opts] 失败/中断节点（洞）清单
+ * @returns {string[]}
  */
 export function lintReport(md, { holes = [] } = {}) {
   const warnings = [];
@@ -655,7 +823,11 @@ export function lintReport(md, { holes = [] } = {}) {
   return warnings;
 }
 
-/** claim 数组 → JSONL（每行一个 claim，末行带换行）。 */
+/**
+ * claim 数组 → JSONL（每行一个 claim，末行带换行）。
+ * @param {SwarmClaim[]} [claims]
+ * @returns {string}
+ */
 export function claimsToJsonl(claims) {
   const list = Array.isArray(claims) ? claims : [];
   if (!list.length) return '';
@@ -666,7 +838,10 @@ export function claimsToJsonl(claims) {
 // 纯函数：workflow-script 的 executeNode 失败路径调用 deriveNodeErrorCode，
 // renderer 的 TraceCards 调 errorCodeLabel 做展示；两处共用这一份映射，避免文案漂移。
 
-/** 从错误文本里提取 HTTP 状态码 → "HTTP 429"；没有返回 null。兼容 "HTTP/1.1 502" 与无空格写法。 */
+/** 从错误文本里提取 HTTP 状态码 → "HTTP 429"；没有返回 null。兼容 "HTTP/1.1 502" 与无空格写法。
+ * @param {string} [text]
+ * @returns {string|null}
+ */
 export function extractHttpErrorCode(text) {
   const m = String(text || '').match(/HTTP(?:\/\d(?:\.\d)?)?\s*(\d{3})\b/i);
   return m ? `HTTP ${m[1]}` : null;
@@ -685,6 +860,7 @@ export function extractHttpErrorCode(text) {
  * 说明：out.error 一旦有内容，judgeSubagentOutcome 就不会被执行（executeNode 里
  * ok = !out?.error && …），所以此时不能拿空转/空内容当失败原因，只能兜底 STEP_FAIL。
  * 成功节点不调用本函数（调用方直接给 null）。
+ * @param {NodeErrorInput} [opts]
  * @returns {string}
  */
 export function deriveNodeErrorCode({
@@ -728,7 +904,10 @@ const ERROR_CODE_LABELS = new Map([
   ['GATE_FAIL', '程序闸失败'],
 ]);
 
-/** 错误码 → 一句人话；没有映射的码（含未知 HTTP 码）一律「步骤失败」。 */
+/** 错误码 → 一句人话；没有映射的码（含未知 HTTP 码）一律「步骤失败」。
+ * @param {string|null} [code]
+ * @returns {string}
+ */
 export function errorCodeLabel(code) {
   const key = String(code || '').trim();
   if (!key) return t('步骤失败');

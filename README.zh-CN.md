@@ -65,6 +65,8 @@ npm run dev                  # 启动桌面端
 
 打包 Windows 安装包：`cd desktop && npm run dist`。
 
+想在本地跑构建产物冒烟：在仓库根执行 `npm run smoke:e2e`（需先有 `desktop/out`）。它会开真实窗口并只用临时隔离配置，不碰你本机的真实 FinalCheck 数据。
+
 ## 语言
 
 界面中英双语，**默认中文**（中文系统 + "跟随系统" 时保持中文）。

@@ -1,3 +1,4 @@
+// @ts-check
 // 会话持久化：DeepSeek 式多会话。
 // 两种后端（对外签名 / 返回形状完全一致，渲染层无感）：
 // - sqlite（生产默认，Electron 运行时）：<项目>/.finalcheck/finalcheck.db，WAL，参数绑定；
@@ -12,6 +13,105 @@ import { fileURLToPath } from 'node:url';
 // 双语：默认会话标题会写进库并显示在侧栏（zh 下 t() 原样返回，写库内容不变）
 import { t } from '../renderer/i18n/core.mjs';
 
+/**
+ * 工具调用 trace（assistant 消息内的一次工具调用；loadSession 还原时只保留这三项）。
+ * @typedef {object} SessionTrace
+ * @property {string} tool 工具名
+ * @property {any} args 参数
+ * @property {any} result 结果
+ */
+
+/**
+ * 写入一条消息的入参（appendTurn / appendAssistantMessage / appendNotice 内部形状）。
+ * @typedef {object} SessionMessageInput
+ * @property {string} [role] user | assistant | notice
+ * @property {string} [content]
+ * @property {string|null} [error]
+ * @property {boolean} [interrupted]
+ * @property {string} [reasoning]
+ * @property {SessionTrace[]} [trace]
+ * @property {number|null} [workedMs]
+ * @property {string} [kind] notice 类型
+ * @property {number} [at]
+ */
+
+/**
+ * 工具生命周期事件（appendToolStart / appendToolEnd 的入参）。
+ * @typedef {object} ToolLifecycleEvent
+ * @property {string} [name] 工具名
+ * @property {string} [callId] 模型给的 tool_call id
+ * @property {any} [args] 参数（字符串原样存，对象走 JSON）
+ * @property {any} [result] 工具结果（appendToolEnd）
+ * @property {string|null} [error] 失败原因
+ * @property {number} [ms] 工具耗时
+ * @property {'ok'|'fail'} [status] 显式结果状态
+ */
+
+/**
+ * 一条会话消息（loadSession 返回的 messages[]）。
+ * user: {role:'user', content, at}
+ * assistant: {role:'assistant', content, error, interrupted, reasoning, trace, workedMs, at}
+ * notice: {role:'notice', kind, content, at}
+ * @typedef {object} SessionMessage
+ * @property {string} role
+ * @property {string} content
+ * @property {number} at
+ * @property {string|null} [error]
+ * @property {boolean} [interrupted]
+ * @property {string} [reasoning]
+ * @property {SessionTrace[]} [trace]
+ * @property {number|null} [workedMs]
+ * @property {string} [kind]
+ */
+
+/**
+ * 模型选择（setModelConfig 读写）。
+ * @typedef {object} ModelConfig
+ * @property {string} providerId
+ * @property {string} model
+ * @property {string} effort
+ */
+
+/**
+ * 会话记录（loadSession / newSession 返回）。
+ * @typedef {object} SessionRecord
+ * @property {string} id
+ * @property {string} title
+ * @property {number} createdAt
+ * @property {number} updatedAt
+ * @property {SessionMessage[]} messages
+ * @property {boolean} [pinned]
+ * @property {boolean} [archived]
+ * @property {boolean} [unread]
+ * @property {ModelConfig} [modelConfig]
+ * @property {any} [usage]
+ * @property {string} [summary]
+ * @property {number} [summaryAt]
+ */
+
+/**
+ * listSessions / listSessionsIn 的会话摘要（不读消息体）。
+ * @typedef {object} SessionSummary
+ * @property {string} id
+ * @property {string} title
+ * @property {number} createdAt
+ * @property {number} updatedAt
+ * @property {number} turns 回合数
+ * @property {boolean} pinned
+ * @property {boolean} archived
+ * @property {boolean} unread
+ * @property {ModelConfig|null} modelConfig
+ * @property {string} path 会话所属 DB/JSON 路径
+ */
+
+/**
+ * 会话变更（追加消息/改名/改标记）的返回。
+ * @typedef {object} SessionMutation
+ * @property {string} id
+ * @property {string|null} title
+ * @property {number} updatedAt
+ */
+
 // 目录惰性解析：主进程在 app ready 后把 FINALCHECK_SESSIONS_DIR 指到「当前项目」，
 // 这样打包版升级/重开都不会丢历史（仍兼容测试临时目录）。
 // 会话级覆盖：主进程通过 setSessionDirResolver 注入「会话 → 它所属项目目录」的解析器，
@@ -25,12 +125,20 @@ const DB_FILE = 'finalcheck.db';
 const SCHEMA_VERSION = '1';
 
 let sessionDirResolver = null;
+/**
+ * 注入「会话 id → 所属项目目录」解析器（切项目后旧会话仍读写它自己的项目目录）。
+ * @param {((sessionId:string)=>string|undefined|null)|null} [fn]
+ * @returns {Function|null}
+ */
 export function setSessionDirResolver(fn) {
   sessionDirResolver = typeof fn === 'function' ? fn : null;
   return sessionDirResolver;
 }
 
-/** 会话实际落盘目录：已登记的按它所属项目，未登记/解析失败回退全局默认目录（不抛错） */
+/** 会话实际落盘目录：已登记的按它所属项目，未登记/解析失败回退全局默认目录（不抛错）
+ * @param {string|null} [sessionId]
+ * @returns {string}
+ */
 export function dirFor(sessionId = null) {
   if (sessionId) {
     try {
@@ -221,7 +329,9 @@ async function openDb(sessionsDir) {
   return entry;
 }
 
-/** 关闭全部 SQLite 连接（测试清理临时目录 / 退出前用；正常进程退出由系统回收） */
+/** 关闭全部 SQLite 连接（测试清理临时目录 / 退出前用；正常进程退出由系统回收）
+ * @returns {void}
+ */
 export function closeAllSessionDatabases() {
   for (const entry of dbs.values()) {
     try { entry.db.close(); } catch { /* 已关闭 */ }
@@ -424,8 +534,15 @@ function finalizePendingMessage(db, sessionId, pending, assistantMsg = {}) {
   return pending.id;
 }
 
+/**
+ * 一条消息落库时要写的 parts（assistant: text/reasoning/tool；notice: step）。
+ * @param {string} role
+ * @param {SessionMessageInput} msg
+ * @returns {Array<{seq:number, type:string, data:any}>}
+ */
 function partsForMessage(role, msg) {
   if (role === 'assistant') {
+    /** @type {Array<{seq:number, type:string, data:any}>} */
     const parts = [
       { seq: 0, type: 'text', data: { text: String(msg.content ?? '') } },
       { seq: 1, type: 'reasoning', data: { text: String(msg.reasoning ?? '') } },
@@ -995,6 +1112,9 @@ async function sqliteDeleteSession(id) {
 /**
  * 跨项目发现用：某个会话目录对应的 DB 里是否有该会话。
  * 只查 session 表；不创建 DB、不解析消息体。json 后端下返回 false（沿用文件名扫描）。
+ * @param {string} id
+ * @param {string} sessionsDir
+ * @returns {Promise<boolean>}
  */
 export async function sessionExistsInDir(id, sessionsDir) {
   if (!OK_ID.test(id)) return false;
@@ -1035,6 +1155,10 @@ async function atomicWrite(file, data) {
 }
 
 // 会话标题只取可读形式：技能展开段折成「✦ 名称」，工作流模板折成「Workflow · 任务」
+/**
+ * @param {string} [text]
+ * @returns {string}
+ */
 export function prettyTitle(text) {
   const s = String(text || '').replace(/\n\n\[附件\][\s\S]*$/, '').trim();
   const skill = s.match(/^\[技能\]\s*([^（(]+)/);
@@ -1237,10 +1361,19 @@ async function jsonDeleteSession(id) {
 }
 
 // ---- 对外导出：签名与返回形状保持不变 ----
+/**
+ * 新建会话（sqlite / json 后端返回形状一致）。
+ * @param {string} [title]
+ * @returns {Promise<SessionRecord>}
+ */
 export async function newSession(title = t('新会话')) {
   return useSqliteStore() ? sqliteNewSession(title) : jsonNewSession(title);
 }
 
+/**
+ * 列出当前项目的会话摘要（按 pinned/archived/时间排序）。
+ * @returns {Promise<SessionSummary[]>}
+ */
 export async function listSessions() {
   return useSqliteStore() ? sqliteListSessions() : jsonListSessions();
 }
@@ -1249,6 +1382,8 @@ export async function listSessions() {
  * 只读列表：按显式会话目录列出会话（不读/不改 FINALCHECK_SESSIONS_DIR，也不碰当前项目）。
  * 侧栏「同时展开多个 Workspace」用它列别的项目；返回形状与 listSessions() 完全一致。
  * projectId → 目录的解析由调用方（project-sessions.mjs）完成，这里只管目录。
+ * @param {string} sessionsDir
+ * @returns {Promise<SessionSummary[]>}
  */
 export async function listSessionsIn(sessionsDir) {
   if (typeof sessionsDir !== 'string' || !sessionsDir.trim()) throw new Error('非法会话目录');
@@ -1256,21 +1391,45 @@ export async function listSessionsIn(sessionsDir) {
   return useSqliteStore() ? sqliteListSessions(dir) : jsonListSessions(dir);
 }
 
+/**
+ * 读取完整会话（消息 + trace + 摘要/用量/flags）；id 非法直接抛错。
+ * @param {string} id
+ * @returns {Promise<SessionRecord>}
+ */
 export async function loadSession(id) {
   if (!OK_ID.test(id)) throw new Error('非法会话 ID');
   return useSqliteStore() ? sqliteLoadSession(id) : jsonLoadSession(id);
 }
 
+/**
+ * 追加一个完整回合（user + assistant），首轮自动用 user 文本生成标题。
+ * @param {string} id
+ * @param {string} userMsg
+ * @param {SessionMessageInput} assistantMsg
+ * @returns {Promise<SessionMutation>}
+ */
 export async function appendTurn(id, userMsg, assistantMsg) {
   if (!OK_ID.test(id)) throw new Error('非法会话 ID');
   return useSqliteStore() ? sqliteAppendTurn(id, userMsg, assistantMsg) : jsonAppendTurn(id, userMsg, assistantMsg);
 }
 
+/**
+ * 只追加 user 消息（工具开始前的半回合落库）。
+ * @param {string} id
+ * @param {string} userMsg
+ * @returns {Promise<SessionMutation>}
+ */
 export async function appendUserMessage(id, userMsg) {
   if (!OK_ID.test(id)) throw new Error('非法会话 ID');
   return useSqliteStore() ? sqliteAppendUserMessage(id, userMsg) : jsonAppendUserMessage(id, userMsg);
 }
 
+/**
+ * 只追加 assistant 消息（已有进行中的 assistant 行时同 id 收尾，不重复插入）。
+ * @param {string} id
+ * @param {SessionMessageInput} assistantMsg
+ * @returns {Promise<SessionMutation>}
+ */
 export async function appendAssistantMessage(id, assistantMsg) {
   if (!OK_ID.test(id)) throw new Error('非法会话 ID');
   return useSqliteStore() ? sqliteAppendAssistantMessage(id, assistantMsg) : jsonAppendAssistantMessage(id, assistantMsg);
@@ -1279,61 +1438,129 @@ export async function appendAssistantMessage(id, assistantMsg) {
 /**
  * 工具调用级别落库（只 SQLite 后端；JSON 后端保持现状，直接 no-op）。
  * 调用点：agent-service 的 onToolLifecycle（index.mjs 接线）——开始一次、结束一次，不做流式逐 delta 写。
+ * @param {string} id
+ * @param {ToolLifecycleEvent} [tool]
+ * @returns {Promise<{messageId:string, partId:string, seq:number}|null>}
  */
 export async function appendToolStart(id, tool = {}) {
   if (!OK_ID.test(id)) throw new Error('非法会话 ID');
   return useSqliteStore() ? sqliteAppendToolStart(id, tool) : null;
 }
 
+/**
+ * 工具执行结束：按 tool_call id / 工具名 / FIFO 找回同一条 running part 并补状态。
+ * @param {string} id
+ * @param {ToolLifecycleEvent} [tool]
+ * @returns {Promise<{messageId:string, partId:string, status:string}|null>}
+ */
 export async function appendToolEnd(id, tool = {}) {
   if (!OK_ID.test(id)) throw new Error('非法会话 ID');
   return useSqliteStore() ? sqliteAppendToolEnd(id, tool) : null;
 }
 
+/**
+ * 保存会话的模型选择（未给的字段沿用旧值）。
+ * @param {string} id
+ * @param {{providerId?:string, model?:string, effort?:string}} [cfg]
+ * @returns {Promise<{id:string, modelConfig:ModelConfig}>}
+ */
 export async function setModelConfig(id, cfg = {}) {
   if (!OK_ID.test(id)) throw new Error('非法会话 ID');
   return useSqliteStore() ? sqliteSetModelConfig(id, cfg) : jsonSetModelConfig(id, cfg);
 }
 
+/**
+ * 保存会话用量统计（对象原样透传，非对象存 null）。
+ * @param {string} id
+ * @param {any} usage
+ * @returns {Promise<{id:string, usage:any}>}
+ */
 export async function setSessionUsage(id, usage) {
   if (!OK_ID.test(id)) throw new Error('非法会话 ID');
   return useSqliteStore() ? sqliteSetSessionUsage(id, usage) : jsonSetSessionUsage(id, usage);
 }
 
+/**
+ * 回退到第 keepUserTurns 个用户回合之前（保留前 N 个 user 回合及其 assistant 回复）。
+ * @param {string} id
+ * @param {number} keepUserTurns
+ * @returns {Promise<{id:string, messages:number, title:string}>}
+ */
 export async function rewindToUserTurn(id, keepUserTurns) {
   if (!OK_ID.test(id)) throw new Error('非法会话 ID');
   return useSqliteStore() ? sqliteRewindToUserTurn(id, keepUserTurns) : jsonRewindToUserTurn(id, keepUserTurns);
 }
 
+/**
+ * 保存会话摘要（上下文压缩用）。
+ * @param {string} id
+ * @param {string} summary
+ * @returns {Promise<{id:string, summaryAt:number}>}
+ */
 export async function saveSummary(id, summary) {
   if (!OK_ID.test(id)) throw new Error('非法会话 ID');
   return useSqliteStore() ? sqliteSaveSummary(id, summary) : jsonSaveSummary(id, summary);
 }
 
+/**
+ * 追加一条 notice 消息（系统提示，不占用户回合）。
+ * @param {string} id
+ * @param {string} content
+ * @param {string} [kind]
+ * @returns {Promise<{id:string, updatedAt:number}>}
+ */
 export async function appendNotice(id, content, kind = 'notice') {
   if (!OK_ID.test(id)) throw new Error('非法会话 ID');
   return useSqliteStore() ? sqliteAppendNotice(id, content, kind) : jsonAppendNotice(id, content, kind);
 }
 
+/**
+ * 重命名会话（去掉附件段，最长 80 字；空标题回退「新会话」）。
+ * @param {string} id
+ * @param {string} title
+ * @returns {Promise<{id:string, title:string}>}
+ */
 export async function renameSession(id, title) {
   if (!OK_ID.test(id)) throw new Error('非法会话 ID');
   return useSqliteStore() ? sqliteRenameSession(id, title) : jsonRenameSession(id, title);
 }
 
+/**
+ * 设置会话标记（只改动显式给出的字段，其余保持原值）。
+ * @param {string} id
+ * @param {{pinned?:boolean, archived?:boolean, unread?:boolean}} [flags]
+ * @returns {Promise<{id:string, pinned:boolean, archived:boolean, unread:boolean}>}
+ */
 export async function setSessionFlags(id, flags = {}) {
   if (!OK_ID.test(id)) throw new Error('非法会话 ID');
   return useSqliteStore() ? sqliteSetSessionFlags(id, flags) : jsonSetSessionFlags(id, flags);
 }
 
+/**
+ * 标记已读（setSessionFlags 的便捷包装；失败返回 null，不抛错）。
+ * @param {string} id
+ * @returns {Promise<{id:string, pinned:boolean, archived:boolean, unread:boolean}|null>}
+ */
 export async function markRead(id) {
   try { return await setSessionFlags(id, { unread: false }); } catch { return null; }
 }
 
+/**
+ * 把会话迁到另一个项目目录（DB 间搬运消息/parts/meta；json 后端挪文件）。
+ * @param {string} id
+ * @param {string} targetDir
+ * @returns {Promise<{id:string, path:string}>}
+ */
 export async function moveSessionTo(id, targetDir) {
   if (!OK_ID.test(id)) throw new Error('非法会话 ID');
   return useSqliteStore() ? sqliteMoveSessionTo(id, targetDir) : jsonMoveSessionTo(id, targetDir);
 }
 
+/**
+ * 删除会话（不复活旧 JSON 导入；不存在时也返回 true）。
+ * @param {string} id
+ * @returns {Promise<boolean>}
+ */
 export async function deleteSession(id) {
   if (!OK_ID.test(id)) throw new Error('非法会话 ID');
   return useSqliteStore() ? sqliteDeleteSession(id) : jsonDeleteSession(id);
