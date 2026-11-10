@@ -29,6 +29,17 @@
 | **Agent 运行时** | 内建于桌面端 | DAG 工作流 **与** 受限脚本 DSL、每条结论强制对抗复核、journal 断点续跑、盲区检查 |
 | **闸门与手册** | skill/hook 接线 + `playbooks/` | 下载闸（装/跑外部项目之前）+ 交活闸（把活交出去之前）；规则手册按档写清 AI 该守什么 |
 
+## 下载
+
+Windows 安装包：[Releases](https://github.com/ccai40359-wq/finalcheck/releases/latest)
+
+1. 下载最新版里的 `FinalCheck-install.exe`
+2. 双击安装，可以自己选安装目录（会建桌面快捷方式）
+3. 首次打开：**设置 → 模型设置**，填一个 OpenAI 兼容网关（Base URL / API Key / 模型名）
+4. 以后有新版本会在 App 里自己提示更新（读的就是同一个 Releases 页）
+
+安装包暂未做代码签名，Windows 可能弹"未知开发者"——点 **更多信息 → 仍要运行** 即可。
+
 ## 快速开始
 
 **安装版**
@@ -80,6 +91,10 @@ tests/        node:test 测试（当前 647 项全绿）
 ## 状态
 
 已能真用但仍在早期：引擎、桌面端、分级闸门、Agent 工作流（DAG + 脚本 DSL）、对抗复核与内置更新都已落地，每次改动跑 647 项测试。本项目自身按 L3 标准开发——本仓库违反 L2 矩阵任何一条，都算 bug。
+
+## 作者
+
+**Sean** — [github.com/ccai40359-wq](https://github.com/ccai40359-wq) · 仓库：[finalcheck](https://github.com/ccai40359-wq/finalcheck)
 
 ## 许可证
 

@@ -5,8 +5,6 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { runWorkflow } from '../desktop/src/main/workflow.mjs';
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
 function hangingStep() {
   const seen = { aborted: false };
   const step = async ({ signal }) => {

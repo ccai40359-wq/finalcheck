@@ -1,5 +1,3 @@
-import { readFile } from 'node:fs/promises';
-import path from 'node:path';
 import { parse } from '@babel/parser';
 import { listTextFiles, readRel, prunedWarning } from '../walk.mjs';
 
@@ -18,14 +16,6 @@ const TRANSACTION_RE = /transaction|begintransaction|withtransaction/i;
 const WRITE_METHOD_RE = /^(?:insert|update|delete)(?:One|Many|All)?$/i;
 const SQL_WRITE_RE = /\b(?:insert|update|delete)\b/i;
 const REQUEST_PARAM_RE = /^(?:req|request|ctx|context)$/i;
-
-function isExcluded(rel, excludes) {
-  const r = String(rel || '').replace(/\\/g, '/');
-  return (Array.isArray(excludes) ? excludes : []).some((x) => {
-    const n = String(x || '').replace(/\\/g, '/');
-    return r === n || r.startsWith(n + '/');
-  });
-}
 
 function prunedToWarnings(warnings, skipped, pruned, prefix) {
   if (skipped.length) warnings.push(`${prefix}：跳过大文件 ${skipped.length} 个（>512KB 未扫描）：${skipped.slice(0, 3).join('、')}${skipped.length > 3 ? '…' : ''}`);

@@ -2,6 +2,7 @@
   "name": "finalcheck",
   "version": "0.0.1",
   "description": "分级生产就绪验收：人看不懂的代码，跑之前先过闸",
+  "author": "Sean (https://github.com/ccai40359-wq)",
   "type": "module",
   "private": true,
   "bin": {
@@ -10,6 +11,7 @@
   },
   "scripts": {
     "test": "node --test \"tests/*.test.mjs\"",
+    "lint": "eslint .",
     "smoke:agent": "node scripts/agent-live-smoke.mjs"
   },
   "engines": {
@@ -20,6 +22,9 @@
     "@babel/parser": "^8.1.0"
   },
   "devDependencies": {
-    "autocannon": "^9.0.0"
+    "@eslint/js": "^9.39.5",
+    "autocannon": "^9.0.0",
+    "eslint": "^9.39.4",
+    "globals": "^17.14.0"
   }
 }

@@ -1,7 +1,7 @@
 // 子代理 transcript 落盘：重开 App 后点旧 chip 还能读回对话（内存没了就走磁盘）
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, utimes, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, utimes } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {

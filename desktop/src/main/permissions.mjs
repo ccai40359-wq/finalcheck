@@ -11,7 +11,6 @@ import { randomUUID } from 'node:crypto';
 import { t } from '../renderer/i18n/core.mjs';
 
 const VALID_DECISIONS = new Set(['allowed-once', 'always-session', 'rejected']);
-const APPROVAL_EVENT = 'finalcheck:approval-request'; // 常量仅作文档；emit 由 index.mjs 注入
 
 // ---- 台账状态（进程级，应用生命周期内有效） ----
 const confirmedHosts = new Set();
@@ -53,14 +52,14 @@ export function getMode() { return permissionMode; }
 
 export async function requestApproval({ callId, tool, summary, sessionId = null } = {}) {
   const id = (typeof callId === 'string' && callId) ? callId : `ap-${randomUUID()}`;
-  const t = String(tool || 'unknown').slice(0, 60);
+  const toolName = String(tool || 'unknown').slice(0, 60);
   const s = String(summary ?? '').slice(0, 500);
   // 一次性免审：hook ask 已人工批准后由工具层下发；命中即放行且不再弹条
-  if (consumeGrant(t, s)) return 'allowed-once';
+  if (consumeGrant(toolName, s)) return 'allowed-once';
   // PermissionRequest hook：策略层先表态；无 hook / 无明确 allow|deny 时回原审批流程
   if (permissionHook) {
     try {
-      const hook = await permissionHook({ tool: t, summary: s, sessionId });
+      const hook = await permissionHook({ tool: toolName, summary: s, sessionId });
       const d = hook && typeof hook === 'object' ? hook.decision : null;
       if (d === 'deny') return 'rejected';
       if (d === 'allow') return 'allowed-once';
@@ -70,7 +69,7 @@ export async function requestApproval({ callId, tool, summary, sessionId = null 
   return new Promise((resolve) => {
     if (!emitApproval) { resolve('rejected'); return; } // 没有 UI 可问 → 拒绝
     const entry = {
-      tool: t, summary: s,
+      tool: toolName, summary: s,
       resolve: (d) => resolve(VALID_DECISIONS.has(d) ? d : 'rejected'),
       timer: null
     };
@@ -80,7 +79,7 @@ export async function requestApproval({ callId, tool, summary, sessionId = null 
     }, approvalTimeoutMs);
     pending.set(id, entry);
     try {
-      emitApproval({ callId: id, tool: t, summary: s });
+      emitApproval({ callId: id, tool: toolName, summary: s });
     } catch {
       if (pending.get(id) === entry) { pending.delete(id); clearTimeout(entry.timer); }
       entry.resolve('rejected'); // 通道故障 = denied
@@ -114,22 +113,22 @@ export function decide(callId, decision) {
  * 工具内部的 requestApproval 检查前 consumeGrant 命中即视为已批准，避免同一调用弹第二次审批条。
  */
 export function grantOnce(tool, target) {
-  const t = String(tool || '');
-  if (!t) return false;
-  let set = onceGrants.get(t);
-  if (!set) { set = new Set(); onceGrants.set(t, set); }
+  const toolName = String(tool || '');
+  if (!toolName) return false;
+  let set = onceGrants.get(toolName);
+  if (!set) { set = new Set(); onceGrants.set(toolName, set); }
   set.add(String(target ?? ''));
   return true;
 }
 
 /** 消费一次性免审券；只有第一次命中返回 true */
 export function consumeGrant(tool, target) {
-  const t = String(tool || '');
+  const toolName = String(tool || '');
   const key = String(target ?? '');
-  const set = onceGrants.get(t);
+  const set = onceGrants.get(toolName);
   if (!set || !set.has(key)) return false;
   set.delete(key);
-  if (!set.size) onceGrants.delete(t);
+  if (!set.size) onceGrants.delete(toolName);
   return true;
 }
 
@@ -144,7 +143,7 @@ export function sessionAllowed(tool, pattern) {
 /** 命令前缀（参数模式）：前两个空白分隔 token，小写归一 —— always-session 的比对粒度 */
 export function commandPrefix(cmd) {
   return String(cmd || '').trim().split(/\s+/).filter(Boolean).slice(0, 2)
-    .map((t) => t.toLowerCase()).join(' ');
+    .map((token) => token.toLowerCase()).join(' ');
 }
 
 // ---- 主机台账 ----

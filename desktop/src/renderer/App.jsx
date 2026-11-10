@@ -918,7 +918,7 @@ export default function App() {
     let sid = activeId;
     try {
       if (!sid) {
-        const s = await y.sessions.create('新会话');
+        const s = await y.sessions.create(t('新会话'));
         sid = s.id;
         setActiveId(sid);
         await refreshSessions();
@@ -1063,7 +1063,7 @@ export default function App() {
     let sid = activeId;
     if (!sid) { // 无会话时自动补建，保证每轮落盘
       try {
-        const s = await y.sessions.create('新会话');
+        const s = await y.sessions.create(t('新会话'));
         sid = s.id;
         setActiveId(sid);
         activeIdRef.current = sid;

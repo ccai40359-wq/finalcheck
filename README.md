@@ -30,6 +30,17 @@ FinalCheck is a tiered production-readiness desk for people who write with AI bu
 | **Gates & playbooks** | Skill/hook integrations + `playbooks/` | Download gate (before installing/running third-party code) and delivery gate (before handing work over) |
 | **Rulebooks** | Text, per tier | What the AI must follow while writing code, so problems are prevented up front |
 
+## Download
+
+Windows installer: [Releases](https://github.com/ccai40359-wq/finalcheck/releases/latest)
+
+1. Download `FinalCheck-install.exe` from the latest release.
+2. Run it, pick the install folder (desktop shortcut included).
+3. On first launch open **Settings → Model settings** and add an OpenAI-compatible gateway (Base URL / API key / model).
+4. Later versions update themselves from the same Releases page.
+
+The build is not code-signed yet, so Windows SmartScreen may show "unrecognized app" — click **More info → Run anyway**.
+
 ## Quick start
 
 **Installed build**
@@ -81,6 +92,10 @@ tests/        node:test suites (647 passing)
 ## Status
 
 Early but real: the engine, the desktop app, tiered gates, agent workflows (DAG + script DSL), adversarial verification and in-app updates are in place, with 647 tests passing on every change. Development follows the project's own L3 standard — a known violation of any L2 item in this repository counts as a bug.
+
+## Author
+
+**Sean** — [github.com/ccai40359-wq](https://github.com/ccai40359-wq) · repository: [finalcheck](https://github.com/ccai40359-wq/finalcheck)
 
 ## License
 

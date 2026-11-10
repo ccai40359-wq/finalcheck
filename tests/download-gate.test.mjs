@@ -97,7 +97,6 @@ test('X2: non-whitelisted external host flagged once (deduped), common hosts ski
 });
 
 test('X2: whitelist matches exact domain or subdomain, never substrings (P1#7)', async () => {
-  const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
   const { tmpdir } = await import('node:os');
   const dir = await mkdtemp(path.join(tmpdir(), 'x2-substr-'));
   try {

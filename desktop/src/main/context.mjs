@@ -191,9 +191,9 @@ function summarizeZone(zone) {
 // 否则 API 会因孤立 tool 消息返回 400。
 export function fullCompact(list) {
   if (!Array.isArray(list)) return false;
-  const KEEP_RECENT = 6;
-  if (list.length <= 1 + KEEP_RECENT) return false; // 除 system 外不足 6 条，没东西可压
-  let keepFrom = list.length - KEEP_RECENT;
+  const KEEP_RECENT_FULL = 6;
+  if (list.length <= 1 + KEEP_RECENT_FULL) return false; // 除 system 外不足 6 条，没东西可压
+  let keepFrom = list.length - KEEP_RECENT_FULL;
   while (keepFrom > 1 && list[keepFrom]?.role === 'tool') keepFrom--;
   if (keepFrom <= 1) return false;
   const zone = list.slice(1, keepFrom);

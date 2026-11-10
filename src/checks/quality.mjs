@@ -135,17 +135,17 @@ export async function checkQuality(projectDir, { tier, run = true, runner = runS
       attempts.push(await runner(c.command, projectDir, c.timeoutMs));
     }
     const r = attempts[attempts.length - 1]; // 以最后一次为代表性结果（repeat=1 时就是唯一一次）
-    const run = { id: c.id, command: c.command, code: r.code, ms: r.ms, timedOut: !!r.timedOut, maxMs: c.maxMs };
+    const runRecord = { id: c.id, command: c.command, code: r.code, ms: r.ms, timedOut: !!r.timedOut, maxMs: c.maxMs };
     if (times > 1) {
       // 只有重复跑才加字段：repeat=1 的输出必须与旧版逐字节一致
       const failures = attempts.filter((a) => a.timedOut || a.code !== 0).length;
-      run.attempts = attempts.map((a) => ({ code: a.code, ms: a.ms, timedOut: !!a.timedOut }));
-      run.flaky = { failures, total: times };
-      run.isFlaky = failures > 0 && failures < times; // 有失败但非全失败 = 抖动
+      runRecord.attempts = attempts.map((a) => ({ code: a.code, ms: a.ms, timedOut: !!a.timedOut }));
+      runRecord.flaky = { failures, total: times };
+      runRecord.isFlaky = failures > 0 && failures < times; // 有失败但非全失败 = 抖动
     }
-    runs.push(run);
-    if (run.isFlaky) {
-      const f = run.flaky;
+    runs.push(runRecord);
+    if (runRecord.isFlaky) {
+      const f = runRecord.flaky;
       if (c.optional) {
         warnings.push(`${c.id} 抖动（可选，不计入结论）：${f.failures}/${f.total} 次非 0`);
       } else {
@@ -164,20 +164,20 @@ export async function checkQuality(projectDir, { tier, run = true, runner = runS
       continue;
     }
     if (c.maxMs && r.ms > c.maxMs) {
-      run.slow = true;
+      runRecord.slow = true;
       push(`Q2.${c.id}-slow`, 'medium', `${r.ms}ms > ${c.maxMs}ms`, `${c.id} 超过耗时阈值：实测 ${r.ms}ms，阈值 ${c.maxMs}ms`);
     }
     if (c.expect) {
       let re = null;
       try { re = new RegExp(c.expect); } catch { warnings.push(`${c.id} 的 expect 不是合法正则：${c.expect}`); }
       if (re && !re.test(`${r.out}\n${r.err}`)) {
-        run.expectOk = false;
+        runRecord.expectOk = false;
         push(`Q2.${c.id}-expect`, 'medium', c.expect.slice(0, 60), `${c.id} 输出里没有匹配 /${c.expect}/（命令成功但没看到期望的指标）`);
-      } else if (re) run.expectOk = true;
+      } else if (re) runRecord.expectOk = true;
     }
     if (c.minPercent) {
       const pct = parseCoverage(`${r.out}\n${r.err}`);
-      run.coverage = pct;
+      runRecord.coverage = pct;
       if (pct == null) warnings.push(`${c.id} 没能从输出解析出覆盖率（期望 minPercent=${c.minPercent}）`);
       else if (pct < c.minPercent) push(`Q2.${c.id}-coverage`, 'high', `${pct}% < ${c.minPercent}%`, `${c.id} 覆盖率不达标：${pct}%，要求 ≥ ${c.minPercent}%`);
     }

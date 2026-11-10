@@ -740,15 +740,15 @@ export async function runSubagentStep({
       });
     }
     for (const call of calls) {
-      const name = call?.function?.name;
+      const toolName = call?.function?.name;
       let args = {};
       try { args = JSON.parse(call?.function?.arguments || '{}'); } catch { /* 参数坏了按空对象 */ }
       const toolStartedAt = now();
       const argsRaw = call?.function?.arguments || '';
-      if (typeof onToolStart === 'function') onToolStart({ name, argsRaw });
+      if (typeof onToolStart === 'function') onToolStart({ name: toolName, argsRaw });
       let out;
       try {
-        out = typeof executeTool === 'function' ? await executeTool(name, args) : { error: '子代理不允许调用工具：' + name };
+        out = typeof executeTool === 'function' ? await executeTool(toolName, args) : { error: '子代理不允许调用工具：' + toolName };
       } catch (e) {
         out = { error: e?.message || t('工具执行失败') };
       }
@@ -756,7 +756,7 @@ export async function runSubagentStep({
       const toolText = JSON.stringify(out ?? null).slice(0, 16000);
       messages.push({ role: 'tool', tool_call_id: call.id, content: toolText });
       if (typeof onToolEnd === 'function') {
-        onToolEnd({ name, argsRaw, out, toolText, ms: now() - toolStartedAt });
+        onToolEnd({ name: toolName, argsRaw, out, toolText, ms: now() - toolStartedAt });
       }
     }
   }
@@ -968,11 +968,11 @@ export async function runWorkflow({
     const data = parsed;
     if (step.kind === 'recon') {
       const targets = Array.isArray(data?.targets) ? data.targets : [];
-      result.targets = targets.map((t, i) => ({
-        id: String(t?.id || `t${i + 1}`),
-        path: String(t?.path || ''),
-        risk: ['high', 'medium', 'low'].includes(t?.risk) ? t.risk : 'medium',
-        reason: String(t?.reason || ''),
+      result.targets = targets.map((tg, i) => ({
+        id: String(tg?.id || `t${i + 1}`),
+        path: String(tg?.path || ''),
+        risk: ['high', 'medium', 'low'].includes(tg?.risk) ? tg.risk : 'medium',
+        reason: String(tg?.reason || ''),
       }));
       return;
     }

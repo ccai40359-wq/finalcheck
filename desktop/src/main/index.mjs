@@ -200,12 +200,12 @@ async function generateSessionTitle(prov, { user, assistant } = {}) {
     });
     if (!res.ok) return null;
     const j = await res.json();
-    const t = String(j?.choices?.[0]?.message?.content || '')
+    const title = String(j?.choices?.[0]?.message?.content || '')
       .replace(/^["'「『《（(]+|["'」』》）)]+$/g, '')
       .replace(/[。.!！?？\n\r]+$/g, '')
       .replace(/\s+/g, ' ')
       .trim();
-    return t ? t.slice(0, 24) : null;
+    return title ? title.slice(0, 24) : null;
   } catch {
     return null;
   } finally {
@@ -344,9 +344,9 @@ async function migrateGlobalToProject(p) {
 
 // 粗略 token 估算：CJK 1 字≈1 token，其他 4 字符≈1 token；图片按 1200 token/张
 const estTokens = (s) => {
-  const t = String(s ?? '');
-  const cjk = (t.match(/[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]/g) || []).length;
-  return cjk + Math.ceil((t.length - cjk) / 4);
+  const text = String(s ?? '');
+  const cjk = (text.match(/[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]/g) || []).length;
+  return cjk + Math.ceil((text.length - cjk) / 4);
 };
 const contentTokens = (m) => {
   const c = m?.content;
@@ -1014,8 +1014,8 @@ app.whenReady().then(async () => {
           requiresTools: requiresEvidence,
           forceFirstToolChoice: requiresEvidence,
           signal: ctl.signal,
-          onTranscript: (messages, meta = {}) => {
-            transcript = messages;
+          onTranscript: (msgs, meta = {}) => {
+            transcript = msgs;
             saveTranscript(!!meta.done);
           }
         });
@@ -1122,8 +1122,25 @@ app.whenReady().then(async () => {
         return list.slice();
       },
       cwd: turnProjectPath,
-      onToken: (t) => win?.webContents.send('finalcheck:agent-token', { sessionId, text: t }),
+      onToken: (text) => win?.webContents.send('finalcheck:agent-token', { sessionId, text }),
       onEvent: (ev) => win?.webContents.send('finalcheck:agent-event', { sessionId, ev }),
+      // 工具调用级落库（SQLite 后端）：开始写 running part、结束补 status/result/error/ms；
+      // 不 await（落库慢不拖工具执行），withQueue 按会话串行保证 start→end→回合收尾的顺序。
+      onToolLifecycle: sessionId ? (ev) => {
+        if (!ev) return;
+        const base = { callId: ev.id ?? null, name: ev.name ?? '', args: ev.args ?? '' };
+        if (ev.phase === 'start') {
+          void sessions.appendToolStart(sessionId, base).catch(() => { /* 落库失败不阻断对话 */ });
+        } else if (ev.phase === 'end') {
+          void sessions.appendToolEnd(sessionId, {
+            ...base,
+            status: ev.status === 'ok' ? 'ok' : 'fail',
+            result: ev.result === undefined ? null : ev.result,
+            error: ev.error ?? null,
+            ms: ev.ms ?? null,
+          }).catch(() => { /* 落库失败不阻断对话 */ });
+        }
+      } : null,
       tools: createAgentTools({
         repoRoot: REPO_ROOT,
         permissions,
@@ -1201,11 +1218,11 @@ app.whenReady().then(async () => {
                 });
                 if (resolved.warning) stepWarnings.push(resolved.warning);
                 const used = resolved.override || fallback;
-                const out = await callSubagent(ctx, used);
+                const stepOut = await callSubagent(ctx, used);
                 // 回填实际使用的 provider/model：工作流结束后的跨家族检查按它判 family
-                return out && typeof out === 'object'
-                  ? { ...out, providerId: used.providerId || null, model: used.model || null }
-                  : out;
+                return stepOut && typeof stepOut === 'object'
+                  ? { ...stepOut, providerId: used.providerId || null, model: used.model || null }
+                  : stepOut;
               },
               // 实时快照 → 渲染层（多 agent 流程状态卡）
               onUpdate: (snap) => { if (sessionId) win?.webContents.send('finalcheck:agent-event', { sessionId, ev: snap }); }

@@ -287,7 +287,7 @@ export const AGENT_TOOLS_SCHEMA = [...TOOLS_SCHEMA, ...AGENT_ONLY_TOOLS_SCHEMA];
 // 工作流子代理工具集：与主 agent 同一份 schema，按 swarm.mjs 的清单过滤。
 // 共 14 个：含 review_diff（review_diff 只在 AGENT_ONLY_TOOLS_SCHEMA），
 // 排除 run_workflow（禁止嵌套工作流）与 remember_project（记忆只由主 agent 写）。
-export const SUBAGENT_TOOLS_SCHEMA = AGENT_TOOLS_SCHEMA.filter((t) => SUBAGENT_TOOL_NAMES.includes(t?.function?.name));
+export const SUBAGENT_TOOLS_SCHEMA = AGENT_TOOLS_SCHEMA.filter((tool) => SUBAGENT_TOOL_NAMES.includes(tool?.function?.name));
 
 const SYSTEM_BASE = [
   '你是 FinalCheck（终检）安全验收助手，连接用户与安全测试工具。',
@@ -588,10 +588,16 @@ function awaitWithAbort(promise, signal, graceMs = TOOL_ABORT_GRACE_MS) {
 }
 
 // 执行单个工具调用：自带 tool-start/tool-end 事件，失败只返回自己的 {error}，不影响同批其它调用
-async function runToolCall(tc, tools, onEvent, signal = null) {
+// onToolLifecycle（可选）：给持久化层用的「开始/结束」钩子（不推渲染层，避免结果大对象进 IPC）。
+async function runToolCall(tc, tools, onEvent, signal = null, onToolLifecycle = null) {
   const name = String(tc?.function?.name || 'unknown');
   const argsText = String(tc?.function?.arguments || '');
+  const callId = tc?.id == null ? null : String(tc.id);
   const t0 = Date.now();
+  const lifecycle = (ev) => {
+    if (typeof onToolLifecycle !== 'function') return;
+    try { onToolLifecycle(ev); } catch { /* 观测/落库回调失败不影响工具执行 */ }
+  };
   // 工具真正开始执行（WorkingStatus 显示「Calling <tool>…」）；run_workflow 额外发 workflow-start，
   // 让工作流卡片立刻出骨架，而不是等第一个 step 快照。
   onEvent?.({ kind: 'activity', label: `Calling ${name}…`, tool: name });
@@ -601,9 +607,12 @@ async function runToolCall(tc, tools, onEvent, signal = null) {
     const result = cancelledToolResult();
     onEvent?.({ kind: 'tool-start', id: tc?.id, name, args: argsText.slice(0, 2000), cancelled: true });
     onEvent?.({ kind: 'tool-end', id: tc?.id, name, ms: 0, ok: false, cancelled: true });
+    lifecycle({ phase: 'start', id: callId, name, args: argsText, at: t0 });
+    lifecycle({ phase: 'end', id: callId, name, args: argsText, status: 'fail', result, error: String(result.error), ms: 0, cancelled: true, at: Date.now() });
     return { id: tc?.id, trace: { tool: name, args: argsText, result }, modelContent: JSON.stringify(result) };
   }
   onEvent?.({ kind: 'tool-start', id: tc?.id, name, args: argsText.slice(0, 2000) });
+  lifecycle({ phase: 'start', id: callId, name, args: argsText, at: t0 });
   let result;
   try {
     const args = JSON.parse(argsText || '{}');
@@ -633,12 +642,24 @@ async function runToolCall(tc, tools, onEvent, signal = null) {
     modelContent = JSON.stringify({ error: t('工具结果无法序列化：{error}', { error: e?.message || e }) });
     traceResult = { error: t('工具结果无法序列化') };
   }
+  lifecycle({
+    phase: 'end',
+    id: callId,
+    name,
+    args: argsText,
+    status: result?.error ? 'fail' : 'ok',
+    result: traceResult,
+    error: result?.error ? String(result.error) : null,
+    ms: Date.now() - t0,
+    cancelled: !!result?.cancelled,
+    at: Date.now(),
+  });
   return { id: tc?.id, trace: { tool: name, args: argsText, result: traceResult }, modelContent };
 }
 
 // 一轮 assistant 返回多个 tool_calls 时的调度：
 // 连续 parallel 调用合成一批（限流并发）；遇到 serial 调用先等当前批全部完成，再单独执行它。
-async function runToolCalls(toolCalls, { tools, onEvent, toolConcurrency, signal = null }) {
+async function runToolCalls(toolCalls, { tools, onEvent, toolConcurrency, signal = null, onToolLifecycle = null }) {
   const limit = clampToolConcurrency(toolConcurrency);
   const results = [];
   let i = 0;
@@ -647,23 +668,23 @@ async function runToolCalls(toolCalls, { tools, onEvent, toolConcurrency, signal
       // 已中断：剩下的并行条目全部直接标 cancelled，不再启动
       let j = i;
       while (j < toolCalls.length && classifyTool(toolCalls[j]?.function?.name) === 'parallel') j++;
-      results.push(...(await mapLimited(toolCalls.slice(i, j), limit, (tc) => runToolCall(tc, tools, onEvent, signal))));
+      results.push(...(await mapLimited(toolCalls.slice(i, j), limit, (tc) => runToolCall(tc, tools, onEvent, signal, onToolLifecycle))));
       i = j;
     } else if (classifyTool(toolCalls[i]?.function?.name) === 'parallel') {
       let j = i + 1;
       while (j < toolCalls.length && classifyTool(toolCalls[j]?.function?.name) === 'parallel') j++;
-      const batch = await mapLimited(toolCalls.slice(i, j), limit, (tc) => runToolCall(tc, tools, onEvent, signal));
+      const batch = await mapLimited(toolCalls.slice(i, j), limit, (tc) => runToolCall(tc, tools, onEvent, signal, onToolLifecycle));
       results.push(...batch);
       i = j;
     } else {
-      results.push(await runToolCall(toolCalls[i], tools, onEvent, signal));
+      results.push(await runToolCall(toolCalls[i], tools, onEvent, signal, onToolLifecycle));
       i++;
     }
   }
   return results; // 按原始调用顺序返回，调用方按序回填 convo/trace
 }
 
-export async function runAgentTurn({ config, messages, confirmedHosts = [], onToken, onEvent, tools, toolsSchema = null, systemPrompt: systemPromptOverride = null, forceFirstToolChoice = false, fetchImpl = fetch, summarize, signal, maxTurns = DEFAULT_MAX_TURNS, maxTurnMs: maxTurnMsOpt, maxTurnTokens: maxTurnTokensOpt, retryBaseMs = 600, noLimits = false, hooksConfig = null, hooksRunner = null, sessionId = null, drainSteer = null, cwd = process.cwd() }) {
+export async function runAgentTurn({ config, messages, confirmedHosts = [], onToken, onEvent, onToolLifecycle = null, tools, toolsSchema = null, systemPrompt: systemPromptOverride = null, forceFirstToolChoice = false, fetchImpl = fetch, summarize, signal, maxTurns = DEFAULT_MAX_TURNS, maxTurnMs: maxTurnMsOpt, maxTurnTokens: maxTurnTokensOpt, retryBaseMs = 600, noLimits = false, hooksConfig = null, hooksRunner = null, sessionId = null, drainSteer = null, cwd = process.cwd() }) {
   if (signal?.aborted) return { cancelled: true, interrupted: true, partialContent: '', answer: '', trace: [] };
   if (!config?.baseUrl || !config?.apiKey) {
     return { error: t('尚未配置网关：请到左下角「模型设置」添加供应商（Base URL / API Key / 模型）并启用'), trace: [] };
@@ -815,8 +836,8 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
   const RETRYABLE = new Set([408, 425, 429, 500, 502, 503, 504]);
   const MAX_ATTEMPTS = 5;
   const sleepAbort = (ms, sig) => new Promise((resolve) => {
-    const t = setTimeout(resolve, ms);
-    sig?.addEventListener('abort', () => { clearTimeout(t); resolve('aborted'); }, { once: true });
+    const timeoutId = setTimeout(resolve, ms);
+    sig?.addEventListener('abort', () => { clearTimeout(timeoutId); resolve('aborted'); }, { once: true });
   });
   for (let turn = 0; turn < maxTurns; turn++) {
     const elapsedMs = Math.max(0, Date.now() - turnStart - toolWaitMs); // 只算模型/等待时间
@@ -987,7 +1008,7 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
     convo.push({ role: 'assistant', content: content || null, tool_calls: toolCalls });
     // 并行调度：连续 parallel 调用成批限流并发；serial 调用单独跑。结果按原始调用顺序回填 convo/trace
     const toolStartedAt = Date.now();
-    const toolResults = await runToolCalls(toolCalls, { tools, onEvent, toolConcurrency: config.toolConcurrency, signal });
+    const toolResults = await runToolCalls(toolCalls, { tools, onEvent, toolConcurrency: config.toolConcurrency, signal, onToolLifecycle });
     toolWaitMs += Date.now() - toolStartedAt;
     for (const r of toolResults) {
       trace.push(r.trace);
@@ -1115,7 +1136,7 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
       onEvent?.({ kind: 'turn-end', ms: workedMs(), interrupted: true });
       return await runStopHook({ answer: (partial ? partial + '\n\n' : '') + t('[{reason}，以上为已输出部分；本轮工具证据仍保留]', { reason: abortLabel }), reasoning: reasoningAll, trace, workedMs: workedMs(), usage: lastUsage || undefined, usageTotal, finishReason: lastFinishReason, warnings, ...(budgetStop ? { budgetStop } : {}) });
     }
-    const names = [...new Set(trace.map((t) => t.tool))].join('、') || t('（无）');
+    const names = [...new Set(trace.map((tr) => tr.tool))].join('、') || t('（无）');
     const answer = fin.content || t('{stop}，本轮调用工具：{tools}。可以点「继续」让我接着做。', { stop: stopDesc, tools: names });
     onEvent?.({ kind: 'turn-end', ms: workedMs() });
     return await runStopHook({ answer, reasoning: reasoningAll, trace, workedMs: workedMs(), usage: lastUsage || undefined, usageTotal, finishReason: lastFinishReason, warnings, ...(budgetStop ? { budgetStop } : {}) });
@@ -1332,15 +1353,15 @@ export async function runSubagentTurn({
   // 工具结果正文：runAgentTurn 的 trace 按调用顺序返回，回填到对应的 tool 行（与旧面板 content 形状一致）
   const trace = Array.isArray(out?.trace) ? out.trace : [];
   let cursor = 0;
-  for (const t of trace) {
+  for (const tr of trace) {
     let idx = -1;
     for (let i = cursor; i < toolEntries.length; i += 1) {
-      if (toolEntries[i].name === t?.tool) { idx = i; break; }
+      if (toolEntries[i].name === tr?.tool) { idx = i; break; }
     }
     if (idx < 0 && cursor < toolEntries.length) idx = cursor;
     if (idx < 0) continue;
     let text = '';
-    try { text = JSON.stringify(t?.result ?? null); } catch { text = ''; }
+    try { text = JSON.stringify(tr?.result ?? null); } catch { text = ''; }
     toolEntries[idx].content = String(text ?? '').slice(0, 16000);
     cursor = idx + 1;
   }

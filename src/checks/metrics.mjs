@@ -301,7 +301,7 @@ export async function checkMetrics(projectDir, { tier, excludes = [] } = {}) {
     return false;
   };
   let dupCount = 0;
-  for (const [fp, occ] of candidates) {
+  for (const [, occ] of candidates) {
     if (dupCount >= 5) break;
     if (occ.every(nearReported)) continue; // 与已报块重叠（同一块的不同滑窗）
     const first = occ[0];

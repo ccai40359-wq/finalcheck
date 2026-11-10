@@ -93,14 +93,14 @@ function normalizeTarget(policy, raw) {
 function isInside(pathApi, root, target, caseInsensitive) {
   const sep = pathApi.sep;
   let r = trimTrailingSep(pathApi, pathApi.normalize(root));
-  let t = trimTrailingSep(pathApi, pathApi.normalize(target));
+  let tgt = trimTrailingSep(pathApi, pathApi.normalize(target));
   if (caseInsensitive) {
     r = r.toLowerCase();
-    t = t.toLowerCase();
+    tgt = tgt.toLowerCase();
   }
-  if (r === t) return true;
+  if (r === tgt) return true;
   const prefix = r.endsWith(sep) ? r : r + sep;
-  return t.startsWith(prefix);
+  return tgt.startsWith(prefix);
 }
 
 function samePath(platform, a, b) {

@@ -15,16 +15,23 @@ const EN = Object.freeze(Object.assign({}, ...DICTS));
 export const LANGUAGES = Object.freeze(['auto', 'zh', 'en']);
 
 const listeners = new Set();
-let current = 'zh';
+// 语言状态放在 globalThis 上：主进程里有些模块（agent-service / workflow / swarm）是
+// 从 resources 目录 **动态 import** 进来的，拿到的是 core.mjs 的另一份实例。
+// 只要各自用局部变量存语言，setLanguage() 就只影响其中一份，界面语言切换对另一份无效。
+const LANG_KEY = '__finalcheck_i18n_language__';
+
+function readLanguage() {
+  return globalThis[LANG_KEY] === 'en' ? 'en' : 'zh';
+}
 
 export function getLanguage() {
-  return current;
+  return readLanguage();
 }
 
 export function setLanguage(lang) {
   const next = lang === 'en' ? 'en' : 'zh';
-  if (next === current) return;
-  current = next;
+  if (next === readLanguage()) return;
+  globalThis[LANG_KEY] = next;
   for (const fn of [...listeners]) {
     try { fn(); } catch { /* 单个订阅者出错不影响其他订阅者 */ }
   }
@@ -46,7 +53,7 @@ export function resolveLanguage(setting, systemLang) {
 // 取译文：en 下查词典，其余（含 zh）返回原文；vars 做 {key} 占位符替换。
 export function t(source, vars) {
   const src = source == null ? '' : String(source);
-  const text = current === 'zh' ? src : (Object.prototype.hasOwnProperty.call(EN, src) ? EN[src] : src);
+  const text = readLanguage() === 'zh' ? src : (Object.prototype.hasOwnProperty.call(EN, src) ? EN[src] : src);
   if (!vars || typeof vars !== 'object') return text;
   return text.replace(/\{([a-zA-Z0-9_]+)\}/g, (m, k) => (
     Object.prototype.hasOwnProperty.call(vars, k) ? String(vars[k]) : m

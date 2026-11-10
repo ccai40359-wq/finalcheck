@@ -123,7 +123,6 @@ test('steer: 工具循环内 drainSteer → 第二次请求带【Steer】，并�
 });
 
 test('steer: 一次 drain 多条按顺序注入；drainSteer 抛错不阻断回合', async () => {
-  const bodies = [];
   const events = [];
   let drains = 0;
   const drainSteer = () => {

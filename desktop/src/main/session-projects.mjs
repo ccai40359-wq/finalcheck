@@ -3,6 +3,7 @@
 // 运行中在 sessions:list / open / new / move 时登记。只读写文件名，不解析会话内容。
 import { readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
+import { sessionExistsInDir } from './sessions.mjs';
 
 // 与 sessions.mjs 的 OK_ID 保持一致：会话 id 全局唯一（UUID）
 const OK_SESSION_ID = /^[a-f0-9-]{8,64}$/;
@@ -78,7 +79,10 @@ export async function scanSessionsDir(sessionsDir, { overwrite = false } = {}) {
   return { dir: d, files, registered };
 }
 
-/** 在当前项目 + 所有已知项目目录里找一个会话文件（用于 open 未登记的会话）；只 stat 存在性 */
+/**
+ * 在当前项目 + 所有已知项目目录里找一个会话（用于 open 未登记的会话）。
+ * 先 stat 旧 JSON 文件；sqlite 后端下再查该目录的 finalcheck.db（只查 session 表，不读消息体）。
+ */
 export async function findSessionDir(sessionId, candidateDirs = []) {
   if (!isValidSessionId(sessionId)) return null;
   for (const raw of candidateDirs) {
@@ -88,6 +92,12 @@ export async function findSessionDir(sessionId, candidateDirs = []) {
       const st = await stat(path.join(d, `session-${sessionId}.json`));
       if (st.isFile()) return d;
     } catch { /* 不在这个目录，继续找 */ }
+  }
+  // DB 会话（迁移后旧 JSON 只读存在；新会话根本没有 JSON 文件）
+  for (const raw of candidateDirs) {
+    const d = normalizeDir(raw);
+    if (!d) continue;
+    if (await sessionExistsInDir(sessionId, d)) return d;
   }
   return null;
 }

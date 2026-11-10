@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (windows-latest, node 20)
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          # 仓库根与 desktop 各有一份 lock，两个都要纳入缓存键
+          cache-dependency-path: |
+            package-lock.json
+            desktop/package-lock.json
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Install desktop dependencies
+        working-directory: desktop
+        run: npm ci
+
+      # 只验证构建产物，不跑 electron-builder 打包（太重）
+      - name: Build desktop
+        working-directory: desktop
+        run: npx electron-vite build

@@ -1685,7 +1685,6 @@ export async function runScriptWorkflow({
         if (stopped || ctl.aborted) break;
       }
       if (stopped || ctl.aborted) break;
-      const last = phaseIds.length > start ? results.get(phaseIds[phaseIds.length - 1]) : null;
       const target = resolveBranchTarget(node.until.ref, spec.aliases, phaseIds.slice(start));
       if (matchScriptCondition(node.until, target)) {
         matched = true;

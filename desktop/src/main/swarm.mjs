@@ -57,7 +57,6 @@ export function stepRequiresToolEvidence(kind, prompt, toolNames = SUBAGENT_TOOL
 
 const SEVERITIES = ['high', 'medium', 'low'];
 const VERDICTS = ['confirmed', 'rejected', 'uncertain'];
-const FINALS = ['confirmed', 'rejected', 'uncertain'];
 const REPORT_SECTIONS = ['Conclusion', 'Findings', 'Verified', 'Not covered', 'Skipped'];
 // 报告硬规则：没有对抗复核者的 claim 不得写成「已确认」。steps 模式写进 buildSwarmPrompt，
 // script 模式的 report 由 workflow-script 追加到 ask 里（两处共用同一句，避免措辞漂移）。

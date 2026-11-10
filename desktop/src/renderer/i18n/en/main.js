@@ -162,6 +162,9 @@ export const EN_MAIN = {
   '开发模式不可下载更新。': 'Updates cannot be downloaded in dev mode.',
   '开发模式不可安装更新。': 'Updates cannot be installed in dev mode.',
 
+  // ---- sessions.mjs（默认标题会写进库；zh 下原样写「新会话」）----
+  '新会话': 'New session',
+
   // ---- workflow-script.mjs（受限脚本 DSL：解析校验 / 执行 / 汇总）----
   'script 不能为空：至少 1 条 op': 'script cannot be empty: at least 1 op is required',
   '脚本节点最多 {max} 个（当前 {n}）': 'At most {max} script nodes (currently {n})',
