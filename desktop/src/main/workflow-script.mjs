@@ -1156,6 +1156,14 @@ export async function runScriptWorkflow({
     if (!resumeJournal || !resumeJournal.steps || typeof resumeJournal.steps !== 'object') return null;
     const entry = resumeJournal.steps[node.id];
     if (!entry || entry.status !== 'success' || !String(entry.content || '').trim()) return null;
+    // report 复用前必须按本次运行的洞重跑 lint：旧报告漏点本次失败节点时禁止复用，
+    // 交给 executeNode 重跑（prompt 会带上完整洞清单），否则 resume 会绕过 report 闸。
+    const accept = (candidate) => {
+      if (node.kind !== 'report') return candidate;
+      const holeList = collectHoles(results);
+      const warnings = lintReport(clipStoredContent(String(candidate.content || '')), { holes: holeList });
+      return warnings.length ? null : candidate;
+    };
     // 依赖必须是本次运行已经执行/复用的节点；分支没走时旧记录不能拿来复用
     for (const dep of node.depends_on) {
       if (results.has(dep)) continue;
@@ -1172,11 +1180,11 @@ export async function runScriptWorkflow({
         if (aliasNodes.has(dep) && aliasNodes.get(dep).every((id) => results.get(id)?.ok)) continue;
         return null;
       }
-      return entry;
+      return accept(entry);
     }
     const reuseInfo = computeReuse(resumeJournal, { steps, byId }, goalText);
     if (!reuseInfo.reusable.has(node.id)) return null;
-    return entry;
+    return accept(entry);
   };
 
   const restoreNode = async (node, entry) => {
@@ -1206,8 +1214,15 @@ export async function runScriptWorkflow({
       ...(fullOutputPath ? { fullOutputPath } : {}),
       ...(node.program ? { source: 'program', verified: true, ...(node.tool ? { gate: node.tool } : {}) } : {}),
       ...(node.autoInserted ? { autoInserted: true } : {}),
-      ...(node.kind === 'report' ? { delivered: true } : {}),
     };
+    if (node.kind === 'report') {
+      // 复用也要重跑本次洞清单的 lint：不能靠旧 journal 把漏点的报告直接算交付。
+      const holeList = collectHoles(results);
+      result.holes = holeList.map((h) => h.id);
+      result.reportWarnings = lintReport(content, { holes: holeList });
+      result.reportLintOk = result.reportWarnings.length === 0;
+      result.delivered = result.ok && result.reportLintOk;
+    }
     if (node.programType === 'aggregate') {
       const parsed = parseAgentJson(content);
       if (!parsed?.error && isObj(parsed)) {
@@ -1229,7 +1244,7 @@ export async function runScriptWorkflow({
     results.set(node.id, result);
     executionOrder.push(node.id);
     if (node.kind === 'verify') ingestVerify(node, result, content);
-    if (node.kind === 'report') delivered.push(node.id);
+    if (node.kind === 'report' && result.delivered) delivered.push(node.id);
     notify(true);
     return result;
   };

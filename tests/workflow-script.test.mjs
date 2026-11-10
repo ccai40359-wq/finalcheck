@@ -345,6 +345,55 @@ test('script/复用: report 的 from 是 fanout 别名时同样可复用', async
   });
 });
 
+test('script/复用: 旧 report 未点名本次失败节点 → 不复用，重跑并带着洞清单交付', async () => {
+  await withTempDir(async (dir) => {
+    const script = [
+      { op: 'step', id: 'a', role: '记录员', prompt: '记录 A' },
+      { op: 'step', id: 'b', role: '记录员', prompt: '记录 B' },
+      { op: 'report', id: 'rep', from: 'a', ask: '汇总' },
+    ];
+    const first = await runWorkflow({
+      goal: 'G',
+      journalDir: dir,
+      script,
+      callStep: async (ctx) => {
+        if (ctx.id === 'a') return { content: '证据 A', toolCount: 1 };
+        if (ctx.id === '__verify__') return { content: JSON.stringify({ verdicts: [] }), toolCount: 1 };
+        if (ctx.id === 'b') return { content: '' }; // 空回复 → salvage 成洞
+        return { content: reportText, toolCount: 0 }; // 旧报告漏点 b
+      },
+    });
+    assert.equal(first.ok, false);
+    const firstRep = first.results.find((r) => r.id === 'rep');
+    assert.equal(firstRep.delivered, false, '首次报告漏点 b，不应交付');
+    assert.ok(firstRep.content.startsWith('## Conclusion'), '报告正文仍保留，不能吞掉');
+
+    const secondCalls = [];
+    const second = await runWorkflow({
+      goal: 'G',
+      journalDir: dir,
+      resumeFrom: first.runId,
+      script,
+      callStep: async (ctx) => {
+        secondCalls.push(ctx.id);
+        if (ctx.id === '__verify__') return { content: JSON.stringify({ verdicts: [] }), toolCount: 1 };
+        if (ctx.id === 'b') return { content: '' };
+        if (ctx.id === 'rep') {
+          return { content: reportText.replace('None', '- [b] 审查 B：无最终结论，未覆盖。'), toolCount: 0 };
+        }
+        return { content: '不该被调用', toolCount: 1 };
+      },
+    });
+    const rep = second.results.find((r) => r.id === 'rep');
+    assert.ok(secondCalls.includes('rep'), '旧报告未点名洞 → 必须重跑 report');
+    assert.equal(rep.reused, false, '不能把旧报告标记为复用');
+    assert.deepEqual(rep.holes, ['b']);
+    assert.equal(rep.reportLintOk, true);
+    assert.equal(rep.delivered, true);
+    assert.ok(second.delivered.includes('rep'));
+  });
+});
+
 // ---------- loop ----------
 
 test('script/loop: 第 1 轮命中 until → 停止，只生成 r1 节点', async () => {

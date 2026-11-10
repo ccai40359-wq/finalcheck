@@ -3,6 +3,7 @@
 // models 兼容 string[] 与混合对象数组：{ id, contextWindow?, maxOutputTokens?, vision? }
 import React, { useEffect, useId, useRef, useState } from 'react';
 import { api, Card, ErrorNote } from '../lib/ui.jsx';
+import { initialUpdateState, reduceUpdateEvent, describeUpdate } from '../lib/updater-state.mjs';
 import UsagePage from './UsagePage.jsx';
 
 const API_FORMATS = [
@@ -16,7 +17,7 @@ const SANDBOX_MODES = [
   { value: 'off', label: 'off', desc: '放开项目边界，敏感路径仍拒绝' }
 ];
 const DEFAULT_TOOL_CONCURRENCY = 8;
-const SECTIONS = ['models', 'runtime', 'usage'];
+const SECTIONS = ['models', 'runtime', 'usage', 'about'];
 const newId = () => `p-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
 const FOCUSABLE_SELECTOR = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
@@ -168,7 +169,9 @@ export default function SettingsPage({ onBack, initialSection = 'models' }) {
   const [baseCfg, setBaseCfg] = useState({});       // 保留 permissionMode / activeModel / thinkingEffort 等字段
   const [sandboxMode, setSandboxMode] = useState('workspace');
   const [toolConc, setToolConc] = useState(DEFAULT_TOOL_CONCURRENCY);
-  const [section, setSection] = useState(() => (SECTIONS.includes(initialSection) ? initialSection : 'models')); // 设置页内分节：models / runtime / usage（仿 ZCode 左侧分组导航）
+  const [section, setSection] = useState(() => (SECTIONS.includes(initialSection) ? initialSection : 'models')); // 设置页内分节：models / runtime / usage / about（仿 ZCode 左侧分组导航）
+  const [update, setUpdate] = useState(initialUpdateState); // 更新状态机（纯函数见 lib/updater-state.mjs）
+  const [appVersion, setAppVersion] = useState('');
   const modelTriggerRef = useRef(null); // 打开模型弹窗的按钮，关闭弹窗后焦点回到这里
 
   // App 通过 initialSection 指定落点（如 page='usage'）；同一组件内切换分节不卸载草稿
@@ -193,6 +196,61 @@ export default function SettingsPage({ onBack, initialSection = 'models' }) {
       })
       .catch((e) => { setErr('读取配置失败：' + e.message); setLoaded(true); });
   }, [y]);
+
+  // ---- 关于 / 更新：当前版本 + 订阅主进程更新事件（卸载时取消订阅） ----
+  useEffect(() => {
+    if (!y) return undefined;
+    let alive = true;
+    if (y.getVersion) {
+      y.getVersion().then((v) => { if (alive) setAppVersion(String(v || '')); }).catch(() => {});
+    }
+    if (!y.onUpdateEvent) return () => { alive = false; };
+    const off = y.onUpdateEvent((ev) => {
+      if (alive) setUpdate((prev) => reduceUpdateEvent(prev, ev));
+    });
+    return () => { alive = false; if (typeof off === 'function') off(); };
+  }, [y]);
+
+  const checkUpdate = async () => {
+    if (!y?.updateCheck) return;
+    setUpdate((prev) => ({ ...prev, phase: 'checking', percent: null, message: '' }));
+    try {
+      const r = await y.updateCheck();
+      if (r && !r.ok) {
+        setUpdate((prev) => (prev.phase === 'error' ? prev : reduceUpdateEvent(prev, { type: 'error', message: r.error || '检查更新失败' })));
+        return;
+      }
+      // 正常路径由主进程事件驱动；这里只做事件丢失时的兜底
+      if (r?.latestVersion) {
+        setUpdate((prev) => (prev.phase === 'checking' ? reduceUpdateEvent(prev, { type: 'available', version: r.latestVersion }) : prev));
+      } else if (r?.ok) {
+        setUpdate((prev) => (prev.phase === 'checking' ? reduceUpdateEvent(prev, { type: 'not-available', version: r.currentVersion }) : prev));
+      }
+    } catch (e) {
+      setUpdate((prev) => reduceUpdateEvent(prev, { type: 'error', message: e?.message }));
+    }
+  };
+
+  const downloadUpdate = async () => {
+    if (!y?.updateDownload) return;
+    setUpdate((prev) => ({ ...prev, phase: 'downloading', percent: 0, message: '' }));
+    try {
+      const r = await y.updateDownload();
+      if (r && !r.ok) setUpdate((prev) => reduceUpdateEvent(prev, { type: 'error', message: r.error || '下载更新失败' }));
+    } catch (e) {
+      setUpdate((prev) => reduceUpdateEvent(prev, { type: 'error', message: e?.message }));
+    }
+  };
+
+  const installUpdate = async () => {
+    if (!y?.updateInstall) return;
+    try {
+      const r = await y.updateInstall();
+      if (r && !r.ok) setUpdate((prev) => reduceUpdateEvent(prev, { type: 'error', message: r.error || '安装更新失败' }));
+    } catch (e) {
+      setUpdate((prev) => reduceUpdateEvent(prev, { type: 'error', message: e?.message }));
+    }
+  };
 
   const selected = providers.find((p) => p.id === selectedId) || null;
 
@@ -354,6 +412,62 @@ export default function SettingsPage({ onBack, initialSection = 'models' }) {
     </Card>
   );
 
+  // 关于 / 更新：文案与按钮可见性全部来自纯函数 describeUpdate（不硬编码 owner/repo，不展示原始 JSON）
+  const updateView = describeUpdate(update, appVersion);
+  const updateToneClass = { mute: 'text-mute', gold: 'text-goldSoft', jade: 'text-jade', red: 'text-red-300' };
+  const aboutCard = (
+    <Card className="p-5 space-y-4">
+      <div>
+        <div className="text-sm text-ink font-medium">应用更新</div>
+        <div className="text-xs text-mute mt-0.5">从 GitHub Release 检查新版本。发现后由你确认下载，重启完成安装；版本与下载地址均由更新模块读取。</div>
+      </div>
+
+      <div className="flex items-center justify-between gap-3 rounded-lg bg-[#15151a] border border-edge px-4 py-3">
+        <div>
+          <div className="text-sm text-ink">当前版本</div>
+          <div className="text-xs text-mute mt-0.5">仅安装版检查更新；开发模式不联网。</div>
+        </div>
+        <span className="font-mono text-sm text-goldSoft shrink-0">{updateView.currentText}</span>
+      </div>
+
+      <div className="min-h-[22px]">
+        {updateView.errorText ? (
+          <div className="text-sm text-red-300 leading-relaxed break-words">{updateView.errorText}</div>
+        ) : (
+          <div className={`text-sm leading-relaxed ${updateToneClass[updateView.tone] || 'text-mute'}`}>{updateView.statusText}</div>
+        )}
+        {updateView.phase === 'downloading' && (
+          <div className="mt-2 h-1 rounded-full bg-white/10 overflow-hidden">
+            <div className="h-full rounded-full bg-goldSoft transition-[width] duration-200" style={{ width: `${updateView.progress ?? 0}%` }} />
+          </div>
+        )}
+      </div>
+
+      <div className="flex items-center gap-2 pt-2 border-t border-edge/60">
+        {updateView.showCheck && (
+          <button className="btn-primary min-w-[100px]" onClick={checkUpdate} disabled={!y || updateView.checkDisabled}>
+            {updateView.checkLabel}
+          </button>
+        )}
+        {updateView.showDownload && (
+          <button className="btn-primary min-w-[100px]" onClick={downloadUpdate} disabled={!y}>
+            {updateView.downloadLabel}
+          </button>
+        )}
+        {updateView.showInstall && (
+          <button className="btn-primary min-w-[100px]" onClick={installUpdate} disabled={!y}>
+            {updateView.installLabel}
+          </button>
+        )}
+        {!y && <span className="text-xs text-mute">请在 Electron 中运行后检查更新。</span>}
+      </div>
+
+      {updateView.phase === 'available' && (
+        <div className="text-xs text-mute leading-relaxed">下载完成后不会自动重启；点「重启并安装」立即更新，或下次退出应用时自动安装。</div>
+      )}
+    </Card>
+  );
+
   return (
     <div className="h-full min-h-0 flex">
       {/* ---- 设置导航（仿 ZCode：Basics / Agent / Data and statistics） ---- */}
@@ -375,6 +489,10 @@ export default function SettingsPage({ onBack, initialSection = 'models' }) {
           <NavGroup label="Data and statistics">
             <NavRow label="Usage stats" active={section === 'usage'} onClick={() => setSection('usage')} icon={<IconChart />} trailing="Tokens" />
           </NavGroup>
+          <NavGroup label="About">
+            <NavRow label="About & updates" active={section === 'about'} onClick={() => setSection('about')} icon={<IconRefresh />}
+              trailing={updateView.hasUpdate ? <span className="text-red-400">有新版本</span> : ''} />
+          </NavGroup>
         </div>
       </nav>
 
@@ -388,12 +506,14 @@ export default function SettingsPage({ onBack, initialSection = 'models' }) {
         <div className="shrink-0 px-8 pt-6 pb-5 flex items-start justify-between gap-4">
           <div className="min-w-0">
             <h1 className="font-kai text-[22px] leading-tight text-goldSoft">
-              {section === 'models' ? 'Model settings' : 'Runtime'}
+              {section === 'models' ? 'Model settings' : section === 'runtime' ? 'Runtime' : 'About'}
             </h1>
             <p className="text-[12px] text-mute mt-1.5 leading-relaxed">
               {section === 'models'
                 ? '管理自定义模型供应商。配置好后可在对话里选择使用。'
-                : '沙箱与工具并发：对所有供应商生效，与权限模式（Full access）独立。'}
+                : section === 'runtime'
+                  ? '沙箱与工具并发：对所有供应商生效，与权限模式（Full access）独立。'
+                  : '版本信息与更新：检查 GitHub Release，下载后重启安装。'}
             </p>
           </div>
           {section === 'models' && (
@@ -623,6 +743,10 @@ export default function SettingsPage({ onBack, initialSection = 'models' }) {
                 )}
               </div>
             </>
+          ) : section === 'about' ? (
+            <div className="flex-1 min-w-0 overflow-y-auto">
+              <div className="max-w-2xl px-6 py-6">{aboutCard}</div>
+            </div>
           ) : (
             <div className="flex-1 min-w-0 overflow-y-auto">
               <div className="max-w-2xl px-6 py-6">{runtimeCard}</div>
@@ -918,6 +1042,13 @@ function IconChart() {
   return (
     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M4 20V4" /><path d="M4 20h16" /><path d="M8 16v-5M13 16V7M18 16v-3" />
+    </svg>
+  );
+}
+function IconRefresh() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21 12a9 9 0 1 1-2.64-6.36" /><polyline points="21 3 21 9 15 9" />
     </svg>
   );
 }

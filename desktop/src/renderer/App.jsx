@@ -367,6 +367,7 @@ export default function App() {
   const [providerMenu, setProviderMenu] = useState(false); // 模型面板右侧的供应商列表
   const [cfg, setCfg] = useState(null);
   const [cfgLoaded, setCfgLoaded] = useState(false);
+  const [updateVersion, setUpdateVersion] = useState(''); // 有新版本时在 Settings 入口点红点
   // 首次使用向导：本会话内可「稍后配置」跳过（存 localStorage）
   const [setupDismissed, setSetupDismissed] = useState(() => {
     try { return typeof localStorage !== 'undefined' && localStorage.getItem('fc.setupSkipped') === '1'; } catch { return false; }
@@ -746,6 +747,16 @@ export default function App() {
         next[i] = applyAgentEvent(prev[i], ev);
         return next;
       });
+    });
+  }, [y]);
+
+  // 更新提示：后台检查发现新版本时，在左下角 Settings 入口点一个小红点（不打断对话）
+  useEffect(() => {
+    if (!y?.onUpdateEvent) return undefined;
+    return y.onUpdateEvent((ev) => {
+      if (!ev || typeof ev !== 'object') return;
+      if (ev.type === 'available') setUpdateVersion(String(ev.version || ''));
+      else if (ev.type === 'not-available') setUpdateVersion('');
     });
   }, [y]);
 
@@ -1429,6 +1440,10 @@ export default function App() {
             className={`flex-1 flex items-center gap-2 rounded-lg px-2 py-1.5 text-[13px] transition-colors ${
               page === 'settings' ? 'bg-white/[0.06] text-goldSoft' : 'text-mute hover:text-ink hover:bg-white/[0.045]'}`}>
             <IconGear active={page === 'settings'} />Settings
+            {updateVersion ? (
+              <span title={updateVersion ? `有新版本 v${updateVersion}` : '有新版本'}
+                className="ml-auto w-1.5 h-1.5 rounded-full bg-red-400 shrink-0" />
+            ) : null}
           </button>
           <span title={y ? 'IPC 已连接' : 'IPC 不可用'} className={`w-1.5 h-1.5 rounded-full ${y ? 'bg-jade' : 'bg-red-400/70'}`} />
         </div>

@@ -51,5 +51,11 @@ contextBridge.exposeInMainWorld('finalcheck', {
   confirmDir: (dir) => ipcRenderer.invoke('finalcheck:confirm-dir', dir),
   getConfig: () => ipcRenderer.invoke('finalcheck:get-config'),
   setConfig: (cfg) => ipcRenderer.invoke('finalcheck:set-config', cfg),
-  testProvider: (p) => ipcRenderer.invoke('finalcheck:test-provider', p)
+  testProvider: (p) => ipcRenderer.invoke('finalcheck:test-provider', p),
+  // 自动更新（仅安装版生效；开发模式主进程返回友好错误）
+  getVersion: () => ipcRenderer.invoke('finalcheck:update:version'),
+  updateCheck: () => ipcRenderer.invoke('finalcheck:update:check'),
+  updateDownload: () => ipcRenderer.invoke('finalcheck:update:download'),
+  updateInstall: () => ipcRenderer.invoke('finalcheck:update:install'),
+  onUpdateEvent: (cb) => { const h = (_e, ev) => cb(ev); ipcRenderer.on('finalcheck:update-event', h); return () => ipcRenderer.removeListener('finalcheck:update-event', h); }
 });

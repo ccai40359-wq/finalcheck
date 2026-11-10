@@ -23,6 +23,13 @@
     "directories": {
       "output": "release"
     },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "ccai40359-wq",
+        "repo": "finalcheck"
+      }
+    ],
     "files": [
       "out/**/*",
       "package.json"
@@ -79,6 +86,7 @@
     "vite": "^5.4.11"
   },
   "dependencies": {
-    "autocannon": "^7.15.0"
+    "autocannon": "^7.15.0",
+    "electron-updater": "^6.8.11"
   }
 }
