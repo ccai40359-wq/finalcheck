@@ -26,7 +26,7 @@ export const LANGUAGE_MODES = [
   { value: 'zh', label: '中文', desc: '始终中文界面与中文报告' },
   { value: 'en', label: 'English', desc: 'English UI and English report output' }
 ];
-const SECTIONS = ['models', 'runtime', 'usage', 'about'];
+const SECTIONS = ['models', 'language', 'runtime', 'usage', 'about'];
 const newId = () => `p-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
 const FOCUSABLE_SELECTOR = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
@@ -377,28 +377,43 @@ export default function SettingsPage({ onBack, initialSection = 'models' }) {
     } finally { setTesting(false); }
   };
 
-  // Agent / 运行时：策略沙箱 + 工具并发 + 界面语言（写入 cfg.sandboxMode / cfg.toolConcurrency / cfg.language）
+  // 界面语言：独立成节（切换立即生效，保存时写入 cfg.language）
+  const languageCard = (
+    <Card className="p-5 space-y-4">
+      <div className="grid grid-cols-3 gap-2">
+        {LANGUAGE_MODES.map((m) => {
+          const on = language === m.value;
+          return (
+            <button key={m.value} type="button" onClick={() => { setLanguageChoice(m.value); touch(); applyLanguage(resolveLanguage(m.value, navigator.language)); }} disabled={!y}
+              className={`rounded-lg border px-3 py-2 text-left transition-colors disabled:opacity-50 ${on ? 'border-gold/45 bg-gold/10' : 'border-edge bg-[#15151a] hover:bg-cardHover'}`}>
+              <div className="text-sm text-ink">{t(m.label)}</div>
+              <div className="text-xs text-mute mt-0.5">{t(m.desc)}</div>
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="flex items-center gap-3 pt-2 border-t border-edge/60">
+        <button className="btn-primary min-w-[92px]" onClick={save} disabled={!y || !loaded}>{t('保存')}</button>
+        {saved && !dirty && (
+          <span className="text-sm text-jade flex items-center gap-1.5 transition-all duration-200">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="20 6 9 17 4 12" /></svg>
+            {t('已保存')}
+          </span>
+        )}
+        {dirty && <span className="text-xs text-mute">{t('有未保存的修改')}</span>}
+      </div>
+      <ErrorNote>{!y ? t('请在 Electron 中运行后修改设置。') : errText}</ErrorNote>
+    </Card>
+  );
+
+  // Agent / 运行时：策略沙箱 + 工具并发（写入 cfg.sandboxMode / cfg.toolConcurrency）
   const runtimeCard = (
     <Card className="p-5 space-y-4">
       <div>
         <div className="text-sm text-ink font-medium">{t('Agent / 运行时')}</div>
-        <div className="text-xs text-mute mt-0.5">{t('Sandbox 管路径与命令边界，Tool concurrency 管同时跑几个工具，Language 管界面与报告语言。')}</div>
+        <div className="text-xs text-mute mt-0.5">{t('Sandbox 管路径与命令边界，Tool concurrency 管同时跑几个工具。')}</div>
       </div>
-
-      <Field label="Language" hint={t('切换后立即生效；英文模式下 agent、工作流与报告也用英文输出')}>
-        <div className="grid grid-cols-3 gap-2">
-          {LANGUAGE_MODES.map((m) => {
-            const on = language === m.value;
-            return (
-              <button key={m.value} type="button" onClick={() => { setLanguageChoice(m.value); touch(); applyLanguage(resolveLanguage(m.value, navigator.language)); }} disabled={!y}
-                className={`rounded-lg border px-3 py-2 text-left transition-colors disabled:opacity-50 ${on ? 'border-gold/45 bg-gold/10' : 'border-edge bg-[#15151a] hover:bg-cardHover'}`}>
-                <div className="text-sm text-ink">{t(m.label)}</div>
-                <div className="text-xs text-mute mt-0.5">{t(m.desc)}</div>
-              </button>
-            );
-          })}
-        </div>
-      </Field>
 
       <Field label="Sandbox mode" hint={t('默认 workspace；Full access 下也生效')}>
         <div className="grid grid-cols-3 gap-2">
@@ -530,6 +545,7 @@ export default function SettingsPage({ onBack, initialSection = 'models' }) {
             <NavRow label="Model settings" active={section === 'models'} onClick={() => setSection('models')} icon={<IconLayers />} />
           </NavGroup>
           <NavGroup label="Agent">
+            <NavRow label="Language" active={section === 'language'} onClick={() => setSection('language')} icon={<IconGlobe />} />
             <NavRow label="Runtime" active={section === 'runtime'} onClick={() => setSection('runtime')} icon={<IconSliders />} />
           </NavGroup>
           <NavGroup label="Data and statistics">
@@ -552,14 +568,16 @@ export default function SettingsPage({ onBack, initialSection = 'models' }) {
         <div className="shrink-0 px-8 pt-6 pb-5 flex items-start justify-between gap-4">
           <div className="min-w-0">
             <h1 className="font-kai text-[22px] leading-tight text-goldSoft">
-              {section === 'models' ? 'Model settings' : section === 'runtime' ? 'Runtime' : 'About'}
+              {section === 'models' ? 'Model settings' : section === 'language' ? 'Language' : section === 'runtime' ? 'Runtime' : 'About'}
             </h1>
             <p className="text-[12px] text-mute mt-1.5 leading-relaxed">
               {section === 'models'
                 ? t('管理自定义模型供应商。配置好后可在对话里选择使用。')
-                : section === 'runtime'
-                  ? t('沙箱与工具并发：对所有供应商生效，与权限模式（Full access）独立。')
-                  : t('版本信息与更新：检查 GitHub Release，下载后重启安装。')}
+                : section === 'language'
+                  ? t('切换后立即生效；英文模式下 agent、工作流与报告也用英文输出')
+                  : section === 'runtime'
+                    ? t('沙箱与工具并发：对所有供应商生效，与权限模式（Full access）独立。')
+                    : t('版本信息与更新：检查 GitHub Release，下载后重启安装。')}
             </p>
           </div>
           {section === 'models' && (
@@ -795,6 +813,10 @@ export default function SettingsPage({ onBack, initialSection = 'models' }) {
           ) : section === 'about' ? (
             <div className="flex-1 min-w-0 overflow-y-auto">
               <div className="max-w-2xl px-6 py-6">{aboutCard}</div>
+            </div>
+          ) : section === 'language' ? (
+            <div className="flex-1 min-w-0 overflow-y-auto">
+              <div className="max-w-2xl px-6 py-6">{languageCard}</div>
             </div>
           ) : (
             <div className="flex-1 min-w-0 overflow-y-auto">
@@ -1118,6 +1140,13 @@ function IconLayers() {
   return (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M12 3l9 5-9 5-9-5 9-5Z" /><path d="M3 13l9 5 9-5" />
+    </svg>
+  );
+}
+function IconGlobe() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="9" /><path d="M3 12h18" /><path d="M12 3c2.6 3.1 4 5.9 4 9s-1.4 5.9-4 9c-2.6-3.1-4-5.9-4-9s1.4-5.9 4-9Z" />
     </svg>
   );
 }

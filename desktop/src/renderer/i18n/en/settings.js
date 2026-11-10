@@ -13,7 +13,7 @@ export const EN_SETTINGS = {
 
   // Agent / 运行时
   'Agent / 运行时': 'Agent / Runtime',
-  'Sandbox 管路径与命令边界，Tool concurrency 管同时跑几个工具，Language 管界面与报告语言。': 'Sandbox controls path and command boundaries, Tool concurrency controls how many tools run at once, and Language controls the UI and report language.',
+  'Sandbox 管路径与命令边界，Tool concurrency 管同时跑几个工具。': 'Sandbox controls path and command boundaries, and Tool concurrency controls how many tools run at once.',
   '切换后立即生效；英文模式下 agent、工作流与报告也用英文输出': 'Applies immediately. In English mode, agents, workflows and reports also output English.',
   '跟随系统': 'Follow system',
   '系统为中文时用中文，否则英文': 'Chinese on Chinese systems, English otherwise',
