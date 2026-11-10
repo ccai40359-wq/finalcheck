@@ -1,5 +1,5 @@
 // S1 鉴权覆盖：吃路由提取器输出，逐接口判守卫。白名单=publicRoutes
-// 常见天然公开接口：命中则给白名单引导，降噪（2026-11-07 爬虫仓实测 91 条里一大半是这类）
+// 常见天然公开接口：命中则给白名单引导，降噪（2026-11-07 某真实项目实测 91 条里一大半是这类）
 const PUBLIC_HINT = /(login|logout|register|signup|auth\/|ping|health|status|version|metrics|docs|openapi)/i;
 
 export async function checkAuthCoverage(routeResult) {

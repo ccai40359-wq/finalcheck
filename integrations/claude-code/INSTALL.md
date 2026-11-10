@@ -12,7 +12,7 @@
       {
         "matcher": "Bash",
         "hooks": [
-          { "type": "command", "command": "node D:/rcw-geo/yanshou/integrations/claude-code/gate.mjs" }
+          { "type": "command", "command": "node <path-to-finalcheck>/integrations/claude-code/gate.mjs" }
         ]
       }
     ]
@@ -42,8 +42,8 @@ FinalCheck 安装位置）：
       {
         "matcher": "Bash",
         "hooks": [
-          { "type": "command", "command": "node D:/rcw-geo/yanshou/integrations/claude-code/gate.mjs" },
-          { "type": "command", "command": "node D:/rcw-geo/yanshou/integrations/claude-code/download-gate.mjs" }
+          { "type": "command", "command": "node <path-to-finalcheck>/integrations/claude-code/gate.mjs" },
+          { "type": "command", "command": "node <path-to-finalcheck>/integrations/claude-code/download-gate.mjs" }
         ]
       }
     ]
