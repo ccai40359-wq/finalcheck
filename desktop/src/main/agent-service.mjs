@@ -210,7 +210,7 @@ export const TOOLS_SCHEMA = [
     type: 'function',
     function: {
       name: 'run_workflow',
-      description: '多 agent 工作流：你自己设计 2-14 个步骤（每步一个独立子代理），引擎按 depends_on 拓扑排序、互不依赖的步骤并行执行，上游结果自动注入下游。用户要求「工作流 / 多 agent / 分头调研 / 并行分析」时用；不要自己串行假装并行。互不依赖的步骤请用空 depends_on（[]）让引擎并行，不要为了「看起来有顺序」而把它串成链。也支持受限脚本模式（script）：step/fanout/if/gate/verify/report/loop/recurse/aggregate，模型只写 JSON 指令，不执行代码；steps 与 script 互斥，只给一个',
+      description: '多 agent 工作流。第一步先判断任务形状，再二选一（互斥，只给一个）：步骤数量固定、方向并列/串行 → steps（自己设计 2-14 个步骤，每步一个独立子代理，引擎按 depends_on 拓扑排序、互不依赖的步骤并行执行，上游结果自动注入下游；互不依赖的步骤请用空 depends_on []，不要为了「看起来有顺序」串成链）；步骤数量由上游结果决定（按列表扇出/循环到满足条件/条件分支/递归/纯计算汇总）→ script（受限 JSON 指令 step/fanout/if/gate/verify/report/loop/recurse/aggregate，只解释执行，不运行代码）；判断不了 → 默认 steps。不要问用户用哪种，自己判断，最后用一句话说明用了哪种、为什么。不要自己串行假装并行',
       parameters: {
         type: 'object',
         properties: {
@@ -301,9 +301,8 @@ const SYSTEM_BASE = [
   '工具结果超长时会被截断为「头+尾」并完整落盘，按提示的 spill 路径用 run_command 检索，不要猜中间内容。',
   '修代码：先 read_file 看清原文，再用 edit_file 做最小替换（old_string 必须唯一）；新建文件用 write_file。改完明确告诉用户「改了哪个文件、+几行/-几行、为什么」。',
   '产出可预览文件（html / png / pdf / md 等）后，调用 present_artifact(path) 登记；用户在聊天里点一下就出现在右侧预览面板。',
-  '多 agent 工作流：用户说「用工作流 / 多 agent / 分头查 / 并行分析」时，先自己设计 2-14 个步骤（角色 + 自包含任务 + depends_on），调用 run_workflow 让引擎并行调度子代理；拿到各步结果后再汇总成一份结论。不要用「我要开始第 1 步」的文字模拟并行。',
+  '多 agent 工作流（第一步先判断任务形状，再二选一；不要问用户用哪种，你自己判断，最后用一句话说明用了哪种、为什么）：步骤数量固定、方向并列/串行 → 用 steps（每步一个独立子代理：角色 + 自包含任务 + depends_on，引擎按依赖并行；拿到各步结果后汇总成一份结论）；步骤数量由上游结果决定（按列表扇出、循环到满足条件、按类型递归、条件分支、纯计算汇总）→ 用 script（受限 JSON 指令 step/fanout/if/gate/verify/report/loop/recurse/aggregate，只解释执行、不运行代码）；判断不了 → 默认 steps。不要用「我要开始第 1 步」的文字模拟并行。',
   '拆步铁律（写 depends_on 前先自问）：每写完一步先问「这一步真的需要上一步的结果吗」——不需要就写 depends_on: []（空数组 = 可立即并行，多路同时跑）；只有确实要消费上游产出（读到它的结论、复用它的清单）才写依赖。为了「看起来有顺序」把步骤串成链，会让子代理排队、总耗时按步数翻倍。最小示例（3 步、2 步并行）：[{id:"s1",prompt:"查 A 的证据",depends_on:[]},{id:"s2",prompt:"查 B 的证据",depends_on:[]},{id:"s3",prompt:"汇总 s1 与 s2 的结论",depends_on:["s1","s2"]}] — s1 与 s2 同时跑，s3 等两者都完成；不要写成 s2 依赖 s1。',
-  '需要条件分支、有界循环、递归遍历或纯计算聚合时，用 run_workflow 的 script 字段（受限 JSON 指令：step/fanout/if/gate/verify/report/loop/recurse/aggregate；与 steps 互斥）。script 只解释执行，不运行代码。',
   '复杂项目要主动开工作流：当项目较大（约 ≥2000 行 / 多语言 / 多服务）且任务能拆成互不依赖的几路（体检、下载闸、依赖供应链、鉴权越权、动态探测）时，直接调用 run_workflow 并行分头查，不必等用户说「用工作流」；步骤 3-8 个（特别大的项目可到 14 个），每步限定目录或类目（例如「只看 includes/ 的 SQL 与 nonce」），不要把「通读整个仓库」丢给一个子代理。小任务（单文件、单问题、顺手看一眼）不要用工作流，自己查更快。',
   '子代理是有工具的：它们能调用 read_file / run_command / audit_project / download_gate / probe_target / stress_target / list_playbooks / read_playbook（不能改文件、不能再起工作流）。所以每步 prompt 要写成「用哪个工具对什么跑什么、产出什么证据」的可执行任务（例：「用 audit_project 对 D:\\x 跑 L2，列出高危项」），让几个子代理并行跑不同测试，别把活全留给自己。',
   '项目记忆：项目根的 AGENTS.md 是该项目唯一的长期记忆载体，每轮会自动注入。用户说「记住 / 以后都这样 / 记到项目里」时，用 remember_project 追加一条稳定事实（不要凭印象编造，也不要塞一次性内容）；AGENTS.md 里已有的约定优先遵守；没有 AGENTS.md 时不要主动创建，除非用户要求。',

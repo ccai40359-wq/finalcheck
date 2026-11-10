@@ -10,6 +10,8 @@ import { readFileTool, editFileTool, writeFileTool } from '../../../src/fs-tools
 import { assertPathAllowed, assertCwd, checkCommand, scrubEnv } from './policy.mjs';
 import { runHookEvent } from './hooks.mjs';
 import { isBlocked } from './shell.mjs';
+// 工作流兜底提示走双语词典（zh 原样返回，en 查表）
+import { t } from '../renderer/i18n/core.mjs';
 
 const PREVIEW_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp', '.html', '.htm', '.pdf', '.txt', '.md', '.json', '.js', '.mjs', '.css', '.csv', '.log', '.xml', '.yml', '.yaml']);
 
@@ -335,9 +337,21 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
 
     run_workflow: async (args) => {
       if (typeof runWorkflow !== 'function') return { error: '当前通道不支持工作流（需要在桌面端运行）' };
+      // 确定性兜底：模型没给 steps 也没给 script 时，不退化成「steps 不能为空」，
+      // 而是把「先判断任务形状再选表示」的判定口径原样回给模型，让它带着参数重试。
+      const filledSteps = Array.isArray(args?.steps) && args.steps.length > 0;
+      const rawScript = args?.script;
+      const hasScript = rawScript != null
+        && !(Array.isArray(rawScript) && rawScript.length === 0)
+        && !(typeof rawScript === 'string' && !rawScript.trim());
+      if (!filledSteps && !hasScript) {
+        return {
+          error: t('你没有给 steps，也没有给 script。先判断任务形状：步骤数量固定、只是并行/串行 → 用 steps；数量由上游结果决定（按列表扇出、循环、条件分支、递归、纯计算汇总）→ 用 script；判断不了 → 用 steps。判断完带上 steps 或 script 重新调用 run_workflow，不要问用户用哪种。')
+        };
+      }
       // steps / script 互斥透传：以前这里把 steps 强制成 [] 并丢掉 script，导致 script 模式永远走 steps 分支
       const payload = { goal: args?.goal };
-      if (Array.isArray(args?.steps) && args.steps.length) {
+      if (filledSteps) {
         payload.steps = args.steps;
       } else if (args?.script != null) {
         let script = args.script;
@@ -346,8 +360,6 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
         }
         if (!Array.isArray(script)) return { error: 'script 必须是数组（受限脚本指令列表）' };
         payload.script = script;
-      } else {
-        payload.steps = Array.isArray(args?.steps) ? args.steps : [];
       }
       const r = await runWorkflow(payload);
       // 子代理产出可能很长：压到 14k 内联回给主 agent（否则会被「头+尾」截断，后面几步的结果主 agent 根本看不到）

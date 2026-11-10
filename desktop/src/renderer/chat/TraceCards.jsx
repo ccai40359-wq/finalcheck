@@ -280,6 +280,19 @@ export function StressCard({ args, result }) {
   );
 }
 
+/* ---------- 本次用了哪种工作流表示：只显示结论（DAG / DSL + 一句人话），不提供用户选择 ---------- */
+function WorkflowModeBadge({ mode, reason }) {
+  const label = mode === 'script' ? 'DSL' : mode === 'dag' ? 'DAG' : null;
+  const why = String(reason || '').trim();
+  if (!label || !why) return null;
+  return (
+    <span className="flex items-center gap-1.5 min-w-0">
+      <span className="shrink-0 badge font-mono text-[9px] leading-none bg-gold/10 text-goldSoft border border-gold/30">{label}</span>
+      <span title={t(why)} className="truncate text-[10px] text-mute/50">{t(why)}</span>
+    </span>
+  );
+}
+
 /* ---------- 工作流实时进度卡（run_workflow 执行中，按快照刷新；仿 ZCode 的工作流实例） ---------- */
 const WF_STATUS = {
   pending: { mark: '○', text: '等待中', cls: 'text-mute/45', dot: 'bg-mute/25' },
@@ -612,6 +625,13 @@ export function WorkflowLiveCard({ data, sessionId = null, providers = [], onOpe
         </span>
       </div>
 
+      {/* 本次表示方式（只给结论，不给选项） */}
+      {data.mode ? (
+        <div className="px-3.5 mt-1.5">
+          <WorkflowModeBadge mode={data.mode} reason={data.modeReason} />
+        </div>
+      ) : null}
+
       {/* 阶段轨道 + 子代理芯片（与完成卡共用 PhaseLane） */}
       {expanded && (
         <PhaseLane phases={phases} stepsById={byId} allClaims={data.claims}
@@ -803,6 +823,12 @@ export function WorkflowCard({ args, result, onOpenStep = null, onRecover = null
           {phases.length} phases · {steps.length} agents
         </span>
       </div>
+      {/* 本次表示方式（只给结论，不给选项） */}
+      {r.mode ? (
+        <div className="px-3.5 mt-1.5">
+          <WorkflowModeBadge mode={r.mode} reason={r.modeReason} />
+        </div>
+      ) : null}
       {expanded && (
         <PhaseLane phases={phases} stepsById={byId} allClaims={r.claims} running={false} onOpenStep={onOpenStep} />
       )}

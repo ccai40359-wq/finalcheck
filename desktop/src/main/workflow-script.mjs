@@ -328,6 +328,51 @@ export function normalizeScript(script) {
   return injectScriptAdversarialVerify({ items, nodes, nodeCount: ctx.nodesCounted.n });
 }
 
+/**
+ * 从已校验的脚本结构生成一句人话（工作流卡「本次用了哪种、为什么」的 why）。
+ * 只读结构，不猜任务语义：fanout 字面列表长度 / 引用型扇出、loop 轮次上限、
+ * recurse 深度与列表长度、条件分支、纯计算聚合。
+ * @param {{items?: any[], nodes?: any[]}|null} norm normalizeScript() 的输出
+ * @returns {string}
+ */
+export function describeScriptMode(norm) {
+  const traits = { fanoutItems: 0, fanoutRefs: 0, recurseItems: 0, loopRounds: 0, recurseDepth: 0, hasIf: false, hasAggregate: false };
+  const walk = (items) => {
+    for (const item of Array.isArray(items) ? items : []) {
+      if (!item) continue;
+      if (item.kind === 'fanout') {
+        if (Array.isArray(item.overItems)) traits.fanoutItems += item.overItems.length;
+        else if (item.overRef) traits.fanoutRefs += 1;
+      } else if (item.kind === 'if') {
+        traits.hasIf = true;
+        walk(item.then);
+        walk(item.else);
+      } else if (item.kind === 'node' && item.node) {
+        const node = item.node;
+        if (node.programType === 'loop') {
+          traits.loopRounds = Math.max(traits.loopRounds, Number(node.maxRounds) || 0);
+        } else if (node.programType === 'recurse') {
+          traits.recurseDepth = Math.max(traits.recurseDepth, Number(node.maxDepth) || 0);
+          if (Array.isArray(node.overItems)) traits.recurseItems += node.overItems.length;
+        } else if (node.programType === 'aggregate') {
+          traits.hasAggregate = true;
+        }
+      }
+    }
+  };
+  walk(norm?.items);
+  const parts = [];
+  if (traits.fanoutItems > 0) parts.push(t('按 {n} 项扇出', { n: traits.fanoutItems }));
+  else if (traits.fanoutRefs > 0) parts.push(t('扇出数量由上游结果决定'));
+  if (traits.recurseItems > 0) parts.push(t('按 {n} 项递归', { n: traits.recurseItems }));
+  if (traits.loopRounds > 0) parts.push(t('最多 {n} 轮循环', { n: traits.loopRounds }));
+  if (traits.recurseDepth > 0) parts.push(t('最多 {n} 层递归', { n: traits.recurseDepth }));
+  if (traits.hasIf) parts.push(t('含条件分支'));
+  if (traits.hasAggregate) parts.push(t('含纯计算汇总'));
+  if (!parts.length) parts.push(t('{n} 个脚本节点按指令顺序执行', { n: (norm?.nodes || []).length }));
+  return parts.join(' · ');
+}
+
 function walkOps(ops, ctx, outItems, outNodes) {
   if (!Array.isArray(ops)) return t('{label} 必须是 op 数组', { label: ctx.label });
   for (let i = 0; i < ops.length; i += 1) {
@@ -982,6 +1027,7 @@ export async function runScriptWorkflow({
   if (!goalText) return { error: t('goal 不能为空（整个工作流要达成的目标）') };
   const norm = normalizeScript(script);
   if (norm.error) return { error: norm.error };
+  const modeReason = describeScriptMode(norm);
 
   const ctl = control && typeof control === 'object' ? control : {};
   // 并发上限：运行中可改（卡片设置写 ctl.maxConcurrency），否则用传入的 concurrency。
@@ -1021,6 +1067,8 @@ export async function runScriptWorkflow({
   const snapshot = (running) => ({
     kind: 'workflow',
     script: true,
+    mode: 'script',
+    modeReason,
     runId: effectiveRunId,
     goal: goalText,
     running,
@@ -1815,6 +1863,8 @@ export async function runScriptWorkflow({
     runId: effectiveRunId,
     goal: goalText,
     script: true,
+    mode: 'script',
+    modeReason,
     steps: allNodes.map((node) => ({
       id: node.id,
       name: node.name,

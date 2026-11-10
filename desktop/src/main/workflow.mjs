@@ -200,6 +200,8 @@ import { t } from '../renderer/i18n/core.mjs';
  * @property {number} startedAt
  * @property {number} ms
  * @property {number} concurrency
+ * @property {'dag'|'script'} [mode] 本次表示方式（卡片徽标用）
+ * @property {string} [modeReason] 一句人话：为什么用这种表示
  * @property {string[][]} phases
  * @property {Array<object>} steps
  */
@@ -209,6 +211,8 @@ import { t } from '../renderer/i18n/core.mjs';
  * @typedef {object} WorkflowRunResult
  * @property {string} runId
  * @property {string} goal
+ * @property {'dag'|'script'} [mode] 本次表示方式（DAG / 受限脚本 DSL）
+ * @property {string} [modeReason] 一句人话：步骤数/层数或 fanout/loop 等依据
  * @property {Array<object>} steps
  * @property {WorkflowStepResult[]} results
  * @property {boolean} ok
@@ -1392,6 +1396,11 @@ export async function runWorkflow({
     if (step.kind !== 'find') ingestStep(step, results.get(step.id), results.get(step.id).content);
   }
 
+  // 本次表示方式（卡片徽标 + 一句人话）：DAG 的步骤数 / 拓扑层数
+  const dagModeReason = norm.levels.length <= 1
+    ? t('{n} 个步骤，互不依赖并行执行', { n: norm.steps.length })
+    : t('{n} 个步骤，按依赖分 {levels} 层并行', { n: norm.steps.length, levels: norm.levels.length });
+
   /** @param {boolean} running @returns {WorkflowSnapshot} */
   const snapshot = (running) => ({
     kind: 'workflow',
@@ -1402,6 +1411,8 @@ export async function runWorkflow({
     startedAt,
     ms: Date.now() - startedAt,
     concurrency: limitOf(),
+    mode: 'dag',
+    modeReason: dagModeReason,
     phases: norm.levels, // 拓扑层级：UI 按「阶段」横向排布
     steps: norm.steps.map((s) => {
       const mine = claimsStore.filter((c) => c.sourceStep === s.id);
@@ -1704,6 +1715,8 @@ export async function runWorkflow({
   return {
     runId,
     goal: goalText,
+    mode: 'dag',
+    modeReason: dagModeReason,
     steps: norm.steps.map((s) => ({
       id: s.id,
       name: s.name,
