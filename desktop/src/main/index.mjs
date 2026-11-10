@@ -1,4 +1,9 @@
 import { app, BrowserWindow, ipcMain } from 'electron';
+
+// Windows 的「原生遮挡检测」会在窗口被别的窗口盖住时把页面判定为 hidden：
+// Chromium 随即停掉 requestAnimationFrame、把定时器节流到 ~1s，用户切回来就觉得“卡”。
+// 这里关掉遮挡检测与首帧可见性分发，窗口在后台也保持正常帧率（代价是后台也会画，可接受）。
+app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion,WidgetInitVisibilityDispatch');
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { readdir, mkdir, stat, copyFile, unlink, writeFile } from 'node:fs/promises';
@@ -166,7 +171,14 @@ function createWindow() {
     autoHideMenuBar: true,
     frame: false, // 自绘标题栏（用户：原生标题栏丑）
     icon: APP_ICON, // 任务栏/窗口图标：build/icon.ico（由 logo 生成，打包后 exe 同源）
-    webPreferences: { preload: path.join(__dirname, '../preload/index.mjs'), contextIsolation: true, nodeIntegration: false, sandbox: false }
+    webPreferences: {
+      preload: path.join(__dirname, '../preload/index.mjs'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+      // 后台不节流：最小化/被遮挡时定时器与 rAF 仍按正常节奏跑，切回来不会“卡一下”
+      backgroundThrottling: false
+    }
   });
   // 自绘窗口按钮通道（removeHandler 保证重复建窗不冲突）
   ipcMain.removeHandler('finalcheck:window-ctl');
