@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   test:
-    name: test (windows-latest, node 20)
+    name: test (windows-latest, node 22)
     runs-on: windows-latest
     timeout-minutes: 30
 
@@ -21,7 +21,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
           # 仓库根与 desktop 各有一份 lock，两个都要纳入缓存键
           cache-dependency-path: |
