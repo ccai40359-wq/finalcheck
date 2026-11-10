@@ -39,7 +39,8 @@ contextBridge.exposeInMainWorld('finalcheck', {
     current: () => ipcRenderer.invoke('finalcheck:projects:current'),
     add: (dir) => ipcRenderer.invoke('finalcheck:projects:add', dir),
     remove: (id) => ipcRenderer.invoke('finalcheck:projects:remove', id),
-    select: (id) => ipcRenderer.invoke('finalcheck:projects:select', id)
+    select: (id) => ipcRenderer.invoke('finalcheck:projects:select', id),
+    sessions: (projectId) => ipcRenderer.invoke('finalcheck:projects:sessions', projectId)
   },
   onAgentToken: (cb) => { const h = (_e, t) => cb(t); ipcRenderer.on('finalcheck:agent-token', h); return () => ipcRenderer.removeListener('finalcheck:agent-token', h); },
   onAgentEvent: (cb) => { const h = (_e, ev) => cb(ev); ipcRenderer.on('finalcheck:agent-event', h); return () => ipcRenderer.removeListener('finalcheck:agent-event', h); },

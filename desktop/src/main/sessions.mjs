@@ -619,9 +619,10 @@ async function sqliteNewSession(title = t('新会话')) {
   return { id, title: cleanTitle, createdAt: now, updatedAt: now, messages: [] };
 }
 
-async function sqliteListSessions() {
-  await mkdir(defaultDir(), { recursive: true });
-  const { db, dbPath } = await openDb(defaultDir());
+async function sqliteListSessions(sessionsDir = defaultDir()) {
+  const dir = path.resolve(sessionsDir);
+  await mkdir(dir, { recursive: true });
+  const { db, dbPath } = await openDb(dir);
   const rows = db.prepare(SQL.listSessions).all();
   const turns = new Map();
   for (const r of db.prepare(SQL.turnMeta).all('turns:%')) {
@@ -1053,9 +1054,9 @@ async function jsonNewSession(title = t('新会话')) {
   return s;
 }
 
-async function jsonListSessions() {
-  await ensureDir();
-  const base = defaultDir(); // 列表永远只列「当前项目」的会话目录
+async function jsonListSessions(sessionsDir = defaultDir()) {
+  const base = path.resolve(sessionsDir); // 默认「当前项目」；显式传入时才列别的项目目录
+  await mkdir(base, { recursive: true });
   const files = (await readdir(base)).filter((f) => f.startsWith('session-') && f.endsWith('.json'));
   const out = [];
   for (const f of files) {
@@ -1242,6 +1243,17 @@ export async function newSession(title = t('新会话')) {
 
 export async function listSessions() {
   return useSqliteStore() ? sqliteListSessions() : jsonListSessions();
+}
+
+/**
+ * 只读列表：按显式会话目录列出会话（不读/不改 FINALCHECK_SESSIONS_DIR，也不碰当前项目）。
+ * 侧栏「同时展开多个 Workspace」用它列别的项目；返回形状与 listSessions() 完全一致。
+ * projectId → 目录的解析由调用方（project-sessions.mjs）完成，这里只管目录。
+ */
+export async function listSessionsIn(sessionsDir) {
+  if (typeof sessionsDir !== 'string' || !sessionsDir.trim()) throw new Error('非法会话目录');
+  const dir = path.resolve(sessionsDir.trim());
+  return useSqliteStore() ? sqliteListSessions(dir) : jsonListSessions(dir);
 }
 
 export async function loadSession(id) {

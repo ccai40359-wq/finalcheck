@@ -6,6 +6,7 @@ import { readFile, writeFile, mkdir, stat, copyFile, readdir, unlink } from 'nod
 import * as sessions from './sessions.mjs';
 import * as permissions from './permissions.mjs';
 import * as projects from './projects.mjs';
+import { listForProject } from './project-sessions.mjs';
 import { recordAudit, projectContext, extractPaths } from './memory.mjs';
 import { readProjectMemory } from './project-memory.mjs';
 import { testProviderConnection } from './provider-test.mjs';
@@ -533,6 +534,19 @@ app.whenReady().then(async () => {
     if (!p) throw new Error(t('项目不存在'));
     await selectProjectEnv(p);
     return p;
+  });
+  // 侧栏同时展开多个 Workspace：列「指定项目」的会话。
+  // 关键隔离：按项目路径解析会话目录后直接 listSessionsIn(dir)，全程不改
+  // FINALCHECK_SESSIONS_DIR / activeProjectId；并发列 A、B 两个项目互不踩。
+  // 不存在的 projectId → []（渲染层按空列表显示，不弹错误）。
+  ipcMain.handle('finalcheck:projects:sessions', async (_e, projectId) => {
+    const list = await listForProject(projectId);
+    const p = await projects.getProject(String(projectId || '')).catch(() => null);
+    if (p) {
+      const dir = projects.sessionDirOf(p.path);
+      for (const s of list) registerSessionDir(s.id, dir); // sqlite 会话没有 JSON 文件名，靠列表登记所属项目
+    }
+    return list;
   });
 
   // 输入框 Context 指示器：按当前会话 + 系统提示 + 工具 schema + 技能目录估算

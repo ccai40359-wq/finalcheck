@@ -335,9 +335,14 @@ export default function App() {
   const y = api(); // window.finalcheck（浏览器直开时为空 → 仅壳）
   useLanguage(); // 订阅语言状态：设置页切换语言后整棵界面重渲染（t() 读的是最新语言）
   const [page, setPage] = useState('chat');
-  const [sessions, setSessions] = useState([]);       // [{id,title,updatedAt,turns}]
+  const [sessions, setSessions] = useState([]);       // 当前项目的会话 [{id,title,updatedAt,turns}]
   const [projects, setProjects] = useState([]);       // [{id,name,path,isDefault,sessionCount}]
   const [activeProjectId, setActiveProjectId] = useState(null);
+  // 每个项目的会话缓存：{ [projectId]: sessions[] }。展开 Workspace 时按需拉一次；
+  // 当前项目的刷新（发消息/归档/重命名/删除）同步写回这里的当前项目桶。
+  const [projectSessions, setProjectSessions] = useState({});
+  const projectSessionsRef = useRef({});       // 与 projectSessions 同步：异步回调里读最新缓存
+  const loadingProjectsRef = useRef(new Set()); // 正在请求中的项目（防重复 IPC）
   const [activeId, setActiveId] = useState(null);     // 当前会话 ID（agentChat 第三参）
   const [messages, setMessages] = useState([]);       // 当前会话消息（含流式助手占位）
   const [input, setInput] = useState('');
@@ -347,6 +352,7 @@ export default function App() {
   const [sessCfg, setSessCfg] = useState({ providerId: '', model: '', effort: '' }); // 当前会话自己的模型配置
   const [effortPos, setEffortPos] = useState(null); // 拖动中的连续位置（0-4，可为小数；松手后按最近档位落库）
   const activeIdRef = useRef(null);   // 供异步回调判断「现在看的是哪个会话」
+  const activeProjectIdRef = useRef(null); // 同上：异步回调里判断「当前项目」
   const runsRef = useRef(new Map());  // sid → { content, events, startedAt }（后台会话的实时流）
   const stoppedRef = useRef(new Set()); // 手动停止过的会话：屏蔽迟到的流式事件把消息变回 streaming
   const stoppingRef = useRef(new Set()); // 已发出停止请求的会话：阻止重复点击
@@ -363,7 +369,9 @@ export default function App() {
   const [rowMenu, setRowMenu] = useState(null); // 会话右键菜单：{x,y,session,project}
   const [renameBox, setRenameBox] = useState(null); // {session,value}
   const [moveOpen, setMoveOpen] = useState(false);
-  const [collapsedProjects, setCollapsedProjects] = useState({}); // 工作区折叠（折叠的是它自己的会话列表）
+  // 工作区展开状态（{ [projectId]: boolean }）：可同时展开多个；当前项目默认展开，别的项目点开才展开。
+  // undefined = 默认值（当前项目展开 / 其它项目折叠），显式 true/false 覆盖。
+  const [expandedProjects, setExpandedProjects] = useState({});
   const [showAllSessions, setShowAllSessions] = useState({});     // 每个工作区：默认 5 条，Show more 展开
   const [showArchived, setShowArchived] = useState({});           // 每个工作区：归档会话默认隐藏，点 Archived 才展开
   const [permMode, setPermMode] = useState('ask'); // 'ask'=标准审批 | 'full'=完全权限（仿 ZCode）
@@ -453,9 +461,75 @@ export default function App() {
     setTimeout(() => { jumpingRef.current = false; }, 500);
   };
 
-  const refreshSessions = async () => {
+  const cacheProjectSessions = (projectId, list) => {
+    if (!projectId) return;
+    projectSessionsRef.current = { ...projectSessionsRef.current, [projectId]: Array.isArray(list) ? list : [] };
+    setProjectSessions(projectSessionsRef.current);
+  };
+
+  // 当前项目列表的读写都走这里：同一份数据写进 sessions 与对应项目缓存
+  const refreshSessions = async (projectId = activeProjectIdRef.current) => {
     if (!y) return [];
-    try { const list = await y.sessions.list(); setSessions(list); return list; } catch { return []; }
+    try {
+      const list = await y.sessions.list();
+      // IPC 期间用户切走了：sessions.list() 读的是主进程「那一刻」的当前项目，
+      // 不能把它写进旧项目的缓存；按只读 IPC 重新核对一次归属。
+      if (projectId && projectId !== activeProjectIdRef.current) {
+        return loadProjectSessions(projectId, { force: true });
+      }
+      setSessions(list);
+      cacheProjectSessions(projectId, list);
+      return list;
+    } catch { return []; }
+  };
+
+  // 刷新某个项目：当前项目沿用 sessions.list()（和聊天区同一份事实源），
+  // 别的项目走只读 IPC（finalcheck:projects:sessions），不切当前项目、不动环境变量。
+  const refreshProjectSessions = async (projectId) => {
+    if (!y || !projectId) return [];
+    if (projectId === activeProjectIdRef.current) return refreshSessions(projectId);
+    try {
+      const list = y.projects?.sessions ? await y.projects.sessions(projectId) : [];
+      cacheProjectSessions(projectId, list);
+      return list;
+    } catch { return []; }
+  };
+
+  // 展开别的项目时才拉会话（惰性 + 缓存）：已缓存/in-flight 都不再发 IPC
+  const loadProjectSessions = async (projectId, { force = false } = {}) => {
+    if (!projectId) return [];
+    if (!y?.projects?.sessions) { cacheProjectSessions(projectId, []); return []; }
+    if (!force && projectSessionsRef.current[projectId] !== undefined) return projectSessionsRef.current[projectId];
+    if (loadingProjectsRef.current.has(projectId)) return projectSessionsRef.current[projectId] || [];
+    loadingProjectsRef.current.add(projectId);
+    try {
+      const list = await y.projects.sessions(projectId);
+      cacheProjectSessions(projectId, list);
+      return projectSessionsRef.current[projectId];
+    } catch {
+      cacheProjectSessions(projectId, []);
+      return [];
+    } finally {
+      loadingProjectsRef.current.delete(projectId);
+    }
+  };
+
+  // 按会话 id 找它属于哪个项目（缓存里的会话只属于一个项目）
+  const projectIdOfSession = (sessionId) => {
+    if (!sessionId) return null;
+    for (const [pid, list] of Object.entries(projectSessionsRef.current)) {
+      if (Array.isArray(list) && list.some((s) => s.id === sessionId)) return pid;
+    }
+    return null;
+  };
+
+  // 局部更新某个项目的会话列表（标题/轮数）；当前项目同时更新 sessions
+  const patchSessionsOf = (projectId, fn) => {
+    if (!projectId) return;
+    const prev = projectSessionsRef.current[projectId] || [];
+    const next = fn(prev);
+    cacheProjectSessions(projectId, next);
+    if (projectId === activeProjectIdRef.current) setSessions(next);
   };
 
   const refreshProjects = async () => {
@@ -467,30 +541,58 @@ export default function App() {
   // 整个项目都归档了就停在新会话页（用户 2026-11-10 反馈：点项目不该跳回一条已归档的对话）
   const firstOpenable = (list) => (Array.isArray(list) ? list.find((x) => !x.archived) : null) || null;
 
+  // 当前项目默认展开；显式状态优先（可同时展开多个 Workspace）
+  const isProjectExpanded = (p) => {
+    const v = expandedProjects[p.id];
+    if (typeof v === 'boolean') return v;
+    return p.id === activeProjectId;
+  };
+
+  // 切「当前项目」只影响模型/权限/New Session 的归属，并保持所有已展开的 Workspace 展开
+  const activateProject = (id) => {
+    const prev = activeProjectIdRef.current;
+    setExpandedProjects((s) => {
+      const next = { ...s };
+      if (prev && isProjectExpanded({ id: prev })) next[prev] = true; // 已展开的项目离开后不折叠
+      if (id) next[id] = true; // 切过去/点会话的项目保持展开
+      return next;
+    });
+    activeProjectIdRef.current = id || null;
+    setActiveProjectId(id || null);
+  };
+
   // 切项目只切 UI 视角（ZCode 语义）：不中断任何在跑的回合，runsRef 里的后台流原样保留
   const switchProject = async (p) => {
     if (!p) return;
     await y.projects.select(p.id);
-    setActiveProjectId(p.id);
+    activateProject(p.id);
     setArtifact(null);
     setAttachments([]);
     setInput('');
-    const list = await refreshSessions();
+    const list = await refreshSessions(p.id);
     const pick = firstOpenable(list);
-    if (pick) await openSession(pick.id);
+    if (pick) await openSession(pick.id, p.id);
     else { setActiveId(null); setMessages([]); }
     setPage('chat');
   };
 
-  // 工作区行：非当前项目 → 切过去并展开；当前项目 → 折叠/展开它自己的会话
-  const toggleProject = async (p) => {
-    if (p.id !== activeProjectId) {
-      await switchProject(p);
-      setCollapsedProjects((s) => ({ ...s, [p.id]: false }));
-      return;
-    }
-    setCollapsedProjects((s) => ({ ...s, [p.id]: !s[p.id] }));
+  // 工作区行：只展开/收起它自己的会话，不再切「当前项目」（切项目发生在点会话时）
+  const toggleProject = (p) => {
+    const expanded = isProjectExpanded(p);
+    setExpandedProjects((s) => ({ ...s, [p.id]: !expanded }));
+    if (!expanded) loadProjectSessions(p.id); // 首次展开才拉；有缓存直接命中
   };
+
+  // 展开的「非当前」项目：惰性拉一次（缓存命中不重复 IPC）；当前项目由 refreshSessions 维护
+  useEffect(() => {
+    if (!y?.projects?.sessions) return;
+    for (const p of projects) {
+      if (p.id === activeProjectIdRef.current) continue;
+      if (!isProjectExpanded(p)) continue;
+      loadProjectSessions(p.id);
+    }
+    // eslint 不扫 JSX 文件；loadProjectSessions 每次都重新创建，靠缓存/in-flight 去重
+  }, [projects, expandedProjects, activeProjectId]);
 
   const addProject = async () => {
     if (!y?.pickDirectory || !y?.projects) return;
@@ -515,26 +617,36 @@ export default function App() {
     if (!ok) return;
     try {
       const r = await y.projects.remove(p.id);
+      // 移除的项目：展开状态与缓存一起清掉
+      const restCache = { ...projectSessionsRef.current };
+      delete restCache[p.id];
+      projectSessionsRef.current = restCache;
+      setProjectSessions(restCache);
+      setExpandedProjects((s) => { if (!(p.id in s)) return s; const n = { ...s }; delete n[p.id]; return n; });
       const list = await refreshProjects();
       if (activeProjectId === p.id) {
         const next = list[0] || r.projects?.[0];
         if (next) await switchProject(next);
-        else { setActiveProjectId(null); setSessions([]); setMessages([]); setActiveId(null); }
+        else { activateProject(null); setSessions([]); setMessages([]); setActiveId(null); }
       }
     } catch { /* 忽略 */ }
   };
 
   const copyText = (text) => { const p = y?.copyText?.(text); if (p?.catch) p.catch(() => {}); };
-  const patchFlags = async (s, flags) => {
+  const patchFlags = async (s, flags, projectId = null) => {
     setRowMenu(null);
-    try { await y.sessions.flags(s.id, flags); await refreshSessions(); } catch { /* 忽略 */ }
+    try {
+      await y.sessions.flags(s.id, flags);
+      await refreshProjectSessions(projectId || projectIdOfSession(s.id) || activeProjectIdRef.current);
+    } catch { /* 忽略 */ }
   };
-  const moveSession = async (s, targetProjectId) => {
+  const moveSession = async (s, targetProjectId, sourceProjectId = null) => {
     setRowMenu(null);
     setMoveOpen(false);
     try {
       await y.sessions.move(s.id, targetProjectId);
-      await refreshSessions();
+      await refreshProjectSessions(sourceProjectId || projectIdOfSession(s.id) || activeProjectIdRef.current);
+      await refreshProjectSessions(targetProjectId); // 目标项目缓存同步（未展开也保持最新）
       await refreshProjects();
     } catch (e) { setMessages((prev) => [...prev, { role: 'notice', content: t('移动失败：{msg}', { msg: e.message }) }]); }
   };
@@ -543,11 +655,15 @@ export default function App() {
     const { session, value } = renameBox;
     setRenameBox(null);
     if (!String(value || '').trim()) return;
-    try { await y.sessions.rename(session.id, value); await refreshSessions(); } catch { /* 忽略 */ }
+    try {
+      await y.sessions.rename(session.id, value);
+      await refreshProjectSessions(renameBox.projectId || projectIdOfSession(session.id) || activeProjectIdRef.current);
+    } catch { /* 忽略 */ }
   };
 
   // 切项目不再走「先停掉所有回合」：主进程按会话所属项目继续跑，切 Workspace 只换 UI 视角
-  const openSession = async (id) => {
+  // projectId：这条会话所属项目（跨项目点会话时先 select 再 open，刷新缓存也落到该项目）
+  const openSession = async (id, projectId = null) => {
     if (!y) return;
     try {
       const s = await y.sessions.open(id);
@@ -566,8 +682,24 @@ export default function App() {
       setMessages(merged.messages);
       setStepView(null); // 面板属于某个会话的某一步：切会话就收起，别留着上一条的上下文
       setPage('chat');
-      refreshSessions(); // markRead 已在主进程清掉 unread → 绿点消失
-    } catch { refreshSessions(); }
+      refreshSessions(projectId || activeProjectIdRef.current); // markRead 已在主进程清掉 unread → 绿点消失
+    } catch { refreshSessions(projectId || activeProjectIdRef.current); }
+  };
+
+  // 点某个 Workspace 下的会话：不属于当前项目 → 先切到它所属项目（模型/权限/New Session 跟着走），再打开
+  const openProjectSession = async (p, s) => {
+    if (!y) return;
+    if (p.id !== activeProjectIdRef.current) {
+      try {
+        await y.projects.select(p.id);
+        activateProject(p.id);
+        setArtifact(null);
+        setAttachments([]);
+        setInput('');
+      } catch { return; }
+      await refreshSessions(p.id); // 切过去后当前项目列表就位（同时写缓存）
+    }
+    await openSession(s.id, p.id);
   };
 
   // dsh 语义：New Session 只是「开一张空白草稿」，不落盘；
@@ -575,7 +707,7 @@ export default function App() {
   const newSession = async () => {
     if (!y) { setActiveId(null); setMessages([]); setPage('chat'); return; }
     if (!activeProjectId && projects[0]) {
-      try { await y.projects.select(projects[0].id); setActiveProjectId(projects[0].id); } catch { /* 忽略 */ }
+      try { await y.projects.select(projects[0].id); activateProject(projects[0].id); } catch { /* 忽略 */ }
     }
     setActiveId(null);
     activeIdRef.current = null;
@@ -591,22 +723,24 @@ export default function App() {
     requestAnimationFrame(() => inputRef.current?.focus());
   };
 
-  const archiveSession = async (s) => {
+  const archiveSession = async (s, projectId = null) => {
     if (!y?.sessions?.flags) return;
+    const pid = projectId || projectIdOfSession(s.id) || activeProjectIdRef.current;
     const next = !s.archived;
     try { await y.sessions.flags(s.id, { archived: next }); } catch { return; }
-    const list = await refreshSessions();
+    const list = await refreshProjectSessions(pid);
     refreshProjects();
-    // 归档正在看的那条：自动打开下一条未归档的，别把界面停在一条列表里看不见的会话上
-    if (next && activeId === s.id && page === 'chat') {
+    // 归档正在看的那条（只在它所属项目就是当前项目时）：自动打开下一条未归档的
+    if (next && activeId === s.id && pid === activeProjectIdRef.current && page === 'chat') {
       const pick = (list || []).find((x) => !x.archived && x.id !== s.id);
       if (pick) openSession(pick.id);
       else { setActiveId(null); setMessages([]); }
     }
   };
 
-  const removeSession = async (s) => {
+  const removeSession = async (s, projectId = null) => {
     if (!y) return;
+    const pid = projectId || projectIdOfSession(s.id) || activeProjectIdRef.current;
     // 自定义黑金确认框（原生 window.confirm 太丑，用户实测点名）
     const ok = await new Promise((resolve) => {
       setConfirmBox({
@@ -617,9 +751,9 @@ export default function App() {
     setConfirmBox(null);
     if (!ok) return;
     try { await y.sessions.remove(s.id); } catch { /* 忽略 */ }
-    const list = await refreshSessions();
+    const list = await refreshProjectSessions(pid);
     refreshProjects();
-    if (activeId === s.id) {
+    if (activeId === s.id && pid === activeProjectIdRef.current) {
       setActiveId(null);
       setMessages([]);
       const pick = firstOpenable(list);
@@ -635,10 +769,10 @@ export default function App() {
       const curId = await y.projects?.current?.();
       const p = plist.find((x) => x.id === curId) || plist[0] || null;
       if (p) {
-        try { await y.projects.select(p.id); setActiveProjectId(p.id); } catch { /* 忽略 */ }
-        const list = await refreshSessions();
+        try { await y.projects.select(p.id); activateProject(p.id); } catch { /* 忽略 */ }
+        const list = await refreshSessions(p.id);
         const pick = firstOpenable(list);
-        if (pick) await openSession(pick.id);
+        if (pick) await openSession(pick.id, p.id);
       }
       setBooted(true);
     })();
@@ -789,6 +923,18 @@ export default function App() {
     if (!y?.onSessionTitle) return undefined;
     return y.onSessionTitle((p) => {
       if (!p?.sessionId || !p?.title) return;
+      // 后台会话可能属于任意已展开的项目：所有缓存桶里同名会话一起改名
+      let touched = false;
+      const next = {};
+      for (const [pid, list] of Object.entries(projectSessionsRef.current)) {
+        if (!Array.isArray(list) || !list.some((s) => s.id === p.sessionId)) { next[pid] = list; continue; }
+        touched = true;
+        next[pid] = list.map((s) => (s.id === p.sessionId ? { ...s, title: p.title } : s));
+      }
+      if (touched) {
+        projectSessionsRef.current = next;
+        setProjectSessions(next);
+      }
       setSessions((prev) => prev.map((s) => (s.id === p.sessionId ? { ...s, title: p.title } : s)));
     });
   }, [y]);
@@ -1010,6 +1156,7 @@ export default function App() {
 
   // send(override)：override = 队首消息（自动发送时使用，不改动输入框里的草稿）
   const send = async (override = null) => {
+    const sendProjectId = activeProjectIdRef.current; // 本轮新建会话的归属：之后切项目也不串桶
     const queued = !!override;
     const typedRaw = String(queued ? (override.text || '') : input).trim();
     const pastedTexts = queued ? (override.pasted || []) : pastedBlocks.map((b) => b.text);
@@ -1067,7 +1214,9 @@ export default function App() {
         sid = s.id;
         setActiveId(sid);
         activeIdRef.current = sid;
-        setSessions((prev) => [{ id: s.id, title: s.title, createdAt: s.createdAt, updatedAt: s.updatedAt, turns: 0 }, ...prev]);
+        const fresh = { id: s.id, title: s.title, createdAt: s.createdAt, updatedAt: s.updatedAt, turns: 0 };
+        if (sendProjectId) patchSessionsOf(sendProjectId, (list) => [fresh, ...list]);
+        else setSessions((prev) => [fresh, ...prev]);
         setMessages([]);
         refreshProjects();
       } catch { /* 忽略 */ }
@@ -1116,7 +1265,8 @@ export default function App() {
         });
       }
       if (r.persisted) {
-        setSessions((prev) => prev
+        // 会话可能属于别的项目（回合中切走了）：只更新它自己的缓存桶，别动当前项目的列表
+        patchSessionsOf(projectIdOfSession(sid) || sendProjectId, (list) => list
           .map((s) => (s.id === sid ? { ...s, title: r.persisted.title || s.title, updatedAt: r.persisted.updatedAt, turns: s.turns + 1 } : s))
           .sort((a, b) => (b.createdAt || b.updatedAt) - (a.createdAt || a.updatedAt)));
       }
@@ -1145,7 +1295,8 @@ export default function App() {
       // 后台会话跑完 → 绿点（表示「已完成」）；当前正在看的会话不留点
       if (!isActive()) {
         try { await y?.sessions?.flags?.(sid, { unread: true }); } catch { /* 忽略 */ }
-        refreshSessions();
+        const pid = projectIdOfSession(sid) || sendProjectId;
+        if (pid) refreshProjectSessions(pid); else refreshSessions();
       }
     }
   };
@@ -1356,16 +1507,19 @@ export default function App() {
           </button>
         </div>
 
-        {/* 工作区列表：文件夹行的箭头折叠它自己的会话；默认 5 条，多的 Show more */}
+        {/* 工作区列表：每个 Workspace 独立展开/收起（可同时展开多个，ZCode 语义）；默认 5 条，多的 Show more */}
         <div className="flex-1 min-h-0 overflow-y-auto px-2 pb-2">
           {!y && <div className="text-xs text-mute/70 px-2 py-3">{t('浏览器直开：项目/会话不可用')}</div>}
           {y && booted && projects.length === 0 && <div className="text-xs text-mute/70 px-2 py-3">No workspaces yet</div>}
           {projects.map((p) => {
             const isActive = p.id === activeProjectId;
-            const collapsed = !!collapsedProjects[p.id];
-            const list = isActive ? sessions : [];
+            const open = isProjectExpanded(p);
+            const cached = isActive ? sessions : projectSessions[p.id];
+            const loading = open && !isActive && projectSessions[p.id] === undefined;
+            const list = open ? (cached || []) : [];
             const live = list.filter((x) => !x.archived);   // 归档的默认不出现（文件、历史、记忆都还在磁盘上）
             const arch = list.filter((x) => x.archived);
+            const headerCount = cached ? live.length : (p.sessionCount || 0);
             const expanded = !!showAllSessions[p.id];
             const archOpen = !!showArchived[p.id];
             const shown = expanded ? live : live.slice(0, SESSION_PREVIEW);
@@ -1375,7 +1529,7 @@ export default function App() {
               const sActive = s.id === activeId && page === 'chat';
               const running = !!runningIds[s.id];
               return (
-                <div key={s.id} onClick={() => openSession(s.id)}
+                <div key={s.id} onClick={() => openProjectSession(p, s)}
                   onContextMenu={(e) => { e.preventDefault(); setMoveOpen(false); setRowMenu({ x: e.clientX, y: e.clientY, session: s, project: p }); }}
                   title={`${prettyTitle(s.title)} · ${new Date(s.updatedAt).toLocaleString('zh-CN')}${s.turns ? ` · ${t('{n} 轮', { n: s.turns })}` : ''}`}
                   className={`group relative flex items-center gap-1.5 rounded-lg pl-2 pr-1.5 py-1.5 cursor-pointer transition-colors ${s.archived ? 'opacity-45' : ''} ${
@@ -1390,7 +1544,7 @@ export default function App() {
                   <span className="flex-1 min-w-0 truncate text-[12px]">{prettyTitle(s.title)}</span>
                   <span className="shrink-0 text-[10px] text-mute/60 tabular-nums group-hover:opacity-0 transition-opacity">{relTime(s.updatedAt)}</span>
                   <button title={s.archived ? t('恢复会话') : t('归档会话（历史与记忆保留，在 Archived 里可找回）')}
-                    onClick={(e) => { e.stopPropagation(); archiveSession(s); }}
+                    onClick={(e) => { e.stopPropagation(); archiveSession(s, p.id); }}
                     className="absolute right-1 top-1/2 -translate-y-1/2 p-1 rounded-md text-mute/40 opacity-0 group-hover:opacity-100 hover:text-goldSoft hover:bg-white/[0.08] transition-opacity">
                     {s.archived ? <IconUnarchive /> : <IconArchive />}
                   </button>
@@ -1403,39 +1557,45 @@ export default function App() {
                   className={`group relative flex items-center gap-1 rounded-lg pl-1 pr-1.5 py-1.5 cursor-pointer transition-colors ${
                     isActive ? 'text-goldSoft bg-white/[0.045]' : 'text-ink/80 hover:bg-white/[0.05] hover:text-ink'}`}>
                   <span role="button" tabIndex={-1}
-                    onClick={(e) => { e.stopPropagation(); setCollapsedProjects((s) => ({ ...s, [p.id]: !s[p.id] })); }}
+                    onClick={(e) => { e.stopPropagation(); toggleProject(p); }}
                     className="shrink-0 p-0.5 rounded text-mute/45 hover:text-ink transition-colors">
                     <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"
-                      className={`transition-transform duration-300 ${collapsed ? '-rotate-90' : ''}`}><path d="M6 9l6 6 6-6" /></svg>
+                      className={`transition-transform duration-300 ${open ? '' : '-rotate-90'}`}><path d="M6 9l6 6 6-6" /></svg>
                   </span>
                   <IconFolder active={isActive} />
                   <span className={`flex-1 min-w-0 truncate text-[13px] ${isActive ? 'font-medium' : ''}`}>{p.name}</span>
-                  <span className="shrink-0 text-[10px] text-mute/55 tabular-nums group-hover:opacity-0 transition-opacity">{isActive ? live.length : (p.sessionCount || 0)}</span>
+                  <span className="shrink-0 text-[10px] text-mute/55 tabular-nums group-hover:opacity-0 transition-opacity">{headerCount}</span>
                   <button title={t('从列表移除项目（不删磁盘目录）')} onClick={(e) => { e.stopPropagation(); removeProject(p); }}
                     className="absolute right-1 top-1/2 -translate-y-1/2 p-1 rounded-md text-mute/40 opacity-0 group-hover:opacity-100 hover:text-red-400 hover:bg-red-500/10 transition-opacity">
                     <IconTrash />
                   </button>
                 </div>
 
-                {!collapsed && isActive && (
+                {open && (
                   <div className="mt-0.5 mb-1 ml-[13px] pl-2 border-l border-white/[0.06]">
-                    {list.length === 0 && <div className="px-2 py-1 text-[10px] text-mute/30">No sessions</div>}
-                    {shown.map((s) => renderSessionRow(s))}
-                    {live.length > SESSION_PREVIEW && (
-                      <button onClick={() => setShowAllSessions((v) => ({ ...v, [p.id]: !v[p.id] }))}
-                        className="mt-0.5 w-full text-left px-2 py-1 rounded-lg text-[11px] text-mute/55 hover:text-goldSoft hover:bg-white/[0.045] transition-colors">
-                        {expanded ? 'Show less' : 'Show more'}
-                      </button>
-                    )}
-                    {arch.length > 0 && (
+                    {loading ? (
+                      <div className="px-2 py-1 text-[10px] text-mute/30">{t('加载中…')}</div>
+                    ) : (
                       <>
-                        <button onClick={() => setShowArchived((v) => ({ ...v, [p.id]: !v[p.id] }))}
-                          className="mt-0.5 w-full text-left px-2 py-1 rounded-lg text-[11px] text-mute/45 hover:text-ink hover:bg-white/[0.045] transition-colors flex items-center gap-1.5">
-                          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"
-                            className={`transition-transform duration-300 ${archOpen ? '' : '-rotate-90'}`}><path d="M6 9l6 6 6-6" /></svg>
-                          Archived <span className="text-mute/30 tabular-nums">{arch.length}</span>
-                        </button>
-                        {archOpen && arch.map((s) => renderSessionRow(s))}
+                        {list.length === 0 && <div className="px-2 py-1 text-[10px] text-mute/30">No sessions</div>}
+                        {shown.map((s) => renderSessionRow(s))}
+                        {live.length > SESSION_PREVIEW && (
+                          <button onClick={() => setShowAllSessions((v) => ({ ...v, [p.id]: !v[p.id] }))}
+                            className="mt-0.5 w-full text-left px-2 py-1 rounded-lg text-[11px] text-mute/55 hover:text-goldSoft hover:bg-white/[0.045] transition-colors">
+                            {expanded ? 'Show less' : 'Show more'}
+                          </button>
+                        )}
+                        {arch.length > 0 && (
+                          <>
+                            <button onClick={() => setShowArchived((v) => ({ ...v, [p.id]: !v[p.id] }))}
+                              className="mt-0.5 w-full text-left px-2 py-1 rounded-lg text-[11px] text-mute/45 hover:text-ink hover:bg-white/[0.045] transition-colors flex items-center gap-1.5">
+                              <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"
+                                className={`transition-transform duration-300 ${archOpen ? '' : '-rotate-90'}`}><path d="M6 9l6 6 6-6" /></svg>
+                              Archived <span className="text-mute/30 tabular-nums">{arch.length}</span>
+                            </button>
+                            {archOpen && arch.map((s) => renderSessionRow(s))}
+                          </>
+                        )}
                       </>
                     )}
                   </div>
@@ -1475,7 +1635,7 @@ export default function App() {
             <div className="shrink-0 h-10 flex items-center px-5 border-b border-edge/60">
               <span className="font-kai text-sm text-goldSoft truncate">{activeTitle || 'FinalCheck'}</span>
               {(() => { const cur = sessions.find((x) => x.id === activeId); return cur?.archived ? (
-                <button onClick={() => archiveSession(cur)} title={t('这条会话已归档（历史和记忆都还在），点一下恢复')}
+                <button onClick={() => archiveSession(cur, activeProjectId)} title={t('这条会话已归档（历史和记忆都还在），点一下恢复')}
                   className="ml-2 shrink-0 rounded-full border border-white/10 px-2 py-0.5 text-[10px] text-mute/70 hover:text-goldSoft hover:border-gold/40 transition-colors">{t('归档')}</button>
               ) : null; })()}
               {busy && <span className="ml-3 text-[11px] text-mute">{t('思考中…')}</span>}
@@ -2075,17 +2235,17 @@ export default function App() {
             {moveOpen && (
               <div className="mx-2 mb-1 border-l border-edge pl-1">
                 {projects.filter((x) => x.id !== rowMenu.project.id).map((x) => (
-                  <button key={x.id} onClick={() => moveSession(rowMenu.session, x.id)}
+                  <button key={x.id} onClick={() => moveSession(rowMenu.session, x.id, rowMenu.project.id)}
                     className="w-full text-left px-2 py-1 rounded-md text-[11px] text-mute hover:text-goldSoft hover:bg-white/5 truncate">{x.name}</button>
                 ))}
                 {projects.length < 2 && <div className="px-2 py-1 text-[10px] text-mute/40">{t('只有当前项目')}</div>}
               </div>
             )}
-            <button onClick={() => patchFlags(rowMenu.session, { pinned: !rowMenu.session.pinned })} className="w-full text-left px-3 py-1.5 text-mute hover:text-ink hover:bg-white/5">{rowMenu.session.pinned ? 'Unpin task' : 'Pin task'}</button>
-            <button onClick={() => { setRenameBox({ session: rowMenu.session, value: rowMenu.session.title }); setRowMenu(null); }} className="w-full text-left px-3 py-1.5 text-mute hover:text-ink hover:bg-white/5">Rename task</button>
-            <button onClick={() => patchFlags(rowMenu.session, { archived: !rowMenu.session.archived })} className="w-full text-left px-3 py-1.5 text-mute hover:text-ink hover:bg-white/5">{rowMenu.session.archived ? 'Unarchive task' : 'Archive task'}</button>
-            <button onClick={() => { const s = rowMenu.session; setRowMenu(null); removeSession(s); }} className="w-full text-left px-3 py-1.5 text-mute hover:text-red-300 hover:bg-red-500/10">{t('Delete task（不可恢复）')}</button>
-            <button onClick={() => patchFlags(rowMenu.session, { unread: true })} className="w-full text-left px-3 py-1.5 text-mute hover:text-ink hover:bg-white/5">Mark as unread</button>
+            <button onClick={() => patchFlags(rowMenu.session, { pinned: !rowMenu.session.pinned }, rowMenu.project.id)} className="w-full text-left px-3 py-1.5 text-mute hover:text-ink hover:bg-white/5">{rowMenu.session.pinned ? 'Unpin task' : 'Pin task'}</button>
+            <button onClick={() => { setRenameBox({ session: rowMenu.session, value: rowMenu.session.title, projectId: rowMenu.project.id }); setRowMenu(null); }} className="w-full text-left px-3 py-1.5 text-mute hover:text-ink hover:bg-white/5">Rename task</button>
+            <button onClick={() => patchFlags(rowMenu.session, { archived: !rowMenu.session.archived }, rowMenu.project.id)} className="w-full text-left px-3 py-1.5 text-mute hover:text-ink hover:bg-white/5">{rowMenu.session.archived ? 'Unarchive task' : 'Archive task'}</button>
+            <button onClick={() => { const s = rowMenu.session; setRowMenu(null); removeSession(s, rowMenu.project.id); }} className="w-full text-left px-3 py-1.5 text-mute hover:text-red-300 hover:bg-red-500/10">{t('Delete task（不可恢复）')}</button>
+            <button onClick={() => patchFlags(rowMenu.session, { unread: true }, rowMenu.project.id)} className="w-full text-left px-3 py-1.5 text-mute hover:text-ink hover:bg-white/5">Mark as unread</button>
             <div className="my-1 border-t border-edge/70" />
             <button onClick={() => { y?.artifactOpen?.(rowMenu.project.path); setRowMenu(null); }} className="w-full text-left px-3 py-1.5 text-mute hover:text-ink hover:bg-white/5">Open in File Explorer</button>
             <button onClick={() => { copyText(rowMenu.project.path); setRowMenu(null); }} className="w-full text-left px-3 py-1.5 text-mute hover:text-ink hover:bg-white/5">Copy path</button>
