@@ -82,6 +82,8 @@ export default function App() {
   const stopping = !!stoppingIds[activeId];
   const queueItems = queueBySession[activeId || 'draft'] || []; // 当前会话的排队消息（切会话各自独立）
   const [approval, setApproval] = useState(null); // 待审批：{callId, tool, summary}（主进程 fail-closed 推送）
+  const [askCards, setAskCards] = useState([]); // 回合中途提问卡（实时）：[{callId,sessionId,question,options,multiSelect,status,...}]
+  const askCardsRef = useRef([]); // 与 askCards 同步：回合收尾/停止回调里读最新值
   const [confirmBox, setConfirmBox] = useState(null); // 自定义确认框：{text, resolve}
   const [rowMenu, setRowMenu] = useState(null); // 会话右键菜单：{x,y,session,project}
   const [renameBox, setRenameBox] = useState(null); // {session,value}
@@ -162,7 +164,7 @@ export default function App() {
     if (el) el.scrollTop = el.scrollHeight;
     setShowJump(false);
   };
-  useEffect(autoScroll, [messages]);
+  useEffect(autoScroll, [messages, askCards]);
 
   const cacheProjectSessions = (projectId, list) => {
     if (!projectId) return;
@@ -386,10 +388,16 @@ export default function App() {
       activeIdRef.current = s.id;
       applySessionCfg(s);
       stickRef.current = true; // 切会话回到最新位置
+      // 该会话还有实时提问卡时：从磁盘历史里去掉仍在 running 的 ask_user 卡片，
+      // 避免「实时卡 + 历史里同一张未完成卡」重复显示。
+      const hasLiveAsk = askCardsRef.current.some((c) => c.sessionId === s.id);
       const loaded = (s.messages || []).map((m) => {
         // 旧版本把「用户点停止」写成了 error='已取消' → 读档时按「已中断」还原，不再显示红色报错
         const legacyCancel = m.error === '已取消' || m.error === '已中断';
-        return { role: m.role, content: m.content ?? '', error: legacyCancel ? null : (m.error ?? null), interrupted: !!m.interrupted || legacyCancel, reasoning: m.reasoning || '', trace: m.trace || [], workedMs: m.workedMs ?? null };
+        const trace = Array.isArray(m.trace) && hasLiveAsk
+          ? m.trace.filter((x) => !(x?.tool === 'ask_user' && (x.status === 'running' || x.status == null)))
+          : (m.trace || []);
+        return { role: m.role, content: m.content ?? '', error: legacyCancel ? null : (m.error ?? null), interrupted: !!m.interrupted || legacyCancel, reasoning: m.reasoning || '', trace, workedMs: m.workedMs ?? null, ...(m.kind ? { kind: m.kind } : {}) };
       });
       // 后台还在跑的会话：把实时流叠加到磁盘历史后面（切回来能继续看到输出 + 工作流卡片）
       const run = runsRef.current.get(id);
@@ -662,6 +670,48 @@ export default function App() {
       });
     });
   }, [y]);
+
+  // 回合中途提问：主进程推一张卡（不是 modal），本回合暂停等回答；卡状态按 callId 存。
+  useEffect(() => {
+    if (!y?.onAskUser) return undefined;
+    return y.onAskUser((p) => {
+      if (!p || !p.callId) return;
+      if (askCardsRef.current.some((c) => c.callId === p.callId)) return;
+      const card = {
+        callId: String(p.callId),
+        sessionId: p.sessionId == null ? null : String(p.sessionId),
+        question: String(p.question || ''),
+        options: Array.isArray(p.options) ? p.options : [],
+        multiSelect: p.multiSelect === true,
+        askedAt: p.askedAt || Date.now(),
+        status: 'pending',
+        selected: [],
+        text: ''
+      };
+      askCardsRef.current = [...askCardsRef.current, card];
+      setAskCards(askCardsRef.current);
+      if (activeIdRef.current === card.sessionId) scrollDown();
+    });
+  }, [y]);
+
+  // 更新一张实时卡（按 callId）：answered / cancelled / expired
+  const patchAskCard = (callId, patch) => {
+    askCardsRef.current = askCardsRef.current.map((c) => (c.callId === callId ? { ...c, ...patch } : c));
+    setAskCards(askCardsRef.current);
+  };
+
+  // 回填回答：主进程 resolve pending → 本回合继续；答完卡片变「已提交：X」
+  const answerAskUser = async (callId, { selected = [], text = '' } = {}) => {
+    const card = askCardsRef.current.find((c) => c.callId === callId);
+    if (!card || card.status !== 'pending') return;
+    try {
+      const r = await y?.askUserAnswer?.({ callId, selected, text });
+      if (r?.ok) patchAskCard(callId, { status: 'answered', answer: r.answer || '', selected, text });
+      else patchAskCard(callId, { status: 'expired', answer: '', error: r?.error || t('该提问已失效') });
+    } catch {
+      // IPC 失败：保持 pending，用户可重试
+    }
+  };
 
   // AI 命名：首轮结束后主进程生成标题 → 侧栏和顶栏即时更新（不用刷新）
   useEffect(() => {
@@ -956,6 +1006,11 @@ export default function App() {
       inflightRef.current.delete(sid);
       runsRef.current.delete(sid);
       setRunningIds((prev) => { const n = { ...prev }; delete n[sid]; return n; });
+      // 实时提问卡收尾：问答已随 assistant.trace（ask_user tool part）固化，下一帧由 TraceBlock 还原成只读卡
+      if (askCardsRef.current.some((c) => c.sessionId === sid)) {
+        askCardsRef.current = askCardsRef.current.filter((c) => c.sessionId !== sid);
+        setAskCards(askCardsRef.current);
+      }
       stoppingRef.current.delete(sid);
       stoppedRef.current.delete(sid);
       setStoppingIds((prev) => { if (!prev[sid]) return prev; const n = { ...prev }; delete n[sid]; return n; });
@@ -1049,6 +1104,11 @@ export default function App() {
       return next;
     });
     setRunningIds((prev) => { const n = { ...prev }; delete n[sid]; return n; });
+    // 挂起的提问卡立即转为「用户取消」；主进程侧 pending 也会被 agent-cancel 同步 resolve
+    askCardsRef.current = askCardsRef.current.map((c) => (
+      c.sessionId === sid && c.status === 'pending' ? { ...c, status: 'cancelled', error: t('用户取消') } : c
+    ));
+    setAskCards(askCardsRef.current);
     try { await y?.cancelChat(sid); } catch { /* 忽略 */ }
   };
 
@@ -1128,6 +1188,8 @@ export default function App() {
                 showJump={showJump} setShowJump={setShowJump} y={y}
                 onSendRecover={(text) => send({ text, pasted: [] })}
                 onOpenArtifact={openArtifact} onEditMessage={editMessage} onOpenStep={openStep}
+                askCards={activeId ? askCards.filter((c) => c.sessionId == null || c.sessionId === activeId) : []}
+                onAskUserAnswer={answerAskUser}
               />
             ) : (
               <EmptyState y={y} demoBusy={demoBusy} setDemoBusy={setDemoBusy}

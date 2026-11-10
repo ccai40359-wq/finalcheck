@@ -1,3 +1,5 @@
+import { DIMENSIONS } from './profile.mjs';
+
 const SEV_ORDER = { high: 0, medium: 1, low: 2 };
 const SEV_MARK = { high: '🔴 高危', medium: '🟡 中危', low: '🔵 低危' };
 const VERDICT_MARK = { '拦': '🔴 拦', '修完再过': '🟠 修完再过', '过': '🟢 过', '无法验收': '⚠️ 无法验收', '待授权': '🟡 待授权' };
@@ -9,6 +11,8 @@ const CHECK_TITLE = {
 };
 // 「待授权」不是失败，是缺用户点头：下一步必须写清楚要授权什么
 const AUTH_STEP = { Q1: 'Q1 需要执行项目测试', Q2: 'Q2 需要执行项目质量命令' };
+// 不在任何维度检查清单里的项（目前只有按 finalcheck.quality.json 追加的 Q2）单独成组，不硬塞给某个维度
+const OTHER_GROUP = '其他检查';
 
 const gapText = (g) => {
   const reason = String(g.reason ?? g.text ?? '');
@@ -39,7 +43,26 @@ function fixPrompt(f) {
   }
 }
 
-export function renderReport(res) {
+// P1#6：审外部项目时证据是不可信输入，防 ANSI/控制字符重绘终端
+const clean = (s) => String(s ?? '').replace(/[\x00-\x1f\x7f]/g, '');
+const cell = (s) => clean(s).replace(/\|/g, '\\|');
+
+function sortedFindings(res) {
+  return [...res.findings].sort((a, b) => SEV_ORDER[a.severity] - SEV_ORDER[b.severity]);
+}
+
+function coverageLine(res) {
+  const executed = res.gates.executed || [];
+  const planned = res.gates.planned || [];
+  const notRun = planned.filter((id) => !executed.includes(id));
+  const notEnabled = Object.keys(CHECK_TITLE).filter((id) => !planned.includes(id));
+  return `本轮覆盖：${executed.join('/') || '无'}`
+    + (notRun.length ? `；未跑：${notRun.join('/')}` : '')
+    + (notEnabled.length ? `；未启用：${notEnabled.join('/')}` : '') + '。';
+}
+
+// 报告头（结论/项目/档位/覆盖/缺口/警告）：旧输出与新输出共用，逐字保持一致。
+function headerLines(res) {
   const L = [];
   L.push('');
   L.push(`【${VERDICT_MARK[res.conclusion.verdict] || res.conclusion.verdict}】结论：${res.conclusion.verdict}`);
@@ -67,30 +90,167 @@ export function renderReport(res) {
     wGroups[key] = (wGroups[key] || 0) + 1;
   }
   for (const [key, n] of Object.entries(wGroups)) L.push(`  ℹ️ ${key}（共 ${n} 条，` + (key.includes('跳过') ? '已排除出扫描范围' : '详见 JSON 输出') + '）');
+  return L;
+}
 
-  const findings = [...res.findings].sort((a, b) => SEV_ORDER[a.severity] - SEV_ORDER[b.severity]);
-  // 覆盖列表必须每份报告都写（验收要求：报告要能看出"这次到底查了哪些关、哪些没查"），
-  // 不能只挂在"无发现"分支里——有发现时更需要说清楚覆盖边界。
-  const executed = res.gates.executed || [];
-  const planned = res.gates.planned || [];
-  const notRun = planned.filter((id) => !executed.includes(id));
-  const notEnabled = Object.keys(CHECK_TITLE).filter((id) => !planned.includes(id));
-  const coverageLine = `本轮覆盖：${executed.join('/') || '无'}`
-    + (notRun.length ? `；未跑：${notRun.join('/')}` : '')
-    + (notEnabled.length ? `；未启用：${notEnabled.join('/')}` : '') + '。';
+function legacyFindingBlock(f) {
+  return [
+    '',
+    `${SEV_MARK[f.severity]}｜${CHECK_TITLE[f.checkId] || f.checkId}（${f.checkId}）｜${clean(f.message)}`,
+    `   证据：${clean(f.file)}${f.line ? ':' + f.line : ''}  ${clean(f.snippet)}`,
+    `   判定来源：${f.rule}（${f.force === 'card' ? '程序判定/实锤' : '提醒级线索'}）`,
+    `   修复提示词（粘回 AI）：${fixPrompt(f)}`,
+  ];
+}
+
+// 无 profile：保持原有按检查项输出，逐字不变（现有调用方与 780 测试依赖此格式）
+function renderLegacyReport(res) {
+  const L = headerLines(res);
+  const findings = sortedFindings(res);
   L.push('');
-  L.push(coverageLine);
-  if (!findings.length) {
-    L.push('未发现程序可判定的问题。');
-  }
-  const clean = (s) => String(s ?? '').replace(/[\x00-\x1f\x7f]/g, ''); // P1#6：审外部项目时证据是不可信输入，防 ANSI/控制字符重绘终端
-  for (const f of findings) {
-    L.push('');
-    L.push(`${SEV_MARK[f.severity]}｜${CHECK_TITLE[f.checkId] || f.checkId}（${f.checkId}）｜${clean(f.message)}`);
-    L.push(`   证据：${clean(f.file)}${f.line ? ':' + f.line : ''}  ${clean(f.snippet)}`);
-    L.push(`   判定来源：${f.rule}（${f.force === 'card' ? '程序判定/实锤' : '提醒级线索'}）`);
-    L.push(`   修复提示词（粘回 AI）：${fixPrompt(f)}`);
-  }
+  L.push(coverageLine(res));
+  if (!findings.length) L.push('未发现程序可判定的问题。');
+  for (const f of findings) L.push(...legacyFindingBlock(f));
   L.push('');
   return L.join('\n');
+}
+
+// ---------- 维度模式（有 profile：res.tier.dimensions 存在） ----------
+
+function dimensionChecks(name, level) {
+  return DIMENSIONS[name]?.[level]?.checks || [];
+}
+
+function evidenceOf(res, name) {
+  const ev = res.evidence && res.evidence[name];
+  return ev && ev.level ? ev : { level: 'unverified', reason: '未验证（未提供证据矩阵）' };
+}
+
+function dimensionTable(res, dims) {
+  const executed = new Set(res.gates.executed || []);
+  const gapItems = res.gates.gapItems || [];
+  const rows = [
+    '| 维度 | 档位 | 结论 | 证据等级 | 覆盖的检查项 |',
+    '| --- | --- | --- | --- | --- |',
+  ];
+  for (const [name, d] of Object.entries(dims)) {
+    const checks = dimensionChecks(name, d.level);
+    const ev = evidenceOf(res, name);
+    const notRun = checks.filter((id) => !executed.has(id) && gapItems.some((g) => g.checkId === id));
+    let covered = checks.length ? checks.join('、') : '无（该档位不要求检查）';
+    if (notRun.length) covered += `（未跑：${notRun.join('、')}）`;
+    rows.push(`| ${cell(name)} | ${cell(d.level)} | ${cell(d.verdict)} | ${cell(ev.level)} | ${cell(covered)} |`);
+  }
+  return rows;
+}
+
+// 每个 checkId 归到「第一个包含它的维度」；Q2 这类不属于任何维度的检查进「其他检查」。
+function groupFindings(res, findings) {
+  const dims = res.tier.dimensions;
+  const names = Object.keys(dims);
+  const groups = new Map(names.map((name) => [name, []]));
+  groups.set(OTHER_GROUP, []);
+  for (const f of findings) {
+    const owner = names.find((name) => dimensionChecks(name, dims[name].level).includes(f.checkId)) || OTHER_GROUP;
+    groups.get(owner).push(f);
+  }
+  return groups;
+}
+
+function dimensionFindingBlock(f) {
+  return [
+    '',
+    `${SEV_MARK[f.severity]}｜${clean(f.message)}`,
+    `   证据：${clean(f.file)}${f.line ? ':' + f.line : ''}  ${clean(f.snippet)}`,
+    `   判定来源：${f.rule}（${f.checkId}；${f.force === 'card' ? '程序判定/实锤' : '提醒级线索'}）`,
+    `   修复提示词（粘回 AI）：${fixPrompt(f)}`,
+  ];
+}
+
+function appendGroupedFindings(L, res) {
+  const findings = sortedFindings(res);
+  if (!findings.length) {
+    L.push('未发现程序可判定的问题。');
+    return;
+  }
+  const groups = groupFindings(res, findings);
+  let first = true;
+  for (const [name, list] of groups) {
+    if (!list.length) continue;
+    if (!first) L.push('');
+    first = false;
+    L.push(`### ${clean(name)}`);
+    for (const f of list) L.push(...dimensionFindingBlock(f));
+  }
+}
+
+function verifiedLines(res, dims) {
+  const out = [];
+  for (const [name, d] of Object.entries(dims)) {
+    if (d.verdict !== '过') continue;
+    const checks = dimensionChecks(name, d.level);
+    const ev = evidenceOf(res, name);
+    out.push(`- ${name}（${d.level}，证据 ${ev.level}）：检查 ${checks.length ? checks.join('、') : '无'} 已执行，未发现卡条目`);
+  }
+  return out;
+}
+
+// 「无法验收」必须带原因：维度缺口优先，其次证据面原因；证据等级 not-covered/unverified 的维度也一并点名。
+function notCoveredLines(res, dims) {
+  const out = [];
+  const gapItems = res.gates.gapItems || [];
+  for (const [name, d] of Object.entries(dims)) {
+    const ev = evidenceOf(res, name);
+    if (ev.level === 'not-covered' || ev.level === 'unverified') {
+      out.push(`- 维度「${name}」证据等级 ${ev.level}：${ev.reason}`);
+    }
+    if (d.verdict === '无法验收') {
+      const checks = dimensionChecks(name, d.level);
+      const own = gapItems.filter((g) => g.dimension === name || checks.includes(g.checkId));
+      // 缺口标签可能已带维度名（如「成本：该维度尚未接入检查」），避免写成「成本：成本：…」
+      const raw = own.length ? own.map(gapText).join('；') : ev.reason;
+      const reason = raw.startsWith(`${name}：`) ? raw.slice(name.length + 1) : raw;
+      out.push(`- 维度「${name}」无法验收：${reason}`);
+    }
+  }
+  return out;
+}
+
+function skippedLines(res) {
+  const gapItems = res.gates.gapItems || [];
+  return gapItems.map((g) => `- ${gapText(g)}（${g.kind === 'unauthorized' ? '待授权，未执行' : '能力缺失，未执行'}）`);
+}
+
+function renderDimensionReport(res) {
+  const dims = res.tier.dimensions;
+  const L = ['## Conclusion'];
+  L.push(...headerLines(res));
+  L.push('');
+  L.push('维度结论表：');
+  L.push(...dimensionTable(res, dims));
+  L.push('');
+  L.push(coverageLine(res));
+  L.push('');
+  L.push('## Findings');
+  appendGroupedFindings(L, res);
+  L.push('');
+  L.push('## Verified');
+  const verified = verifiedLines(res, dims);
+  L.push(...(verified.length ? verified : ['None（没有维度达到「过」）']));
+  L.push('');
+  L.push('## Not covered');
+  const notCovered = notCoveredLines(res, dims);
+  L.push(...(notCovered.length ? notCovered : ['None（所有维度均已有证据）']));
+  L.push('');
+  L.push('## Skipped');
+  const skipped = skippedLines(res);
+  L.push(...(skipped.length ? skipped : ['None']));
+  L.push('');
+  return L.join('\n');
+}
+
+export function renderReport(res) {
+  // 触发条件按约定只看 tier.dimensions：有 profile 才换维度视图，老调用方输出逐字不变。
+  if (res.tier && res.tier.dimensions) return renderDimensionReport(res);
+  return renderLegacyReport(res);
 }

@@ -413,7 +413,11 @@ export function ProcessTimeline({ msg }) {
 
   const live = !!msg.streaming;
   const events = msg.events || [];
-  const liveEntries = events.filter((e) => e.type === 'tool' || e.type === 'retry' || e.type === 'thought');
+  // ask_user 有专门的提问卡（实时卡 / TraceBlock 历史卡），时间线里不再重复一行；
+  // todo_write 同理：验收单卡片单独渲染（MessageList 的 TodoBlock），时间线里不重复
+  const isAskUser = (e) => e?.type === 'tool' && e?.name === 'ask_user';
+  const isCardTool = (e) => isAskUser(e) || (e?.type === 'tool' && e?.name === 'todo_write');
+  const liveEntries = events.filter((e) => e.type === 'tool' || e.type === 'retry' || e.type === 'thought').filter((e) => !isCardTool(e));
 
   if (live) {
     // 进行中的 Working 计时不再放在这里（消息变长会滚出视野），由消息底部/子代理面板底部渲染 WorkingStatus
@@ -441,7 +445,7 @@ export function ProcessTimeline({ msg }) {
       args: typeof t.args === 'string' ? t.args : t.args != null ? JSON.stringify(t.args) : '',
       result: t.result,
       status: 'ok'
-    }));
+    })).filter((e) => !isCardTool(e));
   }
   // 完成态绝不显示还在增长的思考计时（历史 trace 没有耗时，统一显示 Thought 不带秒数）
   entries = entries.map((e) => (e.type === 'thought' && e.live ? { ...e, live: false, ms: null } : e));

@@ -140,6 +140,16 @@ import { t } from '../renderer/i18n/core.mjs';
  */
 
 /**
+ * 验收单条目（todo_write）：报告闸只看 status / evidence / id / task。
+ * @typedef {object} TodoGateItem
+ * @property {string} [id]
+ * @property {string} [task]
+ * @property {string} [acceptance]
+ * @property {'pending'|'running'|'done'|'failed'|'skipped'} [status]
+ * @property {string} [evidence]
+ */
+
+/**
  * claim lint 的返回。
  * @typedef {object} ClaimLintResult
  * @property {SwarmClaim[]} claims
@@ -819,6 +829,52 @@ export function lintReport(md, { holes = [] } = {}) {
   const expected = REPORT_SECTIONS.filter((name) => present.includes(name));
   if (present.length === expected.length && present.some((name, i) => name !== expected[i])) {
     warnings.push(t('段落顺序不对，应为 {order}', { order: REPORT_SECTIONS.map((n) => `## ${n}`).join(' → ') }));
+  }
+  return warnings;
+}
+
+/**
+ * 验收单（todo_write）→ 报告闸。与 lintReport 并列：非空 warnings 即「报告不合格」。
+ * 两条硬规则：
+ * - status=done 的条目必须带 evidence（没有证据的「做完了」不算数）；
+ * - status=failed / skipped 的条目必须在 ## Not covered 里点名（id 或 task），
+ *   否则读者会把「没做」误当「没发现」。
+ * 返回 warnings 数组，不抛错；没有验收单（items 为空）时恒为空。
+ * @param {string} md 最终回答 / 报告 Markdown
+ * @param {{items?: TodoGateItem[]}} [opts] 本回合的验收单台账
+ * @returns {string[]}
+ */
+export function lintTodoReport(md, { items = [] } = {}) {
+  const warnings = [];
+  const list = (Array.isArray(items) ? items : []).filter(Boolean);
+  if (!list.length) return warnings;
+  const { sections } = parseReportSections(md);
+  const notCovered = sections.get('Not covered') || '';
+  const label = (/** @type {TodoGateItem} */ it) => {
+    const id = String(it?.id || '').trim();
+    const task = String(it?.task || '').trim();
+    if (id && task) return `${task}（${id}）`;
+    return task || id;
+  };
+
+  const doneNoEvidence = list.filter((it) => it.status === 'done' && !String(it.evidence || '').trim());
+  if (doneNoEvidence.length) {
+    warnings.push(t('验收单里有 {n} 条标为 done 但没有证据：{labels}（先补 evidence 再交报告）', {
+      n: doneNoEvidence.length,
+      labels: doneNoEvidence.map(label).join('、')
+    }));
+  }
+
+  const unfinished = list.filter((it) => it.status === 'failed' || it.status === 'skipped');
+  const missing = unfinished.filter((it) => {
+    const id = String(it?.id || '').trim();
+    const task = String(it?.task || '').trim();
+    return !(id && notCovered.includes(id)) && !(task && notCovered.includes(task));
+  });
+  if (missing.length) {
+    warnings.push(t('验收单里失败/跳过的任务未在 ## Not covered 点名：{labels}（缺一个即判不合格）', {
+      labels: missing.map(label).join('、')
+    }));
   }
   return warnings;
 }

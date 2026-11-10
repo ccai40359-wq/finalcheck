@@ -7,6 +7,8 @@ import { errorCodeLabel } from '../../main/swarm.mjs'; // 纯函数（零依赖�
 import { RecoverButton } from './RecoverButton.jsx';
 import { buildContinueText } from '../lib/continue-prompt.mjs';
 import { t } from '../i18n/core.mjs';
+import AskUserCard from '../components/AskUserCard.jsx';
+import { askUserCardFromTrace } from '../lib/ask-user.mjs';
 
 /** 四色结论横幅（与 AuditPage 一致） */
 const VERDICT_STYLE = {
@@ -997,11 +999,13 @@ export function GenericToolDetail({ name = '', args, result, running }) {
  *  run_command 等过程类工具一律不出正文卡——其过程细节只在消息顶部 ProcessTimeline 时间线里。 */
 export function TraceBlock({ trace, onOpenStep = null, onRecover = null }) {
   if (!trace?.length) return null;
-  const cards = trace.filter((t) => BODY_CARD_TOOLS.has(t.tool));
+  // ask_user 的问答卡也放在这里：历史加载后从 tool part 还原（answered/cancelled/expired 只读态）
+  const cards = trace.filter((t) => BODY_CARD_TOOLS.has(t.tool) || t.tool === 'ask_user');
   if (!cards.length) return null;
   return (
     <div>
       {cards.map((t, i) => {
+        if (t.tool === 'ask_user') return <AskUserCard key={i} payload={askUserCardFromTrace(t)} />;
         if (t.tool === 'audit_project' || t.tool === 'get_report') return <ReportCard key={i} args={t.args} result={t.result} />;
         if (t.tool === 'probe_target') return <ProbeCard key={i} args={t.args} result={t.result} />;
         if (t.tool === 'stress_target') return <StressCard key={i} args={t.args} result={t.result} />;

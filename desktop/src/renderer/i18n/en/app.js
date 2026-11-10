@@ -36,6 +36,23 @@ export const EN_APP = {
   '回到底部': 'Back to bottom',
   '刚刚': 'Just now',
 
+  // 回合中途提问卡
+  '需要你的选择': 'Your input is needed',
+  '可多选': 'Multi-select',
+  '回答后本回合继续': 'The turn continues after you answer',
+  '也可以直接输入回答…': 'Or type your answer…',
+  '输入你的回答…': 'Type your answer…',
+  '提交回答': 'Submit answer',
+  '提交中…': 'Submitting…',
+  '已选 {n} 项': '{n} selected',
+  '已回答': 'Answered',
+  '提问未发出': 'Question not sent',
+  '已提交：{answer}': 'Submitted: {answer}',
+  '用户取消': 'Cancelled by user',
+  '本回合已按停止处理': 'This turn was stopped',
+  '未回答（已失效）': 'Unanswered (expired)',
+  '这张提问来自已结束的回合，不能再回答': 'This question belongs to a finished turn and can no longer be answered',
+
   // 空态能力卡
   '体检 · 渗透 · 下载闸 · 工作流 —— 选一个，或直接说': 'Audit · Pentest · Download gate · Workflow — pick one, or just ask',
   '代码体检': 'Code audit',

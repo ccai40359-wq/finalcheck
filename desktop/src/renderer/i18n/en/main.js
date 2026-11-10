@@ -337,4 +337,33 @@ export const EN_MAIN = {
   'journal 文件损坏：{file}': 'The journal file is corrupted: {file}',
   'journal 版本不支持：{version}': 'Unsupported journal version: {version}',
   'journal runId 与文件名不一致：{runId}': 'The journal runId does not match the file name: {runId}',
+
+  // ---- ask-user.mjs / ipc-agent.mjs（回合中途提问）----
+  '提问内容不能为空': 'The question cannot be empty',
+  '本次回合提问次数已达上限': 'This turn has reached its question limit',
+  '没有可用的界面通道，无法向用户提问': 'No UI channel is available, so the user cannot be asked',
+  '用户取消': 'Cancelled by user',
+  '向用户提问失败：{error}': 'Failed to ask the user: {error}',
+  '该提问已失效': 'This question has expired',
+  '回答不能为空': 'The answer cannot be empty',
+  '窗口不可用': 'The window is unavailable',
+  '；补充：': '; note: ',
+
+  // ---- lib/todo.mjs + todo-list.mjs（验收单工具参数校验）----
+  'todo_write 参数不是合法 JSON': 'todo_write arguments are not valid JSON',
+  'todo_write 需要 items 数组（{min}-{max} 条）': 'todo_write needs an items array ({min}-{max} entries)',
+  'todo_write 需要 {min}-{max} 条任务，当前 {n} 条：按验收步骤拆分或合并后再调用': 'todo_write needs {min}-{max} tasks but got {n}: split or merge them along acceptance steps and call again',
+  '第 {n} 条不是对象（需要 {id, task, acceptance, status?}）': 'Entry {n} is not an object (expected {id, task, acceptance, status?})',
+  '第 {n} 条缺少 id（稳定标识，更新状态时按 id 合并）': 'Entry {n} is missing id (a stable key used to merge status updates)',
+  '任务 id 重复：{id}': 'Duplicate task id: {id}',
+  '任务 {id} 缺少 task（这一步要做什么）': 'Task {id} is missing task (what this step does)',
+  '任务 {id} 缺少 acceptance（验收标准）：先想清楚「怎么算完成」再调用 todo_write，把验收标准补上': 'Task {id} is missing acceptance criteria: decide what "done" means, add the acceptance criteria, then call todo_write',
+  '任务 {id} 的 status 非法：{status}（只能是 {allowed}）': 'Task {id} has an invalid status: {status} (allowed: {allowed})',
+
+  // ---- swarm.mjs 报告闸：验收单（todo_write）----
+  '验收单里有 {n} 条标为 done 但没有证据：{labels}（先补 evidence 再交报告）': '{n} checklist task(s) are marked done without evidence: {labels} (add evidence before delivering the report)',
+  '验收单里失败/跳过的任务未在 ## Not covered 点名：{labels}（缺一个即判不合格）': 'Failed/skipped checklist tasks are not named under ## Not covered: {labels} (missing even one fails the gate)',
+
+  // ---- ipc-agent.mjs 报告闸不合格提示 ----
+  '报告不合格（验收单闸）': 'Report rejected (checklist gate)',
 };

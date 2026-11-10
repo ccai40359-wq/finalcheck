@@ -195,5 +195,18 @@ export const EN_CHAT = {
   '已折叠（JSON）': 'Collapsed (JSON)',
   '已折叠': 'Collapsed',
   '执行中…': 'Running…',
-  '{n} 字符 · {m} 个字段': '{n} chars · {m} fields'
+  '{n} 字符 · {m} 个字段': '{n} chars · {m} fields',
+
+  // 验收单卡片（TodoCard.jsx / lib/todo.mjs 的展示文案）
+  // '{done}/{total} 完成' 与工作流进度卡共用（上面已有），不重复登记
+  '验收单': 'Checklist',
+  '失败 {n}': '{n} failed',
+  '跳过 {n}': '{n} skipped',
+  '待做': 'To do',
+  '进行中': 'In progress',
+  '已跳过': 'Skipped',
+  '(未命名任务)': '(untitled task)',
+  '(未写验收标准)': '(no acceptance criteria)',
+  '验收：{acceptance}': 'Acceptance: {acceptance}',
+  '证据：{evidence}': 'Evidence: {evidence}'
 };

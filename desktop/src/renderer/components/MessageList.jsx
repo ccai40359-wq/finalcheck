@@ -11,6 +11,8 @@ import { TraceBlock, WorkflowLiveCard } from '../chat/TraceCards.jsx';
 import { ArtifactChips, collectArtifacts } from '../chat/ArtifactPanel.jsx';
 import { renderMarkdown } from '../chat/md.jsx';
 import { IconChevron, IconCopy, IconEdit } from './Icons.jsx';
+import AskUserCard from './AskUserCard.jsx';
+import { TodoBlock } from './TodoCard.jsx';
 
 // 技能 chip：金色符号 + 名称，细底无边框（不是药丸）；title 只在 hover 时暴露 playbook id
 function SkillChips({ skills }) {
@@ -83,7 +85,8 @@ function PastedTextBlock({ text }) {
 export default function MessageList({
   messages, activeId, providers, artifactPath, openWorkflowRaw, setOpenWorkflowRaw,
   scrollRef, stickRef, jumpingRef, showJump, setShowJump,
-  y, onSendRecover, onOpenArtifact, onEditMessage, onOpenStep
+  y, onSendRecover, onOpenArtifact, onEditMessage, onOpenStep,
+  askCards = [], onAskUserAnswer = null
 }) {
   // 只有用户本来就在底部附近才自动跟随；往上看历史时保持不动（判定逻辑与拆分前一致）
   const handleScroll = (e) => {
@@ -200,6 +203,8 @@ export default function MessageList({
             /* AI 回答去气泡：无底色卡片，仅左侧金竖线（错误消息换红线）区分 */
             <div key={i} className={`w-full border-l-2 pl-4 transition-all duration-200 ${m.error ? 'border-red-500/50' : m.interrupted ? 'border-gold/25' : 'border-gold/45'}`}>
               <ProcessTimeline msg={m} />
+              {/* 验收单：实时（events）/ 历史（trace 的 todo_write tool part）都从同一条数据还原 */}
+              <TodoBlock msg={m} />
               {m.streaming && m.workflow ? <WorkflowLiveCard data={m.workflow} sessionId={activeId} providers={providers}
                 onRecover={(text) => onSendRecover(text)}
                 onOpenStep={(s) => onOpenStep(s)} /> : null}
@@ -234,6 +239,11 @@ export default function MessageList({
             </div>
           )
         ))}
+          {/* 回合中途提问卡（实时）：在消息流末尾；回答后本回合继续，历史卡由 assistant.trace 还原 */}
+          {askCards.map((card) => (
+            <AskUserCard key={card.callId} payload={card}
+              onSubmit={onAskUserAnswer ? ({ selected, text }) => onAskUserAnswer(card.callId, { selected, text }) : null} />
+          ))}
         </div>
       </div>
       {/* 不在底部时：底部居中的回到底部箭头（不挡输入框、不压 WorkingStatus） */}

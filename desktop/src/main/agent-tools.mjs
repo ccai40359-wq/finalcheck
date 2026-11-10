@@ -171,7 +171,7 @@ export function runCommandWithSignal(command, { cwd, timeoutMs, idleMs = DEFAULT
   });
 }
 
-export function createAgentTools({ repoRoot, permissions, recordAudit = async () => {}, playbookRoot, runWorkflow = null, projectPath = null, policy = null, hooksConfig = null, hooksRunner = null, sessionId = null, cwd = null, signal = null, commandIdleMs = DEFAULT_COMMAND_IDLE_MS } = {}) {
+export function createAgentTools({ repoRoot, permissions, recordAudit = async () => {}, playbookRoot, runWorkflow = null, projectPath = null, policy = null, hooksConfig = null, hooksRunner = null, sessionId = null, cwd = null, signal = null, commandIdleMs = DEFAULT_COMMAND_IDLE_MS, askUser = null, todoWrite = null } = {}) {
   if (!repoRoot) throw new Error('createAgentTools 需要 repoRoot');
   const engineUrl = (rel) => pathToFileURL(path.join(repoRoot, rel)).href;
   const note = (url) => permissions?.noteTarget?.(url);
@@ -415,6 +415,18 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
       });
     }
   };
+
+  // 回合中途提问：只有主 agent 的 createAgentTools 会传 askUser（子代理/工作流 gate 不传），
+  // 工具表与 schema 两层都不给子代理，避免并行子代理同时弹多张卡。
+  if (typeof askUser === 'function') {
+    tools.ask_user = async (args, ctx) => askUser(args || {}, ctx);
+  }
+
+  // 验收单：同样只给主 agent（todoWrite 由 ipc-agent 注入，子代理 schema 不含该工具）。
+  // 实现只做校验 + 记账；卡片由渲染层从 tool part 还原，报告闸在回合结束时读同一份台账。
+  if (typeof todoWrite === 'function') {
+    tools.todo_write = async (args) => todoWrite(args || {}, { sessionId });
+  }
 
   if (!hooksOn) return tools;
 

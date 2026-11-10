@@ -48,6 +48,9 @@ contextBridge.exposeInMainWorld('finalcheck', {
   // 权限审批：主进程 fail-closed 闭集（allowed-once / always-session / rejected）
   onApprovalRequest: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('finalcheck:approval-request', h); return () => ipcRenderer.removeListener('finalcheck:approval-request', h); },
   approvalDecide: (callId, decision) => ipcRenderer.invoke('finalcheck:approval-decide', callId, decision),
+  // 回合中途提问：主进程推送卡片；回答走 invoke，回填后本回合继续
+  onAskUser: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('finalcheck:ask-user', h); return () => ipcRenderer.removeListener('finalcheck:ask-user', h); },
+  askUserAnswer: (payload) => ipcRenderer.invoke('finalcheck:ask-user-answer', payload),
   confirmHost: (host) => ipcRenderer.invoke('finalcheck:confirm-host', host),
   confirmDir: (dir) => ipcRenderer.invoke('finalcheck:confirm-dir', dir),
   getConfig: () => ipcRenderer.invoke('finalcheck:get-config'),

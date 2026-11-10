@@ -20,6 +20,7 @@ import { checkReadability } from './checks/readability.mjs';
 import { checkPerfStatic } from './checks/perf-static.mjs';
 import { checkLicense } from './checks/license.mjs';
 import { checkOps } from './checks/ops.mjs';
+import { planFromProfile, highestLevel, evidenceMatrix } from './profile.mjs';
 
 // 覆盖关（ACCEPTANCE §4 矩阵已实现子集）：S6/D/E/X 接线中
 // L2 = 安全/供应链/测试 + 交接(H1) + 可维护性(Q3)
@@ -27,7 +28,7 @@ import { checkOps } from './checks/ops.mjs';
 // L1 = 个人底线：只有 S3（含 git 历史密钥）是硬卡
 // L2 = 安全/供应链/测试 + 外部入口(S6) + 交接(H1) + 可维护性(Q3)
 // L3 = L2 + 数据层(D1 事务/D2 备份/D3 隐私) + 许可证(C1) + 运维就绪(O1)
-const GATES = {
+export const GATES = {
   L1: ['S2', 'S3', 'S4', 'S5'],
   L2: ['S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7', 'S8', 'Q1', 'H1', 'Q3', 'Q4', 'Q5'],
   L3: ['S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7', 'S8', 'Q1', 'H1', 'Q3', 'Q4', 'Q5', 'C1', 'O1', 'D1', 'D2', 'D3'],
@@ -43,16 +44,24 @@ export async function loadConfig(projectDir) {
   } catch { return {}; }
 }
 
-export async function audit(projectDir, { tier = null, interactive = false, runTests = true } = {}) {
+export async function audit(projectDir, { tier = null, interactive = false, runTests = true, profile = null } = {}) {
   const cfg = await loadConfig(projectDir);
   const excludes = Array.isArray(cfg.exclude) ? cfg.exclude : [];
 
   const auto = await detectTier(projectDir, { excludes });
-  let effective = tier || auto.suggestedTier;
+  // profile 模式：计划由每维度档位决定，显式配置优先于自动定档（不再保守 +1）。
+  // 不传 profile 时完全走原来的 GATES 路径，现有调用方与测试零变化。
+  const profilePlan = profile ? planFromProfile(profile) : null;
+  let effective;
   let conservativeNote = null;
-  if (!tier && !interactive) {
-    effective = NEXT[effective]; // §2 非交互：保守加一档
-    conservativeNote = '非交互运行：已按保守策略加一档（--interactive 可关闭）';
+  if (profilePlan) {
+    effective = highestLevel(Object.values(profilePlan.dimensions).map((d) => d.level));
+  } else {
+    effective = tier || auto.suggestedTier;
+    if (!tier && !interactive) {
+      effective = NEXT[effective]; // §2 非交互：保守加一档
+      conservativeNote = '非交互运行：已按保守策略加一档（--interactive 可关闭）';
+    }
   }
 
   const raw = await extractRoutes(projectDir).catch((e) => ({ routes: [], publicRoutes: [], warnings: [`路由提取失败：${e.message}`] }));
@@ -66,7 +75,8 @@ export async function audit(projectDir, { tier = null, interactive = false, runT
 
   const qualityOn = QUALITY_TIERS.has(effective) && await hasQualityConfig(projectDir);
   // Q1/Q2 无论是否授权都进计划：没授权就记 coverageGap，绝不「静默不跑」
-  const planned = GATES[effective].slice().concat(qualityOn ? ['Q2'] : []);
+  const basePlanned = profilePlan ? profilePlan.planned : GATES[effective];
+  const planned = basePlanned.slice().concat(qualityOn ? ['Q2'] : []);
   const results = [];
   for (const id of planned) {
     if (id === 'S1') results.push(await checkAuthCoverage(routeResult));
@@ -103,6 +113,14 @@ export async function audit(projectDir, { tier = null, interactive = false, runT
 
   let findings = results.flatMap((r) => r.findings);
   const warnings = [...routeResult.warnings, ...results.flatMap((r) => r.warnings || [])];
+  // profile 文件里的解析/取值警告原样带进审计结果，不静默吞掉
+  if (profile && Array.isArray(profile.warnings)) warnings.push(...profile.warnings);
+  // profile 里写了不存在的维度：按警告暴露，不把用户笔误升级成「无法验收」
+  if (profilePlan) {
+    for (const gap of profilePlan.gapsForUnknown) {
+      warnings.push(`profile：未知维度「${gap.dimension}」已忽略（${gap.reason}）`);
+    }
+  }
   if (effective === 'L1') findings = findings.map((f) => (f.checkId === 'S3' ? f : { ...f, force: 'tip' })); // L1 只有 S3 是硬卡
   // S7/S8 属文件级启发式，人工确认机制（v2）接入前一律 check 级，不自动锁死结论（三轮 reviewer P1#3/#13）
   findings = findings.map((f) => (f.checkId === 'S7' || f.checkId === 'S8') && f.force === 'card' ? { ...f, force: 'check', message: f.message + '（人工确认机制接入后升级为卡）' } : f);
@@ -111,12 +129,29 @@ export async function audit(projectDir, { tier = null, interactive = false, runT
   const gapItems = results
     .filter((r) => r.coverageGap)
     .map((r) => ({ checkId: r.checkId, kind: gapKind(r), reason: r.coverageGap }));
+  // 未实现维度（如可选的第 12 维「成本」）同样记 coverageGap，沿用 checkId 字段保证
+  // 老报告/老调用方还能按 checkId 取到缺口，不静默跳过。
+  if (profilePlan) {
+    for (const gap of profilePlan.gapsForUnimplemented) {
+      gapItems.push({ checkId: gap.dimension, dimension: gap.dimension, kind: 'unavailable', reason: gap.reason });
+    }
+  }
   const gaps = gapItems.map(gapLabel);
   const conclusion = conclude(effective, findings, gapItems);
+  const dimensions = profilePlan ? dimensionResults(profilePlan, findings, gapItems) : null;
+  // 证据等级是加法的：只有传了 profile 才出现，老调用方的结果形状不变。
+  const evidence = profilePlan ? evidenceMatrix(profile) : null;
 
   return {
     projectDir,
-    tier: { requested: tier, suggested: auto.suggestedTier, effective, signals: auto.signals, conservativeNote },
+    tier: {
+      requested: tier,
+      suggested: auto.suggestedTier,
+      effective,
+      signals: auto.signals,
+      conservativeNote,
+      ...(dimensions ? { dimensions } : {}),
+    },
     gates: {
       planned,
       executed: results.filter((r) => !r.coverageGap).map((r) => r.checkId),
@@ -125,8 +160,31 @@ export async function audit(projectDir, { tier = null, interactive = false, runT
     },
     findings,
     conclusion,
+    ...(evidence ? { evidence } : {}),
     warnings,
   };
+}
+
+// 每维度结论：只看本维度 checks 产生的发现与缺口。
+// - 整维没有接入任何检查 → 无法验收（与 coverageGap 同口径）
+// - 该档位不要求任何检查（例如 L1 的可读性）→ 不适用
+// - 本维度有跑不了的关 → 无法验收；只有未授权 → 待授权
+// - 其余沿用结论引擎，但按该维度自己的档位判（L1 只认 S3 硬卡）
+function dimensionResults(plan, findings, gapItems) {
+  const out = {};
+  for (const [name, dim] of Object.entries(plan.dimensions)) {
+    out[name] = { level: dim.level, verdict: dimensionVerdict(dim, findings, gapItems) };
+  }
+  return out;
+}
+
+function dimensionVerdict(dim, findings, gapItems) {
+  if (!dim.implemented) return '无法验收';
+  if (!dim.checks.length) return '不适用';
+  const ownGaps = gapItems.filter((g) => dim.checks.includes(g.checkId));
+  if (ownGaps.some((g) => g.kind !== 'unauthorized')) return '无法验收';
+  if (ownGaps.length) return '待授权';
+  return baseVerdict(dim.level, findings.filter((f) => dim.checks.includes(f.checkId))).verdict;
 }
 
 // gap 归类：检查自己声明了 gapKind 就照办；Q2 与 Q1 共用 runTests 开关，

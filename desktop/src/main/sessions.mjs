@@ -392,7 +392,18 @@ function traceToData(tr) {
 
 function dataToTrace(data) {
   if (!data || typeof data !== 'object') return { tool: '', args: null, result: null };
-  return { tool: data.name ?? '', args: data.args ?? null, result: data.result ?? null };
+  const base = { tool: data.name ?? '', args: data.args ?? null, result: data.result ?? null };
+  // ask_user 的卡片需要区分「等待中 / 已回答 / 已取消」：只对这个工具额外带 status/error/callId，
+  // 其余工具的 trace 形状保持不变（既有断言与渲染都不受影响）。
+  if (String(data.name ?? '') === 'ask_user') {
+    return {
+      ...base,
+      status: typeof data.status === 'string' ? data.status : null,
+      error: data.error == null ? null : String(data.error),
+      callId: data.callId == null ? null : String(data.callId)
+    };
+  }
+  return base;
 }
 
 /* ---------- 工具调用级落库（第 2 步）：running → ok/fail，崩溃后仍可见 ----------

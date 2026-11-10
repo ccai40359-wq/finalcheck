@@ -280,7 +280,13 @@ export const TOOLS_SCHEMA = [
 // TOOLS_SCHEMA 同时是 MCP 通道的 SSOT（src/mcp/server.mjs 照抄并精确断言工具表），
 // MCP 通道没有 review_diff 的实现，放进去会让 tools/list 暴露一个调不通的工具。
 export const AGENT_ONLY_TOOLS_SCHEMA = [
-  { type: 'function', function: { name: 'review_diff', description: '只读审查 git 改动（默认对比 HEAD，也可 HEAD~1 / 分支名）：返回改动文件与 +/- 行数，并标出新增 SQL 拼接 / 命令执行 / 密钥字面量、删除的鉴权中间件、被改的 .env/.gitignore。不执行被审项目代码，不做 add/commit/checkout', parameters: { type: 'object', properties: { dir: { type: 'string', description: '项目绝对路径' }, base: { type: 'string', description: '可选：对比基线，默认 HEAD（也可 HEAD~1 或分支名）' } }, required: ['dir'] } } }
+  { type: 'function', function: { name: 'review_diff', description: '只读审查 git 改动（默认对比 HEAD，也可 HEAD~1 / 分支名）：返回改动文件与 +/- 行数，并标出新增 SQL 拼接 / 命令执行 / 密钥字面量、删除的鉴权中间件、被改的 .env/.gitignore。不执行被审项目代码，不做 add/commit/checkout', parameters: { type: 'object', properties: { dir: { type: 'string', description: '项目绝对路径' }, base: { type: 'string', description: '可选：对比基线，默认 HEAD（也可 HEAD~1 或分支名）' } }, required: ['dir'] } } },
+  // 回合中途向用户提问：只在主 agent 的工具表；子代理不注册（避免并行子代理同时弹多个问题）。
+  // 卡片 UI 用 callId 关联；回答经 finalcheck:ask-user-answer 回填，工具返回 { answer }。
+  { type: 'function', function: { name: 'ask_user', description: '回合中途向用户提问并等待回答（同一回合最多 3 次）。只在真有分叉且影响结论时使用（例如「按 L2 还是 L3」「动态探测要不要授权」「两个方向只能选一个」），信息足够时不要打扰用户。最多给 6 个选项；纯开放式提问可以不给 options，由用户自己输入。调用后本回合暂停，直到用户回答或点击停止', parameters: { type: 'object', properties: { question: { type: 'string', description: '要问用户的问题，一句话说清分叉点与影响' }, options: { type: 'array', maxItems: 6, description: '可选：2-6 个候选答案；不给则纯开放式提问', items: { type: 'object', properties: { label: { type: 'string', description: '选项短标签' }, description: { type: 'string', description: '可选的补充说明（影响/代价）' } }, required: ['label'] } }, multiSelect: { type: 'boolean', description: '可选：是否允许多选，默认 false' } }, required: ['question'] } } },
+  // 验收单（ZCode todo 式）：用户可见的勾选清单，3-8 条，每条必须写清验收标准。
+  // 可多次调用更新状态；done 必须带 evidence，failed/skipped 会被报告闸要求写进 ## Not covered。
+  { type: 'function', function: { name: 'todo_write', description: '维护本轮任务的验收单（勾选清单）：3-8 条，每条必须给 acceptance（怎么算做完）；可多次调用按 id 更新 status。开工时先写一遍，做完一条就把 status 改成 done 并补 evidence（文件:行 / 命令输出 / HTTP 复现）。不能做或跳过的条目标 failed/skipped，最终回答的 ## Not covered 必须点名它们', parameters: { type: 'object', properties: { items: { type: 'array', minItems: 3, maxItems: 8, description: '3-8 条任务；id 稳定（更新状态时按 id 合并）', items: { type: 'object', properties: { id: { type: 'string', description: '稳定标识（如 s1 / step-1）' }, task: { type: 'string', description: '这一步要做什么（一句话）' }, acceptance: { type: 'string', description: '验收标准（必填）：怎么算这一步完成，可检查的条件' }, status: { type: 'string', enum: ['pending', 'running', 'done', 'failed', 'skipped'], description: '状态，默认 pending' }, evidence: { type: 'string', description: '证据（done 时必填）：文件:行 / 命令输出摘要 / HTTP 复现' } }, required: ['id', 'task', 'acceptance'] } } }, required: ['items'] } } }
 ];
 export const AGENT_TOOLS_SCHEMA = [...TOOLS_SCHEMA, ...AGENT_ONLY_TOOLS_SCHEMA];
 
@@ -308,6 +314,8 @@ const SYSTEM_BASE = [
   '项目记忆：项目根的 AGENTS.md 是该项目唯一的长期记忆载体，每轮会自动注入。用户说「记住 / 以后都这样 / 记到项目里」时，用 remember_project 追加一条稳定事实（不要凭印象编造，也不要塞一次性内容）；AGENTS.md 里已有的约定优先遵守；没有 AGENTS.md 时不要主动创建，除非用户要求。',
   '质量命令闸：项目根若有 finalcheck.quality.json，调用 quality_gate 会跑里面声明的 lint / typecheck / test / bench 并给出 exit、耗时、是否超阈值、覆盖率（执行前会要用户授权）。用户问「可读性 / 性能 / 稳定性 / 能不能转接」时：先看有没有这份配置；有就跑它拿可测量证据，没有就明说「没有量化闸，只能代码审查」，再用 read_file 逐文件给结论+文件:行，不要编造分数（没有 profiler，就没有 p95）。',
   '验收档位纪律：用户说「按 L1 / L2 / L3 验收」时必须把 tier 显式传给 audit_project，不许自行降档；L2 会跑交接(H1)与可维护性(Q3)，L3 再加许可证(C1)与运维(O1)。返回的 gates.gaps 必须原样列给用户（「这关没跑，原因是…」），不许把没跑的关说成通过，也不许用「AI 看过了」替代没跑的闸。',
+  '向用户提问：只在不问就无法继续、且答案会改变结论时调用 ask_user（例如「按 L2 还是 L3」「动态探测要不要授权」「两个方向只能选一个」）；信息足够时不要打扰用户。一次只问一件事，选项最多 6 个；纯开放式问题可以不给选项。一次回合最多问 3 次，第 4 次会被拒绝。',
+  '验收单：任务要分几步做时，开工前先用 todo_write 写 3-8 条，每条 acceptance（怎么算完成）必填；做完一条立刻再调一次 todo_write 把 status 改成 done 并补 evidence（文件:行 / 命令输出 / HTTP 复现）。做不了或跳过的条目写 failed/skipped，最终回答的 ## Not covered 必须逐条点名它们——done 无证据、failed/skipped 没点名，报告闸会判不合格。',
   '回答全中文、简洁，先结论后证据；用 markdown 排版（结论加粗、证据用列表、长输出用代码块）。'
 ].join('\n');
 
@@ -626,6 +634,9 @@ async function runToolCall(tc, tools, onEvent, signal = null, onToolLifecycle = 
   const argsText = String(tc?.function?.arguments || '');
   const callId = tc?.id == null ? null : String(tc.id);
   const t0 = Date.now();
+  // 推给渲染层的参数预览：普通工具 2000 字够看细节；todo_write 是结构化清单（3-8 条 +
+  // 验收标准 + 证据），截断会变成非法 JSON 导致实时卡片解析不出来，单独放宽。
+  const previewArgs = (text) => text.slice(0, name === 'todo_write' ? 8000 : 2000);
   const lifecycle = (ev) => {
     if (typeof onToolLifecycle !== 'function') return;
     try { onToolLifecycle(ev); } catch { /* 观测/落库回调失败不影响工具执行 */ }
@@ -637,13 +648,13 @@ async function runToolCall(tc, tools, onEvent, signal = null, onToolLifecycle = 
   if (signal?.aborted) {
     // 已中断：不再执行工具，直接给 cancelled 结果（并行批次里未开始的条目走这里）
     const result = cancelledToolResult();
-    onEvent?.({ kind: 'tool-start', id: tc?.id, name, args: argsText.slice(0, 2000), cancelled: true });
+    onEvent?.({ kind: 'tool-start', id: tc?.id, name, args: previewArgs(argsText), cancelled: true });
     onEvent?.({ kind: 'tool-end', id: tc?.id, name, ms: 0, ok: false, cancelled: true });
     lifecycle({ phase: 'start', id: callId, name, args: argsText, at: t0 });
     lifecycle({ phase: 'end', id: callId, name, args: argsText, status: 'fail', result, error: String(result.error), ms: 0, cancelled: true, at: Date.now() });
     return { id: tc?.id, trace: { tool: name, args: argsText, result }, modelContent: JSON.stringify(result) };
   }
-  onEvent?.({ kind: 'tool-start', id: tc?.id, name, args: argsText.slice(0, 2000) });
+  onEvent?.({ kind: 'tool-start', id: tc?.id, name, args: previewArgs(argsText) });
   lifecycle({ phase: 'start', id: callId, name, args: argsText, at: t0 });
   let result;
   try {

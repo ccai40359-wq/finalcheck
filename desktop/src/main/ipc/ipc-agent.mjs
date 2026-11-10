@@ -11,6 +11,8 @@ import { resolveModel, effectiveWindow, effectiveMaxOutputTokens, crossTurnBudge
 import { listJournals, pickResumableRun } from '../workflow-journal.mjs';
 import { writeStepTranscript, readStepTranscript, pruneRuns, trimTranscriptMessages } from '../transcripts.mjs';
 import { withOutputLanguage } from '../lang.mjs';
+import { createAskUserRegistry } from '../ask-user.mjs';
+import { createTodoRegistry } from '../todo-list.mjs';
 import { t } from '../../renderer/i18n/core.mjs';
 
 // 附件里的图片 → OpenAI 多模态 content parts（本机网关已验证支持 image_url data:）
@@ -82,6 +84,21 @@ export function registerAgentIpc({
 }) {
   const workflowRunsDir = () => path.join(getDataRoot(), 'workflow-runs');
 
+  // 回合中途提问：pending 只活在内存里；问题/回答由 ask_user 的 tool part 落库
+  // （args 在 tool-start 写入，{answer} 在 tool-end 写入），重开会话从 trace 还原卡片。
+  const askUsers = createAskUserRegistry({
+    emit: (payload) => {
+      const w = getWin();
+      if (!w || w.isDestroyed()) throw new Error(t('窗口不可用'));
+      w.webContents.send('finalcheck:ask-user', payload);
+    }
+  });
+  ipcMain.handle('finalcheck:ask-user-answer', (_e, payload = {}) => askUsers.answer(payload));
+
+  // 验收单（todo_write）：台账只在内存（按会话存最新一份）；卡片由 tool part 还原，
+  // 回合结束时用同一份台账跑报告闸（lintTodoReport），不改会话 schema。
+  const todos = createTodoRegistry();
+
   ipcMain.handle('finalcheck:agent-steer', (_e, sessionId = null, text = '') => {
     const steerText = String(text ?? '').trim();
     if (!steerText) return { error: t('Steer 内容为空') };
@@ -94,12 +111,15 @@ export function registerAgentIpc({
   });
   ipcMain.handle('finalcheck:agent-cancel', (_e, sessionId = null) => {
     if (sessionId && state.activeChats.has(sessionId)) {
+      // 先 resolve 挂起的提问（工具返回「用户取消」），再 abort 回合
+      askUsers.cancelSession(sessionId);
       try { state.activeChats.get(sessionId).abort(); } catch { /* 忽略 */ }
       state.activeChats.delete(sessionId);
       state.steerBuffers.delete(sessionId); // 回合被中断：残留的注入不再跨回合生效
       return { cancelled: 1 };
     }
     let n = 0;
+    askUsers.cancelAll();
     for (const ac of state.activeChats.values()) { try { ac.abort(); n++; } catch { /* 忽略 */ } }
     state.activeChats.clear();
     state.steerBuffers.clear();
@@ -454,6 +474,10 @@ export function registerAgentIpc({
     }
     // 工具实现抽到 agent-tools.mjs（可单测）；索引只负责接线
     const { createAgentTools } = await import(engineUrl('desktop/src/main/agent-tools.mjs'));
+    // 新回合：ask_user 的次数上限按回合重置（旧回合挂着的 pending 不应存在；有也按取消收尾）
+    askUsers.beginTurn(sessionId);
+    // 验收单同理：报告闸只判本回合的清单，上一回合的勾选不带过来
+    todos.beginTurn(sessionId);
     const out = await runAgentTurn({
       // agent-service 入参形状不变：baseUrl / apiKey / model（取模型列表第一个）
       // Wave 2：窗口/输出预留/工具并发透传（供应商没配就用默认值；不改动 usage 采集逻辑）
@@ -530,6 +554,10 @@ export function registerAgentIpc({
         hooksConfig: hooksCfg,
         sessionId,
         commandIdleMs: cfg.commandIdleMs,
+        // 只有主 agent 有 ask_user；子代理/工作流 gate 不注册（避免并行弹多张卡）
+        askUser: (args, ctx) => askUsers.ask({ ...(args || {}), sessionId, signal: ctx?.signal || chatAbort.signal }),
+        // 验收单同理：todo_write 只在主 agent 工具表；台账按会话存，回合末跑报告闸
+        todoWrite: (args) => todos.write(sessionId, args),
         runWorkflow: async (args) => {
           const { runWorkflow } = await import(engineUrl('desktop/src/main/workflow.mjs'));
           // 运行中的工作流控制台：暂停/继续/停止、最大并发、子代理模型（UI 可改）
@@ -646,7 +674,7 @@ export function registerAgentIpc({
           }
         }
       })
-    });
+    }).finally(() => { askUsers.endTurn(sessionId); });
     if (sessionId && state.activeChats.get(sessionId) === chatAbort) state.activeChats.delete(sessionId);
     state.steerBuffers.delete(sessionId); // 回合已收尾：没被 drain 的 Steer 不再漏到下一回合
     // 子代理用量补账：工作流里的每一步也是真实请求，token 单独记一条；
@@ -685,6 +713,23 @@ export function registerAgentIpc({
         completion: usageRec.completion,
         cached: usageRec.cached
       }).catch((e) => console.warn('[usage-ledger] 写入失败（已忽略）：' + (e?.message || e)));
+    }
+    // 报告闸（验收单）：done 没 evidence、failed/skipped 没写进 ## Not covered → 判不合格。
+    // 不合格原因附在回答末尾（随 assistant 消息落盘，历史/导出都看得到），不静默放过。
+    if (sessionId && !out.cancelled && !out.error && !out.interrupted && typeof out.answer === 'string') {
+      const todoItems = todos.list(sessionId);
+      if (todoItems.length) {
+        try {
+          const { lintTodoReport } = await import(engineUrl('desktop/src/main/swarm.mjs'));
+          const warnings = lintTodoReport(out.answer, { items: todoItems });
+          out.reportWarnings = warnings;
+          out.reportLintOk = warnings.length === 0;
+          if (warnings.length) {
+            const notice = `**${t('报告不合格（验收单闸）')}**\n${warnings.map((w) => `- ${w}`).join('\n')}`;
+            out.answer = out.answer.trim() ? `${out.answer}\n\n---\n${notice}` : notice;
+          }
+        } catch { /* 闸自身异常不阻断回答 */ }
+      }
     }
     if (sessionId) {
       // dsh 语义：中断的输出也要落盘（content 已含已流出部分），会话历史不丢内容
