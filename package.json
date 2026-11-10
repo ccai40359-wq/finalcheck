@@ -1,0 +1,25 @@
+{
+  "name": "finalcheck",
+  "version": "0.0.1",
+  "description": "分级生产就绪验收：人看不懂的代码，跑之前先过闸",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "finalcheck": "./bin/finalcheck.js",
+    "finalcheck-mcp": "./bin/finalcheck-mcp.js"
+  },
+  "scripts": {
+    "test": "node --test \"tests/*.test.mjs\"",
+    "smoke:agent": "node scripts/agent-live-smoke.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "UNLICENSED",
+  "dependencies": {
+    "@babel/parser": "^8.1.0"
+  },
+  "devDependencies": {
+    "autocannon": "^9.0.0"
+  }
+}

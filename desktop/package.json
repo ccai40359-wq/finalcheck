@@ -1,0 +1,84 @@
+{
+  "name": "finalcheck-desktop",
+  "productName": "FinalCheck",
+  "version": "0.1.0",
+  "author": "FinalCheck",
+  "description": "FinalCheck 终检台桌面端：全方位代码体检 + 渗透/压测 + AI Agent",
+  "private": true,
+  "type": "module",
+  "main": "out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "dist": "electron-vite build && electron-builder --win dir",
+    "preview": "electron-vite preview"
+  },
+  "build": {
+    "appId": "com.finalcheck.terminal",
+    "productName": "FinalCheck",
+    "copyright": "Copyright © 2026 FinalCheck",
+    "artifactName": "FinalCheck-install.${ext}",
+    "asar": false,
+    "npmRebuild": false,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "out/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../src",
+        "to": "src"
+      },
+      {
+        "from": "../playbooks",
+        "to": "playbooks"
+      },
+      {
+        "from": "src",
+        "to": "desktop/src"
+      },
+      {
+        "from": "build",
+        "to": "app/build"
+      },
+      {
+        "from": "../node_modules",
+        "to": "node_modules"
+      }
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "legalTrademarks": "FinalCheck",
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "FinalCheck",
+      "uninstallDisplayName": "FinalCheck"
+    }
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.20",
+    "dompurify": "^3.2.4",
+    "electron": "^33.2.0",
+    "electron-builder": "^26.18.0",
+    "electron-vite": "^2.3.0",
+    "marked": "^15.0.6",
+    "postcss": "^8.4.49",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tailwindcss": "^3.4.17",
+    "vite": "^5.4.11"
+  },
+  "dependencies": {
+    "autocannon": "^7.15.0"
+  }
+}

@@ -1,0 +1,55 @@
+import { contextBridge, ipcRenderer } from 'electron';
+
+contextBridge.exposeInMainWorld('finalcheck', {
+  pickDirectory: () => ipcRenderer.invoke('finalcheck:pick-directory'),
+  pickFiles: () => ipcRenderer.invoke('finalcheck:pick-files'),
+  saveAttachment: (payload) => ipcRenderer.invoke('finalcheck:attachment:save', payload),
+  artifactRead: (p) => ipcRenderer.invoke('finalcheck:artifact:read', p),
+  artifactOpen: (p) => ipcRenderer.invoke('finalcheck:artifact:open', p),
+  copyText: (text) => ipcRenderer.invoke('finalcheck:clipboard:write', text),
+  skillsList: () => ipcRenderer.invoke('finalcheck:skills:list'),
+  compactSession: (id) => ipcRenderer.invoke('finalcheck:compact-session', id),
+  contextStats: (payload) => ipcRenderer.invoke('finalcheck:context:stats', payload),
+  usageStats: (payload) => ipcRenderer.invoke('finalcheck:usage:stats', payload),
+  exportDiagnostics: () => ipcRenderer.invoke('finalcheck:diagnostics:export'),
+  demoPath: () => ipcRenderer.invoke('finalcheck:demo:path'),
+  windowCtl: (action) => ipcRenderer.invoke('finalcheck:window-ctl', action),
+  audit: (dir, opts) => ipcRenderer.invoke('finalcheck:audit', dir, opts),
+  scanDownload: (dir) => ipcRenderer.invoke('finalcheck:scan-download', dir),
+  probe: (url, opts) => ipcRenderer.invoke('finalcheck:probe', url, opts),
+  stress: (url, opts) => ipcRenderer.invoke('finalcheck:stress', url, opts),
+  agentChat: (messages, confirmedHosts, sessionId) => ipcRenderer.invoke('finalcheck:agent-chat', messages, confirmedHosts, sessionId),
+  agentSteer: (sessionId, text) => ipcRenderer.invoke('finalcheck:agent-steer', sessionId, text),
+  cancelChat: (sessionId) => ipcRenderer.invoke('finalcheck:agent-cancel', sessionId),
+  workflowControl: (sessionId, payload) => ipcRenderer.invoke('finalcheck:workflow-control', sessionId, payload),
+  workflowStepContext: (sessionId, stepId) => ipcRenderer.invoke('finalcheck:workflow-step', sessionId, stepId),
+  sessions: {
+    list: () => ipcRenderer.invoke('finalcheck:sessions:list'),
+    open: (id) => ipcRenderer.invoke('finalcheck:sessions:open', id),
+    create: (title) => ipcRenderer.invoke('finalcheck:sessions:new', title),
+    remove: (id) => ipcRenderer.invoke('finalcheck:sessions:delete', id),
+    rename: (id, title) => ipcRenderer.invoke('finalcheck:sessions:rename', id, title),
+    flags: (id, flags) => ipcRenderer.invoke('finalcheck:sessions:flags', id, flags),
+    rewind: (id, keepUserTurns) => ipcRenderer.invoke('finalcheck:sessions:rewind', id, keepUserTurns),
+    setModel: (id, cfg) => ipcRenderer.invoke('finalcheck:sessions:set-model', id, cfg),
+    move: (id, targetProjectId) => ipcRenderer.invoke('finalcheck:sessions:move', id, targetProjectId)
+  },
+  projects: {
+    list: () => ipcRenderer.invoke('finalcheck:projects:list'),
+    current: () => ipcRenderer.invoke('finalcheck:projects:current'),
+    add: (dir) => ipcRenderer.invoke('finalcheck:projects:add', dir),
+    remove: (id) => ipcRenderer.invoke('finalcheck:projects:remove', id),
+    select: (id) => ipcRenderer.invoke('finalcheck:projects:select', id)
+  },
+  onAgentToken: (cb) => { const h = (_e, t) => cb(t); ipcRenderer.on('finalcheck:agent-token', h); return () => ipcRenderer.removeListener('finalcheck:agent-token', h); },
+  onAgentEvent: (cb) => { const h = (_e, ev) => cb(ev); ipcRenderer.on('finalcheck:agent-event', h); return () => ipcRenderer.removeListener('finalcheck:agent-event', h); },
+  onSessionTitle: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('finalcheck:session-title', h); return () => ipcRenderer.removeListener('finalcheck:session-title', h); },
+  // 权限审批：主进程 fail-closed 闭集（allowed-once / always-session / rejected）
+  onApprovalRequest: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('finalcheck:approval-request', h); return () => ipcRenderer.removeListener('finalcheck:approval-request', h); },
+  approvalDecide: (callId, decision) => ipcRenderer.invoke('finalcheck:approval-decide', callId, decision),
+  confirmHost: (host) => ipcRenderer.invoke('finalcheck:confirm-host', host),
+  confirmDir: (dir) => ipcRenderer.invoke('finalcheck:confirm-dir', dir),
+  getConfig: () => ipcRenderer.invoke('finalcheck:get-config'),
+  setConfig: (cfg) => ipcRenderer.invoke('finalcheck:set-config', cfg),
+  testProvider: (p) => ipcRenderer.invoke('finalcheck:test-provider', p)
+});

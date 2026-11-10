@@ -1,0 +1,4 @@
+{
+  "publicRoutes": [],
+  "exclude": ["tests/fixtures", "src/fixtures", "tests/benchmark", "tests", ".tools", ".tmp", "playbooks", "desktop/_recon", "desktop/sessions", "desktop/memory", "desktop/spill", "desktop/config.json", "desktop/release", "desktop/dist-staging"]
+}

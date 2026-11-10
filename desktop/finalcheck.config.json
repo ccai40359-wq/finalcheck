@@ -1,0 +1,4 @@
+{
+  "publicRoutes": [],
+  "exclude": ["release", "out", "dist-staging", "config.json", "sessions", "memory", "spill", "attachments"]
+}

@@ -1,0 +1,9 @@
+{
+  "name": "clean-pkg",
+  "version": "1.0.0",
+  "description": "X1 clean control: no lifecycle scripts, no deps",
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {}
+}

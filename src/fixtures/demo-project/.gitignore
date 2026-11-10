@@ -1,0 +1,8 @@
+# 演示项目本地忽略规则：不提交依赖与真实环境文件。
+node_modules/
+.env
+.env.local
+.env.*.local
+
+# 但保留示例文件，方便体检时对账环境变量。
+!.env.example

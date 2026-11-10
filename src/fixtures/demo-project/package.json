@@ -1,0 +1,16 @@
+{
+  "name": "finalcheck-demo",
+  "version": "0.0.1",
+  "private": true,
+  "description": "故意带洞、绝不联网的 FinalCheck 体检演示项目",
+  "type": "module",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js",
+    "test": "node --test test/demo.test.mjs"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  },
+  "license": "UNLICENSED"
+}

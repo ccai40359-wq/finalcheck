@@ -1,0 +1,309 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  @apply bg-base text-ink antialiased;
+  font-family: 'Noto Serif SC', 'STSong', 'SimSun', 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', serif;
+}
+
+/* 书法感标题与品牌字 */
+h1, h2, .brand, .font-kai {
+  font-family: 'KaiTi', 'STKaiti', 楷体, 'Noto Serif SC', serif;
+  letter-spacing: 0.08em;
+}
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: #2e2a20; border-radius: 8px; }
+::-webkit-scrollbar-thumb:hover { background: #4a4230; }
+::-webkit-scrollbar-track { background: transparent; }
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* 会话运行中的转圈：8 段步进，像系统 activity indicator */
+@keyframes fc-spin { to { transform: rotate(360deg); } }
+.fc-spin { animation: fc-spin 1s steps(8, end) infinite; transform-origin: 50% 50%; }
+
+/* ============ 液态玻璃（Apple Liquid Glass 风格） ============ */
+:root {
+  --glass-tint: rgba(20, 20, 24, 0.55);
+  --glass-hi: rgba(255, 255, 255, 0.10);
+  --glass-line: rgba(255, 255, 255, 0.075);
+  --glass-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+}
+
+.app-root {
+  position: relative;
+  isolation: isolate;
+  background: radial-gradient(120% 90% at 50% -10%, #100c07 0%, #09090b 58%, #060608 100%);
+}
+
+/* 玻璃后面要有东西可折射：两团极暗的光晕，极慢漂移 */
+.app-ambient {
+  position: fixed;
+  inset: -18%;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(closest-side, rgba(201, 162, 39, 0.05), transparent 74%) 8% 4% / 44vmax 44vmax no-repeat,
+    radial-gradient(closest-side, rgba(63, 158, 110, 0.035), transparent 74%) 96% 2% / 34vmax 34vmax no-repeat,
+    radial-gradient(closest-side, rgba(227, 197, 107, 0.03), transparent 74%) 78% 100% / 46vmax 46vmax no-repeat;
+  animation: ambient-drift 32s ease-in-out infinite alternate;
+}
+@keyframes ambient-drift {
+  from { transform: translate3d(-1.2%, -0.8%, 0) scale(1); }
+  to { transform: translate3d(1.2%, 1.2%, 0) scale(1.05); }
+}
+
+
+/* 正文区薄暗纱：玻璃透光但不牺牲文字对比度 */
+.chat-veil { background: rgba(8, 8, 10, 0.72); }
+
+/* 侧栏玻璃 */
+.glass-side {
+  background-color: rgba(12, 12, 15, 0.93);
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.010) 45%, rgba(255, 255, 255, 0.018));
+  backdrop-filter: blur(32px) saturate(165%);
+  box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.06), 14px 0 44px rgba(0, 0, 0, 0.35);
+}
+
+/* 玻璃按钮 / 玻璃行：内侧一道高光 + 外侧软阴影，按下轻微回弹 */
+.glass-row {
+  position: relative;
+  background-color: rgba(255, 255, 255, 0.07);
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0) 46%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), inset 0 0 0 1px rgba(255, 255, 255, 0.06), 0 6px 18px rgba(0, 0, 0, 0.25);
+  transition: background-color 0.28s var(--fc-ease), box-shadow 0.28s var(--fc-ease), transform 0.28s var(--fc-ease), color 0.28s var(--fc-ease);
+}
+.glass-row:hover {
+  background-color: rgba(255, 255, 255, 0.078);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16), inset 0 0 0 1px rgba(227, 197, 107, 0.14), 0 8px 22px rgba(0, 0, 0, 0.3);
+}
+.glass-row:active:not(:disabled) { transform: scale(0.985); }
+
+/* 输入框（无边框，只有玻璃边缘高光） */
+.glass-composer {
+  background-color: rgba(19, 19, 23, 0.82);
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.018) 45%, rgba(255, 255, 255, 0.028));
+  backdrop-filter: blur(28px) saturate(175%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.10), inset 0 0 0 1px rgba(255, 255, 255, 0.045), 0 18px 54px rgba(0, 0, 0, 0.42);
+  transition: box-shadow 0.3s var(--fc-ease), background-color 0.3s var(--fc-ease);
+}
+.glass-composer.fc-drag {
+  background-color: rgba(201, 162, 39, 0.07);
+  box-shadow: inset 0 0 0 1px rgba(227, 197, 107, 0.45), 0 18px 54px rgba(0, 0, 0, 0.42);
+}
+.glass-composer:focus-within {
+  background-color: rgba(24, 24, 29, 0.88);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14), inset 0 0 0 1px rgba(227, 197, 107, 0.18), 0 20px 64px rgba(0, 0, 0, 0.5);
+}
+
+/* 弹出层 / 菜单 / 面板：更厚的玻璃 + 更强的模糊 */
+.glass-pop {
+  /* 菜单/弹层优先可读性：近乎不透明，不做 backdrop-filter（半透明+模糊会让下面的正文透上来） */
+  background-color: #17171c;
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0) 42%);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 28px 80px rgba(0, 0, 0, 0.65);
+}
+
+/* 弹层出现：苹果式 spring（缩放 + 上浮 + 淡入） */
+@keyframes popIn {
+  from { opacity: 0; transform: translateY(6px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.pop-in { animation: popIn 0.22s cubic-bezier(.22, 1, .36, 1); transform-origin: bottom right; }
+
+/* 卡片（过程时间线 / 报告 / 工作流） */
+.glass-card {
+  background-color: rgba(255, 255, 255, 0.055);
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0) 55%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), inset 0 0 0 1px rgba(255, 255, 255, 0.05), 0 10px 30px rgba(0, 0, 0, 0.28);
+}
+
+/* 用户消息气泡：淡淡的金色玻璃 */
+.glass-bubble {
+  background-color: rgba(201, 162, 39, 0.22);
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0) 55%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16), inset 0 0 0 1px rgba(227, 197, 107, 0.22), 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center justify-center gap-1.5 rounded-lg px-4 py-2 text-sm font-medium
+      transition-all duration-200 select-none
+      disabled:opacity-40 disabled:cursor-not-allowed active:scale-[0.98];
+  }
+  .btn-primary {
+    @apply btn text-base bg-gold hover:bg-goldSoft;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35), inset 0 -1px 0 rgba(0, 0, 0, 0.25), 0 6px 18px rgba(143, 116, 29, 0.35);
+  }
+  .btn-ghost {
+    @apply btn text-ink rounded-xl;
+    background-color: rgba(255, 255, 255, 0.05);
+    background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0));
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.10), inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+  }
+  .btn-ghost:hover { background-color: rgba(255, 255, 255, 0.08); }
+  .input {
+    @apply w-full rounded-xl px-3 py-2 text-sm text-ink
+      placeholder:text-mute/60 outline-none transition-all duration-300;
+    background-color: rgba(255, 255, 255, 0.04);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), inset 0 0 0 1px rgba(255, 255, 255, 0.055);
+  }
+  .input:focus {
+    background-color: rgba(255, 255, 255, 0.055);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), inset 0 0 0 1px rgba(201, 162, 39, 0.45);
+  }
+  .badge {
+    @apply inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium transition-all duration-200;
+  }
+}
+
+/* ---- markdown 文档式排版（assistant 消息专用，墨黑鎏金） ---- */
+.md {
+  line-height: 1.8;
+  color: #ece7dc;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+.md > :first-child { margin-top: 0; }
+.md > :last-child { margin-bottom: 0; }
+
+/* 标题：金色楷书 */
+.md h1, .md h2, .md h3, .md h4, .md h5, .md h6 {
+  font-family: 'KaiTi', 'STKaiti', 楷体, 'Noto Serif SC', serif;
+  color: #e3c56b;
+  font-weight: 700;
+  line-height: 1.4;
+  margin: 1.1em 0 0.5em;
+  letter-spacing: 0.05em;
+}
+.md h1 { font-size: 1.35em; border-bottom: 1px solid rgba(201, 162, 39, 0.3); padding-bottom: 0.3em; }
+.md h2 { font-size: 1.2em; border-bottom: 1px solid rgba(201, 162, 39, 0.25); padding-bottom: 0.3em; }
+.md h3 { font-size: 1.08em; }
+.md h4, .md h5, .md h6 { font-size: 1em; }
+
+.md p { margin: 0.6em 0; }
+.md ul, .md ol { margin: 0.6em 0; padding-left: 1.6em; }
+.md li { margin: 0.25em 0; }
+.md li::marker { color: #c9a227; }
+.md strong { color: #e3c56b; font-weight: 600; }
+.md hr { border: 0; border-top: 1px solid rgba(201, 162, 39, 0.3); margin: 1.1em 0; }
+.md img { max-width: 100%; border-radius: 8px; }
+
+/* 链接：金色 */
+.md a {
+  color: #e3c56b;
+  text-decoration: underline;
+  text-decoration-color: rgba(201, 162, 39, 0.45);
+  text-underline-offset: 3px;
+}
+.md a:hover { color: #f0d78a; text-decoration-color: #e3c56b; }
+
+/* 行内 code：金字墨底 */
+.md code {
+  font-family: Consolas, 'JetBrains Mono', 'Courier New', monospace;
+  font-size: 0.86em;
+  color: #e3c56b;
+  background: #111114;
+  border: 1px solid #26262c;
+  border-radius: 4px;
+  padding: 0.1em 0.4em;
+}
+
+/* 代码块：墨底金边，横向滚动 */
+.md pre {
+  background: #0d0d10;
+  border: 1px solid rgba(201, 162, 39, 0.3);
+  border-radius: 10px;
+  padding: 0.8em 1em;
+  margin: 0.7em 0;
+  overflow-x: auto;
+}
+.md pre code {
+  display: block;
+  background: none;
+  border: 0;
+  padding: 0;
+  color: #ece7dc;
+  font-size: 0.82em;
+  line-height: 1.65;
+  white-space: pre;
+}
+
+/* 表格：金色细线边框 */
+.md table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.7em 0;
+  font-size: 0.86em;
+  display: block;
+  overflow-x: auto;
+}
+.md th, .md td {
+  border: 1px solid rgba(201, 162, 39, 0.35);
+  padding: 0.4em 0.75em;
+  text-align: left;
+}
+.md th {
+  background: rgba(201, 162, 39, 0.1);
+  color: #e3c56b;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.md tr:nth-child(2n) td { background: rgba(255, 255, 255, 0.025); }
+
+.md blockquote {
+  border-left: 3px solid rgba(201, 162, 39, 0.5);
+  margin: 0.7em 0;
+  padding: 0.15em 0 0.15em 1em;
+  color: #9a938a;
+}
+
+/* 思考强度滑杆（仿 ZCode：青→蓝渐变 + 白色圆点） */
+.effort-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 16px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #6b5716 0%, #c9a227 52%, #f0d98a 100%);
+  outline: none;
+  cursor: pointer;
+}
+.effort-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #f8fafc;
+  border: 2px solid rgba(15, 17, 21, 0.85);
+  box-shadow: 0 1px 8px rgba(0, 0, 0, 0.5);
+  transition: box-shadow .18s var(--fc-ease), transform .12s var(--fc-ease);
+}
+.effort-slider:active::-webkit-slider-thumb { transform: scale(1.06); box-shadow: 0 2px 12px rgba(0, 0, 0, 0.6); }
+
+/* 苹果式交互过渡：只动颜色/背景/边框/透明度，不碰布局属性 */
+:root { --fc-ease: cubic-bezier(.22, 1, .36, 1); }
+body { -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
+button, [role="button"] {
+  transition-property: background-color, color, border-color, opacity, box-shadow;
+  transition-duration: .24s;
+  transition-timing-function: var(--fc-ease);
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* 工作流卡片：横向滚动条做细，滚轮可左右滑 */
+.wf-scroll { scrollbar-width: thin; }
+.wf-scroll::-webkit-scrollbar { height: 6px; }
+.wf-scroll::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.14); border-radius: 8px; }
+.wf-scroll::-webkit-scrollbar-thumb:hover { background: rgba(227, 197, 107, 0.35); }
+.wf-scroll::-webkit-scrollbar-track { background: transparent; }
