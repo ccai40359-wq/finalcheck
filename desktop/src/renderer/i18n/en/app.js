@@ -107,6 +107,8 @@ export const EN_APP = {
   '还没有供应商，请到「模型设置」添加': 'No providers yet — add one in Model settings',
   '无模型': 'No models',
   '排队发送（当前回合结束后自动发送）': 'Queue send (sends after this turn ends)',
+  '已切换：后续消息与步骤使用 {model}': 'Switched: subsequent messages and steps will use {model}',
+  '已切换：后续步骤与下一条消息使用 {model}；本条正在输出的内容不中断': 'Switched: subsequent steps and the next message will use {model}. The response currently streaming continues uninterrupted.',
   '正在中断，请稍候': 'Stopping — one moment',
   '停止本回合': 'Stop this turn',
   '停止中…': 'Stopping…',
@@ -135,6 +137,8 @@ export const EN_APP = {
   '确定删除': 'Delete',
 
   // 操作提示（notice / error）
+  '请先打开一个会话': 'Open a session first',
+  '正在压缩当前上下文，请稍候…': 'Compacting the current context, please wait…',
   '添加项目失败：{msg}': 'Failed to add workspace: {msg}',
   '从项目列表移除「{name}」？不会删除磁盘文件夹，只移除这里的入口。': 'Remove "{name}" from the list? The folder on disk stays; only this entry is removed.',
   '移动失败：{msg}': 'Move failed: {msg}',

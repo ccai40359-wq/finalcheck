@@ -8,8 +8,9 @@ import { EN_APP } from './en/app.js';
 import { EN_CHAT } from './en/chat.js';
 import { EN_SETTINGS } from './en/settings.js';
 import { EN_MAIN } from './en/main.js';
+import { EN_CHECKS } from './en/checks.js';
 
-const DICTS = [EN_COMMON, EN_APP, EN_CHAT, EN_SETTINGS, EN_MAIN];
+const DICTS = [EN_COMMON, EN_APP, EN_CHAT, EN_SETTINGS, EN_MAIN, EN_CHECKS];
 const EN = Object.freeze(Object.assign({}, ...DICTS));
 
 export const LANGUAGES = Object.freeze(['auto', 'zh', 'en']);

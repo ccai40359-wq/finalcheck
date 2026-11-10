@@ -1,7 +1,7 @@
 {
   "name": "finalcheck-desktop",
   "productName": "FinalCheck",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "author": "Sean (https://github.com/ccai40359-wq)",
   "description": "FinalCheck 终检台桌面端：全方位代码体检 + 渗透/压测 + AI Agent",
   "private": true,

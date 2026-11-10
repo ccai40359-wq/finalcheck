@@ -32,7 +32,18 @@ import { reviewDiff } from '../../../src/review-diff.mjs';
 import { t } from '../renderer/i18n/core.mjs';
 
 export const SCRIPT_MAX_NODES = 200;
+// 硬上限：字面量 / 运行时解析出的扇出列表超过这个数直接报错（脚本写错了，不是规模问题）。
 export const SCRIPT_MAX_FANOUT = 50;
+// 默认软上限：没写 limit 时只跑前 20 项。实测事故里模型把侦察出的 32 个入口全量铺开，
+// 并发 4 跑了 25 分钟、一个字报告都没有；默认截断 + 显式 limit 让「扇出规模」变成
+// 可审查的脚本参数，而不是靠模型自觉。
+export const SCRIPT_DEFAULT_FANOUT_LIMIT = 20;
+// 截断文案里预览多少个未覆盖条目（总数始终写出来，避免文案被长列表撑爆）
+export const SCRIPT_FANOUT_SKIP_PREVIEW = 8;
+// 自动补的 report prompt 里最多列多少个未覆盖条目（超出写「等共 N 项」，报告仍可点名）
+export const SCRIPT_FANOUT_PROMPT_PREVIEW = 40;
+// 自动补的 report 节点 id（与 workflow.mjs 的 ADVERSARIAL_VERIFY_ID 同一命名约定）
+export const SCRIPT_AUTO_REPORT_ID = '__report__';
 // fanout 子节点之间的并发上限：一次 L3 验收会展开十几个独立审查，串行跑等于把每个
 // 子代理的 2-6 分钟直接相加（实测 20 个节点要一个多小时）。默认 4 是「够快」与「别把
 // 网关打限流」的折中；运行中还能在卡片设置里 1..14 调整。
@@ -216,6 +227,156 @@ function makeProgramNode({ id, name, role, depends_on, programType, extra = {}, 
 }
 
 /**
+ * fanout 的 limit：没写 → 默认 20；写了必须是 1..SCRIPT_MAX_FANOUT 的整数。
+ * @returns {{limit:number}|{error:string}}
+ */
+function parseFanoutLimit(raw, opId) {
+  if (raw.limit === undefined || raw.limit === null) return { limit: SCRIPT_DEFAULT_FANOUT_LIMIT };
+  const n = Number(raw.limit);
+  if (!Number.isInteger(n) || n < 1 || n > SCRIPT_MAX_FANOUT) {
+    return { error: t('fanout {id} 的 limit 必须是 1..{max} 的整数', { id: opId, max: SCRIPT_MAX_FANOUT }) };
+  }
+  return { limit: n };
+}
+
+/** 截断记录：让「跑了哪些、没跑哪些」成为可下发到报告的结构化数据 */
+function makeFanoutTruncation({ id, total, limit, skippedItems }) {
+  const skipped = Array.isArray(skippedItems) ? skippedItems.map(String) : [];
+  return { id: String(id), total: Number(total) || 0, limit: Number(limit) || 0, skipped: skipped.length, skippedItems: skipped };
+}
+
+function skippedPreview(skippedItems) {
+  const list = Array.isArray(skippedItems) ? skippedItems : [];
+  const head = list.slice(0, SCRIPT_FANOUT_SKIP_PREVIEW).join('、');
+  return list.length > SCRIPT_FANOUT_SKIP_PREVIEW ? t('{head} 等', { head }) : head;
+}
+
+function fanoutTruncationWarning(rec) {
+  return t('fanout {id}：按 {n} 项扇出，已截断到 {max}；其余 {rest} 项记入 Not covered（{preview}）', {
+    id: rec.id,
+    n: rec.total,
+    max: rec.limit,
+    rest: rec.skipped,
+    preview: skippedPreview(rec.skippedItems),
+  });
+}
+
+/**
+ * 截断信息进入 report prompt：未执行的条目必须被报告点名，否则「只跑了 20 项」
+ * 会被写成「已全面覆盖」。没有截断时返回空串（prompt 不变）。
+ */
+function buildTruncationPromptSection(truncations) {
+  const list = Array.isArray(truncations) ? truncations.filter((rec) => rec && rec.skipped > 0) : [];
+  if (!list.length) return '';
+  const lines = list.map((rec) => {
+    const preview = rec.skippedItems.slice(0, SCRIPT_FANOUT_PROMPT_PREVIEW).join('、');
+    const more = rec.skippedItems.length > SCRIPT_FANOUT_PROMPT_PREVIEW
+      ? t('……等共 {n} 项', { n: rec.skippedItems.length })
+      : '';
+    return t('- {id}：共 {total} 项，只执行前 {limit} 项；未覆盖 {rest} 项：{items}', {
+      id: rec.id, total: rec.total, limit: rec.limit, rest: rec.skipped, items: `${preview}${more}`,
+    });
+  });
+  return [
+    t('扇出截断（硬事实，不得隐瞒）：'),
+    ...lines,
+    t('上面这些未执行条目必须在 ## Not covered 里逐条点名（写清条目名，不要只写数量）。'),
+  ].join('\n');
+}
+
+/**
+ * 默认强制终局：脚本里有 LLM 取证节点（step/fanout/recurse/loop）却没有 report 时，
+ * 在末尾补一个 report，from 指向全部 LLM 节点（含自动补的 verify）。
+ * 幂等：已有任何 report（脚本里任何位置）就不动；aggregate 是程序终局，
+ * 但不能代替交付报告——有 LLM 节点时仍补 report（验证分支由 hasScriptTerminal 负责）。
+ * @returns {object} 同一个 norm（就地追加；节点超限时返回 {error}）
+ */
+export function injectScriptFinalReport(norm) {
+  if (!norm || norm.error || !Array.isArray(norm.items) || !Array.isArray(norm.nodes)) return norm;
+  if (hasScriptTerminal(norm.items, { reportOnly: true })) return norm;
+  const from = collectScriptEvidenceRefs(norm.items);
+  if (!from.length) return norm;
+  const taken = new Set(norm.nodes.map((n) => n && n.id).filter(Boolean));
+  let id = SCRIPT_AUTO_REPORT_ID;
+  if (taken.has(id)) {
+    let n = 2;
+    while (taken.has(`${SCRIPT_AUTO_REPORT_ID}${n}`)) n += 1;
+    id = `${SCRIPT_AUTO_REPORT_ID}${n}`;
+  }
+  if (norm.nodes.length + 1 > SCRIPT_MAX_NODES) {
+    return { error: t('脚本节点最多 {max} 个（自动补 report 后会超限）', { max: SCRIPT_MAX_NODES }) };
+  }
+  const ask = [
+    '把上游所有取证节点的结果汇总成一份最终交付报告，不得新增未经验证的结论。',
+    '必须且只能使用五段（标题一字不差）：## Conclusion / ## Findings / ## Verified / ## Not covered / ## Skipped；没有内容的段落写 None。',
+    '按 ## Not covered 点名未完成项：凡是失败、被跳过、被截断、未覆盖或未经对抗复核的节点/条目，都要按 id 或条目名逐条写出来，不许只写数量或含糊带过；并写明未覆盖原因（失败/中断/截断/超轮次/未执行）。',
+    '## Verified 只写有独立复核证据的条目（claimId + 证据指针）；没有独立复核的一律写「疑似/未复核」。',
+  ].join('\n');
+  const rawOp = { op: 'report', id, from, ask, auto: true };
+  const node = makeSimpleNode({
+    id,
+    name: t('最终报告'),
+    role: t('汇总'),
+    prompt: ask,
+    depends_on: from,
+    kind: 'report',
+    opType: 'report',
+    extra: { delivered: false, autoInserted: true, fromRefs: from, autoReport: true },
+    rawOp,
+  });
+  norm.items.push({ kind: 'node', node });
+  norm.nodes.push(node);
+  norm.nodeCount = norm.nodes.length;
+  return norm;
+}
+
+/** 收集脚本里所有 LLM 取证节点的引用（report 的 from）：step / fanout / recurse / loop / verify */
+export function collectScriptEvidenceRefs(items) {
+  const refs = [];
+  const walk = (list) => {
+    for (const item of Array.isArray(list) ? list : []) {
+      if (!item) continue;
+      if (item.kind === 'node') {
+        const node = item.node;
+        if (!node) continue;
+        const op = String(node.opType || '');
+        if (op === 'step' && !node.program) refs.push(node.id);
+        else if (op === 'verify') refs.push(node.id);
+        else if (op === 'recurse' || node.programType === 'loop') refs.push(node.id);
+      } else if (item.kind === 'fanout') {
+        refs.push(item.id);
+      } else if (item.kind === 'if') {
+        walk(item.then);
+        walk(item.else);
+      }
+    }
+  };
+  walk(items);
+  return [...new Set(refs.filter(Boolean))];
+}
+
+/** 脚本里是否已有终局（report / aggregate），递归看 if 分支、loop 每轮与 recurse 第一层 */
+export function hasScriptTerminal(items, { reportOnly = false } = {}) {
+  for (const item of Array.isArray(items) ? items : []) {
+    if (!item) continue;
+    if (item.kind === 'node' && item.node) {
+      const node = item.node;
+      if (String(node.opType || '') === 'report' || String(node.kind || '').toLowerCase() === 'report') return true;
+      if (!reportOnly && node.programType === 'aggregate') return true;
+      for (const round of Array.isArray(node.rounds) ? node.rounds : []) {
+        if (hasScriptTerminal(round?.items, { reportOnly })) return true;
+      }
+      for (const branch of Array.isArray(node.level1) ? node.level1 : []) {
+        if (hasScriptTerminal(branch?.items, { reportOnly })) return true;
+      }
+    } else if (item.kind === 'if') {
+      if (hasScriptTerminal(item.then, { reportOnly }) || hasScriptTerminal(item.else, { reportOnly })) return true;
+    }
+  }
+  return false;
+}
+
+/**
  * 默认强制对抗复核：脚本里有 LLM 取证节点（step/fanout/recurse）且没有 verify 时，
  * 在第一个 report 之前（没有 report 则末尾）补一个盲验节点，from 指向证据节点。
  * 只有 report/aggregate/gate 的脚本不补。幂等：已有任何 verify 节点则不动。
@@ -325,7 +486,15 @@ export function normalizeScript(script) {
   const nodes = [];
   const error = walkOps(script, ctx, items, nodes);
   if (error) return { error };
-  return injectScriptAdversarialVerify({ items, nodes, nodeCount: ctx.nodesCounted.n });
+  // 先补对抗复核（report 必须把 verify 当上游），再补终局 report（from 会带上 verify）。
+  const norm = injectScriptFinalReport(injectScriptAdversarialVerify({ items, nodes, nodeCount: ctx.nodesCounted.n }));
+  if (norm.error) return norm;
+  // 终局校验：只有 gate / if 这种没有 LLM 节点的边角脚本不会触发自动补 report，
+  // 这里明确报错，避免「跑了半天没有任何交付物」再次发生。
+  if (!hasScriptTerminal(norm.items)) {
+    return { error: t('脚本没有终局（report/aggregate），无法产出交付物；请在末尾加 report') };
+  }
+  return norm;
 }
 
 /**
@@ -336,13 +505,14 @@ export function normalizeScript(script) {
  * @returns {string}
  */
 export function describeScriptMode(norm) {
-  const traits = { fanoutItems: 0, fanoutRefs: 0, recurseItems: 0, loopRounds: 0, recurseDepth: 0, hasIf: false, hasAggregate: false };
+  const traits = { fanoutItems: 0, fanoutRefs: 0, fanoutTruncatedFrom: 0, recurseItems: 0, loopRounds: 0, recurseDepth: 0, hasIf: false, hasAggregate: false };
   const walk = (items) => {
     for (const item of Array.isArray(items) ? items : []) {
       if (!item) continue;
       if (item.kind === 'fanout') {
         if (Array.isArray(item.overItems)) traits.fanoutItems += item.overItems.length;
         else if (item.overRef) traits.fanoutRefs += 1;
+        if (item.truncation) traits.fanoutTruncatedFrom = Math.max(traits.fanoutTruncatedFrom, item.truncation.total);
       } else if (item.kind === 'if') {
         traits.hasIf = true;
         walk(item.then);
@@ -362,8 +532,11 @@ export function describeScriptMode(norm) {
   };
   walk(norm?.items);
   const parts = [];
-  if (traits.fanoutItems > 0) parts.push(t('按 {n} 项扇出', { n: traits.fanoutItems }));
-  else if (traits.fanoutRefs > 0) parts.push(t('扇出数量由上游结果决定'));
+  if (traits.fanoutItems > 0) {
+    parts.push(traits.fanoutTruncatedFrom > traits.fanoutItems
+      ? t('按 {n} 项扇出（原 {total} 项，已截断）', { n: traits.fanoutItems, total: traits.fanoutTruncatedFrom })
+      : t('按 {n} 项扇出', { n: traits.fanoutItems }));
+  } else if (traits.fanoutRefs > 0) parts.push(t('扇出数量由上游结果决定'));
   if (traits.recurseItems > 0) parts.push(t('按 {n} 项递归', { n: traits.recurseItems }));
   if (traits.loopRounds > 0) parts.push(t('最多 {n} 轮循环', { n: traits.loopRounds }));
   if (traits.recurseDepth > 0) parts.push(t('最多 {n} 层递归', { n: traits.recurseDepth }));
@@ -426,8 +599,12 @@ function walkOps(ops, ctx, outItems, outNodes) {
 
     if (op === 'fanout') {
       const over = raw.over;
+      const limitSpec = parseFanoutLimit(raw, baseId);
+      if (limitSpec.error) return limitSpec.error;
+      const limit = limitSpec.limit;
       let overItems = null;
       let originalOverRef = null;
+      let truncation = null;
       if (Array.isArray(over)) {
         if (over.length > SCRIPT_MAX_FANOUT) {
           return t('fanout {id} 的 over 最多 {max} 项（当前 {n}）', { id: baseId, max: SCRIPT_MAX_FANOUT, n: over.length });
@@ -436,6 +613,12 @@ function walkOps(ops, ctx, outItems, outNodes) {
           if (typeof entry !== 'string') return t('fanout {id} 的 over 里每项必须是字符串', { id: baseId });
         }
         overItems = over.map((entry) => String(entry));
+        // 字面列表在静态展开阶段就截断：节点数、阶段轨道、实际调用都以 limit 为准。
+        const kept = Math.min(limit, overItems.length);
+        if (overItems.length > kept) {
+          truncation = makeFanoutTruncation({ id: baseId, total: overItems.length, limit: kept, skippedItems: overItems.slice(kept) });
+          overItems = overItems.slice(0, kept);
+        }
       } else if (typeof over === 'string' && over.trim()) {
         originalOverRef = over.trim();
         if (!originalOverRef.startsWith('${') && !knownRef(originalOverRef, ctx)) {
@@ -465,6 +648,8 @@ function walkOps(ops, ctx, outItems, outNodes) {
         as: asName,
         overItems,
         overRef,
+        limit,
+        truncation,
         step: {
           name: text(raw.step.name).slice(0, 60),
           role: text(raw.step.role).slice(0, 80),
@@ -1046,6 +1231,17 @@ export async function runScriptWorkflow({
   const delivered = [];
   const claimsStore = [];
   const executionOrder = [];
+  // 扇出截断：静态展开阶段（字面列表）与运行时（over 引用解析后）都记到这里。
+  // 它是「报告必须点名未覆盖项」的数据源，随 out.fanoutTruncations 暴露给 UI/主 agent。
+  const truncations = [];
+  const truncationWarnings = [];
+  const recordTruncation = (rec) => {
+    if (!rec || !(rec.skipped > 0)) return;
+    if (!truncations.some((x) => x.id === rec.id)) truncations.push(rec);
+    const warning = fanoutTruncationWarning(rec);
+    if (!truncationWarnings.includes(warning)) truncationWarnings.push(warning);
+  };
+  const fanoutTruncationsOut = () => truncations.map((rec) => ({ ...rec, skippedItems: rec.skippedItems.slice() }));
   let stopped = false;
   let finalized = false;
   let saveChain = Promise.resolve();
@@ -1177,6 +1373,16 @@ export async function runScriptWorkflow({
     }
     if (node.kind === 'report') {
       const dependsOn = resolveRefs(node.depends_on);
+      // 自动补的 report 要汇总「本轮所有已执行的 LLM 节点」：loop/recurse 动态展开的子节点
+      // 没有可静态引用的 id，但 executionOrder 里有结果，直接补进上游。
+      if (node.autoInserted) {
+        for (const id of executionOrder) {
+          if (dependsOn.includes(id)) continue;
+          const row = results.get(id);
+          if (!row || row.program || id === node.id) continue;
+          dependsOn.push(id);
+        }
+      }
       const ask = `${interpolateScriptText(node.prompt, vars, results)}\n\n硬规则：${REPORT_ADVERSARIAL_RULE}`;
       const upstream = dependsOn.map((id) => results.get(id)).filter(Boolean);
       let prompt = buildPrompt(
@@ -1188,6 +1394,9 @@ export async function runScriptWorkflow({
       // 失败/中断节点的洞清单必须进 report prompt：报告不能只汇总成功分支。
       const holesSection = buildHolesPromptSection(collectHoles(results));
       if (holesSection) prompt = `${prompt}\n\n${holesSection}`;
+      // 扇出截断的未覆盖项也必须进 prompt：否则报告会把「只跑了 20 项」写成「全部覆盖」。
+      const truncationSection = buildTruncationPromptSection(truncations);
+      if (truncationSection) prompt = `${prompt}\n\n${truncationSection}`;
       prompt = `${prompt}\n\n${DELIVERY_DISCIPLINE}`;
       return { prompt, dependsOn };
     }
@@ -1469,6 +1678,9 @@ export async function runScriptWorkflow({
       error,
       errorCode,
       tools: toolCount,
+      toolCount,
+      finishReason: out?.finishReason || null,
+      roundsUsed: Number.isFinite(out?.roundsUsed) ? out.roundsUsed : null,
       truncated,
       warnings,
       ...(salvaged ? { salvaged: true, salvageReason } : {}),
@@ -1486,6 +1698,9 @@ export async function runScriptWorkflow({
       content: storedContent,
       ms,
       tools: toolCount,
+      toolCount,
+      finishReason: out?.finishReason || null,
+      roundsUsed: Number.isFinite(out?.roundsUsed) ? out.roundsUsed : null,
       truncated: !!out?.truncated,
       warnings,
       reused: false,
@@ -1563,10 +1778,23 @@ export async function runScriptWorkflow({
       stopped = true;
       return;
     }
-    const items = container.overRef ? resolveOverList(`fanout ${container.id}`, container.overRef) : (container.overItems || []);
-    if (items.length > SCRIPT_MAX_FANOUT) {
-      throw abortScript(t('fanout {id} 的 over 最多 {max} 项（当前 {n}）', { id: container.id, max: SCRIPT_MAX_FANOUT, n: items.length }));
+    const allItems = container.overRef ? resolveOverList(`fanout ${container.id}`, container.overRef) : (container.overItems || []);
+    if (allItems.length > SCRIPT_MAX_FANOUT) {
+      throw abortScript(t('fanout {id} 的 over 最多 {max} 项（当前 {n}）', { id: container.id, max: SCRIPT_MAX_FANOUT, n: allItems.length }));
     }
+    // 字面列表已在静态展开阶段截断；over 引用只能在运行时知道长度，这里同样按 limit 截断。
+    const limit = Number.isInteger(container.limit) && container.limit > 0 ? container.limit : SCRIPT_DEFAULT_FANOUT_LIMIT;
+    const items = allItems.slice(0, Math.min(limit, allItems.length));
+    let truncation = container.truncation || null;
+    if (!truncation && allItems.length > items.length) {
+      truncation = makeFanoutTruncation({
+        id: container.id,
+        total: allItems.length,
+        limit: items.length,
+        skippedItems: allItems.slice(items.length),
+      });
+    }
+    recordTruncation(truncation);
     let children;
     if (container.overItems) {
       children = container.children;
@@ -1620,6 +1848,19 @@ export async function runScriptWorkflow({
       }
     }
     aliasNodes.set(container.id, childIds);
+    // 截断事实同时挂到每个子节点结果与快照上：UI 卡片就能看到「共 32、只跑 20」，
+    // 不必等整轮结束去翻 out.warnings。
+    if (truncation) {
+      const compact = { id: truncation.id, total: truncation.total, limit: truncation.limit, skipped: truncation.skipped };
+      const warning = fanoutTruncationWarning(truncation);
+      for (const id of childIds) {
+        const row = results.get(id);
+        if (row && !row.fanoutTruncated) row.fanoutTruncated = { ...compact };
+        const st = state.get(id) || EMPTY_STATE;
+        const list = Array.isArray(st.warnings) ? st.warnings : [];
+        if (!list.includes(warning)) setState(id, { warnings: [...list, warning] });
+      }
+    }
   };
 
   const resolveBranchTarget = (ref, aliases, branchPhase) => {
@@ -1836,7 +2077,7 @@ export async function runScriptWorkflow({
   claimsStore.length = 0;
   claimsStore.push(...adversarialGate.claims);
   const claimWarnings = linted.warnings;
-  const warnings = [...claimWarnings, ...adversarialGate.warnings];
+  const warnings = [...truncationWarnings, ...claimWarnings, ...adversarialGate.warnings];
   let claimsFile = null;
   if (dir && claimsStore.length) {
     try {
@@ -1851,7 +2092,7 @@ export async function runScriptWorkflow({
 
   notify(false);
   if (fatal) {
-    return { error: fatal, runId: effectiveRunId, goal: goalText, stopped, warnings };
+    return { error: fatal, runId: effectiveRunId, goal: goalText, stopped, warnings, fanoutTruncations: fanoutTruncationsOut() };
   }
 
   const ordered = executionOrder.map((id) => results.get(id)).filter(Boolean);
@@ -1883,6 +2124,7 @@ export async function runScriptWorkflow({
     claims: claimsStore.map((c) => ({ ...c, verdicts: [...(c.verdicts || [])] })),
     claimWarnings,
     warnings,
+    fanoutTruncations: fanoutTruncationsOut(),
     claimsFile,
     delivered: delivered.slice(),
     summary: ordered.map((r) => {

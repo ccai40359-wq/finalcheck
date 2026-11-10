@@ -57,7 +57,7 @@ function AttachmentChip({ item, onRemove }) {
 
 export default function Composer({
   y, input, setInput, attachments, setAttachments, pastedBlocks, setPastedBlocks, editing, dragging, busy, stopping, compacting,
-  approval, queueItems, menu, providerMenu, permMode, ctxStats, skills, cfg, sessCfg, effortPos, activeId,
+  approval, queueItems, menu, providerMenu, permMode, ctxStats, skills, cfg, sessCfg, effortPos, activeId, onNotice,
   slashIndex, setSlashIndex,
   inputRef, modelMenuRef,
   setDragging, setMenu, setProviderMenu, setEffortPos, setSessCfg, setCfg, setPermMode,
@@ -89,21 +89,31 @@ export default function Composer({
     setMenu(null);
     try { const c = await y.getConfig(); const nc = { ...c, permissionMode: m }; await y.setConfig(nc); setCfg(nc); } catch { /* 忽略 */ }
   };
-  const persistSessionCfg = async (patch, { close = true } = {}) => {
+  // 运行中改模型/供应商：立刻落盘（主进程每次请求/每步开始重读），并给一条轻提示。
+  // 正在流式输出的那一条不中断，所以忙碌时文案要说清「下一条/后续步骤生效」。
+  const notifySwitch = (model) => {
+    if (!activeId || typeof onNotice !== 'function') return; // 草稿态还没有会话，切换只记内存
+    const label = model || t('未配置模型');
+    onNotice(busy
+      ? t('已切换：后续步骤与下一条消息使用 {model}；本条正在输出的内容不中断', { model: label })
+      : t('已切换：后续消息与步骤使用 {model}', { model: label }));
+  };
+  const persistSessionCfg = async (patch, { close = true, notify = true } = {}) => {
     const next = { ...sessCfg, ...patch };
     setSessCfg(next);
     if (close) setMenu(null);
+    // 忙碌时也允许切换：set-model 立即写盘，运行中的回合在「下一次模型请求/工作流下一步」读到新值
     if (activeId && y?.sessions?.setModel) {
-      try { await y.sessions.setModel(activeId, next); } catch { /* 保存失败仅影响下次打开 */ }
+      try { await y.sessions.setModel(activeId, next); } catch { /* 保存失败仅影响下次打开（主进程仍用内存快照） */ }
     }
+    const switchedModel = 'model' in patch || 'providerId' in patch;
+    if (notify && switchedModel) notifySwitch(next.model);
   };
   const chooseModel = (providerId, model) => persistSessionCfg({ providerId, model });
-  const chooseEffort = (thinkingEffort, opts) => persistSessionCfg({ effort: thinkingEffort }, opts);
+  const chooseEffort = (thinkingEffort, opts) => persistSessionCfg({ effort: thinkingEffort }, { ...(opts || {}), notify: false });
   const pickProvider = (p) => {
-    const next = { ...sessCfg, providerId: p.id, model: modelIdsOf(p)[0] || '' };
-    setSessCfg(next);
     setProviderMenu(false);
-    if (activeId && y?.sessions?.setModel) { try { y.sessions.setModel(activeId, next); } catch { /* 忽略 */ } }
+    persistSessionCfg({ providerId: p.id, model: modelIdsOf(p)[0] || '' });
   };
 
   // ---- 附件：粘贴截图 / 拖拽文件 / 加号选择 ----

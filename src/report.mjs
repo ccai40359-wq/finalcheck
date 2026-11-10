@@ -5,7 +5,7 @@ const CHECK_TITLE = {
   S1: '鉴权覆盖', S2: '注入类', S3: '密钥与弱默认', S4: '依赖 CVE', S5: '危险配置',
   S6: '外部入口', S7: '越权(IDOR)', S8: '密码与会话', D1: '事务', D2: '备份恢复', D3: '隐私',
   Q1: '测试关', Q2: '质量命令闸',
-  H1: '交接就绪', Q3: '可维护性度量', C1: '许可证合规', O1: '运维就绪',
+  H1: '交接就绪', Q3: '可维护性度量', Q4: '可读性度量', Q5: '性能反模式', C1: '许可证合规', O1: '运维就绪',
 };
 // 「待授权」不是失败，是缺用户点头：下一步必须写清楚要授权什么
 const AUTH_STEP = { Q1: 'Q1 需要执行项目测试', Q2: 'Q2 需要执行项目质量命令' };
@@ -69,16 +69,19 @@ export function renderReport(res) {
   for (const [key, n] of Object.entries(wGroups)) L.push(`  ℹ️ ${key}（共 ${n} 条，` + (key.includes('跳过') ? '已排除出扫描范围' : '详见 JSON 输出') + '）');
 
   const findings = [...res.findings].sort((a, b) => SEV_ORDER[a.severity] - SEV_ORDER[b.severity]);
+  // 覆盖列表必须每份报告都写（验收要求：报告要能看出"这次到底查了哪些关、哪些没查"），
+  // 不能只挂在"无发现"分支里——有发现时更需要说清楚覆盖边界。
+  const executed = res.gates.executed || [];
+  const planned = res.gates.planned || [];
+  const notRun = planned.filter((id) => !executed.includes(id));
+  const notEnabled = Object.keys(CHECK_TITLE).filter((id) => !planned.includes(id));
+  const coverageLine = `本轮覆盖：${executed.join('/') || '无'}`
+    + (notRun.length ? `；未跑：${notRun.join('/')}` : '')
+    + (notEnabled.length ? `；未启用：${notEnabled.join('/')}` : '') + '。';
+  L.push('');
+  L.push(coverageLine);
   if (!findings.length) {
-    // 兜底文案必须由本轮实际计划/执行列表生成：写死「S2/S6-S8 未启用」早已过时（S2/S7/S8 都已启用）
-    const executed = res.gates.executed || [];
-    const planned = res.gates.planned || [];
-    const notRun = planned.filter((id) => !executed.includes(id));
-    const notEnabled = Object.keys(CHECK_TITLE).filter((id) => !planned.includes(id));
-    L.push('');
-    L.push('未发现程序可判定的问题。' + `本轮覆盖：${executed.join('/') || '无'}`
-      + (notRun.length ? `；未跑：${notRun.join('/')}` : '')
-      + (notEnabled.length ? `；未启用：${notEnabled.join('/')}` : '') + '。');
+    L.push('未发现程序可判定的问题。');
   }
   const clean = (s) => String(s ?? '').replace(/[\x00-\x1f\x7f]/g, ''); // P1#6：审外部项目时证据是不可信输入，防 ANSI/控制字符重绘终端
   for (const f of findings) {

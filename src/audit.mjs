@@ -16,6 +16,8 @@ import { checkPassword } from './checks/password.mjs';
 import { checkQuality, hasQualityConfig } from './checks/quality.mjs';
 import { checkHandover } from './checks/handover.mjs';
 import { checkMetrics } from './checks/metrics.mjs';
+import { checkReadability } from './checks/readability.mjs';
+import { checkPerfStatic } from './checks/perf-static.mjs';
 import { checkLicense } from './checks/license.mjs';
 import { checkOps } from './checks/ops.mjs';
 
@@ -27,8 +29,8 @@ import { checkOps } from './checks/ops.mjs';
 // L3 = L2 + 数据层(D1 事务/D2 备份/D3 隐私) + 许可证(C1) + 运维就绪(O1)
 const GATES = {
   L1: ['S2', 'S3', 'S4', 'S5'],
-  L2: ['S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7', 'S8', 'Q1', 'H1', 'Q3'],
-  L3: ['S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7', 'S8', 'Q1', 'H1', 'Q3', 'C1', 'O1', 'D1', 'D2', 'D3'],
+  L2: ['S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7', 'S8', 'Q1', 'H1', 'Q3', 'Q4', 'Q5'],
+  L3: ['S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7', 'S8', 'Q1', 'H1', 'Q3', 'Q4', 'Q5', 'C1', 'O1', 'D1', 'D2', 'D3'],
 };
 // Q2 只在项目根有 finalcheck.quality.json 时才加入计划：没声明就不假装查过质量
 const QUALITY_TIERS = new Set(['L2', 'L3']);
@@ -93,6 +95,8 @@ export async function audit(projectDir, { tier = null, interactive = false, runT
     if (id === 'S8') results.push(await checkPassword(projectDir, { tier: effective, excludes }));
     if (id === 'H1') results.push(await checkHandover(projectDir, { tier: effective, excludes }));
     if (id === 'Q3') results.push(await checkMetrics(projectDir, { tier: effective, excludes }));
+    if (id === 'Q4') results.push(await checkReadability(projectDir, { tier: effective, excludes }));
+    if (id === 'Q5') results.push(await checkPerfStatic(projectDir, { tier: effective, excludes }));
     if (id === 'C1') results.push(await checkLicense(projectDir, { tier: effective, excludes }));
     if (id === 'O1') results.push(await checkOps(projectDir, { tier: effective, excludes }));
   }

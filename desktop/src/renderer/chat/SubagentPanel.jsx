@@ -52,6 +52,7 @@ function buildThread(messages) {
   const events = [];
   let answer = '';
   let finalReasoning = '';
+  let answerSalvaged = false;
   for (const m of messages || []) {
     if (m.role === 'assistant') {
       const reasoning = String(m.reasoning || '').trim();
@@ -65,6 +66,7 @@ function buildThread(messages) {
       } else if (String(m.content || '').trim()) {
         if (reasoning) finalReasoning = reasoning;
         answer = String(m.content || '');
+        answerSalvaged = !!m.salvaged; // 失败/中断时由主进程写的确定性 salvage 正文
       }
     } else if (m.role === 'tool') {
       const hit = events.findIndex((e) => e.type === 'tool' && e.status === 'running' && e.name === (m.name || 'tool'));
@@ -78,7 +80,7 @@ function buildThread(messages) {
       else events.push({ type: 'tool', name: m.name || 'tool', args: summarizeArgs(m.name, m.args), ...patch });
     }
   }
-  return { events, answer, finalReasoning };
+  return { events, answer, finalReasoning, answerSalvaged };
 }
 
 function SystemPrompt({ text }) {
@@ -169,7 +171,7 @@ export function SubagentPanel({ target, onClose }) {
   const msgs = data?.messages || [];
   const system = msgs.find((m) => m.role === 'system')?.content || '';
   const task = msgs.find((m) => m.role === 'user')?.content || '';
-  const { events, answer } = useMemo(() => buildThread(msgs), [msgs]);
+  const { events, answer, answerSalvaged } = useMemo(() => buildThread(msgs), [msgs]);
   const running = !!data && !data.done;
 
   // 头部耗时：运行中按 startedAt 自己走秒（不依赖轮询节奏，和 Working 计时一致）
@@ -237,12 +239,19 @@ export function SubagentPanel({ target, onClose }) {
             ) : null}
             <div className={`w-full border-l-2 pl-4 ${running ? 'border-gold/25' : 'border-gold/45'}`}>
               <ProcessTimeline msg={assistantMsg} />
-              {answer ? <SwarmResult answer={answer} streaming={running} /> : null}
+              {answer ? (
+                <div className="space-y-1.5">
+                  {answerSalvaged ? (
+                    <div className="text-[11px] text-amber-300/80">
+                      {t('部分交付（自动汇总）· 本步失败，以下进度正文由主进程从 transcript 自动生成')}
+                    </div>
+                  ) : null}
+                  <SwarmResult answer={answer} streaming={running} />
+                </div>
+              ) : null}
               {!answer && !running ? (
                 <div className="text-[12px] text-mute/60">
-                  {data?.messages?.length
-                    ? t('（这一步没有留下交付物，上面是它跑过的工具）')
-                    : t('（这一步没有留下交付物）')}
+                  {t('（本步没有可展示的正文；失败原因与错误码见工作流卡片）')}
                 </div>
               ) : null}
               {running && assistantMsg.startedAt ? <WorkingStatus startedAt={assistantMsg.startedAt} className="mt-2" /> : null}

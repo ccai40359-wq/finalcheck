@@ -214,6 +214,9 @@ const SQL = {
   maxSeqOfSession: 'SELECT COALESCE(MAX(seq), -1) AS seq FROM message WHERE session_id = ?',
   messagesOf: 'SELECT * FROM message WHERE session_id = ? ORDER BY seq ASC',
   partsOf: 'SELECT p.* FROM part p JOIN message m ON m.id = p.message_id WHERE m.session_id = ? ORDER BY p.message_id, p.seq ASC',
+  // 工作流子代理的工具 part 挂合成 message_id（wf:<runId>:<stepId>），不参与 message 表 JOIN：
+  // 按前缀取（runId 只是 LIKE 前缀，取回后在 JS 里做精确 startsWith 过滤，避免 %/_ 通配误伤）
+  partsOfPrefix: 'SELECT * FROM part WHERE message_id LIKE ? ORDER BY message_id, seq ASC',
   countUsers: "SELECT COUNT(*) AS n FROM message WHERE session_id = ? AND role = 'user'",
   countMessages: 'SELECT COUNT(*) AS n FROM message WHERE session_id = ?',
   turnMeta: 'SELECT key, value FROM session_meta WHERE key LIKE ?',
@@ -684,6 +687,13 @@ function buildMessage(row, parts) {
   return { role: row.role, content: row.content ?? '', at };
 }
 
+async function sqliteGetModelConfig(id) {
+  const { db } = await openDb(dirFor(id));
+  const row = requireSession(db, id);
+  const cfg = row.model_config_json ? parseJson(row.model_config_json, null) : null;
+  return cfg && typeof cfg === 'object' ? cfg : {};
+}
+
 async function sqliteLoadSession(id) {
   const { db } = await openDb(dirFor(id));
   const row = requireSession(db, id);
@@ -861,6 +871,146 @@ async function sqliteAppendToolEnd(id, tool = {}) {
     });
     tx();
     return { messageId: pending.id, partId: hit.row.id, status };
+  });
+}
+
+/* ---------- 工作流子代理的工具调用落库 ----------
+ * 子代理（callSubagent → runSubagentTurn）跑的是工作流步骤，不属于任何一条聊天消息。
+ * 用合成 message_id「wf:<runId>:<stepId>」把它们写进 part 表（part 表无外键、message_id 是 TEXT）：
+ *  - 与真实 message 行天然不冲突，loadSession 走 message JOIN 因此永远读不到（不污染聊天记录）；
+ *  - 开始一次写 status='running'，结束一次按 tool_call id（没有则工具名/FIFO）更新同一条；
+ *  - seq 用 session_meta 计数器 wfseq:<runId>:<stepId>，不碰 message.seq（不改轮数/排序）；
+ *  - 进程被杀后 DB 里留下 running 的 part，重开后 listWorkflowToolParts 仍能看到（崩溃语义与主 agent 一致）。 */
+const WF_PART_PREFIX = 'wf:';
+const WF_SEQ_PREFIX = 'wfseq:';
+
+function wfIdOf(value) {
+  return value == null ? '' : String(value).trim();
+}
+
+function wfMessageIdOf(runId, stepId) {
+  return WF_PART_PREFIX + runId + ':' + stepId;
+}
+
+function wfSeqKeyOf(messageId) {
+  return WF_SEQ_PREFIX + messageId;
+}
+
+/** 与 runningToolPart 同一套找回规则，只是作用于合成 message_id 下的 parts */
+function pickRunningWorkflowPart(rows, { callId = null, name = '' } = {}) {
+  const tools = rows
+    .filter((p) => p.type === 'tool')
+    .map((p) => ({ row: p, data: parseJson(p.data_json, null) }))
+    .filter((x) => x.data && typeof x.data === 'object');
+  const running = tools.filter((x) => x.data.status === 'running');
+  if (callId) {
+    const hit = running.find((x) => x.data.callId === callId) || tools.find((x) => x.data.callId === callId);
+    if (hit) return hit;
+  }
+  if (name) {
+    const hit = running.find((x) => x.data.name === name);
+    if (hit) return hit;
+  }
+  return running[0] || null;
+}
+
+/** 取出某个 run 的全部工作流工具 part（含崩溃遗留的 running） */
+async function sqliteListWorkflowToolParts(id, runIdRaw) {
+  const runId = wfIdOf(runIdRaw);
+  if (!runId) return [];
+  const { db } = await openDb(dirFor(id));
+  requireSession(db, id);
+  const prefix = wfMessageIdOf(runId, '');
+  const rows = db.prepare(SQL.partsOfPrefix).all(prefix + '%')
+    .filter((p) => p.type === 'tool' && String(p.message_id).startsWith(prefix));
+  return rows.map((p) => {
+    const data = parseJson(p.data_json, {}) || {};
+    return {
+      partId: p.id,
+      messageId: p.message_id,
+      seq: p.seq,
+      stepId: String(p.message_id).slice(prefix.length),
+      status: data.status ?? null,
+      name: data.name ?? '',
+      callId: data.callId ?? null,
+      args: data.args ?? null,
+      result: data.result ?? null,
+      error: data.error ?? null,
+      ms: data.ms ?? null,
+      startedAt: data.startedAt ?? null,
+    };
+  });
+}
+
+async function sqliteAppendWorkflowToolStart(id, params = {}) {
+  const runId = wfIdOf(params.runId);
+  const stepId = wfIdOf(params.stepId);
+  if (!runId || !stepId) return false; // runId/stepId 缺失：退化不落库（不抛错、不写脏 message_id）
+  const tool = params.tool && typeof params.tool === 'object' ? params.tool : {};
+  return withQueue(id, async () => {
+    const { db } = await openDb(dirFor(id));
+    requireSession(db, id);
+    const now = Date.now();
+    const messageId = wfMessageIdOf(runId, stepId);
+    const name = String(tool.name || 'unknown');
+    const callId = tool.callId == null || tool.callId === '' ? null : String(tool.callId);
+    const args = typeof tool.args === 'string' ? tool.args : (tool.args == null ? '' : safeJson(tool.args));
+    const tx = db.transaction(() => {
+      const seqKey = wfSeqKeyOf(messageId);
+      const prev = Number(getMeta(db, seqKey));
+      const partSeq = Number.isFinite(prev) && prev > 0 ? prev + 1 : 2; // 0/1 留给 text/reasoning 的语义位
+      setMeta(db, seqKey, String(partSeq));
+      const partId = randomUUID();
+      db.prepare(SQL.insertPart).run(partId, messageId, partSeq, 'tool', safeJson({
+        status: 'running',
+        name,
+        callId,
+        args,
+        result: null,
+        error: null,
+        ms: null,
+        startedAt: now,
+      }));
+      db.prepare(SQL.touch).run(now, id);
+      return { messageId, partId, seq: partSeq, status: 'running' };
+    });
+    return tx();
+  });
+}
+
+async function sqliteAppendWorkflowToolEnd(id, params = {}) {
+  const runId = wfIdOf(params.runId);
+  const stepId = wfIdOf(params.stepId);
+  if (!runId || !stepId) return false;
+  const tool = params.tool && typeof params.tool === 'object' ? params.tool : {};
+  return withQueue(id, async () => {
+    const { db } = await openDb(dirFor(id));
+    requireSession(db, id);
+    const messageId = wfMessageIdOf(runId, stepId);
+    const callId = tool.callId == null || tool.callId === '' ? null : String(tool.callId);
+    const name = String(tool.name || '');
+    const hit = pickRunningWorkflowPart(db.prepare(SQL.partsOfMessage).all(messageId), { callId, name });
+    if (!hit) return false; // 没有对应的 running part（start 没落库/已被收口）：结束点不补插
+    const prev = hit.data;
+    const status = tool.status === 'ok' || tool.status === 'fail'
+      ? tool.status
+      : (tool.error ? 'fail' : 'ok');
+    const now = Date.now();
+    const tx = db.transaction(() => {
+      db.prepare(SQL.updatePartData).run(safeJson({
+        status,
+        name: prev.name || name || 'unknown',
+        callId: prev.callId ?? callId,
+        args: prev.args ?? (typeof tool.args === 'string' ? tool.args : null),
+        result: tool.result === undefined ? null : tool.result,
+        error: tool.error == null ? null : String(tool.error),
+        ms: Number.isFinite(Number(tool.ms)) ? Number(tool.ms) : null,
+        startedAt: prev.startedAt ?? null,
+      }), hit.row.id);
+      db.prepare(SQL.touch).run(now, id);
+    });
+    tx();
+    return { messageId, partId: hit.row.id, status };
   });
 }
 
@@ -1204,6 +1354,11 @@ async function jsonListSessions(sessionsDir = defaultDir()) {
   return out.sort((a, b) => (Number(b.pinned) - Number(a.pinned)) || (Number(a.archived) - Number(b.archived)) || ((b.createdAt || b.updatedAt) - (a.createdAt || a.updatedAt)));
 }
 
+async function jsonGetModelConfig(id) {
+  const s = await jsonLoadSession(id);
+  return s.modelConfig && typeof s.modelConfig === 'object' ? s.modelConfig : {};
+}
+
 async function jsonLoadSession(id) {
   return JSON.parse(await readFile(fileOf(id), 'utf8'));
 }
@@ -1459,6 +1614,43 @@ export async function appendToolEnd(id, tool = {}) {
 }
 
 /**
+ * 工作流子代理的工具调用开始：写一条 status='running' 的 part。
+ * 合成 message_id = `wf:<runId>:<stepId>`（不写 message 表，loadSession 不会读到）。
+ * JSON 后端 no-op（返回 false，不抛错）。
+ * @param {string} sessionId
+ * @param {{runId?:string, stepId?:string, tool?:ToolLifecycleEvent}} [params]
+ * @returns {Promise<{messageId:string, partId:string, seq:number, status:string}|false>}
+ */
+export async function appendWorkflowToolStart(sessionId, params = {}) {
+  if (!OK_ID.test(sessionId)) throw new Error('非法会话 ID');
+  return useSqliteStore() ? sqliteAppendWorkflowToolStart(sessionId, params) : false;
+}
+
+/**
+ * 工作流子代理的工具调用结束：按 tool_call id（没有则工具名/FIFO）更新同一条 running part。
+ * JSON 后端 no-op（返回 false，不抛错）。
+ * @param {string} sessionId
+ * @param {{runId?:string, stepId?:string, tool?:ToolLifecycleEvent}} [params]
+ * @returns {Promise<{messageId:string, partId:string, status:string}|false>}
+ */
+export async function appendWorkflowToolEnd(sessionId, params = {}) {
+  if (!OK_ID.test(sessionId)) throw new Error('非法会话 ID');
+  return useSqliteStore() ? sqliteAppendWorkflowToolEnd(sessionId, params) : false;
+}
+
+/**
+ * 列出某个工作流 run 落下的工具 part（含进程被杀后仍为 running 的条目；诊断/后续 UI 用）。
+ * JSON 后端没有该表，返回空数组。
+ * @param {string} sessionId
+ * @param {string} runId
+ * @returns {Promise<Array<{partId:string, messageId:string, seq:number, stepId:string, status:string|null, name:string, callId:string|null, args:any, result:any, error:string|null, ms:number|null, startedAt:number|null}>>}
+ */
+export async function listWorkflowToolParts(sessionId, runId) {
+  if (!OK_ID.test(sessionId)) throw new Error('非法会话 ID');
+  return useSqliteStore() ? sqliteListWorkflowToolParts(sessionId, runId) : [];
+}
+
+/**
  * 保存会话的模型选择（未给的字段沿用旧值）。
  * @param {string} id
  * @param {{providerId?:string, model?:string, effort?:string}} [cfg]
@@ -1467,6 +1659,17 @@ export async function appendToolEnd(id, tool = {}) {
 export async function setModelConfig(id, cfg = {}) {
   if (!OK_ID.test(id)) throw new Error('非法会话 ID');
   return useSqliteStore() ? sqliteSetModelConfig(id, cfg) : jsonSetModelConfig(id, cfg);
+}
+
+/**
+ * 只读会话的模型选择（不看消息体）：运行中的回合 / 工作流每一步开始前用它取最新值。
+ * 会话不存在时抛错，由调用方吞掉并回落到全局默认。
+ * @param {string} id
+ * @returns {Promise<ModelConfig>}
+ */
+export async function getModelConfig(id) {
+  if (!OK_ID.test(id)) throw new Error('非法会话 ID');
+  return useSqliteStore() ? sqliteGetModelConfig(id) : jsonGetModelConfig(id);
 }
 
 /**

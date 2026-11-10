@@ -65,6 +65,48 @@ export function effectiveWindow(modelEntry, provider) {
     ?? DEFAULT_CONTEXT_WINDOW;
 }
 
+// provider.models → 纯模型 id 列表（兼容 string[] 与 { id } 对象数组）
+export function modelIdsOf(provider) {
+  const entries = Array.isArray(provider?.models) ? provider.models : [];
+  return entries
+    .map((m) => {
+      if (typeof m === 'string') return m.trim();
+      return m && typeof m === 'object' && typeof m.id === 'string' ? m.id.trim() : '';
+    })
+    .filter(Boolean);
+}
+
+// 可对话的供应商：未被禁用，且有 Base URL / API Key。指定 id 命中时优先，否则按全局 activeProvider → 第一个。
+export function pickUsableProvider(cfg, providerId = '') {
+  const usable = (Array.isArray(cfg?.providers) ? cfg.providers : [])
+    .filter((p) => p && p.enabled !== false && String(p.baseUrl || '').trim() && String(p.apiKey || ''));
+  const wanted = providerId ? usable.find((p) => p.id === providerId) : null;
+  return wanted || usable.find((p) => p.id === cfg?.activeProviderId) || usable[0] || null;
+}
+
+/**
+ * 单次模型请求 / 单个工作流步骤开始时的目标解析（纯函数，不读盘）。
+ * 调用方应在「该步开始执行时」重新读配置再调用它，避免用回合/工作流启动时的快照。
+ * - 会话指定 provider 且可用 → 用它；否则回落全局 activeProvider
+ * - 模型命中 provider.models → 用它；否则回落 cfg.activeModel；再否则 provider 的第一个模型
+ * - 没有可用供应商 / 模型 → provider 或 model 为空，reason 说明原因（调用方沿用上一目标并记 warning）
+ * @returns {{provider: object|null, model: string, reason: null|'no-provider'|'no-model'}}
+ */
+export function resolveTurnTarget({ cfg = null, modelConfig = null } = {}) {
+  const mc = modelConfig && typeof modelConfig === 'object' ? modelConfig : {};
+  const providerId = typeof mc.providerId === 'string' ? mc.providerId.trim() : '';
+  const provider = pickUsableProvider(cfg, providerId);
+  if (!provider) return { provider: null, model: '', reason: 'no-provider' };
+  const ids = modelIdsOf(provider);
+  const wanted = typeof mc.model === 'string' ? mc.model.trim() : '';
+  const active = typeof cfg?.activeModel === 'string' ? cfg.activeModel.trim() : '';
+  const model = (wanted && ids.includes(wanted))
+    ? wanted
+    : ((active && ids.includes(active)) ? active : (ids[0] || ''));
+  if (!model) return { provider, model: '', reason: 'no-model' };
+  return { provider, model, reason: null };
+}
+
 // 有效输出预留：model.maxOutputTokens > provider.maxOutputTokens > 32k
 export function effectiveMaxOutputTokens(modelEntry, provider) {
   return positiveInt(modelEntry?.maxOutputTokens)

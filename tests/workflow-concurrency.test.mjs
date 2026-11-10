@@ -6,6 +6,12 @@ import { runWorkflow } from '../desktop/src/main/workflow.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// 自动补的终局 report 需要一份合格的五段报告（<80 字会被判「汇总为空」）。
+const reportText = [
+  '## Conclusion', '并发测试汇总：全部子项已完成。', '## Findings', '- 见上游子项结果。',
+  '## Verified', 'None', '## Not covered', 'None', '## Skipped', 'None', '',
+].join('\n');
+
 const fanoutScript = (over) => [{
   op: 'fanout', id: 'fa', as: 'file', over,
   step: { role: '审查员', prompt: '检查 ${file}' },
@@ -15,6 +21,7 @@ const fanoutScript = (over) => [{
 function tracker({ ms = 80, content = (id) => `${id} 完成：1 条发现`, tools = 2 } = {}) {
   const t = { inflight: 0, peak: 0, order: [] };
   t.step = async (ctx) => {
+    if (ctx.id === '__report__') return { content: reportText, toolCount: 0 };
     t.inflight += 1;
     t.peak = Math.max(t.peak, t.inflight);
     t.order.push(ctx.id);
@@ -100,6 +107,7 @@ test('script/fanout: 并发跑但结果顺序仍按声明顺序（不被完成�
       step: { role: '审查员', prompt: '检查 ${file}' },
     }],
     callStep: async (ctx) => {
+      if (ctx.id === '__report__') return { content: reportText, toolCount: 0 };
       await sleep(delays[ctx.item] ?? 0);
       return { content: `${ctx.id} 完成：1 条发现`, toolCount: 2 };
     },
@@ -147,6 +155,7 @@ test('script/fanout: depends_on 引用别名在并发下仍拿到全部子项', 
       { op: 'step', id: 'sum', role: '审查员', prompt: '汇总', depends_on: ['fa'] },
     ],
     callStep: async (ctx) => {
+      if (ctx.id === '__report__') return { content: reportText, toolCount: 0 };
       if (ctx.id === 'sum') {
         sumPrompt = ctx.prompt;
         return { content: '汇总完成', toolCount: 1 };
@@ -156,6 +165,6 @@ test('script/fanout: depends_on 引用别名在并发下仍拿到全部子项', 
     },
   });
   assert.equal(out.ok, true);
-  assert.deepEqual(out.results.filter((r) => r.id !== '__verify__').map((r) => r.id), ['fa#0', 'fa#1', 'fa#2', 'sum']);
+  assert.deepEqual(out.results.filter((r) => r.id !== '__verify__' && r.id !== '__report__').map((r) => r.id), ['fa#0', 'fa#1', 'fa#2', 'sum']);
   for (const id of ['fa#0', 'fa#1', 'fa#2']) assert.match(sumPrompt, new RegExp(id));
 });

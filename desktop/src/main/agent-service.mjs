@@ -10,7 +10,7 @@ import { crossTurnBudgetTokens } from './model-config.mjs';
 export { estimateTokens, estimateMessagesTokens, microcompact, fullCompact, contextBudget } from './context.mjs';
 import { loadCatalog, renderCatalog } from '../../../src/playbooks.mjs';
 import { runHookEvent } from './hooks.mjs';
-import { SUBAGENT_TOOL_NAMES } from './swarm.mjs';
+import { SUBAGENT_TOOL_NAMES, deriveNodeErrorCode } from './swarm.mjs';
 // 中断/空回复的确定性 salvage：与 workflow 层共用同一份文案（不调模型、不烧 token）
 import { salvageSubagentContent } from './subagent-salvage.mjs';
 import { extractUsage } from './usage.mjs';
@@ -340,6 +340,39 @@ async function spillResult(toolName, callId, text) {  try {
   } catch {
     return null; // 落盘失败保留头尾，不把成功调用变成失败
   }
+}
+
+/* ---------- 空回复补交（nudge）：同一轮最多催两次，第二次强制只输出正文 ---------- */
+const MAX_EMPTY_NUDGES = 2;
+const EMPTY_NUDGE_DIGEST_ITEMS = 12;
+const EMPTY_NUDGE_DIGEST_LINE_MAX = 200;
+const EMPTY_NUDGE_DIGEST_MAX = 2400;
+
+/**
+ * 把最近 N 条工具结果压成「证据摘要」：每条只取第一行（≤200 字），总长 ≤2400 字。
+ * 第二次补交（tool_choice='none'）时把模型自己跑出来的证据再摆到眼前，避免它「忘了干过什么」。
+ * @param {any[]} [messages] chat/completions 消息数组（只看 role==='tool'）
+ * @param {{items?:number,lineMax?:number,maxChars?:number}} [opts]
+ * @returns {string} 空串表示没有可用证据
+ */
+export function buildEmptyNudgeDigest(messages, {
+  items = EMPTY_NUDGE_DIGEST_ITEMS,
+  lineMax = EMPTY_NUDGE_DIGEST_LINE_MAX,
+  maxChars = EMPTY_NUDGE_DIGEST_MAX
+} = {}) {
+  const list = Array.isArray(messages) ? messages : [];
+  const tools = list.filter((m) => m?.role === 'tool');
+  const take = Math.max(1, Math.trunc(Number(items) || EMPTY_NUDGE_DIGEST_ITEMS));
+  const lines = [];
+  for (const m of tools.slice(-take)) {
+    const raw = typeof m.content === 'string' ? m.content : '';
+    const line = raw.replace(/\r\n/g, '\n').split('\n').map((x) => x.trim()).find(Boolean) || '';
+    if (!line) continue;
+    lines.push(`- ${line.length > lineMax ? `${line.slice(0, lineMax)}…` : line}`);
+  }
+  if (!lines.length) return '';
+  const text = lines.join('\n');
+  return text.length > maxChars ? `${text.slice(0, maxChars)}…` : text;
 }
 
 // onChunk：每收到一个数据块就回调一次（静默看门狗靠它重置「距上一字节」计时）
@@ -683,7 +716,7 @@ async function runToolCalls(toolCalls, { tools, onEvent, toolConcurrency, signal
   return results; // 按原始调用顺序返回，调用方按序回填 convo/trace
 }
 
-export async function runAgentTurn({ config, messages, confirmedHosts = [], onToken, onEvent, onToolLifecycle = null, tools, toolsSchema = null, systemPrompt: systemPromptOverride = null, forceFirstToolChoice = false, fetchImpl = fetch, summarize, signal, maxTurns = DEFAULT_MAX_TURNS, maxTurnMs: maxTurnMsOpt, maxTurnTokens: maxTurnTokensOpt, retryBaseMs = 600, noLimits = false, hooksConfig = null, hooksRunner = null, sessionId = null, drainSteer = null, cwd = process.cwd() }) {
+export async function runAgentTurn({ config, messages, confirmedHosts = [], onToken, onEvent, onToolLifecycle = null, tools, toolsSchema = null, systemPrompt: systemPromptOverride = null, forceFirstToolChoice = false, fetchImpl = fetch, summarize, signal, maxTurns = DEFAULT_MAX_TURNS, maxTurnMs: maxTurnMsOpt, maxTurnTokens: maxTurnTokensOpt, retryBaseMs = 600, noLimits = false, hooksConfig = null, hooksRunner = null, sessionId = null, drainSteer = null, resolveConfig = null, cwd = process.cwd() }) {
   if (signal?.aborted) return { cancelled: true, interrupted: true, partialContent: '', answer: '', trace: [] };
   if (!config?.baseUrl || !config?.apiKey) {
     return { error: t('尚未配置网关：请到左下角「模型设置」添加供应商（Base URL / API Key / 模型）并启用'), trace: [] };
@@ -725,7 +758,25 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
     }
   }
   const turnStart = Date.now();
-  const chatUrl = config.baseUrl.replace(/\/+$/, '') + '/chat/completions';
+  // 实时路由：回合开始时是一份配置，但「下一次模型请求」前会用 resolveConfig 重新解析（用户运行中改模型/供应商）。
+  // liveConfig 只覆盖路由三要素（baseUrl/apiKey/model，可选 reasoningEffort），窗口/预算仍按回合开始时的口径，
+  // 避免跑到一半换模型后预算口径漂移；已流式输出的那一条请求不会被换掉。
+  let liveConfig = config;
+  let liveChatUrl = config.baseUrl.replace(/\/+$/, '') + '/chat/completions';
+  const refreshLiveConfig = async () => {
+    if (typeof resolveConfig !== 'function') return;
+    let next = null;
+    try { next = await resolveConfig(); } catch { return; } // 解析失败：沿用当前配置
+    if (!next || typeof next !== 'object') return;
+    const baseUrl = String(next.baseUrl || '').trim();
+    const apiKey = String(next.apiKey || '').trim();
+    const model = String(next.model || '').trim();
+    if (!baseUrl || !apiKey || !model) return;
+    if (baseUrl === liveConfig.baseUrl && apiKey === liveConfig.apiKey && model === liveConfig.model) return;
+    liveConfig = { ...liveConfig, ...next, baseUrl, apiKey, model };
+    liveChatUrl = baseUrl.replace(/\/+$/, '') + '/chat/completions';
+    onEvent?.({ kind: 'model-switch', model, providerId: next.providerId || null });
+  };
   onEvent?.({ kind: 'turn-start', at: turnStart });
   // 上下文预算压缩：模型可见历史在发给模型的时刻派生（trace/存储不受影响）；派生失败兜底用原始历史
   // 跨轮预算：index 显式透传 crossTurnBudgetTokens；直接调用且配了窗口时按同一公式推导；都没配则保持旧字符口径
@@ -801,7 +852,9 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
   const warnings = [];
   let toolChoiceUnsupported = false; // 网关拒绝 tool_choice 后不再带该字段
   let retriedForTools = false; // 首轮空转提醒只重试一次
-  let retriedForEmpty = false; // 空回复补救只催一次（跑了半天工具却没写结论的活儿要救回来）
+  let emptyNudges = 0; // 空回复补交次数：最多 MAX_EMPTY_NUDGES 次（第一次普通催，第二次强制只输出正文）
+  let forceAnswerNoTools = false; // 下一次请求带 tool_choice='none'（第二次补交用，成功发出后复位）
+  let turnsUsed = 0; // 已发起的主循环请求轮数（供上层定位 length 截断 / 模型自己停）
   const addTurnTokens = (usage, content) => {
     const p = Number(usage?.prompt_tokens ?? usage?.input_tokens);
     const c = Number(usage?.completion_tokens ?? usage?.output_tokens);
@@ -839,6 +892,7 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
     sig?.addEventListener('abort', () => { clearTimeout(timeoutId); resolve('aborted'); }, { once: true });
   });
   for (let turn = 0; turn < maxTurns; turn++) {
+    turnsUsed = turn + 1;
     const elapsedMs = Math.max(0, Date.now() - turnStart - toolWaitMs); // 只算模型/等待时间
     if (elapsedMs >= maxTurnMs || turnTokens >= maxTurnTokens) {
       budgetStop = elapsedMs >= maxTurnMs ? 'time' : 'tokens';
@@ -851,6 +905,7 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
       onEvent?.({ kind: 'budget-warning', turnsLeft: maxTurns - turn, tokensLeft: Math.max(0, maxTurnTokens - turnTokens) });
     }
     applySteer(); // 用户中途注入（Steer）：先并入本轮上下文，再发起下一次请求
+    await refreshLiveConfig(); // 下一次模型请求前重新解析：运行中改模型/供应商从这里开始生效（已输出的内容不重跑）
     compactNow(); // 每轮请求前按 token 做两级压缩，防 40 轮把网关上下文撑爆
     if (signal?.aborted) { onEvent?.({ kind: 'turn-end', ms: Date.now() - turnStart, interrupted: true }); return { cancelled: true, interrupted: true, partialContent: '', answer: '', trace, reasoning: reasoningAll || undefined, usage: lastUsage || undefined }; }
     let lastErr = '';
@@ -873,24 +928,27 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
         // 新请求开始（上一轮工具/回答已结束）：先提示在等网关；收到首块后切回正常活动文案
         onEvent?.({ kind: 'activity', label: SILENCE_MS > 0 ? t('等待网关响应…') : 'Thinking…', request: turn + 1, attempt });
         onEvent?.({ kind: 'phase', name: 'thinking' });
-        const bodyFor = (withUsage, withToolChoice = false) => JSON.stringify({
-          model: config.model,
+        const bodyFor = (withUsage, toolChoiceMode = null) => JSON.stringify({
+          model: liveConfig.model,
           messages: convo,
           tools: toolsSchema || AGENT_TOOLS_SCHEMA,
           stream: true,
-          ...(withToolChoice ? { tool_choice: 'required' } : {}),
+          ...(toolChoiceMode ? { tool_choice: toolChoiceMode } : {}),
           ...(withUsage ? { stream_options: { include_usage: true } } : {}),
-          ...(config.reasoningEffort ? { reasoning_effort: config.reasoningEffort } : {})
+          ...(liveConfig.reasoningEffort ? { reasoning_effort: liveConfig.reasoningEffort } : {})
         });
-        const send = (withUsage, withToolChoice = false) => fetchImpl(chatUrl, {
+        const send = (withUsage, toolChoiceMode = null) => fetchImpl(liveChatUrl, {
           method: 'POST',
-          headers: { 'content-type': 'application/json', authorization: 'Bearer ' + config.apiKey },
-          body: bodyFor(withUsage, withToolChoice),
+          headers: { 'content-type': 'application/json', authorization: 'Bearer ' + liveConfig.apiKey },
+          body: bodyFor(withUsage, toolChoiceMode),
           signal: ctl.signal
         });
         let withUsage = STREAM_USAGE;
-        // 首轮强制工具：只有第一轮带 tool_choice=required；网关不认时去掉字段重试并记 warning
-        let withToolChoice = forceFirstToolChoice && turn === 0 && !toolChoiceUnsupported;
+        // 首轮强制工具：只有第一轮带 tool_choice='required'；第二次补交带 'none' 强制只输出正文。
+        // 网关不认 tool_choice 时去掉字段重试并记 warning（两种模式共用同一条降级路径）
+        let withToolChoice = forceFirstToolChoice && turn === 0 && !toolChoiceUnsupported
+          ? 'required'
+          : (forceAnswerNoTools && !toolChoiceUnsupported ? 'none' : null);
         res = await send(withUsage, withToolChoice);
         // 部分网关不认 stream_options.include_usage → 同一 attempt 内去掉该字段重试一次（只降级一次）
         if (!res.ok && withUsage && res.status >= 400 && res.status < 500) {
@@ -901,12 +959,12 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
         // 400/422 且带了 tool_choice：按旧逻辑去掉该字段重试一次，结果按正常响应判定
         if (!res.ok && withToolChoice && (res.status === 400 || res.status === 422)) {
           toolChoiceUnsupported = true;
-          withToolChoice = false;
+          withToolChoice = null;
           const msg = t('网关不支持 tool_choice（HTTP {status}），已去掉该字段重试', { status: res.status });
           warnings.push(msg);
           onEvent?.({ kind: 'warning', message: msg });
           console.warn(`[agent-service] ${msg}`);
-          res = await send(withUsage, false);
+          res = await send(withUsage, null);
         }
         if (res.ok && res.body) {
           let firstChunk = true;
@@ -922,6 +980,8 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
             // 静默看门狗中止了读取：本次尝试记为可重试失败，已流出的部分不落账（重试会重新给全文）
             streamOut = null;
             retryReason = SILENCE_REASON;
+          } else {
+            forceAnswerNoTools = false; // 'none' 只作用于紧接着的这一轮，拿到流就复位
           }
         } else {
           const keyHint = res.status === 401 || res.status === 403 ? t('（API Key 无效或无权限）') : '';
@@ -976,12 +1036,12 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
       // dsh 语义：中断≠删除——已流出的内容原样返回并落盘，正文标记「已中断」
       const partial = content || '';
       onEvent?.({ kind: 'turn-end', ms: Date.now() - turnStart, interrupted: true });
-      return { cancelled: true, interrupted: true, partialContent: partial, answer: partial, reasoning: reasoningAll || undefined, trace, workedMs: Date.now() - turnStart, usage: usage || lastUsage || undefined };
+      return { cancelled: true, interrupted: true, partialContent: partial, answer: partial, reasoning: reasoningAll || undefined, trace, workedMs: Date.now() - turnStart, roundsUsed: turnsUsed, usage: usage || lastUsage || undefined };
     }
     if (reasoning) reasoningAll += (reasoningAll ? '\n' : '') + reasoning;
     if (repetitive) {
       onEvent?.({ kind: 'turn-end', ms: Date.now() - turnStart, error: true });
-      return { error: t('检测到模型输出异常循环，已自动中止——这是模型问题不是你的问题。可重试，或到模型设置换一个模型。'), reasoning: reasoningAll, trace };
+      return { error: t('检测到模型输出异常循环，已自动中止——这是模型问题不是你的问题。可重试，或到模型设置换一个模型。'), reasoning: reasoningAll, trace, roundsUsed: turnsUsed };
     }
     if (!toolCalls.length) {
       // 强制首轮工具却只回了话：追加 system 提醒后再请求一次（与旧 runSubagentStep 一致，最多一次）
@@ -992,18 +1052,56 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
         onEvent?.({ kind: 'system', content: reminder });
         continue;
       }
-      // 空回复补救（实测踩过：子代理跑了 50 次工具、10 分钟，最后一条回复是空的 → 整步判失败，活白干）。
-      // 只要不是「明确结束的截断」，就催一次「别再调工具、直接写结论」，仍然空才认输。
-      if (!String(content || '').trim() && !retriedForEmpty && lastFinishReason !== 'length') {
-        retriedForEmpty = true;
-        const nudge = '你这一轮没有输出任何正文。请立即基于上面已经跑过的工具结果写出最终结论（结论要带 file:line 证据），不要再调用工具。';
-        convo.push({ role: 'user', content: `[系统] ${nudge}` });
-        onEvent?.({ kind: 'activity', label: t('补交结论…') });
+      // 空回复补交（实测踩过：子代理跑了 20-50 次工具、最后一条回复是空的 → 整步判失败，活白干）。
+      // 升级为有限两次：
+      //   第一次：普通催交（写结论、别再调工具）；
+      //   第二次：tool_choice='none' 强制只输出正文 + 把最近 N 条工具结果压成证据摘要附上，
+      //          并明确要求「已确认发现 / 证据 file:line / 未完成项」三段；
+      //   仍空 → 认输，由上层用 transcript 做确定性 salvage（绝不返回空 content）。
+      if (!String(content || '').trim() && emptyNudges < MAX_EMPTY_NUDGES) {
+        emptyNudges += 1;
+        const lengthHint = lastFinishReason === 'length'
+          ? '上一轮输出被长度上限截断（finish_reason=length），这次只写结论，不要复述过程、不要输出长清单。'
+          : '';
+        if (emptyNudges === 1) {
+          const nudge = `你这一轮没有输出任何正文。请立即基于上面已经跑过的工具结果写出最终结论（结论要带 file:line 证据），不要再调用工具。${lengthHint}`;
+          convo.push({ role: 'user', content: `[系统] ${nudge}` });
+        } else {
+          const digest = buildEmptyNudgeDigest(convo);
+          forceAnswerNoTools = true; // 下一请求带 tool_choice='none'（网关不支持时自动降级并记 warning）
+          const nudge = [
+            '这是最后一次补交：这一轮必须只输出文字结论，禁止再调用任何工具（已强制 tool_choice=none）。',
+            '严格按下面三段输出，缺一段都算不合格：',
+            '1) 已确认发现：每条一句话，必须带 file:line 证据；',
+            '2) 证据清单：file:line → 该处说明了什么；',
+            '3) 未完成项：没查到的、没验证的逐条列出（确实没有就写「无」）。',
+            lengthHint,
+            digest ? `已跑工具的证据摘要（最近 ${EMPTY_NUDGE_DIGEST_ITEMS} 条工具结果首行，可直接引用）：\n${digest}` : '',
+          ].filter(Boolean).join('\n');
+          convo.push({ role: 'user', content: `[系统] ${nudge}` });
+        }
+        onEvent?.({ kind: 'activity', label: t('补交结论（{n}/{max}）…', { n: emptyNudges, max: MAX_EMPTY_NUDGES }) });
         continue;
       }
+      const emptyReply = !String(content || '').trim();
+      if (emptyReply) {
+        warnings.push(t('空回复补交 {n} 次仍无正文，已改用 transcript 兜底交付', { n: emptyNudges }));
+      }
       onEvent?.({ kind: 'turn-end', ms: Date.now() - turnStart });
-      return await runStopHook({ answer: content || '(空回复)', reasoning: reasoningAll || undefined, trace, workedMs: Date.now() - turnStart, usage: lastUsage || undefined, usageTotal, finishReason: lastFinishReason, warnings });
+      return await runStopHook({
+        answer: content || '(空回复)',
+        reasoning: reasoningAll || undefined,
+        trace,
+        workedMs: Date.now() - turnStart,
+        usage: lastUsage || undefined,
+        usageTotal,
+        finishReason: lastFinishReason,
+        roundsUsed: turnsUsed,
+        ...(emptyReply ? { emptyReply: true } : {}),
+        warnings
+      });
     }
+    forceAnswerNoTools = false; // 模型无视 'none' 继续调工具时复位，避免污染后续轮次
     convo.push({ role: 'assistant', content: content || null, tool_calls: toolCalls });
     // 并行调度：连续 parallel 调用成批限流并发；serial 调用单独跑。结果按原始调用顺序回填 convo/trace
     const toolStartedAt = Date.now();
@@ -1032,17 +1130,18 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
       : t('工具调用轮次已达上限（{n}）', { n: maxTurns });
   const wrap = { role: 'user', content: `[系统] ${stopDesc}。不要再调用任何工具，立即基于以上所有工具结果给出最终结论：已复现什么、没覆盖什么、下一步建议。` };
   applySteer(); // 收尾请求前再 drain 一次，尽量不把用户最后注入的内容留到回合外
+  await refreshLiveConfig(); // 收尾请求也是一次真实请求：按最新配置解析
   compactNow(); // 收尾请求同样守住上下文预算（token 两级压缩）
   const fbody = (withUsage) => JSON.stringify({
-    model: config.model,
+    model: liveConfig.model,
     messages: [...convo, wrap],
     stream: true,
     ...(withUsage ? { stream_options: { include_usage: true } } : {}),
-    ...(config.reasoningEffort ? { reasoning_effort: config.reasoningEffort } : {})
+    ...(liveConfig.reasoningEffort ? { reasoning_effort: liveConfig.reasoningEffort } : {})
   }); // 不带 tools：强制收尾
-  const fsend = (withUsage, sig) => fetchImpl(chatUrl, {
+  const fsend = (withUsage, sig) => fetchImpl(liveChatUrl, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer ' + config.apiKey },
+    headers: { 'content-type': 'application/json', authorization: 'Bearer ' + liveConfig.apiKey },
     body: fbody(withUsage),
     signal: sig
   });
@@ -1073,7 +1172,7 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
       } catch (e) {
         if (signal?.aborted) {
           onEvent?.({ kind: 'turn-end', ms: workedMs(), interrupted: true });
-          return { cancelled: true, interrupted: true, partialContent: '', answer: '', reasoning: reasoningAll, trace, workedMs: workedMs(), usage: lastUsage || undefined };
+          return { cancelled: true, interrupted: true, partialContent: '', answer: '', reasoning: reasoningAll, trace, workedMs: workedMs(), roundsUsed: turnsUsed, usage: lastUsage || undefined };
         }
         ferr = silenceHit
           ? SILENCE_REASON
@@ -1127,21 +1226,21 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
     if (signal?.aborted) {
       const partial = fin.content || '';
       onEvent?.({ kind: 'turn-end', ms: workedMs(), interrupted: true });
-      return { cancelled: true, interrupted: true, partialContent: partial, answer: partial, reasoning: reasoningAll, trace, workedMs: workedMs(), usage: fin.usage || lastUsage || undefined };
+      return { cancelled: true, interrupted: true, partialContent: partial, answer: partial, reasoning: reasoningAll, trace, workedMs: workedMs(), roundsUsed: turnsUsed, usage: fin.usage || lastUsage || undefined };
     }
     if (fin.aborted) {
       const partial = fin.content || '';
       const abortLabel = fsilenceHit ? t('网关静默 {s}s 无任何响应', { s: silenceSec(SILENCE_MS) }) : t('收尾请求超时（{s}s）', { s: watchdogSec(FINALIZE_WATCHDOG_MS) });
       onEvent?.({ kind: 'turn-end', ms: workedMs(), interrupted: true });
-      return await runStopHook({ answer: (partial ? partial + '\n\n' : '') + t('[{reason}，以上为已输出部分；本轮工具证据仍保留]', { reason: abortLabel }), reasoning: reasoningAll, trace, workedMs: workedMs(), usage: lastUsage || undefined, usageTotal, finishReason: lastFinishReason, warnings, ...(budgetStop ? { budgetStop } : {}) });
+      return await runStopHook({ answer: (partial ? partial + '\n\n' : '') + t('[{reason}，以上为已输出部分；本轮工具证据仍保留]', { reason: abortLabel }), reasoning: reasoningAll, trace, workedMs: workedMs(), usage: lastUsage || undefined, usageTotal, finishReason: lastFinishReason, warnings, roundsUsed: turnsUsed, ...(budgetStop ? { budgetStop } : {}) });
     }
     const names = [...new Set(trace.map((tr) => tr.tool))].join('、') || t('（无）');
     const answer = fin.content || t('{stop}，本轮调用工具：{tools}。可以点「继续」让我接着做。', { stop: stopDesc, tools: names });
     onEvent?.({ kind: 'turn-end', ms: workedMs() });
-    return await runStopHook({ answer, reasoning: reasoningAll, trace, workedMs: workedMs(), usage: lastUsage || undefined, usageTotal, finishReason: lastFinishReason, warnings, ...(budgetStop ? { budgetStop } : {}) });
+    return await runStopHook({ answer, reasoning: reasoningAll, trace, workedMs: workedMs(), usage: lastUsage || undefined, usageTotal, finishReason: lastFinishReason, warnings, roundsUsed: turnsUsed, ...(budgetStop ? { budgetStop } : {}) });
   } catch (e) {
     onEvent?.({ kind: 'turn-end', ms: workedMs(), error: true });
-    if (signal?.aborted) return { cancelled: true, interrupted: true, partialContent: '', answer: '', reasoning: reasoningAll, trace, workedMs: workedMs(), usage: lastUsage || undefined };
+    if (signal?.aborted) return { cancelled: true, interrupted: true, partialContent: '', answer: '', reasoning: reasoningAll, trace, workedMs: workedMs(), roundsUsed: turnsUsed, usage: lastUsage || undefined };
     const reason = /abort/i.test(e?.message || '') || e?.name === 'AbortError' ? t('收尾请求超时（{s}s）', { s: watchdogSec(FINALIZE_WATCHDOG_MS) }) : (e?.message || t('收尾请求失败'));
     return { error: t('{stop}，{reason}。本轮已收集的证据在时间线里，可点「继续」让我接着做。', { stop: stopDesc, reason }), reasoning: reasoningAll, trace, workedMs: workedMs() };
   } finally {
@@ -1193,6 +1292,7 @@ export async function runSubagentTurn({
   retryBaseMs = 600,
   onTranscript = null,
   onToken: onTokenHook = null,
+  onToolLifecycle = null,
   saveIntervalMs = 200,
   now = Date.now
 } = {}) {
@@ -1323,6 +1423,7 @@ export async function runSubagentTurn({
       forceFirstToolChoice: forceFirst,
       onToken,
       onEvent,
+      onToolLifecycle,
       signal,
       fetchImpl,
       maxTurns,
@@ -1396,9 +1497,28 @@ export async function runSubagentTurn({
     salvaged = true;
     salvageReason = aborted ? 'aborted' : 'empty';
   }
+  // 空回复是「模型结束但没给正文」这一种失败，单列 EMPTY_CONTENT；网关/循环中止等其它错误
+  // 交给 deriveNodeErrorCode（HTTP 5xx / STALL / STEP_FAIL），避免把「网关挂了」误报成「没有返回内容」。
+  const emptyReply = !!out?.emptyReply;
   const errorCode = error
-    ? (aborted ? 'INTERRUPTED' : (answer ? 'STEP_FAIL' : 'EMPTY_CONTENT'))
+    ? (aborted
+      ? 'INTERRUPTED'
+      : (emptyReply
+        ? 'EMPTY_CONTENT'
+        : deriveNodeErrorCode({
+          errorText: out?.error || '',
+          content: answer,
+          toolCount,
+          toolCountKnown: true,
+          truncated,
+          requiresTools: requires,
+        })))
     : null;
+  // salvage 正文同时写进 transcript（标记 salvaged）：SubagentPanel 最终答案是「最后一个有正文的
+  // assistant 条目」，不写进去面板就会误报「没有留下交付物」——即使 step content 其实有内容。
+  if (salvaged && content) {
+    transcript.push({ role: 'assistant', content, final: true, ms: null, salvaged: true, salvageReason });
+  }
 
   flush(true);
   if (thrown) throw thrown;
@@ -1412,6 +1532,7 @@ export async function runSubagentTurn({
     truncated,
     warnings,
     finishReason,
+    ...(Number.isFinite(out?.roundsUsed) ? { roundsUsed: out.roundsUsed } : {}),
     ...(out?.budgetStop ? { budgetStop: out.budgetStop } : {}),
     transcript: snapshotTranscript(transcript),
     ...(out?.reasoning ? { reasoning: out.reasoning } : {}),

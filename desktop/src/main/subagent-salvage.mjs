@@ -18,6 +18,14 @@ const RESULT_LINE_MAX = 200;
 const REASONING_MAX = 200;
 const PARTIAL_MAX = 600;
 const HOLE_SUMMARY_MAX = 600;
+// 可交付摘要：工具清单不再只取最后 5 条（跑了 20-40 次工具的步骤，最后 5 条往往什么也说明不了）
+const TOOL_LIST_MAX = 30;
+const FINDING_MAX = 10;
+const FINDING_SNIPPET_MAX = 200;
+const FINDING_SCAN_MAX = 24000; // 单条工具结果最多扫描这么多字符（面板 tool 行本就截到 16000）
+// 疑似发现：漏洞语义关键词 + file:line 形状，两者命中其一就摘出来
+const FINDING_RE = /vulnerab|漏洞|未授权|unauthori[sz]ed|secret|密钥|泄露|越权|bypass|sensitive|敏感|credential|凭据|password|api[_-]?key/i;
+const FILE_LINE_RE = /[\w./\\-]+\.[A-Za-z0-9]{1,8}:\d+/;
 
 function textOf(value) {
   if (value === null || value === undefined) return '';
@@ -41,16 +49,58 @@ function toolResultSummary(entry) {
   return summary || t('（无结果输出）');
 }
 
-/** 统计真实工具调用：优先 reported toolCount，transcript 行数只作兜底/下限。 */
+/** 统计真实工具调用：优先 reported toolCount，transcript 行数只作兜底/下限。
+ * 注意 runSubagentTurn 的 transcript 里，一次调用同时有 assistant.toolCalls 与 tool 行——
+ * 两者相加会翻倍，所以有 tool 行时只数 tool 行。 */
 function countToolCalls(transcript, reported = 0) {
   const list = Array.isArray(transcript) ? transcript : [];
-  let transcriptCount = 0;
+  let rows = 0;
+  let calls = 0;
   for (const m of list) {
     if (!m || typeof m !== 'object') continue;
-    if (m.role === 'tool') transcriptCount += 1;
-    else if (m.role === 'assistant' && Array.isArray(m.toolCalls)) transcriptCount += m.toolCalls.length;
+    if (m.role === 'tool') rows += 1;
+    else if (m.role === 'assistant' && Array.isArray(m.toolCalls)) calls += m.toolCalls.length;
   }
-  return Math.max(0, Math.trunc(Number(reported) || 0), transcriptCount);
+  return Math.max(0, Math.trunc(Number(reported) || 0), rows || calls);
+}
+
+/** 把一条命中行压到 200 字：优先保留 file:line / 关键词附近的信息，而不是行首。 */
+function clipFindingLine(line, max = FINDING_SNIPPET_MAX) {
+  const text = String(line || '').replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  if (text.length <= max) return text;
+  const m = FILE_LINE_RE.exec(text) || FINDING_RE.exec(text);
+  const at = m ? m.index : 0;
+  const start = Math.max(0, Math.min(Math.max(0, at - Math.floor(max / 3)), text.length - max));
+  return `${start > 0 ? '…' : ''}${text.slice(start, start + max)}${start + max < text.length ? '…' : ''}`;
+}
+
+/**
+ * 从工具结果里摘「疑似发现」：命中 file:line 或漏洞关键词的行，最多 10 条。
+ * 只是线索、未经复核：标题里明确写「自动提取」，下游不得当已确认结论。
+ * @param {object[]} [transcript]
+ * @param {number} [max]
+ * @returns {Array<{tool:string,snippet:string}>}
+ */
+function suspectFindings(transcript, max = FINDING_MAX) {
+  const tools = (Array.isArray(transcript) ? transcript : []).filter((m) => m?.role === 'tool' && !m.pending);
+  const out = [];
+  const seen = new Set();
+  for (let i = tools.length - 1; i >= 0 && out.length < max; i -= 1) {
+    const raw = textOf(tools[i]?.content).replace(/\r\n/g, '\n').slice(0, FINDING_SCAN_MAX);
+    if (!raw.trim()) continue;
+    for (const line of raw.split('\n')) {
+      if (out.length >= max) break;
+      if (!FINDING_RE.test(line) && !FILE_LINE_RE.test(line)) continue;
+      const snippet = clipFindingLine(line);
+      if (!snippet) continue;
+      const key = snippet.replace(/\s+/g, '');
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ tool: String(tools[i].name || 'tool').trim() || 'tool', snippet });
+    }
+  }
+  return out;
 }
 
 /** 最后一模型推理（若有）截前 200 字；只取 assistant 的 reasoning 字段。 */
@@ -105,6 +155,7 @@ export function salvageSubagentContent({
   const tools = (Array.isArray(transcript) ? transcript : []).filter((m) => m?.role === 'tool');
   const partial = lastPartial(transcript, partialContent);
   const reasoning = lastReasoning(transcript);
+  const findings = suspectFindings(transcript);
 
   const lines = [
     header,
@@ -112,19 +163,30 @@ export function salvageSubagentContent({
     t('已调用工具：{n} 次。', { n: count }),
   ];
   if (error) lines.push(t('失败原因：{error}', { error: firstLine(error, 300) }));
+  // 已用工具清单：名称 + 每条结果首行（≤200 字）。全量列出（上限 30 条），
+  // 因为「最后 5 条」常常是同一个工具的重复调用，对审阅毫无信息量。
   if (tools.length) {
-    lines.push(t('最后 5 次工具（名称 → 结果首行，最多 200 字）：'));
-    for (const tool of tools.slice(-5)) {
+    lines.push(t('已用工具清单（名称 → 结果首行，最多 200 字）：'));
+    for (const tool of tools.slice(0, TOOL_LIST_MAX)) {
       lines.push(`- ${String(tool.name || 'tool').trim() || 'tool'} → ${toolResultSummary(tool)}`);
     }
+    if (tools.length > TOOL_LIST_MAX) {
+      lines.push(t('…另有 {n} 次工具调用未展开。', { n: tools.length - TOOL_LIST_MAX }));
+    }
   } else {
-    lines.push(t('最后 5 次工具：无（中断前尚未产生工具调用）。'));
+    lines.push(t('已用工具清单：无（尚未产生工具调用）。'));
+  }
+  // 疑似发现：自动从工具输出提取线索，明确标注「未经复核」，避免被下游当结论
+  if (findings.length) {
+    lines.push(t('疑似发现（从工具输出自动提取，最多 10 条，未经复核，不能直接当结论）：'));
+    for (const f of findings) lines.push(`- ${f.tool} → ${f.snippet}`);
   }
   if (reasoning) lines.push(t('最后一段模型推理（前 200 字）：{text}', { text: reasoning }));
   if (partial) {
     lines.push(t('中断前已有正文（前 600 字，未完成、不能当最终结论）：'));
     lines.push(partial);
   }
+  lines.push(t('未完成：未产出最终结论。上面的工具清单与疑似发现只是进度证据，不能当交付物。'));
   lines.push(t('交付状态：未完成。缺少最终结论/证据总表；本步按「洞」处理，下游报告必须在 ## Not covered 点名本步并说明未覆盖范围。'));
   return lines.join('\n');
 }

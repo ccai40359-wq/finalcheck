@@ -37,6 +37,10 @@ function cmdiHit(line) {
   if (!RE_CONCAT.test(line)) return false;
   if (RE_EXEC_BARE.test(line)) return true;
   if (isRegexLiteralExec(line)) return false;
+  // 收尾是 `/` 的接收者也是正则字面量（如 `/(?:[:：=]|\s)/.exec(line)`）：
+  // 正则里带 `+` 或括号时 isRegexLiteralExec 的切分可能失效，这里再兜一层，别把 RegExp.exec 当命令执行。
+  const receiver = /([^\s]+)\s*\.\s*exec(?:Sync)?\s*\(/.exec(line);
+  if (receiver && receiver[1].trim().endsWith('/')) return false;
   return RE_EXEC_MEMBER.test(line) && !RE_RX_EXEC.test(line);
 }
 

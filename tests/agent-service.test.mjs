@@ -732,7 +732,7 @@ test('agent: 空回复补救——第一次空正文会催一次，第二次拿�
   assert.match(out.answer, /补交结论/);
 });
 
-test('agent: 空回复补救只催一次——两次都空就认输，不无限循环', async () => {
+test('agent: 空回复补救最多两次——第二次仍空就认输，不无限循环', async () => {
   let calls = 0;
   const mockFetch = async () => {
     calls += 1;
@@ -744,6 +744,8 @@ test('agent: 空回复补救只催一次——两次都空就认输，不无限�
     tools: {},
     fetchImpl: mockFetch
   });
-  assert.equal(calls, 2, `最多催一次，实际发了 ${calls} 次`);
+  assert.equal(calls, 3, `最多补交两次（首次 + 2 次催促），实际发了 ${calls} 次`);
   assert.equal(out.answer, '(空回复)');
+  assert.equal(out.emptyReply, true, '空回复要带显式标记，上层据此归因 EMPTY_CONTENT');
+  assert.equal(out.roundsUsed, 3, '记录主循环轮数，便于定位 length 截断 / 模型自己停');
 });

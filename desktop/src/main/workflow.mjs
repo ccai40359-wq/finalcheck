@@ -144,6 +144,9 @@ import { t } from '../renderer/i18n/core.mjs';
  * @property {string|null} error
  * @property {string|null} [errorCode]
  * @property {number} tools
+ * @property {number} [toolCount]
+ * @property {string|null} [finishReason]
+ * @property {number|null} [roundsUsed]
  * @property {boolean} [skipped]
  * @property {boolean} [truncated]
  * @property {string[]} [warnings]
@@ -1585,6 +1588,9 @@ export async function runWorkflow({
       error,
       errorCode,
       tools: toolCount,
+      toolCount,
+      finishReason: out?.finishReason || null,
+      roundsUsed: Number.isFinite(out?.roundsUsed) ? out.roundsUsed : null,
       truncated: !!out?.truncated,
       warnings: stepWarnings,
       ...(salvaged ? { salvaged: true, salvageReason } : {}),
@@ -1601,6 +1607,9 @@ export async function runWorkflow({
       content: storedContent,
       ms,
       tools: toolCount,
+      toolCount,
+      finishReason: out?.finishReason || null,
+      roundsUsed: Number.isFinite(out?.roundsUsed) ? out.roundsUsed : null,
       truncated: !!out?.truncated,
       warnings: stepWarnings,
       reused: false,

@@ -181,7 +181,11 @@ test('errorcode/run: 验证步骤被截断且 JSON 解析失败 → TRUNCATED', 
 test('errorcode/run: 程序闸失败 → GATE_FAIL', async () => {
   const out = await runWorkflow({
     goal: 'g',
-    script: [{ op: 'gate', id: 'g1', name: '整改闸', tool: 'review_diff', args: { dir: 'D:/tmp' } }],
+    // 终局校验要求脚本必须有 report/aggregate；这里关心的是 gate 自己的失败码。
+    script: [
+      { op: 'gate', id: 'g1', name: '整改闸', tool: 'review_diff', args: { dir: 'D:/tmp' } },
+      { op: 'report', id: 'rep', from: 'g1', ask: '汇总' },
+    ],
     runGate: async () => { throw new Error('review_diff 命令执行失败'); },
   });
   const row = out.results.find((r) => r.id === 'g1');
@@ -204,10 +208,17 @@ test('errorcode/run: callStep 抛错且无码 → STEP_FAIL', async () => {
 });
 
 test('errorcode/run: 成功节点 errorCode 为 null，不产生误导', async () => {
+  const reportText = [
+    '## Conclusion', '扫描完成，无问题。', '## Findings', 'None',
+    '## Verified', 'None', '## Not covered', 'None', '## Skipped', 'None', '',
+  ].join('\n');
   const out = await runWorkflow({
     goal: 'g',
     script: [{ op: 'step', id: 'ok1', name: '扫描', role: '审查员', prompt: '检查配置' }],
-    callStep: async () => ({ content: '扫描完成，无问题。', toolCount: 1 }),
+    callStep: async (ctx) => ({
+      content: ctx.id === '__report__' ? reportText : '扫描完成，无问题。',
+      toolCount: ctx.id === '__report__' ? 0 : 1,
+    }),
   });
   assert.equal(out.ok, true);
   const row = out.results.find((r) => r.id === 'ok1');

@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
-import { resolveModel } from '../model-config.mjs';
+import { resolveModel, modelIdsOf, pickUsableProvider } from '../model-config.mjs';
 import { setLanguage, resolveLanguage, t } from '../../renderer/i18n/core.mjs';
 import { isEnglish } from '../lang.mjs';
 import { testProviderConnection } from '../provider-test.mjs';
@@ -99,18 +99,7 @@ export function createConfigStore({ app, getDataRoot, engineUrl }) {
   };
 
   // 对话使用的供应商：enabled 且被选中（选中者被禁用时回退到第一个 enabled）
-  const pickActiveProvider = (cfg) => {
-    const enabled = (cfg?.providers || []).filter((p) => p.enabled && p.baseUrl && p.apiKey);
-    return enabled.find((p) => p.id === cfg?.activeProviderId) || enabled[0] || null;
-  };
-
-  // 模型 id 列表：兼容 string[] 与对象数组（对象取 id）；判断会话/工作流指定的模型是否命中
-  const modelIdsOf = (prov) => (Array.isArray(prov?.models) ? prov.models : [])
-    .map((m) => {
-      if (typeof m === 'string') return m.trim();
-      return m && typeof m === 'object' && typeof m.id === 'string' ? m.id.trim() : '';
-    })
-    .filter(Boolean);
+  const pickActiveProvider = (cfg) => pickUsableProvider(cfg, '') || null;
   const firstModelId = (prov) => resolveModel(prov, null)?.id || '';
 
   // 非流式摘要：上下文压缩 / 手动 /compact 共用（失败由调用方兜底）

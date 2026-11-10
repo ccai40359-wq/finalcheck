@@ -717,18 +717,11 @@ export default function App() {
   const closeArtifact = () => { setArtifact(null); setArtifactError(''); setArtifactLoading(false); };
 
   // ---- / 技能（dsh 式：文字后面空格 + / 就能唤起，命令/技能可嵌在正文里） ----
-  const runCompact = async () => {
-    if (!y?.compactSession || busy || compacting) return;
+  // 只由 send() 在「整条消息就是 /compact」时调用：没有活动会话不新建，直接提示用户先打开会话
+  const runCompact = async (sid = activeId) => {
+    if (!y?.compactSession || !sid || busy || compacting) return;
     setCompacting(true);
-    let sid = activeId;
     try {
-      if (!sid) {
-        const s = await y.sessions.create(t('新会话'));
-        sid = s.id;
-        setActiveId(sid);
-        await refreshSessions();
-        setMessages([]);
-      }
       const r = await y.compactSession(sid);
       if (r?.error) setMessages((prev) => [...prev, { role: 'notice', content: r.error }]);
       else await openSession(sid);
@@ -741,14 +734,15 @@ export default function App() {
     // 只替换「光标前那个 /token」，保留前面已经写好的文字（dsh 式）
     const m = input.match(/(^|\s)\/([a-z0-9-]*)$/i);
     const head = m ? input.slice(0, m.index) + (m[1] || '') : input;
-    if (item.type === 'command' && item.id === 'compact' && !head.trim()) {
-      setInput('');
-      runCompact();
-      return;
-    }
-    setInput(head + `/${item.name} `);
+    // 命令一律只插入文本、不立即执行（/compact 与 /workflow 一致）：用户点发送才真正压缩
+    const next = head + `/${item.name} `;
+    setInput(next);
     setMenu(null);
-    requestAnimationFrame(() => inputRef.current?.focus());
+    requestAnimationFrame(() => {
+      const el = inputRef.current;
+      el?.focus();
+      try { el?.setSelectionRange(next.length, next.length); } catch { /* 非 textarea 时忽略 */ }
+    });
   };
 
   // Ctrl+T：打开当前会话的模型/思考强度面板（同 ZCode）
@@ -830,16 +824,29 @@ export default function App() {
       pumpingRef.current = false;
       return;
     }
+    // 整条消息恰好是 /compact 才触发压缩；`/compact 保留结论` 这类带后续文字的按普通消息交给模型
+    if (!pastedTexts.length && /^\/compact$/i.test(typedRaw)) {
+      if (!queued) {
+        setInput('');
+        setPastedBlocks([]);
+        setAttachments([]);
+        if (inputRef.current) inputRef.current.style.height = 'auto';
+      }
+      pumpingRef.current = false;
+      if (!activeId) {
+        setMessages((prev) => [...prev, { role: 'notice', content: t('请先打开一个会话') }]);
+        return;
+      }
+      if (compacting) {
+        setMessages((prev) => [...prev, { role: 'notice', content: t('正在压缩当前上下文，请稍候…') }]);
+        return;
+      }
+      runCompact();
+      return;
+    }
     if (!activeModel) {
       setMessages((prev) => [...prev, { role: 'notice', content: t('供应商「{name}」还没有可用模型：请在模型面板里添加/选择模型后再发送。', { name: activeProv?.name || t('未选择') }) }]);
       pumpingRef.current = false;
-      return;
-    }
-    if (!pastedTexts.length && /^\/compact\b/i.test(typedRaw)) {
-      setInput('');
-      if (!queued) { setPastedBlocks([]); setAttachments([]); }
-      pumpingRef.current = false;
-      runCompact();
       return;
     }
     // 编辑历史消息：先把会话回退到被编辑那条之前（失败不阻断本次发送）；排队消息按普通新消息发送
@@ -882,8 +889,10 @@ export default function App() {
       } catch { /* 忽略 */ }
     }
     if (!sid) { pumpingRef.current = false; return; }
-    // 新会话首次发送：把当前会话的模型配置落盘（主进程按它选模型）
-    if (y.sessions?.setModel) { try { await y.sessions.setModel(sid, sessCfg); } catch { /* 落盘失败用全局默认 */ } }
+    // 手动发送 / 新会话首次发送：把当前会话的模型配置落盘（主进程按它选模型）。
+    // 排队消息出队时不回写：出队执行的回合由主进程在回合开始重读盘上最新配置，
+    // 这条路径若拿入队时的状态回写，反而会把运行中刚改的新模型覆盖回旧值。
+    if (!queued && y.sessions?.setModel) { try { await y.sessions.setModel(sid, sessCfg); } catch { /* 落盘失败用全局默认 */ } }
 
     const baseList = baseMessages
       .filter((m) => !m.error && !m.local && !m.steer && (m.role === 'user' || m.role === 'assistant'))
@@ -1133,6 +1142,7 @@ export default function App() {
               approval={approval} queueItems={queueItems} menu={menu} providerMenu={providerMenu}
               permMode={permMode} ctxStats={ctxStats} skills={skills} cfg={cfg} sessCfg={sessCfg}
               effortPos={effortPos} activeId={activeId} slashIndex={slashIndex} setSlashIndex={setSlashIndex}
+              onNotice={(content) => setMessages((prev) => [...prev, { role: 'notice', content }])}
               inputRef={inputRef} modelMenuRef={modelMenuRef}
               setDragging={setDragging} setMenu={setMenu} setProviderMenu={setProviderMenu} setEffortPos={setEffortPos}
               setSessCfg={setSessCfg} setCfg={setCfg} setPermMode={setPermMode}

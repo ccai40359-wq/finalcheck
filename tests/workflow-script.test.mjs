@@ -40,13 +40,13 @@ test('script/step: 正常执行，prompt 带总目标，phases 按顶层 op 分�
     script: [{ op: 'step', id: 'a', name: '扫描', role: '审查员', prompt: '检查 A' }],
     callStep: async (ctx) => {
       calls.push(ctx);
-      return { content: '扫描完成', toolCount: 1 };
+      return { content: ctx.id === '__report__' ? reportText : '扫描完成', toolCount: 1 };
     },
   });
   assert.equal(out.error, undefined);
   assert.equal(out.ok, true);
-  assert.deepEqual(out.results.filter((r) => r.id !== '__verify__').map((r) => r.id), ['a']);
-  assert.equal(calls.length, 2, 'step + 自动补的对抗复核（上游有正文就必须跑）');
+  assert.deepEqual(out.results.filter((r) => r.id !== '__verify__' && r.id !== '__report__').map((r) => r.id), ['a']);
+  assert.equal(calls.length, 3, 'step + 自动补的对抗复核 + 自动补的终局 report');
   assert.equal(calls[0].id, 'a');
   assert.match(calls[0].prompt, /总目标：检查登录模块/);
   assert.match(calls[0].prompt, /检查 A/);
@@ -114,7 +114,7 @@ test('script/step: depends_on 引用 fanout 别名 → 注入全部子项结果'
     ],
     callStep: async (ctx) => {
       prompts.push([ctx.id, ctx.prompt, ctx.depends_on]);
-      return { content: `${ctx.id} ok`, toolCount: 1 };
+      return { content: ctx.id === '__report__' ? reportText : `${ctx.id} ok`, toolCount: 1 };
     },
   });
   assert.equal(out.ok, true);
@@ -124,15 +124,14 @@ test('script/step: depends_on 引用 fanout 别名 → 注入全部子项结果'
   assert.match(sum[1], /fa#1 ok/);
 });
 
-test('script/gate: 只有程序节点时可省略 callStep', async () => {
+test('script/gate: 只有 gate 没有 LLM 节点且没有 report → 没有终局，明确报错', async () => {
   const out = await runWorkflow({
     goal: 'g',
     script: [{ op: 'gate', id: 'g1', tool: 'review_diff', args: { dir: 'D:/tmp' } }],
     runGate: async () => ({ changed: 0 }),
   });
-  assert.equal(out.error, undefined);
-  assert.equal(out.ok, true);
-  assert.equal(out.results[0].source, 'program');
+  assert.match(out.error, /没有终局（report\/aggregate）/);
+  assert.match(out.error, /请在末尾加 report/);
 });
 
 // ---------- if ----------
@@ -177,18 +176,21 @@ test('script/gate: 不调 callStep，source=program 且 verified', async () => {
   let gateCalls = 0;
   const out = await runWorkflow({
     goal: 'g',
-    script: [{ op: 'gate', id: 'g1', tool: 'audit_project', args: { dir: 'D:/tmp/project' } }],
+    script: [
+      { op: 'gate', id: 'g1', tool: 'audit_project', args: { dir: 'D:/tmp/project' } },
+      { op: 'report', id: 'rep', from: 'g1', ask: '汇总' },
+    ],
     runGate: async (tool, args) => {
       gateCalls += 1;
       return { verdict: 'pass', findings: [], echo: { tool, args } };
     },
     callStep: async () => {
       stepCalls += 1;
-      return { content: 'x', toolCount: 1 };
+      return { content: reportText, toolCount: 0 };
     },
   });
   const row = out.results.find((r) => r.id === 'g1');
-  assert.equal(stepCalls, 0, 'gate 节点不得调用模型');
+  assert.equal(stepCalls, 1, 'gate 节点不得调用模型；只有 report 调一次');
   assert.equal(gateCalls, 1);
   assert.equal(row.ok, true);
   assert.equal(row.source, 'program');
@@ -407,12 +409,13 @@ test('script/loop: 第 1 轮命中 until → 停止，只生成 r1 节点', asyn
     }],
     callStep: async (ctx) => {
       calls.push(ctx.id);
+      if (ctx.id === '__report__') return { content: reportText, toolCount: 0 };
       return { content: ctx.id === 'lp.r1.0' ? 'DONE' : 'NO', toolCount: 1 };
     },
   });
   assert.equal(out.error, undefined);
   assert.equal(out.ok, true);
-  assert.deepEqual(out.results.map((r) => r.id), ['lp.r1.0', 'lp']);
+  assert.deepEqual(out.results.map((r) => r.id), ['lp.r1.0', 'lp', '__report__']);
   assert.ok(!out.results.some((r) => r.id === 'lp.r2.0'), '命中后不再执行后续轮次');
   const lp = out.results.find((r) => r.id === 'lp');
   assert.equal(lp.ok, true);
@@ -461,13 +464,14 @@ test('script/recurse: 沿列表展开到 maxDepth，${as} 可用，节点 id 按
     }],
     callStep: async (ctx) => {
       prompts.push([ctx.id, ctx.prompt]);
+      if (ctx.id === '__report__') return { content: reportText, toolCount: 0 };
       if (ctx.id === 'rc.d1.i0.0') return { content: JSON.stringify(['child']), toolCount: 1 };
       return { content: '[]', toolCount: 1 };
     },
   });
   assert.equal(out.error, undefined);
   assert.equal(out.ok, true);
-  assert.deepEqual(out.results.map((r) => r.id), ['rc.d1.i0.0', 'rc.d2.i0.0', 'rc']);
+  assert.deepEqual(out.results.map((r) => r.id), ['rc.d1.i0.0', 'rc.d2.i0.0', 'rc', '__report__']);
   assert.match(prompts[0][1], /处理 root/);
   assert.match(prompts[1][1], /处理 child/);
   const rc = out.results.find((r) => r.id === 'rc');
@@ -484,7 +488,10 @@ test('script/recurse: maxDepth 触顶后停止展开（不静默越界）', asyn
       op: 'recurse', id: 'rc', over: ['root'], as: 'item', maxDepth: 1,
       body: [{ op: 'step', id: 'walk', role: '审查员', prompt: '处理 ${item}' }],
     }],
-    callStep: async () => ({ content: JSON.stringify(['child']), toolCount: 1 }),
+    callStep: async (ctx) => ({
+      content: ctx.id === '__report__' ? reportText : JSON.stringify(['child']),
+      toolCount: ctx.id === '__report__' ? 0 : 1,
+    }),
   });
   assert.equal(out.ok, true);
   assert.ok(!out.results.some((r) => r.id.startsWith('rc.d2.')), '超过 maxDepth 的节点不得执行');
@@ -502,10 +509,13 @@ test('script/recurse: stopWhen 命中 → 该分支停止，不再向下展开',
       stopWhen: { ref: 'walk', test: { contains: 'STOP' } },
       body: [{ op: 'step', id: 'walk', role: '审查员', prompt: '处理 ${item}' }],
     }],
-    callStep: async () => ({ content: 'STOP ["child"]', toolCount: 1 }),
+    callStep: async (ctx) => ({
+      content: ctx.id === '__report__' ? reportText : 'STOP ["child"]',
+      toolCount: ctx.id === '__report__' ? 0 : 1,
+    }),
   });
   assert.equal(out.ok, true);
-  assert.deepEqual(out.results.map((r) => r.id), ['rc.d1.i0.0', 'rc']);
+  assert.deepEqual(out.results.map((r) => r.id), ['rc.d1.i0.0', 'rc', '__report__']);
   const rc = out.results.find((r) => r.id === 'rc');
   assert.equal(rc.stopWhenMatched, 1);
   assert.equal(rc.branches, 1);
@@ -548,7 +558,6 @@ test('script/aggregate: 从上游 findings 聚合，top 截断，且不调 callS
       };
     },
   });
-  assert.ok(!called.includes('agg'), 'aggregate 节点不得调用模型');
   const agg = out.results.find((r) => r.id === 'agg');
   assert.equal(agg.ok, true);
   assert.equal(agg.source, 'program');
@@ -558,7 +567,10 @@ test('script/aggregate: 从上游 findings 聚合，top 截断，且不调 callS
     { key: 'medium', count: 1 },
   ]);
   assert.deepEqual(agg.top, [{ key: 'high', count: 2 }, { key: 'low', count: 1 }]);
-  assert.equal(out.results.filter((r) => r.id !== '__verify__').length, 2);
+  // aggregate 是程序终局，但不代替交付报告：有 LLM 节点时仍会自动补 report。
+  assert.ok(!called.includes('agg'), 'aggregate 节点不得调用模型');
+  assert.ok(out.results.some((r) => r.id === '__report__'));
+  assert.equal(out.results.filter((r) => r.id !== '__verify__' && r.id !== '__report__').length, 2);
 });
 
 test('script/aggregate: 空输入不炸，groups/top 为空数组', async () => {
@@ -568,7 +580,10 @@ test('script/aggregate: 空输入不炸，groups/top 为空数组', async () => 
       { op: 'step', id: 'scan', role: '审查员', prompt: '扫描' },
       { op: 'aggregate', id: 'agg', from: 'scan', by: 'file' },
     ],
-    callStep: async () => ({ content: '没有发现任何问题。', toolCount: 1 }),
+    callStep: async (ctx) => ({
+      content: ctx.id === '__report__' ? reportText : '没有发现任何问题。',
+      toolCount: ctx.id === '__report__' ? 0 : 1,
+    }),
   });
   assert.equal(out.ok, true);
   const agg = out.results.find((r) => r.id === 'agg');
@@ -587,6 +602,158 @@ test('script/aggregate: top 超过 20 → 明确报错', async () => {
     callStep: okStep(),
   });
   assert.match(out.error, /top 必须是 1..20 的整数/);
+});
+
+// ---------- 终局 report 自动补 / fanout 默认上限 ----------
+
+test('script/final: 只有 step+fanout 没有 report → 自动补 report，上游包含所有 LLM 节点', async () => {
+  const prompts = {};
+  const out = await runWorkflow({
+    goal: 'g',
+    script: [
+      { op: 'step', id: 's1', prompt: '取证 A' },
+      { op: 'fanout', id: 'fa', as: 'file', over: ['a.js', 'b.js'], step: { prompt: '检查 ${file}' } },
+    ],
+    callStep: async (ctx) => {
+      if (ctx.id === '__report__') {
+        prompts.report = ctx.prompt;
+        return { content: reportText, toolCount: 0 };
+      }
+      return { content: `done ${ctx.id}`, toolCount: 1 };
+    },
+  });
+  assert.equal(out.error, undefined);
+  const repStep = out.steps.find((s) => s.id === '__report__');
+  assert.ok(repStep, '自动补的 report 必须出现在 steps 里');
+  assert.equal(repStep.autoInserted, true);
+  assert.ok(repStep.depends_on.includes('s1'), 'report 上游包含 step');
+  assert.ok(repStep.depends_on.includes('fa'), 'report 上游包含 fanout（运行时展开到子节点）');
+  assert.ok(repStep.depends_on.includes('__verify__'), 'report 必须把自动补的 verify 当上游');
+  assert.match(prompts.report, /done s1/, 'report prompt 必须拿到 step 正文');
+  assert.match(prompts.report, /done fa#0/, 'report prompt 必须拿到 fanout 子节点正文');
+  assert.match(prompts.report, /done fa#1/);
+  assert.match(prompts.report, /点名未完成项/, '自动 report 的 ask 必须写清按 Not covered 点名未完成项');
+  assert.equal(out.delivered.includes('__report__'), true);
+});
+
+test('script/final: fanout 字面 32 项 → 只跑 20 项，warning 含截断与剩余数，report 能看到未覆盖项', async () => {
+  const prompts = {};
+  const out = await runWorkflow({
+    goal: 'g',
+    script: [{
+      op: 'fanout', id: 'fa', as: 'f',
+      over: Array.from({ length: 32 }, (_, i) => `entry${i}`),
+      step: { prompt: '检查 ${f}' },
+    }],
+    callStep: async (ctx) => {
+      if (ctx.id === '__report__') prompts.report = ctx.prompt;
+      return { content: ctx.id === '__report__' ? reportText : 'ok', toolCount: 1 };
+    },
+  });
+  assert.equal(out.results.filter((r) => /^fa#\d+$/.test(r.id)).length, 20, '实际只跑前 20 项');
+  assert.deepEqual(out.phases[0], Array.from({ length: 20 }, (_, i) => `fa#${i}`));
+  const warning = out.warnings.find((w) => w.includes('已截断到 20'));
+  assert.ok(warning, '必须有截断 warning');
+  assert.match(warning, /其余 12 项/);
+  assert.match(warning, /entry20/, 'warning 里要能看见未覆盖条目');
+  assert.equal(out.fanoutTruncations.length, 1);
+  assert.equal(out.fanoutTruncations[0].total, 32);
+  assert.equal(out.fanoutTruncations[0].skipped, 12);
+  assert.equal(out.results.find((r) => r.id === 'fa#0').fanoutTruncated.skipped, 12, '子节点结果里带截断信息（加法字段）');
+  assert.match(prompts.report, /共 32 项，只执行前 20 项/, 'report prompt 必须带截断事实');
+  assert.match(prompts.report, /entry20/, 'report prompt 必须带未覆盖条目，报告才能点名');
+});
+
+test('script/final: fanout 显式 limit:5 → 只跑 5 项；limit 超范围报错', async () => {
+  const out = await runWorkflow({
+    goal: 'g',
+    script: [{
+      op: 'fanout', id: 'fa', as: 'f', limit: 5,
+      over: Array.from({ length: 32 }, (_, i) => `entry${i}`),
+      step: { prompt: '检查 ${f}' },
+    }],
+    callStep: async (ctx) => ({ content: ctx.id === '__report__' ? reportText : 'ok', toolCount: 1 }),
+  });
+  assert.equal(out.results.filter((r) => /^fa#\d+$/.test(r.id)).length, 5);
+  assert.deepEqual(out.phases[0], ['fa#0', 'fa#1', 'fa#2', 'fa#3', 'fa#4']);
+  assert.match(out.warnings.join('\n'), /已截断到 5/);
+  assert.match(out.warnings.join('\n'), /其余 27 项/);
+
+  const tooBig = await runWorkflow({
+    goal: 'g',
+    script: [{ op: 'fanout', id: 'fa', as: 'f', limit: 51, over: ['a'], step: { prompt: '查 ${f}' } }],
+    callStep: okStep(),
+  });
+  assert.match(tooBig.error, /limit 必须是 1\.\.50 的整数/);
+});
+
+test('script/final: limit 超过 over 实际长度 → 按实际长度跑，不报错也不截断', async () => {
+  const out = await runWorkflow({
+    goal: 'g',
+    script: [{ op: 'fanout', id: 'fa', as: 'f', limit: 5, over: ['a', 'b', 'c'], step: { prompt: '查 ${f}' } }],
+    callStep: async (ctx) => ({ content: ctx.id === '__report__' ? reportText : 'ok', toolCount: 1 }),
+  });
+  assert.equal(out.results.filter((r) => /^fa#\d+$/.test(r.id)).length, 3);
+  assert.deepEqual(out.fanoutTruncations, []);
+  assert.ok(!out.warnings.some((w) => /已截断/.test(w)));
+});
+
+test('script/final: 只有 gate/if（没有 LLM 节点、没有 report）→ 报「没有终局」', async () => {
+  let gateCalls = 0;
+  const out = await runWorkflow({
+    goal: 'g',
+    script: [
+      { op: 'gate', id: 'g1', tool: 'review_diff', args: {} },
+      {
+        op: 'if', id: 'cond', when: { ref: 'g1', test: { notEmpty: true } },
+        then: [{ op: 'gate', id: 'g2', tool: 'review_diff', args: {} }],
+      },
+    ],
+    runGate: async () => { gateCalls += 1; return { ok: true }; },
+  });
+  assert.match(out.error, /脚本没有终局（report\/aggregate），无法产出交付物；请在末尾加 report/);
+  assert.equal(gateCalls, 0, '终局校验在静态展开阶段，脚本不应开始执行');
+});
+
+test('script/final: 已有 report 不被重复插入（幂等）', async () => {
+  const out = await runWorkflow({
+    goal: 'g',
+    script: [
+      { op: 'step', id: 's1', prompt: '取证' },
+      { op: 'report', id: 'rep', from: 's1', ask: '汇总' },
+    ],
+    callStep: async (ctx) => ({ content: ctx.id === 'rep' ? reportText : 'evidence', toolCount: 1 }),
+  });
+  assert.equal(out.error, undefined);
+  assert.equal(out.results.filter((r) => String(r.kind || '') === 'report').length, 1);
+  assert.ok(!out.results.some((r) => r.id === '__report__'));
+  assert.equal(out.steps.filter((s) => s.kind === 'report').length, 1);
+});
+
+test('script/final: over 引用解析出 32 项 → 运行时同样截断到 20，报告可点名剩余项', async () => {
+  const prompts = {};
+  const out = await runWorkflow({
+    goal: 'g',
+    script: [
+      { op: 'step', id: 'recon', role: '审查员', prompt: '列出全部入口' },
+      { op: 'fanout', id: 'fa', as: 'entry', over: 'recon', step: { prompt: '检查 ${entry}' } },
+    ],
+    callStep: async (ctx) => {
+      if (ctx.id === 'recon') {
+        return { content: JSON.stringify(Array.from({ length: 32 }, (_, i) => `p${i}`)), toolCount: 1 };
+      }
+      if (ctx.id === '__report__') {
+        prompts.report = ctx.prompt;
+        return { content: reportText, toolCount: 0 };
+      }
+      return { content: 'ok', toolCount: 1 };
+    },
+  });
+  assert.equal(out.results.filter((r) => /^fa#\d+$/.test(r.id)).length, 20, '运行时解析出的 32 项也只跑 20');
+  assert.equal(out.fanoutTruncations.length, 1);
+  assert.equal(out.fanoutTruncations[0].skipped, 12);
+  assert.match(out.warnings.join('\n'), /其余 12 项/);
+  assert.match(prompts.report, /p20/, '运行时截断的未覆盖项也要进 report prompt');
 });
 
 // ---------- 插值安全 ----------

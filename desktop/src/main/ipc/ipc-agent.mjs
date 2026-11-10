@@ -7,7 +7,7 @@ import { readProjectMemory } from '../project-memory.mjs';
 import { extractUsage, cacheHitOf } from '../usage.mjs';
 import { appendUsage } from '../usage-ledger.mjs';
 import { createPolicy } from '../policy.mjs';
-import { resolveModel, effectiveWindow, effectiveMaxOutputTokens, crossTurnBudgetTokens } from '../model-config.mjs';
+import { resolveModel, effectiveWindow, effectiveMaxOutputTokens, crossTurnBudgetTokens, resolveTurnTarget } from '../model-config.mjs';
 import { listJournals, pickResumableRun } from '../workflow-journal.mjs';
 import { writeStepTranscript, readStepTranscript, pruneRuns, trimTranscriptMessages } from '../transcripts.mjs';
 import { withOutputLanguage } from '../lang.mjs';
@@ -36,6 +36,35 @@ async function attachImagesToLastUser(messages, imageMime) {
   const out = [...messages];
   out[idx] = { ...out[idx], content: parts };
   return out;
+}
+
+// 运行期模型解析器：每次（工作流的一步 / 主 agent 的一次模型请求）开始时重读配置 + 会话模型选择，
+// 而不是复用回合启动时的快照。用户运行中改模型/供应商后，从下一个可切换点（下一步 / 下一次请求）生效。
+// - 解析成功：current() 更新，之后的回落也以它为准
+// - 解析失败（供应商被禁用/删光、模型列表为空）：沿用上一次可用目标，fellBack=true 由调用方记 warning
+export function createLiveModelResolver({ store, sessionsStore, sessionId = null, initial = null }) {
+  let last = initial && initial.provider && initial.model ? { provider: initial.provider, model: initial.model } : null;
+  const resolve = async () => {
+    let cfg = null;
+    try { cfg = await store.loadConfig(); } catch { /* 配置读失败：按上一次目标继续 */ }
+    let mc = null;
+    if (sessionId) {
+      try { mc = await sessionsStore.getModelConfig(sessionId); } catch { /* 无会话/读失败：用全局默认 */ }
+    }
+    const r = cfg ? resolveTurnTarget({ cfg, modelConfig: mc }) : { provider: null, model: '', reason: 'no-provider' };
+    const ok = !!(r.provider && r.model);
+    if (ok) last = { provider: r.provider, model: r.model };
+    const effort = String((mc && mc.effort) || cfg?.thinkingEffort || '').trim();
+    return {
+      cfg,
+      provider: ok ? r.provider : (last?.provider || null),
+      model: ok ? r.model : (last?.model || ''),
+      effort,
+      fellBack: !ok,
+      reason: r.reason || (ok ? null : 'no-provider')
+    };
+  };
+  return { resolve, current: () => last };
 }
 
 // ---- Agent（tool-use 循环 + 流式 token 转发 + 会话落盘） ----
@@ -163,8 +192,12 @@ export function registerAgentIpc({
         }, ...contextMessages];
       }
     } catch { /* 项目记忆读取失败不阻断对话 */ }
-    // LLM 总结回调（超预算时由 agent-service 调用）：非流式，失败由 context.mjs 静默回退抽取式
-    const summarize = (text) => store.summarizeWithProvider(prov, text);
+    // 运行期模型解析器：主 agent 的每次模型请求、工作流的每一步开始时都重新读配置（不是回合启动快照）
+    const liveModels = createLiveModelResolver({ store, sessionsStore: sessions, sessionId, initial: { provider: prov, model } });
+    let liveFallbackWarned = false; // 回退 warning 每回合最多一条，不刷屏
+    // LLM 总结回调（超预算时由 agent-service 调用）：非流式，失败由 context.mjs 静默回退抽取式。
+    // 用当前生效的供应商（运行中切换后别再拿旧 key 去请求）
+    const summarize = (text) => store.summarizeWithProvider(liveModels.current()?.provider || prov, text);
     // 手动 /compact 后：只带「摘要 + 最近 6 条」，UI 历史仍完整
     if (sessionId) {
       try {
@@ -308,6 +341,29 @@ export function registerAgentIpc({
           requiresTools: requiresEvidence,
           forceFirstToolChoice: requiresEvidence,
           signal: ctl.signal,
+          // 工作流子代理的工具调用也落库：合成 message_id「wf:<runId>:<stepId>」写 part 表（不写 message 表，
+          // loadSession 读不到 → 聊天记录不被污染）。开始写 running、结束补 ok/fail；不 await，避免拖慢工具执行。
+          // runId/stepId 缺失时 appendWorkflowTool* 自己退化为 no-op（返回 false）。
+          onToolLifecycle: sessionId ? (ev) => {
+            if (!ev) return;
+            const tool = { callId: ev.id ?? null, name: ev.name ?? '', args: ev.args ?? '' };
+            if (ev.phase === 'start') {
+              void sessions.appendWorkflowToolStart(sessionId, { runId, stepId: id, tool })
+                .catch(() => { /* 落库失败不阻断子代理执行 */ });
+            } else if (ev.phase === 'end') {
+              void sessions.appendWorkflowToolEnd(sessionId, {
+                runId,
+                stepId: id,
+                tool: {
+                  ...tool,
+                  status: ev.status === 'ok' ? 'ok' : 'fail',
+                  result: ev.result === undefined ? null : ev.result,
+                  error: ev.error ?? null,
+                  ms: ev.ms ?? null
+                }
+              }).catch(() => { /* 落库失败不阻断子代理执行 */ });
+            }
+          } : null,
           onTranscript: (msgs, meta = {}) => {
             transcript = msgs;
             saveTranscript(!!meta.done);
@@ -337,7 +393,10 @@ export function registerAgentIpc({
         const passthrough = {
           ...(result.errorCode ? { errorCode: result.errorCode } : {}),
           ...(result.salvaged ? { salvaged: true, salvageReason: result.salvageReason || null } : {}),
-          ...(Array.isArray(result.transcript) ? { transcript: result.transcript } : {})
+          ...(Array.isArray(result.transcript) ? { transcript: result.transcript } : {}),
+          // 诊断字段（加法）：区分「finish_reason=length 被截断」与「模型自己停但没写正文」
+          ...(result.finishReason != null ? { finishReason: result.finishReason } : {}),
+          ...(Number.isFinite(result.roundsUsed) ? { roundsUsed: result.roundsUsed } : {})
         };
         if (result.error) {
           return { error: result.error, ...(content ? { content } : {}), ...passthrough, toolCount, truncated, warnings };
@@ -350,12 +409,21 @@ export function registerAgentIpc({
         let content = '';
         if (salvage) {
           content = salvage({ transcript, toolCount, reason: aborted ? 'aborted' : 'empty', error });
-        } else if (transcript.length) {
+        } else {
+          // salvage 模块都加载失败时的最后兜底：也必须给出可审阅的失败正文，不能交白卷
           content = t('【未完成·{state}】\n原因：{error}。\n已调用工具：{count} 次。\n交付状态：未完成，下游报告必须在 ## Not covered 点名本步。', {
             state: aborted ? t('已中断') : t('无最终结论'),
             error,
             count: toolCount
           });
+        }
+        // salvage 正文也写进 transcript：面板的「最终答案」取最后一个有正文的 assistant 条目，
+        // 不写进去即使 step content 有内容，面板也会说「没有可展示的正文」。
+        if (content) {
+          transcript = [
+            ...transcript,
+            { role: 'assistant', content, final: true, ms: null, salvaged: true, salvageReason: aborted ? 'aborted' : 'empty' }
+          ];
         }
         return {
           error,
@@ -404,6 +472,24 @@ export function registerAgentIpc({
       messages: contextMessages,
       summarize,
       signal: chatAbort.signal,
+      // 运行中改模型/供应商：每次模型请求前重新解析（已流式输出的那一条不换，下一次请求起用新值）
+      resolveConfig: async () => {
+        const live = await liveModels.resolve();
+        if (live.fellBack && !liveFallbackWarned) {
+          liveFallbackWarned = true;
+          const message = t('最新配置暂时解析不到可用模型，本回合继续使用 {model}', { model: live.model || model });
+          console.warn('[agent-chat] ' + message);
+          try { getWin()?.webContents.send('finalcheck:agent-event', { sessionId, ev: { kind: 'warning', message } }); } catch { /* 窗口不在也继续跑 */ }
+        }
+        if (!live.provider || !live.model) return null;
+        return {
+          baseUrl: live.provider.baseUrl,
+          apiKey: live.provider.apiKey,
+          model: live.model,
+          providerId: live.provider.id,
+          ...(live.effort ? { reasoningEffort: live.effort } : {})
+        };
+      },
       // Hooks 回合事件（UserPromptSubmit / Stop）由 agent-service 调用；工具事件在 agent-tools 层
       hooksConfig: hooksCfg,
       sessionId,
@@ -458,14 +544,18 @@ export function registerAgentIpc({
           };
           if (sessionId) state.workflowTranscripts.set(sessionId, {});
           if (sessionId) state.workflowControls.set(sessionId, ctl);
-          const override = () => {
+          // 工作流面板里改的「子代理模型」：值来自用户即时操作，provider 详情也按最新配置查（运行中改过 baseUrl/key 同样生效）
+          const controlOverride = (providersNow) => {
             if (!ctl.model) return null;
-            const p = (cfg.providers || []).find((x) => x.id === ctl.providerId && x.enabled !== false && x.baseUrl && x.apiKey && store.modelIdsOf(x).includes(ctl.model));
+            const p = (providersNow || []).find((x) => x.id === ctl.providerId && x.enabled !== false && x.baseUrl && x.apiKey && store.modelIdsOf(x).includes(ctl.model));
             return p ? { baseUrl: p.baseUrl, apiKey: p.apiKey, model: ctl.model, providerId: p.id } : null;
           };
-          // 全局子代理模型（工作流控制台优先，否则会话模型）：per-step 未指定/解析失败时回退到这里
-          const fallbackSubagent = () => override() || { baseUrl: prov.baseUrl, apiKey: prov.apiKey, model, providerId: prov.id };
+          // 回合启动时的会话模型：最新配置解析不到时的最后回落
+          const turnFallback = () => ({ baseUrl: prov.baseUrl, apiKey: prov.apiKey, model, providerId: prov.id });
           const stepWarnings = [];
+          // 工作流结束后做跨家族复核时用它：按「跑完时」的配置判断家族，而不是启动时快照
+          let finalCfg = cfg;
+          let finalProv = prov;
           // script 模式的程序节点（gate）直接复用现有工具实现：audit_project / review_diff / quality_gate
           // （保留权限/审批/沙箱边界，不走模型、不在这里另写一套引擎调用）
           const gateTools = createAgentTools({
@@ -502,13 +592,28 @@ export function registerAgentIpc({
               control: ctl,
               projectPath: turnProjectPath,
               runGate,
-              // per-step 模型：ctx.providerId / ctx.model → 配置里的 provider；不合法回退全局并记 warning
+              // per-step 模型：该步开始执行时才解析（重读最新配置 + 会话模型选择），已跑完的步骤不回滚
               callStep: async (ctx) => {
-                const fallback = fallbackSubagent();
+                const live = await liveModels.resolve();
+                const providersNow = Array.isArray(live.cfg?.providers) ? live.cfg.providers : (cfg.providers || []);
+                if (live.cfg) finalCfg = live.cfg;
+                if (live.provider) finalProv = live.provider;
+                let fallback;
+                if (live.provider && live.model) {
+                  fallback = { baseUrl: live.provider.baseUrl, apiKey: live.provider.apiKey, model: live.model, providerId: live.provider.id };
+                } else {
+                  // 最新配置解析不到：沿用上一可用目标（回合启动时的会话模型打底），并在 warnings 里点名
+                  fallback = controlOverride(providersNow) || turnFallback();
+                  stepWarnings.push(t('步骤 {label} 使用了回退模型：{reason}，沿用 {model}', {
+                    label: String(ctx?.id || '?'),
+                    reason: live.reason === 'no-model' ? t('最新配置里该供应商没有可用模型') : t('最新配置里没有可用的供应商'),
+                    model: fallback.model || '—'
+                  }));
+                }
                 const resolved = resolveWorkflowStepModel({
                   step: { id: ctx?.id, providerId: ctx?.providerId, model: ctx?.model },
-                  providers: cfg.providers || [],
-                  fallback
+                  providers: providersNow,
+                  fallback: controlOverride(providersNow) || fallback
                 });
                 if (resolved.warning) stepWarnings.push(resolved.warning);
                 const used = resolved.override || fallback;
@@ -527,8 +632,8 @@ export function registerAgentIpc({
                 ...stepWarnings,
                 ...computeCrossFamilyWarnings({
                   results: r.results || [],
-                  providers: cfg.providers || [],
-                  fallbackProvider: prov
+                  providers: finalCfg.providers || [],
+                  fallbackProvider: finalProv
                 })
               ];
               if (warnings.length) r.warnings = [...(r.warnings || []), ...warnings];
@@ -569,11 +674,13 @@ export function registerAgentIpc({
         state.sessionUsage.set(sessionId, rec);
         await sessions.setSessionUsage(sessionId, rec).catch(() => {}); // 落盘：重启后实测还在
       }
-      // 用量账本：每次主会话拿到真实 usage 追加一条（provider 取本轮供应商，model 取本轮实际模型）
+      // 用量账本：每次主会话拿到真实 usage 追加一条（provider/model 取最后一次请求实际使用的值：
+      // 运行中切过模型时账本按「新值」记，避免把新模型的消耗记到旧供应商名下）
+      const usedTarget = liveModels.current() || { provider: prov, model };
       await appendUsage({
         at: rec.at,
-        model,
-        providerId: prov.id,
+        model: usedTarget.model || model,
+        providerId: usedTarget.provider?.id || prov.id,
         prompt: usageRec.prompt,
         completion: usageRec.completion,
         cached: usageRec.cached
@@ -589,7 +696,7 @@ export function registerAgentIpc({
             const s = await sessions.loadSession(sessionId);
             const userCount = (s.messages || []).filter((m) => m.role === 'user').length;
             if (userCount !== 1) return; // 只在第一轮命名，之后（含手动改名）不覆盖
-            const title = await store.generateSessionTitle(prov, { user: userMsg, assistant: out.answer || '' });
+            const title = await store.generateSessionTitle(liveModels.current()?.provider || prov, { user: userMsg, assistant: out.answer || '' });
             if (!title) return;
             await sessions.renameSession(sessionId, title);
             getWin()?.webContents.send('finalcheck:session-title', { sessionId, title });
