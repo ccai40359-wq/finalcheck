@@ -311,7 +311,7 @@ export function resolveMaxStepMs(budget) {
 }
 
 /** 盲验节点的专属墙钟上限：verifyTimeoutMs 显式传才覆盖，缺省/非法 = 60 分钟；显式 0 = 关闭上限。
- * @param {number|null|undefined} [value]
+ * @param {number|string|null|undefined} [value]
  * @returns {number}
  */
 export function resolveVerifyTimeoutMs(value) {
@@ -335,7 +335,7 @@ function isVerifyStep(step) {
  * 曾经的 bug：盲验把 60 分钟写进 budget.maxStepMs，随后被 resolveMaxStepMs 的
  * 10 分钟 clamp 截成 600s，所有盲验实际 10 分钟就被杀（2026-11-11 实测日志里的
  * 「盲验超过 600s 被强制截止」）。
- * @param {{kind?:string|null, autoInserted?:boolean, budget?:object|null}} [ctx]
+ * @param {{kind?:string|null, autoInserted?:boolean, budget?:StepBudget|null}} [ctx]
  * @returns {number} 毫秒；0 = 不限制
  */
 export function resolveStepDeadlineMs(ctx = {}) {
@@ -1163,6 +1163,7 @@ export async function runSubagentStep({
  * @param {string|null} [opts.journalDir] journal 落盘目录；不传则不落盘（旧行为）
  * @param {Function|null} [opts.runGate] 程序闸执行器（gate/aggregate 用）
  * @param {string|null} [opts.projectPath] 程序闸未显式给 dir 时的默认项目目录
+ * @param {number|null} [opts.verifyTimeoutMs] 盲验节点专属墙钟上限（毫秒）；缺省 60 分钟，0 = 关闭
  * @returns {Promise<WorkflowRunResult|{error:string}>}
  */
 export async function runWorkflow({
