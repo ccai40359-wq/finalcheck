@@ -1,7 +1,7 @@
 {
   "name": "finalcheck-desktop",
   "productName": "FinalCheck",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "author": "Sean (https://github.com/ccai40359-wq)",
   "description": "FinalCheck 终检台桌面端：全方位代码体检 + 渗透/压测 + AI Agent",
   "private": true,
@@ -14,7 +14,8 @@
     "dist:dir": "electron-vite build && electron-builder --win dir",
     "preview": "electron-vite preview",
     "setup:sqlite": "node scripts/ensure-sqlite-binding.mjs",
-    "postinstall": "node scripts/ensure-sqlite-binding.mjs"
+    "postinstall": "node scripts/ensure-sqlite-binding.mjs",
+    "check:package": "node scripts/check-package-hygiene.mjs"
   },
   "build": {
     "appId": "com.finalcheck.terminal",
@@ -40,23 +41,48 @@
     "extraResources": [
       {
         "from": "../src",
-        "to": "src"
+        "to": "src",
+        "filter": [
+          "**/*",
+          "!**/.mimosa/**",
+          "!**/.mimosa"
+        ]
       },
       {
         "from": "../playbooks",
-        "to": "playbooks"
+        "to": "playbooks",
+        "filter": [
+          "**/*",
+          "!**/.mimosa/**",
+          "!**/.mimosa"
+        ]
       },
       {
         "from": "src",
-        "to": "desktop/src"
+        "to": "desktop/src",
+        "filter": [
+          "**/*",
+          "!**/.mimosa/**",
+          "!**/.mimosa"
+        ]
       },
       {
         "from": "build",
-        "to": "app/build"
+        "to": "app/build",
+        "filter": [
+          "**/*",
+          "!**/.mimosa/**",
+          "!**/.mimosa"
+        ]
       },
       {
         "from": "../node_modules",
-        "to": "node_modules"
+        "to": "node_modules",
+        "filter": [
+          "**/*",
+          "!**/.mimosa/**",
+          "!**/.mimosa"
+        ]
       }
     ],
     "win": {
