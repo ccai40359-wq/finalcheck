@@ -1,7 +1,7 @@
 {
   "name": "finalcheck-desktop",
   "productName": "FinalCheck",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "author": "Sean (https://github.com/ccai40359-wq)",
   "description": "FinalCheck 终检台桌面端：全方位代码体检 + 渗透/压测 + AI Agent",
   "private": true,
@@ -20,7 +20,7 @@
     "appId": "com.finalcheck.terminal",
     "productName": "FinalCheck",
     "copyright": "Copyright © 2026 Sean",
-    "artifactName": "FinalCheck-install.${ext}",
+    "artifactName": "fc-setup-${version}.${ext}",
     "asar": false,
     "npmRebuild": false,
     "directories": {
@@ -71,7 +71,8 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "shortcutName": "FinalCheck",
-      "uninstallDisplayName": "FinalCheck"
+      "uninstallDisplayName": "FinalCheck",
+      "include": "build/installer.nsh"
     }
   },
   "devDependencies": {
