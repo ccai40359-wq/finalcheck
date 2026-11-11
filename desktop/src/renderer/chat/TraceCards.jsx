@@ -1,7 +1,7 @@
 // 工具调用富卡片：trace → 仅「交付物卡」出正文（报告卡 / 探测表 / 压测统计，墨黑金边主题）；
 // run_command 等过程类工具一律不出正文卡——过程统一在 ProcessTimeline 时间线里折叠呈现。
 import React, { useEffect, useState } from 'react';
-import { sevStyle, sevLabel, SEV_ORDER, api } from '../lib/ui.jsx';
+import { sevLabel, SEV_ORDER, api } from '../lib/ui.jsx';
 import { humanizeToolError, summarizeToolArgs, formatToolArgs } from '../lib/humanize.js';
 import { errorCodeLabel } from '../../main/swarm.mjs'; // 纯函数（零依赖）：错误码 → 一句人话，与主进程共用同一份映射
 import { RecoverButton } from './RecoverButton.jsx';
@@ -10,12 +10,12 @@ import { t } from '../i18n/core.mjs';
 import AskUserCard from '../components/AskUserCard.jsx';
 import { askUserCardFromTrace } from '../lib/ask-user.mjs';
 
-/** 四色结论横幅（与 AuditPage 一致） */
+/** 四色结论横幅（与 AuditPage 一致）；卡片内只留底色 + 左侧细强调条，不再叠边框 */
 const VERDICT_STYLE = {
-  '过': { cls: 'bg-emerald-500/10 border-emerald-500/40 text-emerald-300', mark: '🟢' },
-  '修完再过': { cls: 'bg-amber-500/10 border-amber-500/40 text-amber-300', mark: '🟠' },
-  '拦': { cls: 'bg-red-500/10 border-red-500/40 text-red-300', mark: '🔴' },
-  '无法验收': { cls: 'bg-neutral-500/10 border-neutral-500/40 text-neutral-300', mark: '⚠️' }
+  '过': { cls: 'bg-emerald-500/10 text-emerald-300', bar: 'bg-emerald-500/55', mark: '🟢' },
+  '修完再过': { cls: 'bg-amber-500/10 text-amber-300', bar: 'bg-amber-500/55', mark: '🟠' },
+  '拦': { cls: 'bg-red-500/10 text-red-300', bar: 'bg-red-500/55', mark: '🔴' },
+  '无法验收': { cls: 'bg-neutral-500/10 text-neutral-300', bar: 'bg-neutral-500/55', mark: '⚠️' }
 };
 
 /** trace.args 是 JSON 字符串（function.arguments），也可能是对象——都兼容 */
@@ -43,7 +43,7 @@ function Chevron({ open }) {
 function ToolHeader({ icon, title, subtitle }) {
   return (
     <div className="flex items-center gap-2.5 min-w-0">
-      <span className="badge shrink-0 bg-gold/15 text-goldSoft border border-gold/35 text-[11px]">{icon} {title}</span>
+      <span className="badge shrink-0 bg-gold/12 text-goldSoft text-[11px]">{icon} {title}</span>
       {subtitle ? <span className="text-xs text-mute font-mono truncate min-w-0">{subtitle}</span> : null}
     </div>
   );
@@ -54,37 +54,42 @@ function ToolShell({ children }) {
   return <div className="mt-2.5 rounded-xl border border-gold/30 bg-[#0d0d10] overflow-hidden animate-[fadeIn_.2s_ease]">{children}</div>;
 }
 
-/* 原始文本折叠块：默认收起（金边细线），点开才铺完整栈/JSON。
-   label 用中文说明，hint 只放简短元信息（绝不把 JSON 首行铺出来）。 */
+/* 原始文本折叠块：默认收起；只留一行灰色文字按钮，展开是浅底，不再套边框。 */
 function FoldedRaw({ text, label = t('查看详情'), hint = '', maxH = 'max-h-56' }) {
   const [open, setOpen] = useState(false);
   if (text == null || text === '') return null;
   return (
-    <div className="mt-1.5 rounded-lg border border-gold/25 bg-[#0b0b0e] overflow-hidden">
+    <div className="mt-1">
       <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open}
-        className="w-full flex items-center gap-1.5 px-2.5 py-1.5 text-left text-mute/70 hover:text-goldSoft transition-colors duration-150">
-        <Chevron open={open} />
-        <span className="text-[11px] shrink-0">{label}</span>
-        {hint ? <span className="truncate min-w-0 text-[10px] font-mono text-mute/40">{hint}</span> : null}
+        className="flex w-full items-center gap-1.5 py-1 text-left text-[11px] text-mute/70 hover:text-ink transition-colors duration-150">
+        <span aria-hidden className="w-2.5 shrink-0 text-[9px] leading-none text-mute/50">{open ? '▾' : '▸'}</span>
+        <span className="shrink-0">{label}</span>
+        {hint ? <span className="truncate min-w-0 text-[10px] font-mono text-mute/45">{hint}</span> : null}
       </button>
       {open && (
-        <pre className={`border-t border-gold/15 bg-[#0d0d10] px-2.5 py-2 font-mono text-[11px] leading-relaxed text-ink/75 whitespace-pre-wrap break-all ${maxH} overflow-y-auto animate-[fadeIn_.18s_ease]`}>{String(text)}</pre>
+        <pre className={`mt-1 rounded-md bg-white/[0.02] px-3 py-2 font-mono text-[11px] leading-relaxed text-ink/75 whitespace-pre-wrap break-all ${maxH} overflow-y-auto animate-[fadeIn_.18s_ease]`}>{String(text)}</pre>
       )}
     </div>
   );
 }
 
 /* ---------- 发现列表（severity chips + 可展开 snippet） ---------- */
+const SEV_BADGE = {
+  high: 'bg-red-500/15 text-red-400',
+  medium: 'bg-amber-500/15 text-amber-400',
+  low: 'bg-gold/15 text-goldSoft'
+};
+
 function ReportFindings({ findings }) {
   const [openIdx, setOpenIdx] = useState(null);
   const sorted = [...(findings || [])].sort((a, b) => (SEV_ORDER[a.severity] ?? 9) - (SEV_ORDER[b.severity] ?? 9));
   if (!sorted.length) return <div className="text-xs text-emerald-400/90 py-1">{t('没有发现，全净')}</div>;
   return (
-    <div className="space-y-1.5">
+    <div className="rounded-lg bg-white/[0.022] divide-y divide-white/[0.06] overflow-hidden">
       {sorted.map((f, i) => (
-        <div key={i} className="glass-card rounded-xl overflow-hidden hover:border-goldDeep transition-colors duration-200">
-          <button className="w-full text-left px-3 py-2 flex items-start gap-2" onClick={() => setOpenIdx(openIdx === i ? null : i)}>
-            <span className={`badge mt-0.5 shrink-0 text-[11px] ${sevStyle[f.severity] || sevStyle.low}`}>{t(sevLabel[f.severity] || f.severity)}</span>
+        <div key={i}>
+          <button className="w-full text-left px-3 py-2 flex items-start gap-2 hover:bg-white/[0.03] transition-colors duration-200" onClick={() => setOpenIdx(openIdx === i ? null : i)}>
+            <span className={`badge mt-0.5 shrink-0 text-[11px] ${SEV_BADGE[f.severity] || SEV_BADGE.low}`}>{t(sevLabel[f.severity] || f.severity)}</span>
             <span className="flex-1 min-w-0 text-xs text-ink/90">
               <span className="font-mono text-goldSoft mr-1.5">{f.checkId}</span>{f.message || f.rule || t('(无描述)')}
               <span className="block text-[11px] text-mute font-mono truncate mt-0.5">{f.file ? `${f.file}${f.line ? ':' + f.line : ''}` : t('位置未知')}</span>
@@ -92,7 +97,7 @@ function ReportFindings({ findings }) {
             {f.snippet ? <span className="mt-0.5"><Chevron open={openIdx === i} /></span> : null}
           </button>
           {openIdx === i && f.snippet && (
-            <pre className="border-t border-edge px-3 py-2 text-[11px] font-mono text-ink/80 overflow-x-auto whitespace-pre-wrap">{f.snippet}</pre>
+            <pre className="px-3 py-2 bg-black/25 text-[11px] font-mono text-ink/80 overflow-x-auto whitespace-pre-wrap">{f.snippet}</pre>
           )}
         </div>
       ))}
@@ -126,9 +131,9 @@ export function ReportCard({ args, result }) {
   return (
     <ToolShell>
       <button onClick={() => setOpen(!open)} className="w-full flex items-center gap-2 px-4 py-2.5 text-left hover:bg-white/[0.02] transition-colors duration-200">
-        <span className="badge shrink-0 bg-gold/15 text-goldSoft border border-gold/35 text-[11px]">{t('🩺 体检报告')}</span>
+        <span className="badge shrink-0 bg-gold/12 text-goldSoft text-[11px]">{t('🩺 体检报告')}</span>
         <span className="text-xs font-mono text-mute/80 truncate min-w-0">{a.dir || ''}</span>
-        {vs && <span className={`shrink-0 rounded border px-1.5 py-0.5 text-[10px] ${vs.cls}`}>{t(verdict)}</span>}
+        {vs && <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] ${vs.cls}`}>{t(verdict)}</span>}
         {counts ? <span className="shrink-0 text-[10px] text-mute/45">{counts}</span> : null}
         <span className="ml-auto shrink-0"><Chevron open={open} /></span>
       </button>
@@ -136,19 +141,18 @@ export function ReportCard({ args, result }) {
       {open && (
         <>
           {vs && (
-            <div className={`mx-4 mt-1 rounded-lg border px-4 py-3 ${vs.cls}`}>
-              <div className="flex items-center gap-2.5">
-                <span className="text-xl">{vs.mark}</span>
-                <div className="min-w-0">
-                  <div className="font-bold leading-tight">{t(verdict)}</div>
-                  {textReason && <div className="text-xs opacity-90 mt-0.5">{textReason}</div>}
-                </div>
+            <div className={`mx-4 mt-1 flex gap-3 rounded-md px-3.5 py-3 ${vs.cls}`}>
+              <span aria-hidden className={`w-[2px] shrink-0 self-stretch rounded-full ${vs.bar}`} />
+              <span className="shrink-0 text-xl">{vs.mark}</span>
+              <div className="min-w-0">
+                <div className="font-bold leading-tight">{t(verdict)}</div>
+                {textReason && <div className="text-xs opacity-90 mt-0.5">{textReason}</div>}
               </div>
             </div>
           )}
           {gates.length > 0 && (
             <div className="px-4 mt-2.5 flex flex-wrap gap-1.5">
-              {gates.map((g) => <span key={g} className="badge bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 text-[11px]">{g} ✓</span>)}
+              {gates.map((g) => <span key={g} className="badge bg-emerald-500/10 text-emerald-400 text-[11px]">{g} ✓</span>)}
             </div>
           )}
           {obj ? (
@@ -161,7 +165,7 @@ export function ReportCard({ args, result }) {
                 <Chevron open={rawOpen} /> {t('报告全文')}
               </button>
               {rawOpen && (
-                <pre className="mt-2 glass-card rounded-xl p-3 text-[11px] font-mono text-ink/80 whitespace-pre-wrap max-h-72 overflow-y-auto">{String(r)}</pre>
+                <pre className="mt-2 rounded-md bg-white/[0.02] p-3 text-[11px] font-mono text-ink/80 whitespace-pre-wrap max-h-72 overflow-y-auto">{String(r)}</pre>
               )}
             </div>
           )}
@@ -184,18 +188,18 @@ export function ProbeCard({ args, result }) {
         <ToolHeader icon="🛡️" title={t('渗透探测')} subtitle={r?.target || a.url || ''} />
       </div>
       <div className="px-4 py-3 space-y-2.5">
-        <div className="glass-card rounded-xl overflow-hidden">
+        <div className="rounded-lg bg-white/[0.022] overflow-hidden">
           <table className="w-full text-xs">
             <thead>
-              <tr className="text-left text-mute border-b border-edge">
+              <tr className="text-left text-mute">
                 <th className="px-3 py-2 font-medium">{t('路径')}</th>
                 <th className="px-3 py-2 font-medium">{t('状态码')}</th>
                 <th className="px-3 py-2 font-medium">{t('复现')}</th>
               </tr>
             </thead>
-            <tbody>
+            <tbody className="divide-y divide-white/[0.06]">
               {rows.length ? rows.map((row, i) => (
-                <tr key={i} className="border-b border-edge/60 last:border-0">
+                <tr key={i}>
                   <td className="px-3 py-1.5 font-mono">
                     <div>{row.path}</div>
                     {row.note ? <div className="text-[10px] text-mute/70 font-sans mt-0.5">{row.note}</div> : null}
@@ -231,7 +235,7 @@ export function ProbeCard({ args, result }) {
             {headers.error
               ? <span className="text-mute">{t('请求失败（{reason}）', { reason: humanizeToolError(headers.error) })}</span>
               : headers.missing?.length
-                ? headers.missing.map((h) => <span key={h} className="badge bg-amber-500/15 text-amber-400 border border-amber-500/30 text-[11px] font-mono">{t('缺失 {header}', { header: h })}</span>)
+                ? headers.missing.map((h) => <span key={h} className="badge bg-amber-500/15 text-amber-400 text-[11px] font-mono">{t('缺失 {header}', { header: h })}</span>)
                 : <span className="text-emerald-400">{t('齐全')}</span>}
           </div>
         )}
@@ -243,7 +247,7 @@ export function ProbeCard({ args, result }) {
 /* ---------- 压测统计卡（stress_target） ---------- */
 function StressStat({ label, value, unit, tone = 'text-ink' }) {
   return (
-    <div className="glass-card rounded-xl px-3 py-2.5 hover:border-goldDeep transition-colors duration-200">
+    <div className="rounded-md bg-white/[0.025] px-3 py-2.5">
       <div className="text-[11px] text-mute mb-0.5">{label}</div>
       <div className={`text-lg font-bold tabular-nums ${tone}`}>
         {value}{unit && <span className="text-[11px] font-normal text-mute ml-1">{unit}</span>}
@@ -271,7 +275,7 @@ export function StressCard({ args, result }) {
         {r.statusCodes && Object.keys(r.statusCodes).length > 0 && (
           <div className="mt-2 flex flex-wrap gap-1.5">
             {Object.entries(r.statusCodes).map(([code, n]) => (
-              <span key={code} className={`badge font-mono text-[11px] ${String(code).startsWith('2') || String(code).startsWith('3') ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30' : 'bg-red-500/10 text-red-400 border border-red-500/30'}`}>
+              <span key={code} className={`badge font-mono text-[11px] ${String(code).startsWith('2') || String(code).startsWith('3') ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400'}`}>
                 {code} × {n && typeof n === 'object' ? (n.count ?? 0) : n}
               </span>
             ))}
@@ -289,7 +293,7 @@ function WorkflowModeBadge({ mode, reason }) {
   if (!label || !why) return null;
   return (
     <span className="flex items-center gap-1.5 min-w-0">
-      <span className="shrink-0 badge font-mono text-[9px] leading-none bg-gold/10 text-goldSoft border border-gold/30">{label}</span>
+      <span className="shrink-0 badge font-mono text-[9px] leading-none bg-gold/10 text-goldSoft">{label}</span>
       <span title={t(why)} className="truncate text-[10px] text-mute/50">{t(why)}</span>
     </span>
   );
@@ -302,6 +306,8 @@ const WF_STATUS = {
   success: { mark: '●', text: '已完成', cls: 'text-jade', dot: 'bg-jade' },
   failed: { mark: '✕', text: '失败', cls: 'text-red-400', dot: 'bg-red-400' },
   cancelled: { mark: '–', text: '已取消', cls: 'text-mute/40', dot: 'bg-mute/30' },
+  // 上次进程崩溃/被强杀留下的节点：不是「还在跑」，也不是普通失败
+  interrupted: { mark: '⏸', text: '应用重启导致中断', cls: 'text-goldSoft/80', dot: 'bg-goldSoft/50' },
 };
 // 子代理头像配色（暖色系，不引入蓝紫）
 const AGENT_COLORS = ['#c9a227', '#3f9e6e', '#d9884a', '#c76a6a', '#7fb0a3', '#c9b06a', '#a8894b', '#8fa86b'];
@@ -614,8 +620,10 @@ export function WorkflowLiveCard({ data, sessionId = null, providers = [], onOpe
       errorCode: s.errorCode || null, kind: s.kind || null,
     })),
   };
-  // 只认「中断/失败」：正常跑完的最后一帧（running:false、全 success）不该闪出一颗恢复键
-  const canRecover = !!onRecover && (data.stopped === true || failed > 0);
+  // 只认「中断/失败」：正常跑完的最后一帧（running:false、全 success）不该闪出一颗恢复键。
+  // 应用重启留下的 interrupted 节点也算中断——已完成节点按缓存重放，只补没跑完的。
+  const interrupted = (data.steps || []).some((s) => s.status === 'interrupted') || data.interrupted === true;
+  const canRecover = !!onRecover && (data.stopped === true || failed > 0 || interrupted);
   const recover = () => {
     if (!onRecover) return;
     onRecover(buildContinueText({ trace: [{ tool: 'run_workflow', result: recoverResult }] }));
@@ -663,7 +671,8 @@ export function WorkflowLiveCard({ data, sessionId = null, providers = [], onOpe
       )}
 
       {/* 底栏：进度 / 总耗时 + 暂停继续 / 停止 / 设置（行为与原实现一致） */}
-      <div className="px-3.5 pb-2.5 pt-2 flex items-center gap-3 text-[10px] text-mute/40 border-t border-white/[0.06]">
+      <div aria-hidden className="h-px bg-white/[0.06]" />
+      <div className="px-3.5 pb-2.5 pt-2 flex items-center gap-3 text-[10px] text-mute/40">
         <span className="tabular-nums">{t('{done}/{total} 完成', { done, total })}</span>
         {running > 0 ? <span className="text-goldSoft/70 tabular-nums">{t('{n} 运行中', { n: running })}</span> : null}
         {failed ? <span className="text-red-400/80">{t('{n} 个失败', { n: failed })}</span> : null}
@@ -768,13 +777,12 @@ export function WorkflowCard({ args, result, onOpenStep = null, onRecover = null
     return (
       <ToolShell>
         <div className="px-4 pt-3"><ToolHeader icon="⧉" title={t('工作流')} subtitle={a.goal || ''} /></div>
-        <div className="mx-4 my-3 rounded-lg border border-gold/40 bg-gold/[0.06] px-3.5 py-2.5">
-          <div className="flex items-start gap-2.5">
-            <span className="shrink-0 mt-px text-[13px] leading-none text-goldSoft">⚠</span>
-            <div className="min-w-0 flex-1">
-              <div className="text-xs leading-relaxed text-ink/85">{humanizeToolError(r.error)}</div>
-              <FoldedRaw text={typeof r.error === 'string' ? r.error : safeJson(r.error)} label={t('查看详情')} hint={t('原始错误 / 调用栈')} />
-            </div>
+        <div className="mx-4 my-3 flex gap-3 rounded-md bg-red-500/[0.08] py-2.5 pl-3 pr-3.5">
+          <span aria-hidden className="w-[2px] shrink-0 self-stretch rounded-full bg-red-500/60" />
+          <span className="shrink-0 mt-px text-[13px] leading-none text-red-300">⚠</span>
+          <div className="min-w-0 flex-1">
+            <div className="text-xs leading-relaxed text-red-200/90">{humanizeToolError(r.error)}</div>
+            <FoldedRaw text={typeof r.error === 'string' ? r.error : safeJson(r.error)} label={t('查看详情')} hint={t('原始错误 / 调用栈')} />
           </div>
         </div>
       </ToolShell>
@@ -820,9 +828,11 @@ export function WorkflowCard({ args, result, onOpenStep = null, onRecover = null
   const duration = Number.isFinite(Number(r.ms)) && r.ms != null
     ? Number(r.ms)
     : steps.reduce((sum, s) => sum + (Number(s.ms) || 0), 0);
-  // 只有「被停止」或真有失败节点时才给恢复键：成功完成的一轮不给（点了只是白白再跑一遍）。
+  // 只有「被停止 / 有失败 / 被重启打断」时才给恢复键：成功完成的一轮不给（点了只是白白再跑一遍）。
   const canRecover = !!onRecover
-    && (r.stopped === true || rows.some((row) => row && row.ok === false));
+    && (r.stopped === true
+      || r.interrupted === true
+      || rows.some((row) => row && (row.ok === false || row.status === 'interrupted')));
   const recover = () => {
     if (!onRecover) return;
     onRecover(buildContinueText({ trace: [{ tool: 'run_workflow', result: r }] }));
@@ -857,7 +867,8 @@ export function WorkflowCard({ args, result, onOpenStep = null, onRecover = null
         <PhaseLane phases={phases} stepsById={byId} allClaims={r.claims} running={false} onOpenStep={onOpenStep} />
       )}
       {/* 底栏：成功/失败聚合 + 总耗时（完成态不出现运行控制） */}
-      <div className="px-3.5 pb-2.5 pt-2 flex items-center gap-3 text-[10px] text-mute/40 border-t border-white/[0.06]">
+      <div aria-hidden className="h-px bg-white/[0.06]" />
+      <div className="px-3.5 pb-2.5 pt-2 flex items-center gap-3 text-[10px] text-mute/40">
         <span className="tabular-nums">
           {t('{done}/{total} 成功', { done: okCount, total: steps.length })}
           {failCount ? <span className="text-red-400/80"> · {t('{n} 失败', { n: failCount })}</span> : null}
@@ -887,7 +898,7 @@ function CmdOutBlock({ label, text, tone }) {
   return (
     <div>
       <div className="text-[11px] text-mute mb-1 font-mono">{t('{label} · {n} 行', { label, n: lines.length })}</div>
-      <pre className={`rounded-lg bg-[#111114] border px-3 py-2 text-[11px] font-mono leading-relaxed overflow-x-auto whitespace-pre-wrap break-words ${tone}`}>
+      <pre className={`rounded-md bg-[#111114] px-3 py-2 text-[11px] font-mono leading-relaxed overflow-x-auto whitespace-pre-wrap break-words ${tone}`}>
         {shown.join('\n')}
       </pre>
       {over && (
@@ -926,17 +937,17 @@ export function CommandDetail({ args, result }) {
   };
   return (
     <div className="space-y-2 text-xs">
-      <div className="flex items-start gap-2 rounded-lg bg-[#0d0d10] border border-gold/25 px-3 py-2">
+      <div className="flex items-start gap-2 rounded-md bg-white/[0.03] px-3 py-2">
         <span className="shrink-0 select-none font-mono text-xs font-bold text-goldDeep leading-5">$</span>
         <code className="flex-1 min-w-0 font-mono text-xs text-goldSoft whitespace-pre-wrap break-all leading-5">{cmd || t('(空命令)')}</code>
         <button onClick={copy} title={t('复制命令')}
-          className="shrink-0 badge font-mono text-[10px] bg-gold/10 text-goldSoft border border-gold/30 hover:bg-gold/20 transition-all duration-150">
+          className="shrink-0 badge font-mono text-[10px] bg-gold/10 text-goldSoft hover:bg-gold/20 transition-all duration-150">
           {copied ? t('已复制') : t('复制')}
         </button>
         {r.blocked ? (
-          <span className="badge shrink-0 bg-red-500/15 text-red-300 border border-red-500/40 text-[10px] font-medium">{t('被安全策略拦截')}</span>
+          <span className="badge shrink-0 bg-red-500/15 text-red-300 text-[10px] font-medium">{t('被安全策略拦截')}</span>
         ) : code != null ? (
-          <span className={`badge shrink-0 font-mono text-[10px] tabular-nums ${code === 0 ? 'bg-jade/15 text-jade border border-jade/40' : 'bg-red-500/10 text-red-400 border border-red-500/40'}`}>
+          <span className={`badge shrink-0 font-mono text-[10px] tabular-nums ${code === 0 ? 'bg-jade/15 text-jade' : 'bg-red-500/10 text-red-400'}`}>
             exit {code}
           </span>
         ) : null}
@@ -952,17 +963,18 @@ export function CommandDetail({ args, result }) {
         </div>
       ) : null}
       {r.blocked ? (
-        <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-300 leading-relaxed">
+        <div className="flex gap-2.5 rounded-md bg-red-500/10 py-2 pl-2.5 pr-3 text-xs text-red-300 leading-relaxed">
+          <span aria-hidden className="w-[2px] shrink-0 self-stretch rounded-full bg-red-500/50" />
           {t('🚫 被安全策略拦截：命令命中灾难性操作规则，未执行')}
         </div>
       ) : result == null ? (
         <div className="text-[11px] text-goldDeep/90 font-mono animate-pulse">{t('执行中…输出结束后补全')}</div>
       ) : r.truncated ? (
-        <CmdOutBlock label={t('输出（截断预览）')} text={r.preview} tone="border-edge text-ink/85" />
+        <CmdOutBlock label={t('输出（截断预览）')} text={r.preview} tone="text-ink/85" />
       ) : (
         <>
-          <CmdOutBlock label="stdout" text={r.stdout} tone="border-edge text-ink/85" />
-          {r.stderr ? <CmdOutBlock label="stderr" text={r.stderr} tone="border-red-500/25 text-red-300/90" /> : null}
+          <CmdOutBlock label="stdout" text={r.stdout} tone="text-ink/85" />
+          {r.stderr ? <CmdOutBlock label="stderr" text={r.stderr} tone="text-red-300/90" /> : null}
         </>
       )}
     </div>
@@ -990,7 +1002,7 @@ export function GenericToolDetail({ name = '', args, result, running }) {
     <div className="space-y-2 text-[11px]">
       <div>
         <div className="text-mute mb-1 font-mono">{t('参数')}</div>
-        <div className="rounded-lg bg-[#0d0d10] border border-edge px-2.5 py-2 space-y-1.5">
+        <div className="rounded-md bg-white/[0.025] px-2.5 py-2 space-y-1.5">
           {argLines.length ? argLines.map((line, i) => (
             <div key={i} className="flex items-start gap-2 min-w-0">
               {line.label ? (

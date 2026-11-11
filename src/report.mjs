@@ -139,7 +139,14 @@ function dimensionTable(res, dims) {
     const notRun = checks.filter((id) => !executed.has(id) && gapItems.some((g) => g.checkId === id));
     let covered = checks.length ? checks.join('、') : '无（该档位不要求检查）';
     if (notRun.length) covered += `（未跑：${notRun.join('、')}）`;
-    rows.push(`| ${cell(name)} | ${cell(d.level)} | ${cell(d.verdict)} | ${cell(ev.level)} | ${cell(covered)} |`);
+    // 动态维度必须能一眼看出「实测过」还是「只是声明了授权」
+    const dynamicNote = ev.dynamic
+      ? (ev.dynamic.measured
+        ? `实测：probe ${ev.dynamic.probe.count} 次 / stress ${ev.dynamic.stress.count} 次`
+        : (ev.dynamic.declared ? '仅声明，本轮未实测' : '未授权，无实测'))
+      : null;
+    const evText = dynamicNote ? `${ev.level}（${dynamicNote}）` : ev.level;
+    rows.push(`| ${cell(name)} | ${cell(d.level)} | ${cell(d.verdict)} | ${cell(evText)} | ${cell(covered)} |`);
   }
   return rows;
 }
@@ -203,6 +210,9 @@ function notCoveredLines(res, dims) {
     const ev = evidenceOf(res, name);
     if (ev.level === 'not-covered' || ev.level === 'unverified') {
       out.push(`- 维度「${name}」证据等级 ${ev.level}：${ev.reason}`);
+    }
+    if (ev.dynamic && ev.dynamic.declared && !ev.dynamic.measured) {
+      out.push(`- 维度「${name}」声明了动态授权，但本轮没有 probe/stress 记录，按 static-only 计（实测后才能升 full）`);
     }
     if (d.verdict === '无法验收') {
       const checks = dimensionChecks(name, d.level);

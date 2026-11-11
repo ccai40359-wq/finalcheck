@@ -308,6 +308,23 @@ export function resolveMaxStepMs(budget) {
   return clampInt(budget?.maxStepMs, 0, 600000, 0);
 }
 
+/** 盲验节点的专属墙钟上限：verifyTimeoutMs 显式传才覆盖，缺省/非法 = 60 分钟；显式 0 = 关闭上限。
+ * @param {number|null|undefined} [value]
+ * @returns {number}
+ */
+export function resolveVerifyTimeoutMs(value) {
+  // 非法/负数一律回落默认（fail-closed：复核上限不能被坏输入悄悄关掉）；只有显式 0 才关闭。
+  if (value === null || value === undefined || value === '') return VERIFY_TIMEOUT_MS;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) return VERIFY_TIMEOUT_MS;
+  if (n === 0) return 0;
+  return Math.min(Math.trunc(n), VERIFY_TIMEOUT_MAX_MS);
+}
+
+function isVerifyStep(step) {
+  return String(step?.kind || '').toLowerCase() === 'verify' || !!step?.autoInserted;
+}
+
 /**
  * 给 callStep 套一层可选中止：
  * - 默认 maxStepMs=0：不设任何墙钟超时，长任务不会被自动 abort；
@@ -366,10 +383,17 @@ export function withStepDeadline(callStep, { abortGraceMs = STEP_ABORT_GRACE_MS,
     const base = out && typeof out === 'object' ? out : {};
     const content = String(base.content || base.partialContent || '').trim();
     if (timedOut) {
+      // 复核节点的超时必须是「明确状态」，不能只留一句错误：带 VERIFY_TIMEOUT 错误码 →
+      // 卡片 chip、结果行、报告 Not covered 都能点名「复核未完成」。
+      const verifyTimedOut = isVerifyStep(ctx);
       return {
         ...base,
         ...(content ? { content } : {}),
-        error: stepTimeoutText(maxMs),
+        timedOut: true,
+        ...(verifyTimedOut ? { errorCode: VERIFY_TIMEOUT_CODE } : {}),
+        error: verifyTimedOut
+          ? t('复核未完成：盲验超过 {duration} 被强制截止（结论按未复核处理）', { duration: durationText(maxMs) })
+          : stepTimeoutText(maxMs),
         warnings: [...(Array.isArray(base.warnings) ? base.warnings : []), t('单步超时（{duration}）：已中断', { duration: durationText(maxMs) })],
       };
     }
@@ -599,6 +623,12 @@ export const SUBAGENT_MAX_TOOLS = Number.POSITIVE_INFINITY;
 export const SUBAGENT_STEP_BUDGET_MS = Number.POSITIVE_INFINITY; // 旧 runSubagentStep（非流式）路径也默认不限时
 export const SUBAGENT_STEP_TIMEOUT_MS = 0; // 单步墙钟默认值：0 = 不限制（不搞墙钟超时；显式 budget.maxStepMs 才生效）
 export const STEP_ABORT_GRACE_MS = 1500; // 显式墙钟到点后等 callStep 自己清理的宽限（保留它已产出的部分）
+// 盲验（对抗复核）专属上限：其他步骤默认不限时，但复核节点必须能结束。
+// 2026-11-11 实测：DAG 的 __verify__ 跑了 62.8 分钟、225 次工具仍未出结论，
+// 把并行取证省下来的时间全部吃掉，报告一直拿不到复核结果。默认 60 分钟，0 = 显式关闭。
+export const VERIFY_TIMEOUT_MS = 60 * 60 * 1000;
+export const VERIFY_TIMEOUT_MAX_MS = 4 * 60 * 60 * 1000;
+export const VERIFY_TIMEOUT_CODE = 'VERIFY_TIMEOUT';
 export const SUBAGENT_TOOL_RETRY_REMINDER = '你还没有调用任何工具。现在必须调用工具取证，只回复一句话会被判为失败。';
 export const SUBAGENT_TRUNCATED_WARNING = '输出被截断（finish_reason=length）：结果可能不完整';
 
@@ -1120,6 +1150,7 @@ export async function runWorkflow({
   journalDir = null,
   runGate = null,
   projectPath = null,
+  verifyTimeoutMs = null,
 } = {}) {
   const goalText = String(goal || '').trim();
   if (!goalText) return { error: t('goal 不能为空（整个工作流要达成的目标）') };
@@ -1210,6 +1241,7 @@ export async function runWorkflow({
         control: ctl,
         concurrency: startLimit,
         onUpdate,
+        verifyTimeoutMs: resolveVerifyTimeoutMs(verifyTimeoutMs),
       });
     } finally {
       clearInterval(stopWatch);
@@ -1510,8 +1542,10 @@ export async function runWorkflow({
         prompt,
         depends_on: step.depends_on,
         runId, // 子代理 transcript 按 run 落盘（重开 App 后还能回看）
-        // 预算透传：maxStepMs 缺省为 0（不设墙钟上限）；显式正数才由上层中断
-        budget: step.budget && typeof step.budget === 'object' ? step.budget : { maxStepMs: SUBAGENT_STEP_TIMEOUT_MS },
+        // 预算透传：maxStepMs 缺省为 0（不设墙钟上限）；盲验节点例外，默认 60 分钟硬截止
+        budget: step.budget && typeof step.budget === 'object'
+          ? step.budget
+          : { maxStepMs: isVerifyStep(step) ? resolveVerifyTimeoutMs(verifyTimeoutMs) : SUBAGENT_STEP_TIMEOUT_MS },
         kind: step.kind || null,
         model: step.model || null,
         providerId: step.providerId || null,

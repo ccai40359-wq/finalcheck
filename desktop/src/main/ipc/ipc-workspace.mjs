@@ -4,6 +4,7 @@ import { readFile, writeFile, mkdir, stat } from 'node:fs/promises';
 import { dialog, shell, clipboard } from 'electron';
 import * as sessions from '../sessions.mjs';
 import { t } from '../../renderer/i18n/core.mjs';
+import { assertArtifactPath } from '../artifact-gate.mjs';
 
 // ---- 附件 / 产物预览（右侧面板） ----
 export function registerWorkspaceIpc({ ipcMain, getWin, getDataRoot, imageMime, store }) {
@@ -25,7 +26,10 @@ export function registerWorkspaceIpc({ ipcMain, getWin, getDataRoot, imageMime, 
     return { path: file, name, size: buf.length };
   });
   ipcMain.handle('finalcheck:artifact:read', async (_e, p) => {
-    const abs = path.resolve(String(p || ''));
+    // 敏感路径闸：%APPDATA%\FinalCheck（config.json）、~/.ssh、私钥名一律拒绝
+    const gate = assertArtifactPath(p);
+    if (!gate.ok) return { kind: 'missing', path: gate.path, name: path.basename(gate.path), error: gate.reason };
+    const abs = gate.path;
     let st;
     try { st = await stat(abs); } catch (e) {
       // 产物可能在会话之后被移动/删除（agent 的临时文件很常见）：给可读提示，不把 ENOENT 原样抛给渲染层
@@ -42,7 +46,11 @@ export function registerWorkspaceIpc({ ipcMain, getWin, getDataRoot, imageMime, 
     if (['.txt', '.md', '.json', '.js', '.mjs', '.css', '.csv', '.log', '.xml', '.yml', '.yaml'].includes(ext)) return { kind: 'text', path: abs, name: path.basename(abs), size: st.size, content: await readFile(abs, 'utf8') };
     throw new Error(t('不支持预览的类型：{ext}', { ext }));
   });
-  ipcMain.handle('finalcheck:artifact:open', async (_e, p) => shell.openPath(path.resolve(String(p || ''))));
+  ipcMain.handle('finalcheck:artifact:open', async (_e, p) => {
+    const gate = assertArtifactPath(p);
+    if (!gate.ok) return gate.reason;
+    return shell.openPath(gate.path);
+  });
   ipcMain.handle('finalcheck:clipboard:write', (_e, text) => { clipboard.writeText(String(text || '')); return true; });
 
   // 手动 /compact（dsh 式）：把会话压成摘要，后续请求只带摘要+最近 6 条，UI 历史保留

@@ -236,6 +236,11 @@ app.whenReady().then(async () => {
     const known = await projects.listProjects().catch(() => []);
     const ordered = [activeProject, ...known.filter((p) => p.id !== activeProject.id)];
     for (const p of ordered) await scanSessionsDir(projects.sessionDirOf(p.path)).catch(() => {});
+    // 上次进程崩溃/被强杀时挂着的「运行中」工具调用：启动即标成 interrupted，
+    // 否则卡片永远转圈，工作流恢复入口也不知道该重放什么。
+    let interrupted = 0;
+    for (const p of ordered) interrupted += await sessions.markInterruptedRunningParts(p.path).catch(() => 0);
+    if (interrupted) writeLog(`启动收尾：${interrupted} 个遗留的工具调用已标记为「应用重启导致中断」`);
   }
 
   // ---- IPC 模块接线（顺序与拆分前一致；运行时状态通过 getter / 共享 Map 注入） ----

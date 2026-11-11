@@ -767,3 +767,28 @@ test('script/插值: 只支持 ${name} 与 ${nodeId.content}，其他语法原�
   assert.equal(matchScriptCondition({ test: { contains: 'A', notEmpty: true } }, { content: 'A' }), true);
   assert.equal(matchScriptCondition({ test: { equals: 'A' } }, { content: 'B' }), false);
 });
+
+// DSL 的 verify 节点同样受盲验硬截止约束（2026-11-11：DSL __verify__ 跑 27.5 分钟无结论）
+test('DSL verify: 盲验节点到点落成 VERIFY_TIMEOUT，且只对 verify 生效', async () => {
+  const budgets = {};
+  const t0 = Date.now();
+  const out = await runWorkflow({
+    goal: 'dsl 盲验超时',
+    script: [
+      { op: 'step', id: 'scan', prompt: '取证' },
+      { op: 'verify', id: 'v', from: 'scan' },
+    ],
+    verifyTimeoutMs: 80,
+    callStep: async (ctx) => {
+      budgets[ctx.id] = ctx.budget;
+      if (ctx.id === 'v') return new Promise(() => { /* 永不返回 */ });
+      return { content: JSON.stringify({ findings: [] }), toolCount: 2 };
+    },
+  });
+  assert.ok(Date.now() - t0 < 6000, 'DSL 盲验也必须有硬截止');
+  assert.equal(budgets.scan?.maxStepMs, 0, '普通 step 不受影响，仍然不限时');
+  assert.equal(budgets.v?.maxStepMs, 80, 'DSL verify 节点必须收到上限');
+  const v = (out.nodes || out.results || []).find((n) => n.id === 'v' || n.nodeId === 'v');
+  assert.ok(v, 'DSL 结果里必须有 verify 节点');
+  assert.equal(v.errorCode || v.error?.code, 'VERIFY_TIMEOUT', '超时必须带结构化错误码');
+});

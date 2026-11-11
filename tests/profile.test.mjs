@@ -330,15 +330,26 @@ test('evidenceMatrix 只有 URL 且未授权：动态维度 static-only，代码
   assert.equal(withCost.成本.level, 'not-covered', '成本没有源码时无法核算');
 });
 
-test('evidenceMatrix 只有 URL + dynamicAuth：动态维度升级 full，代码类维度仍 not-covered', () => {
-  const ev = evidenceMatrix({ sources: { url: 'https://example.com', dynamicAuth: true } });
+test('evidenceMatrix 只有 URL + dynamicAuth：没有实测记录只能 static-only（防假满分）', () => {
+  const profile = { sources: { url: 'https://example.com', dynamicAuth: true } };
+  const noRun = evidenceMatrix(profile);
   for (const name of ['安全性', '鲁棒性', '性能', '运行稳定性']) {
-    assert.equal(ev[name].level, 'full');
-    assert.match(ev[name].reason, /已授权/);
-    assert.match(ev[name].reason, /10s\/10 连接/);
+    assert.equal(noRun[name].level, 'static-only', `${name}：只是声明了授权，没跑过 probe/stress 不能算 full`);
+    assert.match(noRun[name].reason, /没有 probe\/stress 实测记录/);
+    assert.equal(noRun[name].dynamic.declared, true);
+    assert.equal(noRun[name].dynamic.measured, false);
   }
-  assert.equal(ev['供应链与许可证'].level, 'static-only');
-  assert.equal(ev.可维护性.level, 'not-covered');
+  assert.equal(noRun['供应链与许可证'].level, 'static-only');
+  assert.equal(noRun.可维护性.level, 'not-covered');
+
+  // 真的跑过一条 probe → 动态维度才升 full，并把次数/耗时写进证据
+  const measured = evidenceMatrix(profile, { probe: [{ ms: 120, samples: 1, at: Date.now() }] });
+  for (const name of ['安全性', '鲁棒性', '性能', '运行稳定性']) {
+    assert.equal(measured[name].level, 'full');
+    assert.match(measured[name].reason, /probe 1 次/);
+    assert.equal(measured[name].dynamic.measured, true);
+    assert.equal(measured[name].dynamic.probe.count, 1);
+  }
 });
 
 test('evidenceMatrix 源码 + URL：静态维度全 full；动态维度开关 dynamicAuth', () => {
@@ -351,8 +362,17 @@ test('evidenceMatrix 源码 + URL：静态维度全 full；动态维度开关 dy
     assert.equal(noAuth[name].level, 'full', `${name} 源码 + URL 应 full`);
   }
 
-  const authed = evidenceMatrix({ sources: { code: './src', url: 'https://example.com', dynamicAuth: true } });
+  // 授权 + 实测两条都成立才 full；只有声明（authedNoRun）仍是 static-only
+  const authedNoRun = evidenceMatrix({ sources: { code: './src', url: 'https://example.com', dynamicAuth: true } });
+  for (const name of ['安全性', '鲁棒性', '性能', '运行稳定性']) {
+    assert.equal(authedNoRun[name].level, 'static-only', `${name}：声明了授权但没实测，不能 full`);
+  }
+  const authed = evidenceMatrix(
+    { sources: { code: './src', url: 'https://example.com', dynamicAuth: true } },
+    { probe: [{ ms: 80, samples: 1 }], stress: [{ ms: 10000, samples: 320 }] }
+  );
   for (const name of CORE_DIMENSION_NAMES) assert.equal(authed[name].level, 'full', `${name} 应 full`);
+  assert.equal(authed.安全性.dynamic.measured, true);
 
   const cost = evidenceMatrix({ dimensions: { 成本: 'L2' }, sources: { code: './src', url: 'https://example.com' } });
   assert.equal(cost.成本.level, 'full', '源码 + URL 时成本也可核算');

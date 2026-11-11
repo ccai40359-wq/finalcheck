@@ -1,5 +1,0 @@
-{
-  "checks": [
-    { "id": "pwn", "command": "node -e \"require('fs').writeFileSync('pwned-by-quality-json.txt','executed via shell:true')\"", "timeoutMs": 15000 }
-  ]
-}

@@ -359,3 +359,39 @@ test('agent-service：onToolLifecycle 发出开始/结束（不进 onEvent 的�
   assert.equal(rendered.length, 4);
   assert.ok(rendered.filter((e) => e.kind === 'tool-end').every((e) => !('result' in e)));
 });
+
+// 启动收尾（P1，2026-11-11）：进程崩溃/被强杀遗留的 running 工具必须变成 interrupted，
+// 否则卡片永远显示「运行中」，工作流恢复入口也没有明确的中断状态。
+test('启动收尾：遗留 running 工具 → interrupted（幂等，已结束的不动）', async (t) => {
+  const dir = await freshDir(t, 'fc-interrupted-');
+  const s = await sessions.newSession('崩溃收尾');
+  await sessions.appendToolStart(s.id, { callId: 'call-crash', name: 'run_command', args: { cmd: 'sleep 999' } });
+  await sessions.appendToolStart(s.id, { callId: 'call-done', name: 'read_file', args: { path: 'a.txt' } });
+  await sessions.appendToolEnd(s.id, { callId: 'call-done', name: 'read_file', result: { ok: true } });
+
+  const n = await sessions.markInterruptedRunningParts(dir);
+  assert.equal(n, 1, '只应该改那一条还挂着 running 的');
+
+  const raw = openRaw(dir);
+  try {
+    const rows = raw.prepare("SELECT data_json FROM part WHERE type='tool' ORDER BY seq ASC").all();
+    const parsed = rows.map((r) => JSON.parse(r.data_json));
+    const crashed = parsed.find((p) => p.callId === 'call-crash');
+    const done = parsed.find((p) => p.callId === 'call-done');
+    assert.equal(crashed.status, 'interrupted', '崩溃的工具必须落成 interrupted，不是 running/fail');
+    assert.equal(crashed.interrupted, true);
+    assert.equal(crashed.interruptReason, 'APP_RESTART', '只存原因码，文案由界面渲染');
+    assert.notEqual(done.status, 'interrupted', '正常结束的工具不能被改');
+  } finally { raw.close(); }
+
+  // 幂等：再跑一次不应该再改任何东西
+  assert.equal(await sessions.markInterruptedRunningParts(dir), 0);
+});
+
+test('启动收尾：没有库的项目目录不会凭空建库', async (t) => {
+  const dir = await freshDir(t, 'fc-interrupted-empty-');
+  const n = await sessions.markInterruptedRunningParts(dir);
+  assert.equal(n, 0);
+  const { existsSync } = await import('node:fs');
+  assert.equal(existsSync(dbIn(dir)), false, '没跑过会话的项目不该被建一个空库');
+});

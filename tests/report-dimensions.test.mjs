@@ -117,13 +117,13 @@ test('profile + 源码和 URL：动态维度按 dynamicAuth 降级，静态维�
   const text = renderReport(res);
 
   for (const name of ['安全性', '鲁棒性', '性能', '运行稳定性']) {
-    assert.match(rowOf(text, name), /\| static-only \|/, `${name} 未授权压测应为 static-only`);
+    assert.match(rowOf(text, name), /\| static-only（未授权，无实测） \|/, `${name} 未授权压测应为 static-only`);
   }
   for (const name of ['数据与隐私', '可维护性', '代码可读性', '可测试性', '供应链与许可证', '可观测性与可运维', '可移交性']) {
     assert.match(rowOf(text, name), /\| full \|/, `${name} 源码 + URL 应为 full`);
   }
   // 证据降级的原因只在证据等级列出现，不篡改结论列
-  assert.match(rowOf(text, '安全性'), /\| (过|修完再过|拦|待授权|无法验收|不适用) \| static-only \|/);
+  assert.match(rowOf(text, '安全性'), /\| (过|修完再过|拦|待授权|无法验收|不适用) \| static-only（未授权，无实测） \|/);
 });
 
 test('不传 profile：旧输出逐字不变（黄金样本 + 真实审计都不出现维度表）', async (t) => {
@@ -254,4 +254,40 @@ test('不适用维度：L1 可测试性证据 not-covered，原因写进 Not cov
   assert.match(rowOf(text, '可测试性'), /\| L1 \| 不适用 \| not-covered \| 无（该档位不要求检查） \|/);
   const notCovered = text.slice(text.indexOf('## Not covered'), text.indexOf('## Skipped'));
   assert.match(notCovered, /维度「可测试性」证据等级 not-covered：未覆盖（该档位不要求检查）/);
+});
+
+// P0 接线回归（2026-11-11）：App/CLI 只给 sources（没有 profile 文件）时也必须出 11 维表；
+// 动态维度「声明了授权但本轮没实测」只能 static-only，并在表里/Not covered 里写明。
+test('sources-only：不传 profile 也出 11 维表（接线回归）', async (t) => {
+  const dir = await makeProject(t);
+  const res = await audit(dir, {
+    tier: 'L2', interactive: true, runTests: false,
+    sources: { code: '.', url: 'https://example.com', dynamicAuth: true },
+  });
+  assert.ok(res.tier.dimensions, '只给 sources 必须走维度计划（不能悄悄退回老 GATES）');
+  assert.equal(Object.keys(res.tier.dimensions).length, CORE_DIMENSION_NAMES.length);
+  assert.ok(res.evidence, '必须带证据矩阵');
+  const text = renderReport(res);
+  assertFiveSections(text);
+  assert.match(text, /\| 维度 \| 档位 \| 结论 \| 证据等级 \| 覆盖的检查项 \|/);
+  for (const name of ['安全性', '鲁棒性', '性能', '运行稳定性']) {
+    const row = rowOf(text, name);
+    assert.ok(row, `${name} 必须有维度行`);
+    assert.match(row, /static-only（仅声明，本轮未实测）/, `${name} 没实测就不能写 full`);
+  }
+  assert.match(text, /声明了动态授权，但本轮没有 probe\/stress 记录/);
+});
+
+test('sources + 实测记录：动态维度升 full，表里写实测次数', async (t) => {
+  const dir = await makeProject(t);
+  const res = await audit(dir, {
+    tier: 'L2', interactive: true, runTests: false,
+    sources: { code: '.', url: 'https://example.com', dynamicAuth: true },
+    runtime: { probe: [{ ms: 90, samples: 1 }], stress: [{ ms: 10000, samples: 250 }] },
+  });
+  assert.equal(res.evidence.安全性.level, 'full');
+  assert.equal(res.evidence.安全性.dynamic.measured, true);
+  const text = renderReport(res);
+  const row = rowOf(text, '安全性');
+  assert.match(row, /full（实测：probe 1 次 \/ stress 1 次）/);
 });

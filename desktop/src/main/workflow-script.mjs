@@ -21,7 +21,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { recordStep, runIdOf, saveJournal } from './workflow-journal.mjs';
-import { ADVERSARIAL_VERIFY_ID, ADVERSARIAL_VERIFY_NAME, ADVERSARIAL_VERIFY_PROMPT, ADVERSARIAL_VERIFY_ROLE, applyAdversarialGate, appendAdversarialReportNote, buildPrompt, computeReuse, judgeSubagentOutcome, needsEvidence, stepHash } from './workflow.mjs';
+import { ADVERSARIAL_VERIFY_ID, ADVERSARIAL_VERIFY_NAME, ADVERSARIAL_VERIFY_PROMPT, ADVERSARIAL_VERIFY_ROLE, applyAdversarialGate, appendAdversarialReportNote, buildPrompt, computeReuse, judgeSubagentOutcome, needsEvidence, resolveVerifyTimeoutMs, stepHash } from './workflow.mjs';
 import { REPORT_ADVERSARIAL_RULE, applyVerdicts, buildSwarmPrompt, claimsToJsonl, collectClaims, deriveNodeErrorCode, errorCodeLabel, lintClaims, lintReport, parseAgentJson } from './swarm.mjs';
 import { DELIVERY_DISCIPLINE } from './swarm.mjs';
 import { buildHolesPromptSection, collectHoles, isSalvageText, salvageSubagentContent } from './subagent-salvage.mjs';
@@ -463,6 +463,13 @@ export function injectScriptAdversarialVerify(norm) {
  * 校验并展开脚本（不执行）。
  * @returns {{error:string}|{items:Array, nodes:Array, nodeCount:number}}
  */
+// 被 fanout/recurse 当 over 消费的节点，必须在 prompt 里就写死输出形状。
+// 2026-11-11 实测：recon 交了一段人话 → fanout 按数组解析失败 → 整条 DSL 停机。
+// 模板字符串里是真实换行（不是转义），保证提示词里就是两行空行 + 一行硬要求。
+const OVER_ARRAY_CONTRACT = `
+
+【输出契约·硬要求】你的正文会被下一步 fanout 当作列表逐项执行。正文最后必须是一个 JSON 字符串数组（例：["a.php","b.js"]），数组外不要写解释，也不要加「共 N 项」之类的收尾句；宁可直接给数组，也不要只写自然语言总结。`;
+
 export function normalizeScript(script) {
   if (!Array.isArray(script) || script.length === 0) {
     return { error: t('script 不能为空：至少 1 条 op') };
@@ -1160,6 +1167,14 @@ const OVER_LEAD_TOKEN_RE = new RegExp(
 );
 const OVER_TABLE_SEP_RE = /^\|?\s*:?-{2,}:?\s*(?:\|\s*:?-{2,}:?\s*)+\|?$/;
 
+/** 严格模式：只认 JSON 字符串数组（或 {items:[...]}）。用来决定「要不要为 fanout.over 纠正重试一次」。 */
+export function isStrictOverArray(content) {
+  const parsed = parseAgentJson(String(content || ''));
+  const arr = Array.isArray(parsed) ? parsed : (parsed && Array.isArray(parsed.items) ? parsed.items : null);
+  if (!Array.isArray(arr) || !arr.length) return false;
+  return arr.every((x) => typeof x === 'string' && x.trim());
+}
+
 /** 清理单个文本条目：去 markdown 强调/反引号/复选框，行首是路径或行内代码时只取那个 token。 */
 function cleanOverTextItem(raw) {
   let s = String(raw == null ? '' : raw).trim();
@@ -1337,6 +1352,7 @@ export async function runScriptWorkflow({
   onUpdate = null,
   runId = null,
   startedAt = Date.now(),
+  verifyTimeoutMs = null,
 } = {}) {
   const goalText = text(goal);
   if (!goalText) return { error: t('goal 不能为空（整个工作流要达成的目标）') };
@@ -1345,6 +1361,8 @@ export async function runScriptWorkflow({
   const modeReason = describeScriptMode(norm);
 
   const ctl = control && typeof control === 'object' ? control : {};
+  // 盲验节点的硬截止（默认 60 分钟；0 = 显式关闭）。其他节点仍不限时。
+  const verifyCapMs = resolveVerifyTimeoutMs(verifyTimeoutMs);
   // 并发上限：运行中可改（卡片设置写 ctl.maxConcurrency），否则用传入的 concurrency。
   // 每次 fanout 开始时重新算一次，所以「跑着的时候把并发调高」对后面的 fanout 也生效。
   const limitOf = () => {
@@ -1354,6 +1372,18 @@ export async function runScriptWorkflow({
     return Math.min(SCRIPT_MAX_CONCURRENCY, Math.max(1, n));
   };
   const allNodes = norm.nodes.slice();
+  // 哪些节点的输出会被后面的 fanout/recurse 当 over 列表消费：这些节点的 prompt 要写清
+  // 「必须只输出 JSON 字符串数组」，没做到时为它纠正重试一次（2026-11-11 实测的停机根因）。
+  const overRefIds = new Set();
+  // fanout/recurse 容器不在 norm.nodes 里（静态字面列表才展开成节点），所以整棵树递归找 overRef
+  const collectOverRefs = (v, depth = 0) => {
+    if (!v || typeof v !== 'object' || depth > 12) return;
+    if (Array.isArray(v)) { for (const x of v) collectOverRefs(x, depth + 1); return; }
+    const ref = String(v.overRef || '').trim();
+    if (ref) overRefIds.add(ref);
+    for (const k of Object.keys(v)) collectOverRefs(v[k], depth + 1);
+  };
+  collectOverRefs(norm);
   const results = new Map();
   const state = new Map();
   const aliasNodes = new Map();
@@ -1550,11 +1580,13 @@ export async function runScriptWorkflow({
     }
     const dependsOn = resolveRefs(node.depends_on);
     const promptText = interpolateScriptText(node.prompt, vars, results);
+    // 输出契约：下游要按数组扇出，必须提前说清，不能让模型「交一段人话」再让引擎去猜
+    const contract = overRefIds.has(node.id) ? OVER_ARRAY_CONTRACT : '';
     const prompt = `${buildPrompt(
       goalText,
       { id: node.id, name: node.name, role: node.role, prompt: promptText, depends_on: dependsOn },
       results
-    )}\n\n${DELIVERY_DISCIPLINE}`;
+    )}\n\n${DELIVERY_DISCIPLINE}${contract}`;
     return { prompt, dependsOn };
   };
 
@@ -1798,7 +1830,8 @@ export async function runScriptWorkflow({
             prompt: built.prompt,
             depends_on: built.dependsOn || node.depends_on,
             runId: effectiveRunId, // 子代理 transcript 按 run 落盘
-            budget: null,
+            // 盲验节点默认 60 分钟硬截止（可配）；其余节点 budget=null → 不设墙钟
+            budget: node.kind === 'verify' ? { maxStepMs: verifyCapMs } : null,
             kind: node.kind || null,
             model: null,
             providerId: null,
@@ -1806,6 +1839,45 @@ export async function runScriptWorkflow({
           });
         } catch (e) {
           out = { error: e?.message || t('子代理调用失败') };
+        }
+      }
+    }
+
+    // over 引用节点的输出形状不对（交的是人话）→ 给一次「只输出 JSON 数组」的纠正重试。
+    // 仍然不对时不动 content：下游 resolveOverList 会先尝试文本提取，再不行才降级成洞。
+    if (!node.program && overRefIds.has(node.id) && typeof callStep === 'function') {
+      const first = String(out?.content || '').trim();
+      if (first && !isStrictOverArray(first)) {
+        try {
+          const retry = await callStep({
+            id: node.id,
+            name: node.name,
+            role: node.role,
+            prompt: `${built.prompt}
+
+【上一次输出不合格】你的正文不是 JSON 字符串数组，下游无法扇出。现在只输出一个 JSON 字符串数组，不要任何解释或标题。`,
+            depends_on: built.dependsOn || node.depends_on,
+            runId: effectiveRunId,
+            budget: null,
+            kind: node.kind || null,
+            model: null,
+            providerId: null,
+            blind: node.kind === 'verify' ? true : null,
+          });
+          const retryText = String(retry?.content || '').trim();
+          if (isStrictOverArray(retryText)) {
+            overWarnings.push(t('{id}：首次输出不是 JSON 数组，已用一次纠正重试拿到列表（{n} 项）', { id: node.id, n: retryText ? (JSON.parse(retryText).length || 0) : 0 }));
+            out = {
+              ...retry,
+              toolCount: (Number(out?.toolCount) || 0) + (Number(retry?.toolCount) || 0),
+              warnings: [
+                ...(Array.isArray(out?.warnings) ? out.warnings : []),
+                t('{id}：首次输出不是 JSON 数组，已用一次纠正重试拿到列表', { id: node.id }),
+              ],
+            };
+          }
+        } catch (e) {
+          out = { ...(out || {}), warnings: [...(Array.isArray(out?.warnings) ? out.warnings : []), t('{id}：JSON 数组纠正重试失败（{error}）', { id: node.id, error: e?.message || e })] };
         }
       }
     }

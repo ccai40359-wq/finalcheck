@@ -144,7 +144,7 @@ function normalizeLoadLimit(raw, warnings) {
 }
 
 // sources 只做形状与取值校验，不碰文件系统：code 是用户声明的源码入口，不是本轮要读的目录。
-function normalizeSources(raw, warnings) {
+export function normalizeSources(raw, warnings = []) {
   if (raw === undefined) return {};
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     warnings.push('profile：sources 必须是对象，已按空输入面处理');
@@ -359,7 +359,46 @@ const DYNAMIC_DIMENSIONS = new Set(['安全性', '鲁棒性', '性能', '运行�
 // 只有 URL 时仍能拿到部分静态证据的维度（供应链看响应/版本线索，可观测性探活与响应头）。
 const URL_STATIC = new Set(['供应链与许可证', '可观测性与可运维']);
 
-function evidenceOf(name, dim, sources) {
+/**
+ * 归一化「本轮实测记录」，供证据等级判定使用。
+ * 接受两种写法：
+ *   { probe:{count,ms,samples,at}, stress:{count,ms,samples,at} }  （主路径：App 现场记账）
+ *   { probe:[{ms,samples,at},…], stress:[…] }                     （CLI / 测试直传）
+ * 有任何一条 probe/stress 记录才算 measured；声明了 dynamicAuth 但没有记录 = 只有声明。
+ * @param {object|null} [runtime]
+ * @returns {{probe:{count:number,ms:number,samples:number,at:number},stress:{count:number,ms:number,samples:number,at:number},measured:boolean}}
+ */
+export function normalizeRuntime(runtime = null) {
+  const zero = () => ({ count: 0, ms: 0, samples: 0, at: 0 });
+  const agg = (v) => {
+    if (!v) return zero();
+    if (Array.isArray(v)) {
+      const rows = v.filter((r) => r && typeof r === 'object');
+      return {
+        count: rows.length,
+        ms: rows.reduce((s, r) => s + (Number(r.ms) || 0), 0),
+        samples: rows.reduce((s, r) => s + (Number(r.samples) || 0), 0),
+        at: rows.reduce((s, r) => Math.max(s, Number(r.at) || 0), 0),
+      };
+    }
+    if (typeof v === 'object') {
+      return { count: Number(v.count) || 0, ms: Number(v.ms) || 0, samples: Number(v.samples) || 0, at: Number(v.at) || 0 };
+    }
+    return zero();
+  };
+  const probe = agg(runtime?.probe);
+  const stress = agg(runtime?.stress);
+  return { probe, stress, measured: probe.count > 0 || stress.count > 0 };
+}
+
+function measuredText(rt) {
+  const parts = [];
+  if (rt.probe.count) parts.push(`probe ${rt.probe.count} 次/${Math.round(rt.probe.ms)}ms`);
+  if (rt.stress.count) parts.push(`stress ${rt.stress.count} 次/${rt.stress.samples} 样本/${Math.round(rt.stress.ms)}ms`);
+  return parts.join('、');
+}
+
+function evidenceOf(name, dim, sources, runtime = null) {
   // 成本是可选维度：当前没有接入检查，但证据等级仍按输入面给出（有源码=static-only，
   // 源码+URL=full）；它是否有检查由 coverageGap 单独表达，不在证据轴上重复降级。
   if (!dim.checks.length && name !== '成本') {
@@ -371,6 +410,27 @@ function evidenceOf(name, dim, sources) {
   const dynamicAuth = sources.dynamicAuth === true;
   const limit = sources.loadLimit || DEFAULT_LOAD_LIMIT;
   const limitText = `${limit.seconds}s/${limit.connections} 连接`;
+  const rt = normalizeRuntime(runtime);
+  // 「声明 + 实测」双条件：dynamicAuth 只代表用户点了头，不能代替真的 probe/stress 记录。
+  // 没有记录就给 static-only，并把 dynamic 明细挂到证据上，报告里能看出是实测还是只声明。
+  const dynamicBlock = () => ({
+    declared: dynamicAuth,
+    measured: rt.measured,
+    probe: { ...rt.probe },
+    stress: { ...rt.stress },
+    limit: { ...limit },
+  });
+  const dynamicFullOrStatic = (fullReason) => {
+    if (!dynamicAuth) return { level: 'static-only', reason: '仅静态（未授权压测）', dynamic: dynamicBlock() };
+    if (!rt.measured) {
+      return {
+        level: 'static-only',
+        reason: '仅静态（已声明授权，但本轮没有 probe/stress 实测记录）',
+        dynamic: dynamicBlock(),
+      };
+    }
+    return { level: 'full', reason: `${fullReason}，${measuredText(rt)}`, dynamic: dynamicBlock() };
+  };
 
   if (!hasCode && !hasUrl) return { level: 'unverified', reason: '未验证（缺源码与 URL）' };
 
@@ -381,9 +441,7 @@ function evidenceOf(name, dim, sources) {
 
   if (!hasCode && hasUrl) {
     if (DYNAMIC_DIMENSIONS.has(name)) {
-      return dynamicAuth
-        ? { level: 'full', reason: `证据充分（URL 实测已授权，${limitText}）` }
-        : { level: 'static-only', reason: '仅静态（未授权压测）' };
+      return dynamicFullOrStatic(`证据充分（URL 实测已授权，${limitText}）`);
     }
     if (URL_STATIC.has(name)) {
       return name === '供应链与许可证'
@@ -393,11 +451,9 @@ function evidenceOf(name, dim, sources) {
     return { level: 'not-covered', reason: '未覆盖（缺源码）' };
   }
 
-  // 源码 + URL：静态维度 full；动态维度仍需 dynamicAuth 才 full。
+  // 源码 + URL：静态维度 full；动态维度仍需「授权 + 实测」两条都成立。
   if (DYNAMIC_DIMENSIONS.has(name)) {
-    return dynamicAuth
-      ? { level: 'full', reason: `证据充分（源码 + URL 实测，${limitText}）` }
-      : { level: 'static-only', reason: '仅静态（未授权压测）' };
+    return dynamicFullOrStatic(`证据充分（源码 + URL 实测，${limitText}）`);
   }
   return { level: 'full', reason: '证据充分（源码 + URL）' };
 }
@@ -407,8 +463,9 @@ function evidenceOf(name, dim, sources) {
  * 返回 { [维度]: { level: 'full'|'static-only'|'unverified'|'not-covered', reason } }。
  * 注意：这里的 level 是「证据等级」，不是 L1/L2/L3 档位。
  * @param {object} [profile] loadProfile 的返回值，或包含 sources 的平铺对象
+ * @param {object|null} [runtime] 本轮实测记录（probe/stress）；没有就只能是 static-only
  */
-export function evidenceMatrix(profile = null) {
+export function evidenceMatrix(profile = null, runtime = null) {
   const levels = resolveDimensions(profile);
   const rawSources = profile && typeof profile === 'object' && !Array.isArray(profile) ? profile.sources : undefined;
   const sources = normalizeSources(rawSources, []);
@@ -417,7 +474,7 @@ export function evidenceMatrix(profile = null) {
     const def = DIMENSIONS[name];
     if (!def) continue;
     const spec = def[lv] || def.L2;
-    out[name] = evidenceOf(name, { checks: spec.checks }, sources);
+    out[name] = evidenceOf(name, { checks: spec.checks }, sources, runtime);
   }
   return out;
 }

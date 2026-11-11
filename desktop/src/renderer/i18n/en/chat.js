@@ -181,6 +181,9 @@ export const EN_CHAT = {
   '已中断（用户停止）': 'Interrupted (stopped by user)',
   '输出被截断': 'Output truncated',
   '程序闸失败': 'Program gate failed',
+  '应用重启导致中断': 'Interrupted by app restart',
+  '复核超时未完成': 'Verification timed out; not completed',
+  '复核未完成：盲验超过 {duration} 被强制截止（结论按未复核处理）': 'Verification not completed: the blind review exceeded {duration} and was cut off (its conclusions count as unverified)',
 
   // 命令 / 通用工具折叠详情（TraceCards.jsx）
   '(空命令)': '(empty command)',

@@ -10,6 +10,8 @@ import { readFileTool, editFileTool, writeFileTool } from '../../../src/fs-tools
 import { assertPathAllowed, assertCwd, checkCommand, scrubEnv } from './policy.mjs';
 import { runHookEvent } from './hooks.mjs';
 import { isBlocked } from './shell.mjs';
+import { dynamicRuntime, recordProbe, recordStress } from './dynamic-evidence.mjs';
+import { assertArtifactPath } from './artifact-gate.mjs';
 // 工作流兜底提示走双语词典（zh 原样返回，en 查表）
 import { t } from '../renderer/i18n/core.mjs';
 
@@ -195,12 +197,51 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
   };
   const preApproved = (tool, target) => !!permissions?.consumeGrant?.(tool, target);
 
+  // 11 维计划解析（App 侧统一入口）：
+  //   1) 项目根有 finalcheck.profile.json → 用它（每维档位 + sources）
+  //   2) 没有 → 按请求档位合成 11 维同档（DIMENSIONS 的并集与老 GATES 一致，检查计划不变）
+  //   3) 工具参数 sources 覆盖文件里的 sources（agent 明确说了「有源码/给 URL/已授权」时以它为准）
+  // runtime 只取本轮真的跑过的 probe/stress（最近 2 小时、host 与声明 URL 一致）——声明不等于实测。
+  const resolveAuditPlan = async (dir, args = {}) => {
+    const { loadProfile, CORE_DIMENSION_NAMES, PROFILE_FILE } = await import(engineUrl('src/profile.mjs'));
+    const file = await loadProfile(dir).catch(() => null);
+    const tierArg = String(args?.tier || '').toUpperCase();
+    const level = ['L1', 'L2', 'L3'].includes(tierArg) ? tierArg : 'L2';
+    const base = file && file.source === PROFILE_FILE
+      ? file
+      : {
+        source: 'tier',
+        dimensions: Object.fromEntries(CORE_DIMENSION_NAMES.map((n) => [n, level])),
+        sources: { code: true },
+        warnings: [],
+      };
+    const rawSources = args?.sources && typeof args.sources === 'object' && !Array.isArray(args.sources) ? args.sources : null;
+    // sources.code 在工具参数里是布尔（有源码吗），profile 里要求非空字符串（声明的源码入口）→ 归一成 '.'
+    const explicit = rawSources ? { ...rawSources, ...(rawSources.code === true ? { code: '.' } : {}) } : null;
+    const profile = explicit ? { ...base, sources: { ...(base.sources || {}), ...explicit } } : base;
+    const url = profile?.sources?.url || null;
+    const runtime = dynamicRuntime({ sinceMs: Date.now() - 2 * 60 * 60 * 1000, url });
+    return { profile, runtime, profileSource: base.source };
+  };
+
   const tools = {
     audit_project: async (args) => {
       const { audit } = await import(engineUrl('src/audit.mjs'));
-      const r = await audit(args.dir, { tier: args.tier ?? null, interactive: true, runTests: false });
-      recordAudit(args.dir, r).catch(() => {}); // 体检成功落项目档案；失败不影响工具结果
-      return { verdict: r.conclusion.verdict, reason: r.conclusion.reason, gates: r.gates, findings: r.findings.slice(0, 30) };
+      const dir = path.resolve(String(args?.dir || projectPath || ''));
+      const { profile, runtime, profileSource } = await resolveAuditPlan(dir, args);
+      const r = await audit(dir, { tier: args.tier ?? null, interactive: true, runTests: false, profile, runtime });
+      recordAudit(dir, r).catch(() => {}); // 体检成功落项目档案；失败不影响工具结果
+      return {
+        verdict: r.conclusion.verdict,
+        reason: r.conclusion.reason,
+        gates: r.gates,
+        // 11 维结论 + 证据矩阵（每维：结论 / 证据等级 / 覆盖的检查项），与报告层同源
+        dimensions: r.tier?.dimensions || null,
+        evidence: r.evidence || null,
+        planSource: profileSource, // finalcheck.profile.json / tier
+        measured: { probe: runtime.probe.length, stress: runtime.stress.length },
+        findings: r.findings.slice(0, 30),
+      };
     },
 
     // 质量命令闸：按项目根 finalcheck.quality.json 跑 lint / typecheck / test / bench，
@@ -245,21 +286,29 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
     probe_target: async (args) => {
       note(args.url); // 口头确认语义：记账不拦（用户定案 2026-11-07）
       const { probeTarget } = await import(engineUrl('src/dynamic/probe.mjs'));
-      return probeTarget(args.url, { requests: args?.requests });
+      const t0 = Date.now();
+      const out = await probeTarget(args.url, { requests: args?.requests });
+      try { recordProbe(args.url, { ms: Date.now() - t0, ok: !out?.error, samples: 1 }); } catch { /* 记账失败不影响探测 */ }
+      return out;
     },
 
     stress_target: async (args) => {
       note(args.url);
       if ((args.duration ?? 10) > 60 || (args.connections ?? 10) > 50) throw new Error('超过温和上限');
       const { stressTarget } = await import(engineUrl('src/dynamic/stress.mjs'));
-      return stressTarget(args.url, { duration: args.duration ?? 10, connections: args.connections ?? 10 });
+      const t0 = Date.now();
+      const out = await stressTarget(args.url, { duration: args.duration ?? 10, connections: args.connections ?? 10 });
+      try { recordStress(args.url, { ms: Date.now() - t0, ok: !out?.error, samples: Number(out?.requests) || Number(out?.samples) || 0 }); } catch { /* 记账失败不影响压测 */ }
+      return out;
     },
 
     get_report: async (args) => {
       const { renderReport } = await import(engineUrl('src/report.mjs'));
       const { audit } = await import(engineUrl('src/audit.mjs'));
-      const r = await audit(args.dir, { tier: args.tier ?? null, interactive: true, runTests: false });
-      recordAudit(args.dir, r).catch(() => {}); // 同 audit_project 落档案
+      const dir = path.resolve(String(args?.dir || projectPath || ''));
+      const { profile, runtime } = await resolveAuditPlan(dir, args);
+      const r = await audit(dir, { tier: args.tier ?? null, interactive: true, runTests: false, profile, runtime });
+      recordAudit(dir, r).catch(() => {}); // 同 audit_project 落档案
       return renderReport(r);
     },
 
@@ -317,7 +366,11 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
     },
 
     present_artifact: async (args) => {
-      const abs = path.resolve(String(args?.path || ''));
+      // 唯一没做路径校验的文件类工具（lane A 实测：可把 config.json / ~/.ssh/id_rsa 登记成产物，
+      // 用户点开就经 artifact:read 读出来）→ 与读文件工具同一道敏感路径闸
+      const gate = assertArtifactPath(args?.path, { policy });
+      if (!gate.ok) return { error: gate.reason, path: gate.path };
+      const abs = gate.path;
       let st;
       try { st = await stat(abs); } catch { return { error: '文件不存在：' + abs }; }
       if (!st.isFile()) return { error: '不是文件' };

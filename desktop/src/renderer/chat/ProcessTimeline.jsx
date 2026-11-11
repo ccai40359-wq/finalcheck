@@ -273,7 +273,7 @@ function ReadDetail({ result }) {
         <span className="text-mute/40">{t('{n} 行', { n: result?.totalLines })}</span>
         {result?.truncated ? <span className="text-goldDeep">{t('已截断，nextOffset={offset}', { offset: result.nextOffset })}</span> : null}
       </div>
-      <pre className="rounded-lg bg-[#0d0d10] border border-edge px-2.5 py-2 font-mono text-ink/75 whitespace-pre-wrap break-all max-h-72 overflow-y-auto">{result?.content || ''}</pre>
+      <pre className="rounded-md bg-[#111114] px-2.5 py-2 font-mono text-ink/75 whitespace-pre-wrap break-all max-h-72 overflow-y-auto">{result?.content || ''}</pre>
     </div>
   );
 }
@@ -287,7 +287,7 @@ function PlaybookDetail({ result }) {
         <span className="text-goldSoft/80">{result?.file}</span>
         <span className="text-mute/40">{t('{n} 字符', { n: result?.totalChars })}</span>
       </div>
-      <pre className="rounded-lg bg-[#0d0d10] border border-edge px-2.5 py-2 font-mono text-ink/75 whitespace-pre-wrap break-all max-h-72 overflow-y-auto">{result?.content || ''}</pre>
+      <pre className="rounded-md bg-[#111114] px-2.5 py-2 font-mono text-ink/75 whitespace-pre-wrap break-all max-h-72 overflow-y-auto">{result?.content || ''}</pre>
     </div>
   );
 }
@@ -304,7 +304,7 @@ function DiffDetail({ result }) {
         <span className="text-mute/50 truncate">{result?.path}</span>
         {result?.created ? <span className="text-goldSoft/80">{t('新建')}</span> : null}
       </div>
-      <div className="rounded-lg border border-edge bg-[#0d0d10] max-h-72 overflow-auto font-mono text-[11px] leading-5">
+      <div className="rounded-md bg-[#111114] max-h-72 overflow-auto font-mono text-[11px] leading-5">
         {lines.length ? lines.map((l, i) => (
           <div key={i} className={
             l.type === 'add' ? 'bg-jade/10 text-jade/90'
@@ -362,7 +362,7 @@ function ToolEntry({ e, cardInBody }) {
         {expandable ? <Chevron open={open} /> : null}
       </button>
       {expandable && open && (
-        <div className="mt-1.5 glass-card rounded-xl border border-gold/25 p-2.5 animate-[fadeIn_.2s_ease]">
+        <div className="mt-1.5 rounded-lg bg-white/[0.02] p-2.5 animate-[fadeIn_.2s_ease]">
           {isCmd ? (
             <CommandDetail args={e.args} result={e.result} />
           ) : isDiff ? (

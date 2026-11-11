@@ -217,6 +217,8 @@ const SQL = {
   // 工作流子代理的工具 part 挂合成 message_id（wf:<runId>:<stepId>），不参与 message 表 JOIN：
   // 按前缀取（runId 只是 LIKE 前缀，取回后在 JS 里做精确 startsWith 过滤，避免 %/_ 通配误伤）
   partsOfPrefix: 'SELECT * FROM part WHERE message_id LIKE ? ORDER BY message_id, seq ASC',
+  // 启动收尾：只捞可能还挂着 running 的 tool part（LIKE 先粗筛，JS 再精确判定）
+  listRunningToolParts: "SELECT id, data_json FROM part WHERE type = 'tool' AND data_json LIKE '%\"running\"%'",
   countUsers: "SELECT COUNT(*) AS n FROM message WHERE session_id = ? AND role = 'user'",
   countMessages: 'SELECT COUNT(*) AS n FROM message WHERE session_id = ?',
   turnMeta: 'SELECT key, value FROM session_meta WHERE key LIKE ?',
@@ -1622,6 +1624,40 @@ export async function appendToolStart(id, tool = {}) {
 export async function appendToolEnd(id, tool = {}) {
   if (!OK_ID.test(id)) throw new Error('非法会话 ID');
   return useSqliteStore() ? sqliteAppendToolEnd(id, tool) : null;
+}
+
+/**
+ * 启动时收尾：把上次进程崩溃/被强杀留下的 status='running' 工具调用改成 status='interrupted'。
+ * 为什么必须有：卡片上一直挂着「运行中」但主人已经不在，用户会以为还在跑；
+ * 而且工作流恢复入口需要一个明确的「中断」状态才知道该重放哪些节点。
+ * 只改 part 的 JSON，不动 message/seq；JSON 后端（纯 Node 测试）no-op。
+ * @param {string} projectDir 项目根目录（<dir>/.finalcheck/finalcheck.db）
+ * @returns {Promise<number>} 改了多少条
+ */
+export async function markInterruptedRunningParts(projectDir) {
+  if (!useSqliteStore()) return 0;
+  const dir = String(projectDir || '').trim();
+  if (!dir) return 0;
+  if (!existsSync(dbFileFor(dir))) return 0; // 没库就别为它建一个空库
+  const { db } = await openDb(dir);
+  const rows = db.prepare(SQL.listRunningToolParts).all();
+  if (!rows.length) return 0;
+  const upd = db.prepare(SQL.updatePartData);
+  let n = 0;
+  const tx = db.transaction((list) => {
+    for (const r of list) {
+      let data;
+      try { data = JSON.parse(r.data_json); } catch { continue; }
+      if (!data || typeof data !== 'object' || data.status !== 'running') continue;
+      data.status = 'interrupted';
+      data.interrupted = true;
+      data.interruptReason = 'APP_RESTART'; // 文案由界面渲染（应用重启导致中断），库里只存原因码
+      upd.run(JSON.stringify(data), r.id);
+      n += 1;
+    }
+  });
+  tx(rows);
+  return n;
 }
 
 /**

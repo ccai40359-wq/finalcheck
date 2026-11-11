@@ -9,7 +9,8 @@
 //  6. SYSTEM_BASE / run_workflow 描述教模型用空 depends_on 并行拆步
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { runWorkflow, resolveMaxStepMs, stepTimeoutText, withStepDeadline, SUBAGENT_STEP_TIMEOUT_MS } from '../desktop/src/main/workflow.mjs';
+import { runWorkflow, resolveMaxStepMs, resolveVerifyTimeoutMs, stepTimeoutText, withStepDeadline, SUBAGENT_STEP_TIMEOUT_MS, VERIFY_TIMEOUT_MS, VERIFY_TIMEOUT_MAX_MS } from '../desktop/src/main/workflow.mjs';
+import { errorCodeLabel } from '../desktop/src/main/swarm.mjs';
 import { getSystemPromptParts, runSubagentTurn, TOOLS_SCHEMA } from '../desktop/src/main/agent-service.mjs';
 
 const READ_FILE_SCHEMA = {
@@ -157,4 +158,58 @@ test('prompts: SYSTEM_BASE 教「先问是否需要上游」并用空 depends_on
   assert.match(wf.function.description, /空 depends_on/);
   assert.match(wf.function.description, /不要为了「看起来有顺序」/);
   assert.match(stepTimeoutText(300), /单步超时/);
+});
+
+// ---- 盲验硬截止（2026-11-11 实测：DAG 的 __verify__ 跑 62.8 分钟 / 225 次工具仍未出结论）----
+test('verify: 盲验节点默认 60 分钟上限；显式值可覆盖；0 = 关闭', () => {
+  assert.equal(VERIFY_TIMEOUT_MS, 60 * 60 * 1000, '默认必须是 60 分钟');
+  assert.equal(resolveVerifyTimeoutMs(null), VERIFY_TIMEOUT_MS);
+  assert.equal(resolveVerifyTimeoutMs(undefined), VERIFY_TIMEOUT_MS);
+  assert.equal(resolveVerifyTimeoutMs(120000), 120000, '显式值生效');
+  assert.equal(resolveVerifyTimeoutMs(0), 0, '显式 0 = 关闭上限');
+  assert.equal(resolveVerifyTimeoutMs(999999999), VERIFY_TIMEOUT_MAX_MS, '超上限按 4 小时 clamp');
+  assert.equal(resolveVerifyTimeoutMs(-5), VERIFY_TIMEOUT_MS, '非法值回落默认');
+});
+
+test('verify: 到点必须落成明确状态 VERIFY_TIMEOUT（不是挂着）', async () => {
+  let verifyBudget = null;
+  const t0 = Date.now();
+  const out = await runWorkflow({
+    goal: '复核超时',
+    steps: [
+      { id: 'find', kind: 'find', prompt: '取证' },
+      { id: 'rep', kind: 'report', prompt: '汇总', depends_on: ['find'] }
+    ],
+    verifyTimeoutMs: 80,
+    callStep: async (ctx) => {
+      if (String(ctx.kind || '') === 'verify') {
+        verifyBudget = ctx.budget;
+        return new Promise(() => { /* 永不返回：模拟盲验一直挂着 */ });
+      }
+      return { content: '取证与汇总的正常输出', toolCount: 3 };
+    }
+  });
+  const ms = Date.now() - t0;
+  assert.ok(ms < 6000, '必须在 80ms + 宽限内结束，实际 ' + ms + 'ms');
+  assert.equal(verifyBudget?.maxStepMs, 80, '盲验节点必须收到 verify 专属上限');
+  const v = (out.results || []).find((r) => r.id === '__verify__');
+  assert.ok(v, '自动补的盲验节点必须出现在结果里');
+  assert.equal(v.ok, false);
+  assert.equal(v.errorCode, 'VERIFY_TIMEOUT', '超时必须有结构化错误码，卡片/报告才能点名');
+  assert.match(String(v.error), /复核未完成/, '错误文案必须说清是复核未完成');
+  assert.equal(errorCodeLabel('VERIFY_TIMEOUT'), '复核超时未完成');
+});
+
+test('verify: verifyTimeoutMs=0 时盲验也不设墙钟（显式关闭）', async () => {
+  let verifyBudget = null;
+  await runWorkflow({
+    goal: '关闭盲验上限',
+    steps: [{ id: 'find', kind: 'find', prompt: '取证' }],
+    verifyTimeoutMs: 0,
+    callStep: async (ctx) => {
+      if (String(ctx.kind || '') === 'verify') verifyBudget = ctx.budget;
+      return { content: '正常输出', toolCount: 2 };
+    }
+  });
+  assert.equal(verifyBudget?.maxStepMs, 0, '显式 0 必须关掉盲验上限');
 });

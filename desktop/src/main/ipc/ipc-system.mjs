@@ -1,4 +1,5 @@
 import * as permissions from '../permissions.mjs';
+import { recordProbe, recordStress } from '../dynamic-evidence.mjs';
 import * as sessions from '../sessions.mjs';
 import { runHookEvent } from '../hooks.mjs';
 import { resolveModel, effectiveWindow } from '../model-config.mjs';
@@ -113,12 +114,19 @@ export function registerSystemIpc({ ipcMain, getWin, engineUrl, store, getHooksC
   ipcMain.handle('finalcheck:probe', async (_e, baseUrl) => {
     permissions.noteTarget(baseUrl);
     const { probeTarget } = await import(engineUrl('src/dynamic/probe.mjs'));
-    return probeTarget(baseUrl);
+    const t0 = Date.now();
+    const out = await probeTarget(baseUrl);
+    // 记账：证据等级要能区分「声明了授权」和「本轮真的跑过」
+    try { recordProbe(baseUrl, { ms: Date.now() - t0, ok: !out?.error, samples: 1 }); } catch { /* 记账失败不影响探测 */ }
+    return out;
   });
   ipcMain.handle('finalcheck:stress', async (_e, baseUrl, { duration = 10, connections = 10 } = {}) => {
     permissions.noteTarget(baseUrl);
     if (duration > 60 || connections > 50) throw new Error(t('超过温和上限（60s / 50 连接），请分批进行'));
     const { stressTarget } = await import(engineUrl('src/dynamic/stress.mjs'));
-    return stressTarget(baseUrl, { duration, connections });
+    const t0 = Date.now();
+    const out = await stressTarget(baseUrl, { duration, connections });
+    try { recordStress(baseUrl, { ms: Date.now() - t0, ok: !out?.error, samples: Number(out?.requests) || Number(out?.samples) || 0 }); } catch { /* 记账失败不影响压测 */ }
+    return out;
   });
 }

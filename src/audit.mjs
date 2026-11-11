@@ -44,14 +44,19 @@ export async function loadConfig(projectDir) {
   } catch { return {}; }
 }
 
-export async function audit(projectDir, { tier = null, interactive = false, runTests = true, profile = null } = {}) {
+export async function audit(projectDir, { tier = null, interactive = false, runTests = true, profile = null, runtime = null, sources = null } = {}) {
   const cfg = await loadConfig(projectDir);
   const excludes = Array.isArray(cfg.exclude) ? cfg.exclude : [];
+  // 只给输入面（sources）不给 profile 时：包成一个最小 profile，仍走维度计划（默认各维 L2）。
+  // 这样「用户只填了 URL」也能得到维度视图，而不是悄悄退回老 GATES。
+  const effProfile = sources && typeof sources === 'object' && !Array.isArray(sources)
+    ? { ...(profile && typeof profile === 'object' && !Array.isArray(profile) ? profile : {}), sources: { ...(profile?.sources || {}), ...sources } }
+    : profile;
 
   const auto = await detectTier(projectDir, { excludes });
   // profile 模式：计划由每维度档位决定，显式配置优先于自动定档（不再保守 +1）。
   // 不传 profile 时完全走原来的 GATES 路径，现有调用方与测试零变化。
-  const profilePlan = profile ? planFromProfile(profile) : null;
+  const profilePlan = effProfile ? planFromProfile(effProfile) : null;
   let effective;
   let conservativeNote = null;
   if (profilePlan) {
@@ -114,7 +119,7 @@ export async function audit(projectDir, { tier = null, interactive = false, runT
   let findings = results.flatMap((r) => r.findings);
   const warnings = [...routeResult.warnings, ...results.flatMap((r) => r.warnings || [])];
   // profile 文件里的解析/取值警告原样带进审计结果，不静默吞掉
-  if (profile && Array.isArray(profile.warnings)) warnings.push(...profile.warnings);
+  if (effProfile && Array.isArray(effProfile.warnings)) warnings.push(...effProfile.warnings);
   // profile 里写了不存在的维度：按警告暴露，不把用户笔误升级成「无法验收」
   if (profilePlan) {
     for (const gap of profilePlan.gapsForUnknown) {
@@ -140,7 +145,7 @@ export async function audit(projectDir, { tier = null, interactive = false, runT
   const conclusion = conclude(effective, findings, gapItems);
   const dimensions = profilePlan ? dimensionResults(profilePlan, findings, gapItems) : null;
   // 证据等级是加法的：只有传了 profile 才出现，老调用方的结果形状不变。
-  const evidence = profilePlan ? evidenceMatrix(profile) : null;
+  const evidence = profilePlan ? evidenceMatrix(effProfile, runtime) : null;
 
   return {
     projectDir,

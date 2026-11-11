@@ -11,7 +11,7 @@ function ResultLine({ payload }) {
   if (status === 'answered') {
     return (
       <div data-testid="ask-user-result" className="flex items-start gap-2 text-xs leading-relaxed text-ink/85">
-        <span className="badge shrink-0 bg-emerald-500/15 text-emerald-300 border border-emerald-500/35">{t('已回答')}</span>
+        <span className="badge shrink-0 bg-emerald-500/15 text-emerald-300">{t('已回答')}</span>
         <span className="min-w-0 break-words">{t('已提交：{answer}', { answer: payload.answer || t('(空)') })}</span>
       </div>
     );
@@ -19,7 +19,7 @@ function ResultLine({ payload }) {
   if (status === 'cancelled') {
     return (
       <div data-testid="ask-user-result" className="flex items-center gap-2 text-xs text-mute/75">
-        <span className="badge shrink-0 bg-white/5 text-mute border border-edge">{t('用户取消')}</span>
+        <span className="badge shrink-0 bg-white/5 text-mute">{t('用户取消')}</span>
         <span>{t('本回合已按停止处理')}</span>
       </div>
     );
@@ -27,14 +27,14 @@ function ResultLine({ payload }) {
   if (status === 'rejected') {
     return (
       <div data-testid="ask-user-result" className="flex items-start gap-2 text-xs text-red-300/85">
-        <span className="badge shrink-0 bg-red-500/10 text-red-300 border border-red-500/35">{t('提问未发出')}</span>
+        <span className="badge shrink-0 bg-red-500/10 text-red-300">{t('提问未发出')}</span>
         <span className="min-w-0 break-words">{payload.error || t('未知原因')}</span>
       </div>
     );
   }
   return (
     <div data-testid="ask-user-result" className="flex items-center gap-2 text-xs text-amber-300/85">
-      <span className="badge shrink-0 bg-amber-500/10 text-amber-300 border border-amber-500/35">{t('未回答（已失效）')}</span>
+      <span className="badge shrink-0 bg-amber-500/10 text-amber-300">{t('未回答（已失效）')}</span>
       <span className="text-mute/60">{t('这张提问来自已结束的回合，不能再回答')}</span>
     </div>
   );
@@ -84,7 +84,7 @@ export default function AskUserCard({ payload, onSubmit = null }) {
     <div data-testid="ask-user-card" data-status={status}
       className="my-3 rounded-xl border border-gold/45 bg-gold/[0.07] px-4 py-3 animate-[fadeIn_.2s_ease]">
       <div className="flex items-center gap-2">
-        <span className="badge shrink-0 bg-gold/15 text-goldSoft border border-gold/40">{t('需要你的选择')}</span>
+        <span className="badge shrink-0 bg-gold/15 text-goldSoft">{t('需要你的选择')}</span>
         {multi && status === 'pending' ? <span className="text-[10px] text-mute/60">{t('可多选')}</span> : null}
         {status === 'pending' ? <span className="ml-auto text-[10px] text-mute/45">{t('回答后本回合继续')}</span> : null}
       </div>
@@ -94,7 +94,7 @@ export default function AskUserCard({ payload, onSubmit = null }) {
       {status === 'pending' ? (
         <>
           {options.length ? (
-            <div className="mt-2.5 flex flex-col gap-1.5">
+            <div className="mt-2.5 flex flex-col divide-y divide-white/[0.06] overflow-hidden rounded-md bg-white/[0.022]">
               {options.map((opt, i) => {
                 const label = String(opt?.label ?? '');
                 const active = selected.includes(label);
@@ -102,12 +102,12 @@ export default function AskUserCard({ payload, onSubmit = null }) {
                   <button key={`${label}-${i}`} type="button" disabled={submitting}
                     data-testid="ask-user-option"
                     onClick={() => onOption(label)}
-                    className={`w-full rounded-lg border px-3 py-2 text-left text-xs transition-colors duration-150 disabled:opacity-50 ${active ? 'border-gold/70 bg-gold/15' : 'border-edge bg-[#0b0b0e] hover:border-gold/50 hover:bg-gold/[0.06]'}`}>
+                    className={`w-full px-3 py-2 text-left text-xs transition-colors duration-150 disabled:opacity-50 ${active ? 'bg-gold/[0.12]' : 'hover:bg-white/[0.035]'}`}>
                     <div className="flex items-center gap-2">
                       {multi ? (
-                        <span className={`inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-[3px] border text-[9px] ${active ? 'border-gold bg-gold/80 text-black' : 'border-mute/50 text-transparent'}`}>✓</span>
+                        <span className={`inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-[3px] text-[9px] ${active ? 'bg-gold text-black' : 'bg-white/[0.07] text-transparent'}`}>✓</span>
                       ) : null}
-                      <span className="font-medium text-ink/90">{label}</span>
+                      <span className={`font-medium ${active ? 'text-goldSoft' : 'text-ink/90'}`}>{label}</span>
                     </div>
                     {opt?.description ? <div className="mt-0.5 pl-0.5 text-[11px] leading-relaxed text-mute/65">{opt.description}</div> : null}
                   </button>
@@ -122,7 +122,7 @@ export default function AskUserCard({ payload, onSubmit = null }) {
               onChange={(e) => setText(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void submit(); } }}
               placeholder={options.length ? t('也可以直接输入回答…') : t('输入你的回答…')}
-              className="min-w-0 flex-1 rounded-lg border border-edge bg-[#0a0a0c] px-3 py-2 text-xs text-ink placeholder:text-mute/40 focus:border-gold/60 focus:outline-none disabled:opacity-50" />
+              className="min-w-0 flex-1 rounded-md bg-white/[0.04] px-3 py-2 text-xs text-ink placeholder:text-mute/40 focus:bg-white/[0.07] focus:outline-none disabled:opacity-50" />
             <button type="button" disabled={submitting || (!selected.length && !text.trim())}
               data-testid="ask-user-submit" onClick={() => void submit()}
               className="btn-primary shrink-0 px-3 py-2 text-xs disabled:opacity-50">

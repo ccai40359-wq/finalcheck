@@ -958,6 +958,7 @@ const ERROR_CODE_LABELS = new Map([
   ['INTERRUPTED', '已中断（用户停止）'],
   ['TRUNCATED', '输出被截断'],
   ['GATE_FAIL', '程序闸失败'],
+  ['VERIFY_TIMEOUT', '复核超时未完成'],
 ]);
 
 /** 错误码 → 一句人话；没有映射的码（含未知 HTTP 码）一律「步骤失败」。
