@@ -382,9 +382,7 @@ export function withStepDeadline(callStep, { abortGraceMs = STEP_ABORT_GRACE_MS,
         timedOut = true;
         try { ctl.abort(); } catch { /* 已中断 */ }
         graceTimer = setTimeout(() => finishRace(null), Math.max(0, Number(abortGraceMs) || 0));
-        graceTimer?.unref?.();
       }, maxMs);
-      timer?.unref?.();
     }
     let out;
     try {

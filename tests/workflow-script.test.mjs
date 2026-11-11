@@ -1,6 +1,7 @@
 // 受限脚本 DSL（script 模式）回归：用 fake callStep / fake runGate，不碰真实模型与网络。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -791,4 +792,19 @@ test('DSL verify: 盲验节点到点落成 VERIFY_TIMEOUT，且只对 verify 生
   const v = (out.nodes || out.results || []).find((n) => n.id === 'v' || n.nodeId === 'v');
   assert.ok(v, 'DSL 结果里必须有 verify 节点');
   assert.equal(v.errorCode || v.error?.code, 'VERIFY_TIMEOUT', '超时必须带结构化错误码');
+});
+
+test('withStepDeadline 的截止计时器不被 unref：事件循环空闲时也必须到点返回', () => {
+  // 回归 CI 上的 cancelledByParent：计时器一旦 unref，事件循环以为没活可干，
+  // 会先于截止时间退出（"Promise resolution is still pending..."）。
+  const mod = new URL('../desktop/src/main/workflow.mjs', import.meta.url).href;
+  const script = `
+    import { withStepDeadline } from ${JSON.stringify(mod)};
+    const fn = withStepDeadline(async () => new Promise(() => {}), { abortGraceMs: 0 });
+    const r = await fn({ budget: { maxStepMs: 40 } });
+    console.log(JSON.stringify({ timedOut: r && r.timedOut === true }));
+  `;
+  const r = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8', timeout: 5000 });
+  assert.equal(r.status, 0, r.stderr || r.stdout);
+  assert.match(r.stdout, /"timedOut":true/);
 });
