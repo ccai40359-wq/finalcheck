@@ -429,7 +429,7 @@ export function ProcessTimeline({ msg }) {
   const live = !!msg.streaming;
   const events = msg.events || [];
   // ask_user 有专门的提问卡（实时卡 / TraceBlock 历史卡），时间线里不再重复一行；
-  // todo_write 同理：验收单卡片单独渲染（MessageList 的 TodoBlock），时间线里不重复
+  // todo_write 同理：验收单由消息区右上角的常驻面板单独渲染（MessageList / TodoPanel），时间线里不重复
   const isAskUser = (e) => e?.type === 'tool' && e?.name === 'ask_user';
   const isCardTool = (e) => isAskUser(e) || (e?.type === 'tool' && e?.name === 'todo_write');
   const liveEntries = events.filter((e) => e.type === 'tool' || e.type === 'retry' || e.type === 'thought').filter((e) => !isCardTool(e));

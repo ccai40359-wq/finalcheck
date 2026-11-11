@@ -9,11 +9,13 @@ import { EN_CHAT } from './en/chat.js';
 import { EN_SETTINGS } from './en/settings.js';
 import { EN_MAIN } from './en/main.js';
 import { EN_CHECKS } from './en/checks.js';
+import { EN_TITLES } from './en/titles.js';
 
-const DICTS = [EN_COMMON, EN_APP, EN_CHAT, EN_SETTINGS, EN_MAIN, EN_CHECKS];
+const DICTS = [EN_COMMON, EN_APP, EN_CHAT, EN_SETTINGS, EN_MAIN, EN_CHECKS, EN_TITLES];
 const EN = Object.freeze(Object.assign({}, ...DICTS));
 
-export const LANGUAGES = Object.freeze(['auto', 'zh', 'en']);
+// 只有两个态：界面语言不再有 auto（旧配置的 auto 由 resolveLanguage 落成实际值）
+export const LANGUAGES = Object.freeze(['zh', 'en']);
 
 const listeners = new Set();
 // 语言状态放在 globalThis 上：主进程里有些模块（agent-service / workflow / swarm）是
@@ -44,7 +46,7 @@ export function subscribe(fn) {
   return () => listeners.delete(fn);
 }
 
-// 设置值 auto/zh/en → 实际语言。auto 跟随系统语言：中文系统用中文，其余一律英文。
+// 设置值 zh/en → 实际语言。旧配置的 auto 与缺省值兼容：按系统语言落成 zh 或 en（中文系统→中文，其余→英文）。
 export function resolveLanguage(setting, systemLang) {
   if (setting === 'zh' || setting === 'en') return setting;
   const s = String(systemLang || '').trim().toLowerCase();

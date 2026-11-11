@@ -10,7 +10,6 @@ import { createPolicy } from '../policy.mjs';
 import { resolveModel, effectiveWindow, effectiveMaxOutputTokens, crossTurnBudgetTokens, resolveTurnTarget } from '../model-config.mjs';
 import { listJournals, pickResumableRun } from '../workflow-journal.mjs';
 import { writeStepTranscript, readStepTranscript, pruneRuns, trimTranscriptMessages } from '../transcripts.mjs';
-import { withOutputLanguage } from '../lang.mjs';
 import { createAskUserRegistry } from '../ask-user.mjs';
 import { createTodoRegistry } from '../todo-list.mjs';
 import { t } from '../../renderer/i18n/core.mjs';
@@ -275,10 +274,9 @@ export function registerAgentIpc({
     });
     const hooksCfg = getHooksConfig(); // 本轮固定快照，运行中切项目不影响已在跑的回合
     // 工作流子代理：与主 agent 同一套引擎（agent-service.runSubagentTurn → runAgentTurn：
-    // SSE 流式 / 两级压缩 / 默认 40 轮 / usage）；这里只做工具装配、transcript 落盘与用量补账。
+    // SSE 流式 / 两级压缩 / 默认 40 轮 / usage）；这里只做工具装配、transcript 落盘与按请求记账。
     // override：工作流面板里改过「子代理模型」时传入（baseUrl/apiKey/model），否则用会话模型
-    const subagentUsageLog = []; // 子代理真实 usage：主回合结束后逐条补进用量账本（不混进主回合的 Context 指示器）
-    const callSubagent = async ({ id, name, role, prompt, kind, runId = null, signal: stepSignal = null } = {}, override = null) => {
+    const callSubagent = async ({ id, name, role, prompt, kind, originalName = null, runId = null, signal: stepSignal = null } = {}, override = null) => {
       const P = override?.baseUrl ? override : { baseUrl: prov.baseUrl, apiKey: prov.apiKey, model, providerId: prov.id };
       let transcript = [];
       let salvage = null; // subagent-salvage 的确定性拼接函数（catch 分支兜底用）
@@ -361,11 +359,18 @@ export function registerAgentIpc({
           sessionId,
           commandIdleMs: cfg.commandIdleMs
         });
-        const systemPrompt = withOutputLanguage(`你是 FinalCheck 工作流中的子代理${role ? `（角色：${role}）` : ''}。你可以调用工具（读文件 / 跑命令 / 体检 / 下载闸 / 探测 / 压测 / 读方法论 / 改代码）：需要证据就自己去跑，不要凭空断言。规则：任务里提到工具或路径时，第一条回复必须是真的工具调用，禁止用「我现在开始…」「我将运行…」这类话代替调用；拿到结果后再给交付物（结论/清单/证据），不要寒暄、不要复述任务。改文件前先 read_file，改完在交付里说明改了哪些文件。\n\n${DELIVERY_DISCIPLINE}`);
+        const systemPrompt = `你是 FinalCheck 工作流中的子代理${role ? `（角色：${role}）` : ''}。你可以调用工具（读文件 / 跑命令 / 体检 / 下载闸 / 探测 / 压测 / 读方法论 / 改代码）：需要证据就自己去跑，不要凭空断言。规则：任务里提到工具或路径时，第一条回复必须是真的工具调用，禁止用「我现在开始…」「我将运行…」这类话代替调用；拿到结果后再给交付物（结论/清单/证据），不要寒暄、不要复述任务。改文件前先 read_file，改完在交付里说明改了哪些文件。\n\n${DELIVERY_DISCIPLINE}`;
         transcript = [{ role: 'system', content: systemPrompt }, { role: 'user', content: prompt }];
         saveTranscript();
         // 取证步骤：首轮强制 tool_choice=required + 空转提醒重试（与 workflow.mjs 同一份 needsEvidence）
-        const requiresEvidence = needsEvidence({ kind: kind || null, name: name || '', role: role || '', prompt });
+        const requiresEvidence = needsEvidence({
+          kind: kind || null,
+          name: name || '',
+          role: role || '',
+          prompt,
+          // 空串也算「模型没给 name」：有 originalName 时只由它参与取证判定（展示名不改变执行语义）
+          ...(originalName === null || originalName === undefined ? {} : { originalName }),
+        });
         const result = await runSubagentTurn({
           config: {
             baseUrl: P.baseUrl,
@@ -412,6 +417,18 @@ export function registerAgentIpc({
           onTranscript: (msgs, meta = {}) => {
             transcript = msgs;
             saveTranscript(!!meta.done);
+          },
+          // 按请求记账：子代理每完成一次模型请求就追加一条（不再等主回合结束用 usageTotal 补一条，
+          // 否则长工作流跑 30 分钟账本一动不动；也不会计重复）。provider/model 取该次请求的实际值。
+          onUsage: (u) => {
+            void appendUsage({
+              at: u.at,
+              model: u.model || P.model,
+              providerId: u.providerId || P.providerId || prov.id,
+              prompt: u.prompt,
+              completion: u.completion,
+              cached: u.cached
+            }).catch((e) => console.warn('[usage-ledger] 子代理用量写入失败（已忽略）：' + (e?.message || e)));
           }
         });
         toolCount = Number(result.toolCount) || 0;
@@ -420,18 +437,7 @@ export function registerAgentIpc({
         if (warnings.length) {
           try { console.warn(`[workflow] 步骤 ${id} 警告：${warnings.join('；')}`); } catch { /* 忽略 */ }
         }
-        // 累计 usage：一轮子代理可能发多次请求，result.usage 只是最后一次；优先用 usageTotal 记账
-        const u = result.usageTotal?.requests ? result.usageTotal : extractUsage(result.usage);
-        if (u) {
-          subagentUsageLog.push({
-            at: Date.now(),
-            model: P.model,
-            providerId: P.providerId || prov.id,
-            prompt: u.prompt,
-            completion: u.completion,
-            cached: u.cached
-          });
-        }
+        // 子代理用量已在每次请求时逐条记账；这里不再重复补记（usageTotal 仅作返回值/诊断）
         // 失败也要把已产出的正文带回去（报告能看到失败步骤做到哪一步）
         const content = result.content || result.partialContent || '';
         // salvage / 错误码 / transcript 透传：workflow 层据此判断失败原因与洞
@@ -510,6 +516,7 @@ export function registerAgentIpc({
         baseUrl: prov.baseUrl,
         apiKey: prov.apiKey,
         model,
+        providerId: prov.id, // 首次请求就带供应商 id：按请求记账要用它（resolveConfig 会覆盖最新值）
         reasoningEffort: effort,
         contextWindow,
         maxOutputTokens,
@@ -553,6 +560,18 @@ export function registerAgentIpc({
       cwd: turnProjectPath,
       onToken: (text) => getWin()?.webContents.send('finalcheck:agent-token', { sessionId, text }),
       onEvent: (ev) => getWin()?.webContents.send('finalcheck:agent-event', { sessionId, ev }),
+      // 按请求记账：主 agent 每完成一次模型请求就追加一条账本（跑长任务时数字会持续上涨）。
+      // 回合结束不再用 out.usage 补记，避免同一请求被记两次。
+      onUsage: (u) => {
+        void appendUsage({
+          at: u.at,
+          model: u.model || model,
+          providerId: u.providerId || prov.id,
+          prompt: u.prompt,
+          completion: u.completion,
+          cached: u.cached
+        }).catch((e) => console.warn('[usage-ledger] 写入失败（已忽略）：' + (e?.message || e)));
+      },
       // 工具层的「长命令仍在跑」提示（F7）：run_command 超过 60s 每 30s 推一条，只带耗时；
       // 不设硬超时（尊重「不要默认墙钟超时」），只把「还在动」变成可见。
       onActivity: (ev) => getWin()?.webContents.send('finalcheck:agent-event', { sessionId, ev }),
@@ -706,18 +725,8 @@ export function registerAgentIpc({
     }).finally(() => { askUsers.endTurn(sessionId); });
     if (sessionId && state.activeChats.get(sessionId) === chatAbort) state.activeChats.delete(sessionId);
     state.steerBuffers.delete(sessionId); // 回合已收尾：没被 drain 的 Steer 不再漏到下一回合
-    // 子代理用量补账：工作流里的每一步也是真实请求，token 单独记一条；
-    // 主回合的 sessionUsage 仍只记主 agent 最后一次请求（Context 指示器口径不变）。
-    for (const rec of subagentUsageLog) {
-      await appendUsage({
-        at: rec.at,
-        model: rec.model,
-        providerId: rec.providerId,
-        prompt: rec.prompt,
-        completion: rec.completion,
-        cached: rec.cached
-      }).catch((e) => console.warn('[usage-ledger] 子代理用量写入失败（已忽略）：' + (e?.message || e)));
-    }
+    // 用量账本已在每次模型请求完成时逐条写入（主 agent 与子代理走同一个 onUsage 回调）；
+    // 这里只维护「当前会话最后一次请求」的 sessionUsage（Context 指示器口径不变），不再补记账本。
     const usageRec = extractUsage(out.usage);
     if (usageRec) {
       const rec = {
@@ -731,17 +740,6 @@ export function registerAgentIpc({
         state.sessionUsage.set(sessionId, rec);
         await sessions.setSessionUsage(sessionId, rec).catch(() => {}); // 落盘：重启后实测还在
       }
-      // 用量账本：每次主会话拿到真实 usage 追加一条（provider/model 取最后一次请求实际使用的值：
-      // 运行中切过模型时账本按「新值」记，避免把新模型的消耗记到旧供应商名下）
-      const usedTarget = liveModels.current() || { provider: prov, model };
-      await appendUsage({
-        at: rec.at,
-        model: usedTarget.model || model,
-        providerId: usedTarget.provider?.id || prov.id,
-        prompt: usageRec.prompt,
-        completion: usageRec.completion,
-        cached: usageRec.cached
-      }).catch((e) => console.warn('[usage-ledger] 写入失败（已忽略）：' + (e?.message || e)));
     }
     // 报告闸（验收单）：done 没 evidence、failed/skipped 没写进 ## Not covered → 判不合格。
     // 不合格原因附在回答末尾（随 assistant 消息落盘，历史/导出都看得到），不静默放过。

@@ -1,4 +1,4 @@
-// 消息区：滚动容器 + 用户/助手/Notice 气泡 + 回到底部按钮。
+// 消息区：滚动容器 + 用户/助手/Notice 气泡 + 回到底部按钮 + 右上角常驻验收单面板。
 // 纯展示：消息、会话与滚动状态都在 App，这里只读 props 并按原有内联 JSX 渲染。
 import React, { useEffect, useRef, useState } from 'react';
 import { api } from '../lib/ui.jsx';
@@ -6,13 +6,14 @@ import { t } from '../i18n/core.mjs';
 import {
   splitAttachmentBlock, parseWorkflowPrompt, parseSkillSegments, baseName, IMG_EXT_RE, previewFromPath
 } from '../lib/app-helpers.mjs';
+import { latestTodoFromMessages } from '../lib/todo.mjs';
 import { ProcessTimeline, WorkingStatus } from '../chat/ProcessTimeline.jsx';
 import { TraceBlock, WorkflowLiveCard } from '../chat/TraceCards.jsx';
 import { ArtifactChips, collectArtifacts } from '../chat/ArtifactPanel.jsx';
 import { renderMarkdown } from '../chat/md.jsx';
 import { IconChevron, IconCopy, IconEdit } from './Icons.jsx';
 import AskUserCard from './AskUserCard.jsx';
-import { TodoBlock } from './TodoCard.jsx';
+import { TodoPanel, TodoHistoryRow } from './TodoCard.jsx';
 
 // 技能 chip：金色符号 + 名称，细底无边框（不是药丸）；title 只在 hover 时暴露 playbook id
 function SkillChips({ skills }) {
@@ -88,6 +89,27 @@ export default function MessageList({
   y, onSendRecover, onOpenArtifact, onEditMessage, onOpenStep,
   askCards = [], onAskUserAnswer = null
 }) {
+  // 常驻面板要按「会话列宽度」自动折叠：右侧子代理/产物面板打开时会话列变窄。
+  // 用 ResizeObserver 量会话列本身（不是 window），面板让位/收缩都由真实可用宽度决定。
+  const hostRef = useRef(null);
+  const [hostWidth, setHostWidth] = useState(0);
+  useEffect(() => {
+    const el = hostRef.current;
+    if (!el) return undefined;
+    const measure = () => setHostWidth(el.clientWidth || 0);
+    measure();
+    if (typeof ResizeObserver !== 'function') {
+      window.addEventListener('resize', measure);
+      return () => window.removeEventListener('resize', measure);
+    }
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // 当前会话最新一份验收单：面板只显示这一份；消息流里同一份不再内联渲染（避免一屏两份）。
+  const latestTodo = latestTodoFromMessages(messages);
+
   // 只有用户本来就在底部附近才自动跟随；往上看历史时保持不动（判定逻辑与拆分前一致）
   const handleScroll = (e) => {
     const el = e.currentTarget;
@@ -106,8 +128,10 @@ export default function MessageList({
     setTimeout(() => { jumpingRef.current = false; }, 500);
   };
   return (
-    <div className="relative flex-1 min-h-0">
-      <div ref={scrollRef} className="h-full overflow-y-auto px-5 py-4"
+    <div ref={hostRef} className="flex-1 min-h-0 flex" data-testid="message-host">
+      {/* 消息滚动列：面板出现时用 flex-1 让出右侧固定宽度，不用绝对定位压住消息 */}
+      <div className="relative min-w-0 flex-1">
+      <div ref={scrollRef} data-testid="message-scroll" className="h-full overflow-y-auto px-5 py-4"
         onScroll={handleScroll}>
         {/* 全宽文档式排版：消息/输入区同宽（≥90% 容器宽） */}
         <div className="w-full max-w-[96%] mx-auto space-y-4">
@@ -203,8 +227,8 @@ export default function MessageList({
             /* AI 回答去气泡：无底色卡片，仅左侧金竖线（错误消息换红线）区分 */
             <div key={i} className={`w-full border-l-2 pl-4 transition-all duration-200 ${m.error ? 'border-red-500/50' : m.interrupted ? 'border-gold/25' : 'border-gold/45'}`}>
               <ProcessTimeline msg={m} />
-              {/* 验收单：实时（events）/ 历史（trace 的 todo_write tool part）都从同一条数据还原 */}
-              <TodoBlock msg={m} sessionId={activeId} />
+              {/* 验收单：最新一份钉在右上角面板；这里只在旧回合留一行只读摘要（同一份不渲染两次） */}
+              {latestTodo?.index === i ? null : <TodoHistoryRow msg={m} />}
               {m.streaming && m.workflow ? <WorkflowLiveCard data={m.workflow} sessionId={activeId} providers={providers}
                 onRecover={(text) => onSendRecover(text)}
                 onOpenStep={(s) => onOpenStep(s)} /> : null}
@@ -249,10 +273,19 @@ export default function MessageList({
       {/* 不在底部时：底部居中的回到底部箭头（不挡输入框、不压 WorkingStatus） */}
       {showJump && (
         <button type="button" data-testid="scroll-bottom" onClick={jumpToBottom} title={t('回到底部')}
-          className="absolute bottom-2 left-1/2 z-20 flex h-[30px] w-[30px] -translate-x-1/2 items-center justify-center rounded-full border border-gold/45 bg-[#141210]/80 text-goldSoft shadow-lg backdrop-blur-md transition-all duration-200 hover:border-gold hover:bg-gold/20 hover:text-ink">
+          className="absolute bottom-2 left-1/2 z-20 flex h-[30px] w-[30px] -translate-x-1/2 items-center justify-center rounded-full border border-gold/45 bg-[#141210]/80 text-goldSoft shadow-lg backdrop-blur-md transition-all duration-200 motion-reduce:transition-none hover:border-gold hover:bg-gold/20 hover:text-ink">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12l7 7 7-7" /></svg>
         </button>
       )}
+      </div>
+      {/* 常驻验收单面板：滚动容器的兄弟节点 → 滚动时不动；只在有验收单时占位 */}
+      {latestTodo ? (
+        <aside data-testid="todo-panel-dock" aria-label={t('验收单面板')}
+          className="flex shrink-0 flex-col items-end pt-4 pr-4 pb-4">
+          <TodoPanel items={latestTodo.items} error={latestTodo.error} sessionId={activeId}
+            live={latestTodo.live} hostWidth={hostWidth} />
+        </aside>
+      ) : null}
     </div>
   );
 }

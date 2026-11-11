@@ -349,6 +349,9 @@ export const EN_MAIN = {
   '窗口不可用': 'The window is unavailable',
   '；补充：': '; note: ',
 
+  // ---- agent-tools.mjs（验收前置闸：没档位/没 profile 时先问，不许猜）----
+  '先确认档位与维度：请用 ask_user 问清 L1/L2/L3 与要覆盖的维度，再调用 audit_project': 'Confirm the tier and dimensions first: use ask_user to ask which of L1/L2/L3 applies and which dimensions to cover, then call audit_project again',
+
   // ---- lib/todo.mjs + todo-list.mjs（验收单工具参数校验）----
   'todo_write 参数不是合法 JSON': 'todo_write arguments are not valid JSON',
   'todo_write 需要 items 数组（{min}-{max} 条）': 'todo_write needs an items array ({min}-{max} entries)',

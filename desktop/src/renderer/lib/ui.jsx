@@ -1,4 +1,5 @@
 import React, { forwardRef, useState } from 'react';
+import { t } from '../i18n/core.mjs';
 
 export const api = () => (typeof window !== 'undefined' ? window.finalcheck : undefined);
 
@@ -31,7 +32,7 @@ export function SectionTitle({ children, right }) {
 }
 
 /** 带已复制反馈的复制按钮 */
-export function CopyButton({ text, children = '复制修复提示词', className = '' }) {
+export function CopyButton({ text, children, className = '' }) {
   const [copied, setCopied] = useState(false);
   const onCopy = async () => {
     try {
@@ -52,7 +53,7 @@ export function CopyButton({ text, children = '复制修复提示词', className
       onClick={onCopy}
       className={`btn-ghost text-xs px-2.5 py-1 ${copied ? '!bg-emerald-600/20 !text-emerald-400 !border-emerald-600/40' : ''} ${className}`}
     >
-      {copied ? '已复制' : children}
+      {copied ? t('已复制') : (children ?? t('复制修复提示词'))}
     </button>
   );
 }

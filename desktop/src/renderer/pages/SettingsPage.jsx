@@ -4,6 +4,7 @@
 import React, { useEffect, useId, useRef, useState } from 'react';
 import { api, Card, ErrorNote } from '../lib/ui.jsx';
 import { initialUpdateState, reduceUpdateEvent, describeUpdate } from '../lib/updater-state.mjs';
+import { changelogView } from '../lib/changelog.mjs';
 import UsagePage from './UsagePage.jsx';
 // 双语：界面语言开关（auto 跟随系统 / zh / en）；applyLanguage 立即生效，保存后写入 config
 import { t, setLanguage as applyLanguage, resolveLanguage } from '../i18n/core.mjs';
@@ -20,13 +21,14 @@ const SANDBOX_MODES = [
   { value: 'off', label: 'off', desc: '放开项目边界，敏感路径仍拒绝' }
 ];
 const DEFAULT_TOOL_CONCURRENCY = 8;
-// 界面语言：auto 跟随系统（系统语言是中文则中文，否则英文）
+// 界面语言：只有中文 / English 两态（不再有跟随系统）。旧配置的 auto 在读取时落成实际语言。
 export const LANGUAGE_MODES = [
-  { value: 'auto', label: '跟随系统', desc: '系统为中文时用中文，否则英文' },
-  { value: 'zh', label: '中文', desc: '始终中文界面与中文报告' },
-  { value: 'en', label: 'English', desc: 'English UI and English report output' }
+  { value: 'zh', label: '中文', desc: '界面文案用中文；AI 回复与报告跟随你的提问语言。' },
+  { value: 'en', label: 'English', desc: '界面文案用英文；AI 回复与报告跟随你的提问语言。' }
 ];
 const SECTIONS = ['models', 'language', 'runtime', 'usage', 'about'];
+// 更新详情三段（label 是界面中文原文，t() 负责英文）
+const CHANGELOG_SECTIONS = [['added', '新增'], ['fixed', '修复'], ['improved', '优化']];
 const newId = () => `p-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
 const FOCUSABLE_SELECTOR = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
@@ -119,9 +121,9 @@ export function validateModelForm({ id, contextWindow, maxOutputTokens, otherIds
   if (!modelId) errors.id = '请填写 Model ID';
   else if ((otherIds || []).some((x) => String(x || '').trim() === modelId)) errors.id = '该模型 ID 已存在';
   const ctx = parseTokenCountInput(contextWindow);
-  if (!ctx.ok) errors.contextWindow = `Context window ${ctx.error}`;
+  if (!ctx.ok) errors.contextWindow = t('上下文窗口：{msg}', { msg: t(ctx.error) });
   const out = parseTokenCountInput(maxOutputTokens);
-  if (!out.ok) errors.maxOutputTokens = `Max output tokens ${out.error}`;
+  if (!out.ok) errors.maxOutputTokens = t('最大输出 tokens：{msg}', { msg: t(out.error) });
   return {
     ok: Object.keys(errors).length === 0,
     errors,
@@ -163,7 +165,7 @@ export function toModelObjects(models) {
   });
 }
 
-export default function SettingsPage({ onBack, initialSection = 'models' }) {
+export default function SettingsPage({ onBack, initialSection = 'models', running = false }) {
   const y = api();
   useLanguage(); // 切换语言后本页跟着重渲染（t() 读的是模块级语言状态）
   const [providers, setProviders] = useState([]);   // 草稿（保存前仅在本地）
@@ -180,10 +182,14 @@ export default function SettingsPage({ onBack, initialSection = 'models' }) {
   const [baseCfg, setBaseCfg] = useState({});       // 保留 permissionMode / activeModel / thinkingEffort 等字段
   const [sandboxMode, setSandboxMode] = useState('workspace');
   const [toolConc, setToolConc] = useState(DEFAULT_TOOL_CONCURRENCY);
-  const [language, setLanguageChoice] = useState('auto'); // 界面语言：auto（跟随系统）/ zh / en
+  const [language, setLanguageChoice] = useState(() => resolveLanguage(undefined, navigator.language)); // 界面语言：zh / en（旧配置 auto 读取时落成实际值）
   const [section, setSection] = useState(() => (SECTIONS.includes(initialSection) ? initialSection : 'models')); // 设置页内分节：models / runtime / usage / about（仿 ZCode 左侧分组导航）
   const [update, setUpdate] = useState(initialUpdateState); // 更新状态机（纯函数见 lib/updater-state.mjs）
   const [appVersion, setAppVersion] = useState('');
+  // 更新详情：null = 还没加载过；{ version, entries } 由 IPC finalcheck:update:changelog 读取随包 CHANGELOG.md
+  const [changelog, setChangelog] = useState(null);
+  const [changelogOpen, setChangelogOpen] = useState(false);
+  const [changelogLoading, setChangelogLoading] = useState(false);
   const modelTriggerRef = useRef(null); // 打开模型弹窗的按钮，关闭弹窗后焦点回到这里
 
   // App 通过 initialSection 指定落点（如 page='usage'）；同一组件内切换分节不卸载草稿
@@ -203,7 +209,8 @@ export default function SettingsPage({ onBack, initialSection = 'models' }) {
         setSandboxMode(SANDBOX_MODES.some((m) => m.value === c?.sandboxMode) ? c.sandboxMode : 'workspace');
         const conc = Number(c?.toolConcurrency);
         setToolConc(Number.isFinite(conc) && conc > 0 ? Math.min(16, Math.max(1, Math.trunc(conc))) : DEFAULT_TOOL_CONCURRENCY);
-        setLanguageChoice(c?.language === 'en' || c?.language === 'zh' ? c.language : 'auto');
+        // 兼容旧配置：language 缺失或为 'auto' 时按系统语言落成实际值，UI 上选中对应项
+        setLanguageChoice(resolveLanguage(c?.language, navigator.language));
         setSelectedId(list[0]?.id ?? null);
         setLoaded(true);
       })
@@ -262,6 +269,29 @@ export default function SettingsPage({ onBack, initialSection = 'models' }) {
       if (r && !r.ok) setUpdate((prev) => reduceUpdateEvent(prev, { type: 'error', message: r.error || '安装更新失败' }));
     } catch (e) {
       setUpdate((prev) => reduceUpdateEvent(prev, { type: 'error', message: e?.message }));
+    }
+  };
+
+  // 更新详情：首次展开时才读 CHANGELOG（懒加载）；失败/为空都落到「暂无更新记录」，不抛错
+  const toggleChangelog = async () => {
+    const next = !changelogOpen;
+    setChangelogOpen(next);
+    if (!next || changelog || changelogLoading) return;
+    if (!y?.changelogGet) {
+      setChangelog({ version: appVersion, entries: [] });
+      return;
+    }
+    setChangelogLoading(true);
+    try {
+      const r = await y.changelogGet();
+      setChangelog({
+        version: String(r?.version || appVersion || ''),
+        entries: Array.isArray(r?.entries) ? r.entries : []
+      });
+    } catch {
+      setChangelog({ version: appVersion, entries: [] });
+    } finally {
+      setChangelogLoading(false);
     }
   };
 
@@ -347,7 +377,7 @@ export default function SettingsPage({ onBack, initialSection = 'models' }) {
         ...baseCfg,
         sandboxMode: mode,
         toolConcurrency: conc,
-        language: language === 'en' || language === 'zh' ? language : 'auto',
+        language: language === 'en' ? 'en' : 'zh',
         providers: clean,
         activeProviderId: clean.some((p) => p.id === activeId) ? activeId : (clean[0]?.id ?? null)
       };
@@ -356,8 +386,8 @@ export default function SettingsPage({ onBack, initialSection = 'models' }) {
       setProviders(clean);
       setSandboxMode(mode);
       setToolConc(conc);
-      // 语言立即生效：界面与主进程提示词同步切换（保存后无需重启）
-      applyLanguage(resolveLanguage(nextCfg.language, navigator.language));
+      // 语言立即生效：只切界面文案；agent / 报告不再跟随界面语言（AI 按用户提问语言输出）
+      applyLanguage(nextCfg.language);
       setDirty(false);
       setSaved(true);
       setTimeout(() => setSaved(false), 2500);
@@ -377,20 +407,28 @@ export default function SettingsPage({ onBack, initialSection = 'models' }) {
     } finally { setTesting(false); }
   };
 
-  // 界面语言：独立成节（切换立即生效，保存时写入 cfg.language）
+  // 界面语言：只切界面文案，独立成节（切换立即生效，保存时写入 cfg.language = 'zh' | 'en'）
   const languageCard = (
     <Card className="p-5 space-y-4">
-      <div className="grid grid-cols-3 gap-2">
+      <div className="grid grid-cols-2 gap-2">
         {LANGUAGE_MODES.map((m) => {
           const on = language === m.value;
           return (
-            <button key={m.value} type="button" onClick={() => { setLanguageChoice(m.value); touch(); applyLanguage(resolveLanguage(m.value, navigator.language)); }} disabled={!y}
-              className={`rounded-lg border px-3 py-2 text-left transition-colors disabled:opacity-50 ${on ? 'border-gold/45 bg-gold/10' : 'border-edge bg-[#15151a] hover:bg-cardHover'}`}>
-              <div className="text-sm text-ink">{t(m.label)}</div>
-              <div className="text-xs text-mute mt-0.5">{t(m.desc)}</div>
+            <button key={m.value} type="button" role="radio" aria-checked={on}
+              onClick={() => { setLanguageChoice(m.value); touch(); applyLanguage(m.value); }} disabled={!y}
+              className={`relative rounded-lg border px-4 py-3 text-left transition-colors disabled:opacity-50 ${on ? 'border-gold/45 bg-gold/10' : 'border-edge bg-[#15151a] hover:bg-cardHover'}`}>
+              <div className="text-sm text-ink flex items-center gap-2">
+                {m.label}
+                {on && <span className="text-[10px] text-goldSoft border border-gold/30 rounded px-1 leading-tight">{t('已选')}</span>}
+              </div>
+              <div className="text-xs text-mute mt-1 leading-snug">{t(m.desc)}</div>
             </button>
           );
         })}
+      </div>
+
+      <div className="text-xs text-mute leading-relaxed rounded-lg bg-[#15151a] border border-edge px-3.5 py-2.5">
+        {t('这里只影响按钮、菜单、表单与提示等界面文案；AI 回复和报告使用你提问时的语言，不随这里切换。')}
       </div>
 
       <div className="flex items-center gap-3 pt-2 border-t border-edge/60">
@@ -415,7 +453,7 @@ export default function SettingsPage({ onBack, initialSection = 'models' }) {
         <div className="text-xs text-mute mt-0.5">{t('Sandbox 管路径与命令边界，Tool concurrency 管同时跑几个工具。')}</div>
       </div>
 
-      <Field label="Sandbox mode" hint={t('默认 workspace；Full access 下也生效')}>
+      <Field label={t('沙箱模式')} hint={t('默认 workspace；Full access 下也生效')}>
         <div className="grid grid-cols-3 gap-2">
           {SANDBOX_MODES.map((m) => {
             const on = sandboxMode === m.value;
@@ -430,7 +468,7 @@ export default function SettingsPage({ onBack, initialSection = 'models' }) {
         </div>
       </Field>
 
-      <Field label="Tool concurrency" hint={t('同时执行的工具调用数，1–16，默认 8')}>
+      <Field label={t('工具并发')} hint={t('同时执行的工具调用数，1–16，默认 8')}>
         <div className="flex items-center gap-1.5">
           <button type="button" onClick={() => { setToolConc((v) => Math.max(1, (Math.trunc(Number(v)) || DEFAULT_TOOL_CONCURRENCY) - 1)); touch(); }} disabled={!y}
             className="h-8 w-8 rounded-md bg-white/[0.06] hover:bg-white/[0.12] text-ink/80 disabled:opacity-40">−</button>
@@ -476,6 +514,38 @@ export default function SettingsPage({ onBack, initialSection = 'models' }) {
     }
   })();
   const updateToneClass = { mute: 'text-mute', gold: 'text-goldSoft', jade: 'text-jade', red: 'text-red-300' };
+  // 更新详情视图：当前版本置顶，历史版本按 CHANGELOG 顺序向下排列（整卡仍只有一个边框）
+  const changelogData = changelogView(changelog?.entries, changelog?.version || appVersion);
+  const renderChangelogEntry = (entry, isCurrent) => (
+    <div key={`${isCurrent ? 'current' : 'history'}-${entry.version}`} className={isCurrent ? '' : 'pt-3 border-t border-edge/40'}>
+      <div className="flex items-baseline justify-between gap-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="font-mono text-xs text-goldSoft">v{entry.version}</span>
+          {isCurrent && (
+            <span className="text-[10px] text-mute border border-edge rounded px-1 py-0.5 shrink-0">{t('当前')}</span>
+          )}
+        </div>
+        {entry.date && <span className="font-mono text-[10px] text-mute/60 shrink-0">{entry.date}</span>}
+      </div>
+      {CHANGELOG_SECTIONS.map(([key, label]) => {
+        const items = Array.isArray(entry[key]) ? entry[key] : [];
+        if (!items.length) return null; // 空段直接省略，不留空标题
+        return (
+          <div key={key} className="mt-2">
+            <div className="text-[11px] text-ink/70 font-medium">{t(label)}</div>
+            <ul className="mt-1 space-y-1">
+              {items.map((item, i) => (
+                <li key={`${key}-${i}`} className="text-xs text-mute leading-relaxed break-words flex gap-1.5">
+                  <span className="text-mute/50 shrink-0">•</span>
+                  <span>{item}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        );
+      })}
+    </div>
+  );
   const aboutCard = (
     <Card className="p-5 space-y-4">
       <div>
@@ -520,8 +590,38 @@ export default function SettingsPage({ onBack, initialSection = 'models' }) {
             {t(updateView.installLabel)}
           </button>
         )}
+        <button type="button" className="btn-ghost min-w-[100px]"
+          onClick={toggleChangelog} aria-expanded={changelogOpen} aria-controls="about-changelog">
+          {t('查看更新详情')}
+        </button>
         {!y && <span className="text-xs text-mute">{t('请在 Electron 中运行后检查更新。')}</span>}
       </div>
+
+      {changelogOpen && (
+        <div id="about-changelog" className="pt-3 border-t border-edge/60">
+          <div className="flex items-center justify-between gap-2">
+            <div className="text-xs text-ink/80 font-medium">{t('更新详情')}</div>
+            <button type="button" className="text-xs text-mute hover:text-ink" onClick={toggleChangelog}>
+              {t('收起更新详情')}
+            </button>
+          </div>
+          <div className="mt-2 max-h-64 overflow-y-auto overscroll-contain pr-1 pb-1 space-y-3"
+            style={{ scrollbarWidth: 'thin', scrollbarColor: '#3a3a42 transparent' }}>
+            {changelogLoading && <div className="text-sm text-mute">{t('正在读取更新记录…')}</div>}
+            {!changelogLoading && changelogData.empty && (
+              <div className="text-sm text-mute">{t('暂无更新记录')}</div>
+            )}
+            {!changelogLoading && !changelogData.empty && (
+              <>
+                {changelogData.current
+                  ? renderChangelogEntry(changelogData.current, true)
+                  : <div className="text-sm text-mute">{t('暂无本版更新记录')}</div>}
+                {changelogData.history.map((entry) => renderChangelogEntry(entry, false))}
+              </>
+            )}
+          </div>
+        </div>
+      )}
 
       {updateView.phase === 'available' && (
         <div className="text-xs text-mute leading-relaxed">{t('下载完成后不会自动重启；点「重启并安装」立即更新，或下次退出应用时自动安装。')}</div>
@@ -537,22 +637,22 @@ export default function SettingsPage({ onBack, initialSection = 'models' }) {
           <button onClick={onBack} disabled={!onBack}
             className="glass-row w-full flex items-center gap-2 rounded-xl px-3 py-2 text-[12px] text-ink/85 hover:text-ink disabled:opacity-40">
             <IconChevronLeft />
-            Back to workspace
+            {t('返回工作区')}
           </button>
         </div>
         <div className="flex-1 min-h-0 overflow-y-auto px-2.5 pb-4 space-y-5">
-          <NavGroup label="Basics">
-            <NavRow label="Model settings" active={section === 'models'} onClick={() => setSection('models')} icon={<IconLayers />} />
+          <NavGroup label={t('基础')}>
+            <NavRow label={t('模型设置')} active={section === 'models'} onClick={() => setSection('models')} icon={<IconLayers />} />
           </NavGroup>
           <NavGroup label="Agent">
-            <NavRow label="Language" active={section === 'language'} onClick={() => setSection('language')} icon={<IconGlobe />} />
-            <NavRow label="Runtime" active={section === 'runtime'} onClick={() => setSection('runtime')} icon={<IconSliders />} />
+            <NavRow label={t('语言')} active={section === 'language'} onClick={() => setSection('language')} icon={<IconGlobe />} />
+            <NavRow label={t('运行时')} active={section === 'runtime'} onClick={() => setSection('runtime')} icon={<IconSliders />} />
           </NavGroup>
-          <NavGroup label="Data and statistics">
-            <NavRow label="Usage stats" active={section === 'usage'} onClick={() => setSection('usage')} icon={<IconChart />} trailing="Tokens" />
+          <NavGroup label={t('数据与统计')}>
+            <NavRow label={t('用量统计')} active={section === 'usage'} onClick={() => setSection('usage')} icon={<IconChart />} trailing="Tokens" />
           </NavGroup>
-          <NavGroup label="About">
-            <NavRow label="About & updates" active={section === 'about'} onClick={() => setSection('about')} icon={<IconRefresh />}
+          <NavGroup label={t('关于')}>
+            <NavRow label={t('关于与更新')} active={section === 'about'} onClick={() => setSection('about')} icon={<IconRefresh />}
               trailing={updateView.hasUpdate ? <span className="text-red-400">{t('有新版本')}</span> : ''} />
           </NavGroup>
         </div>
@@ -561,20 +661,20 @@ export default function SettingsPage({ onBack, initialSection = 'models' }) {
       {/* ---- 内容区 ---- */}
       <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
         {section === 'usage' ? (
-          <UsagePage />
+          <UsagePage running={running} />
         ) : (
           <>
         {/* 页头：大标题 + 副标题 + 主操作（仿 ZCode） */}
         <div className="shrink-0 px-8 pt-6 pb-5 flex items-start justify-between gap-4">
           <div className="min-w-0">
             <h1 className="font-kai text-[22px] leading-tight text-goldSoft">
-              {section === 'models' ? 'Model settings' : section === 'language' ? 'Language' : section === 'runtime' ? 'Runtime' : 'About'}
+              {section === 'models' ? t('模型设置') : section === 'language' ? t('语言') : section === 'runtime' ? t('运行时') : t('关于')}
             </h1>
             <p className="text-[12px] text-mute mt-1.5 leading-relaxed">
               {section === 'models'
                 ? t('管理自定义模型供应商。配置好后可在对话里选择使用。')
                 : section === 'language'
-                  ? t('切换后立即生效；英文模式下 agent、工作流与报告也用英文输出')
+                  ? t('只切换界面文案（按钮、菜单、表单、提示）；立即生效。AI 回复与报告跟随你的提问语言。')
                   : section === 'runtime'
                     ? t('沙箱与工具并发：对所有供应商生效，与权限模式（Full access）独立。')
                     : t('版本信息与更新：检查 GitHub Release，下载后重启安装。')}
@@ -582,7 +682,7 @@ export default function SettingsPage({ onBack, initialSection = 'models' }) {
           </div>
           {section === 'models' && (
             <button className="btn-primary shrink-0" onClick={addProvider} disabled={!y || !loaded}>
-              <IconPlus /> Add provider
+              <IconPlus /> {t('添加供应商')}
             </button>
           )}
         </div>
@@ -592,7 +692,7 @@ export default function SettingsPage({ onBack, initialSection = 'models' }) {
             <>
               {/* ---- Providers 列 ---- */}
               <div className="w-[240px] shrink-0 border-r border-edge/40 flex flex-col min-h-0">
-                <div className="px-3.5 pt-2 pb-2 text-[10px] uppercase tracking-[0.14em] text-mute/45">Providers</div>
+                <div className="px-3.5 pt-2 pb-2 text-[10px] uppercase tracking-[0.14em] text-mute/45">{t('供应商')}</div>
                 <div className="flex-1 min-h-0 overflow-y-auto px-2 space-y-1">
                   {providers.length === 0 && loaded && (
                     <div className="text-xs text-mute/70 px-2 py-3">{t('还没有供应商，点下方按钮添加。')}</div>
@@ -624,7 +724,7 @@ export default function SettingsPage({ onBack, initialSection = 'models' }) {
                 </div>
                 <div className="p-2.5 border-t border-edge/40">
                   <button className="glass-row w-full flex items-center justify-center gap-1.5 rounded-xl px-2.5 h-8 text-[12px] text-ink/85 hover:text-ink disabled:opacity-40" onClick={addProvider} disabled={!y || !loaded}>
-                    <IconPlus /> Add provider
+                    <IconPlus /> {t('添加供应商')}
                   </button>
                 </div>
               </div>
@@ -642,7 +742,7 @@ export default function SettingsPage({ onBack, initialSection = 'models' }) {
                       {t('添加一个 OpenAI 兼容网关（Base URL + API Key + 模型），对话即可用。')}<br />{t('API Key 只存本机 config.json。')}
                     </p>
                     <button className="btn-primary" onClick={addProvider} disabled={!y || !loaded}>
-                      <IconPlus /> Add provider
+                      <IconPlus /> {t('添加供应商')}
                     </button>
                   </div>
                 ) : (
@@ -686,12 +786,12 @@ export default function SettingsPage({ onBack, initialSection = 'models' }) {
                     <span className="ml-2 text-xs text-mute/60">{t('对话使用列表中的第一个模型')}</span>
                   </label>
                   <button type="button" className="btn-ghost text-xs px-2.5 py-1 shrink-0" onClick={openAddModel} disabled={!y}>
-                    <IconPlus /> Add model
+                    <IconPlus /> {t('添加模型')}
                   </button>
                 </div>
                 <div className="space-y-1.5">
                   {(selected.models || []).length === 0 && (
-                    <div className="text-xs text-mute/70 px-1 py-1">{t('还没有模型，点右上角「Add model」添加。')}</div>
+                    <div className="text-xs text-mute/70 px-1 py-1">{t('还没有模型，点右上角「添加模型」添加。')}</div>
                   )}
                   {(selected.models || []).map((entry, idx) => {
                     const v = modelEntryView(entry, selected);
@@ -1000,7 +1100,7 @@ function ModelEditorDialog({ provider, isNew, initialEntry, otherIds, onSave, on
         {/* 标题行 */}
         <div className="flex items-start justify-between gap-3 px-5 pt-4 pb-3 border-b border-edge/60">
           <div className="min-w-0">
-            <h3 id={titleId} className="font-kai text-base text-goldSoft">{isNew ? 'Add model' : 'Edit model settings'}</h3>
+            <h3 id={titleId} className="font-kai text-base text-goldSoft">{isNew ? t('添加模型') : t('编辑模型设置')}</h3>
             <div className="text-[11px] text-mute/60 mt-0.5">{isNew ? t('新增模型；留空字段继承供应商') : t('修改模型参数')}</div>
           </div>
           <button type="button" className="p-1.5 -mr-1 rounded-md text-mute/60 hover:text-ink hover:bg-white/[0.06] transition-colors shrink-0"
@@ -1013,13 +1113,13 @@ function ModelEditorDialog({ provider, isNew, initialEntry, otherIds, onSave, on
           {/* Smart configuration */}
           <div className="flex items-start justify-between gap-3 rounded-lg bg-[#15151a] border border-edge px-3 py-2.5">
             <div className="min-w-0">
-              <div className="text-sm text-ink">Smart configuration</div>
+              <div className="text-sm text-ink">{t('智能配置')}</div>
               <div className="text-[11px] text-mute/70 mt-0.5 leading-snug">{t('按模型名自动识别上下文窗口（如 128k / 200k / 1m）；关闭后手动填写。')}</div>
               {smart && detectedWindow != null && (
                 <div className="text-[11px] text-jade/90 mt-1">{t('已匹配到智能配置：{window} tokens', { window: detectedWindow.toLocaleString('en-US') })}</div>
               )}
             </div>
-            <Switch checked={smart} onChange={toggleSmart} label="Smart configuration" />
+            <Switch checked={smart} onChange={toggleSmart} label={t('智能配置')} />
           </div>
 
           <Field label="Model ID">
@@ -1029,7 +1129,7 @@ function ModelEditorDialog({ provider, isNew, initialEntry, otherIds, onSave, on
             <FieldError>{t(errors.id)}</FieldError>
           </Field>
 
-          <Field label="Context window"
+          <Field label={t('上下文窗口')}
             hint={smart ? t('Smart configuration 自动填写') : t('留空 = 继承供应商')}>
             <input value={contextWindow} onChange={(e) => setContextWindow(e.target.value)}
               disabled={smart} inputMode="numeric" placeholder={String(providerWindow)}
@@ -1043,7 +1143,7 @@ function ModelEditorDialog({ provider, isNew, initialEntry, otherIds, onSave, on
             <FieldError>{t(errors.contextWindow)}</FieldError>
           </Field>
 
-          <Field label="Max output tokens"
+          <Field label={t('最大输出 tokens')}
             hint={smart ? t('关闭 Smart configuration 后可手填') : t('留空 = 继承供应商')}>
             <input value={maxOutputTokens} onChange={(e) => setMaxOutputTokens(e.target.value)}
               disabled={smart} inputMode="numeric" placeholder={String(providerMaxOut)}
@@ -1062,7 +1162,7 @@ function ModelEditorDialog({ provider, isNew, initialEntry, otherIds, onSave, on
             <button type="button" onClick={() => setAdvanced((v) => !v)}
               className="flex items-center gap-1.5 text-xs text-mute hover:text-ink transition-colors">
               <span className={`inline-block transition-transform duration-200 ${advanced ? 'rotate-90' : ''}`}>▸</span>
-              Advanced settings
+              {t('高级设置')}
             </button>
             {advanced && (
               <div className="mt-2.5 rounded-lg border border-edge bg-[#15151a] px-3 py-2.5">
@@ -1082,11 +1182,11 @@ function ModelEditorDialog({ provider, isNew, initialEntry, otherIds, onSave, on
         <div className="flex items-center gap-3 px-5 py-3 border-t border-edge/60">
           <button type="button" onClick={resetForm}
             className="text-xs text-mute hover:text-ink transition-colors underline-offset-2 hover:underline">
-            Reset form
+            {t('重置表单')}
           </button>
           <div className="ml-auto flex items-center gap-2">
-            <button type="button" className="btn-ghost px-3.5 py-1.5 text-xs" onClick={onClose}>Cancel</button>
-            <button type="button" className="btn-primary px-3.5 py-1.5 text-xs min-w-[72px]" onClick={submit}>Save</button>
+            <button type="button" className="btn-ghost px-3.5 py-1.5 text-xs" onClick={onClose}>{t('取消')}</button>
+            <button type="button" className="btn-primary px-3.5 py-1.5 text-xs min-w-[72px]" onClick={submit}>{t('保存')}</button>
           </div>
         </div>
       </div>

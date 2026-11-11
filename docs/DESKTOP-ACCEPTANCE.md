@@ -69,9 +69,21 @@ IPC 桥（contextBridge 白名单，禁 nodeIntegration）
 
 - `npm run dist` = electron-vite build + `electron-builder --win dir`，产物 `desktop/release/win-unpacked/FinalCheck.exe`（进程名 FinalCheck，exe/窗口/任务栏图标均为 build/icon.ico）。
 - `asar: false` 是刻意的：引擎 `src/`、方法论库 `playbooks/`、agent 源文件 `desktop/src/` 需要从磁盘动态 import，不能封进 asar。
-- extraResources：`src`、`playbooks`、`desktop/src`、`build`（到 `resources/app/build`）、`node_modules`（引擎依赖 @babel/parser/autocannon）。
+- extraResources：`src`、`playbooks`、`desktop/src`、`build`（到 `resources/app/build`）、`node_modules`（引擎依赖 @babel/parser/autocannon）、`CHANGELOG.md`（到 `resources/CHANGELOG.md`，供设置页「查看更新详情」读取）。
 - 供应商配置：默认读 `resources/app/config.json`，也可用 `FINALCHECK_CONFIG_FILE` 环境变量指向外部配置文件；会话目录可用 `FINALCHECK_SESSIONS_DIR` 覆盖。
 - 验收：打包后真机 CDP E2E（read_file → edit_file +1/-1 → node 验证）截图 `finalcheck-packaged-edit.png`；进程名 PowerShell 实测 `FinalCheck`。
+
+#### 5.3.1 发版检查清单
+
+发版顺序固定，详见仓库根 `AGENTS.md`「发版检查清单」：
+
+1. 改版本号（`desktop/package.json`）。
+2. 先在 `CHANGELOG.md` 顶部写当前版本段（`### 新增` / `### 修复` / `### 优化`，无内容省略）。
+3. 跑 `node scripts/run-tests.mjs`（`tests/changelog.test.mjs` 会断言 CHANGELOG 含当前版本号且有内容）与 `cd desktop && npx electron-vite build`。
+4. `node scripts/release-notes.mjs <version> .tmp/release-notes.md` 生成 Release 正文，`gh release create <tag> --notes-file .tmp/release-notes.md`；正文必须与 CHANGELOG 一致。
+5. 最后才构建并上传安装包（`fc-setup-<version>.exe` 与 `latest.yml`）。
+
+App 内查看：设置 → 关于与更新 →「查看更新详情」，主进程 `finalcheck:update:changelog` 读取随包 `CHANGELOG.md`。
 
 ### 5.4 输入框与右侧产物面板（ZCode / dsh 式）
 

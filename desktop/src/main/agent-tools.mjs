@@ -217,9 +217,13 @@ export function runCommandWithSignal(command, {
   });
 }
 
-export function createAgentTools({ repoRoot, permissions, recordAudit = async () => {}, playbookRoot, runWorkflow = null, projectPath = null, policy = null, hooksConfig = null, hooksRunner = null, sessionId = null, cwd = null, signal = null, commandIdleMs = DEFAULT_COMMAND_IDLE_MS, askUser = null, todoWrite = null, onActivity = null } = {}) {
+export function createAgentTools({ repoRoot, permissions, recordAudit = async () => {}, playbookRoot, runWorkflow = null, projectPath = null, policy = null, hooksConfig = null, hooksRunner = null, sessionId = null, cwd = null, signal = null, commandIdleMs = DEFAULT_COMMAND_IDLE_MS, askUser = null, todoWrite = null, onActivity = null, requireAuditIntent = null } = {}) {
   if (!repoRoot) throw new Error('createAgentTools 需要 repoRoot');
   const engineUrl = (rel) => pathToFileURL(path.join(repoRoot, rel)).href;
+  // 验收前置闸：只有「能向用户提问」的主 agent 才强制先问档位/维度。
+  // 子代理与工作流 gate 走同一份 createAgentTools 但不传 askUser（见 ipc-agent.mjs），
+  // 它们的 audit_project 必须保持原行为（gate 里没有交互通道，兜底成 L2 继续跑）。
+  const askBeforeAudit = requireAuditIntent === null ? typeof askUser === 'function' : !!requireAuditIntent;
   const note = (url) => permissions?.noteTarget?.(url);
   const hooksOn = !!(hooksConfig && hooksConfig.enabled === true);
   const hookCwd = cwd || projectPath || undefined;
@@ -250,8 +254,11 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
     const { loadProfile, CORE_DIMENSION_NAMES, PROFILE_FILE } = await import(engineUrl('src/profile.mjs'));
     const file = await loadProfile(dir).catch(() => null);
     const tierArg = String(args?.tier || '').toUpperCase();
-    const level = ['L1', 'L2', 'L3'].includes(tierArg) ? tierArg : 'L2';
-    const base = file && file.source === PROFILE_FILE
+    const explicitTier = ['L1', 'L2', 'L3'].includes(tierArg) ? tierArg : null;
+    const level = explicitTier || 'L2';
+    // 项目根有 finalcheck.profile.json → 视为用户已声明档位与维度（不弹提问）
+    const hasProfile = !!(file && file.source === PROFILE_FILE);
+    const base = hasProfile
       ? file
       : {
         source: 'tier',
@@ -265,15 +272,26 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
     const profile = explicit ? { ...base, sources: { ...(base.sources || {}), ...explicit } } : base;
     const url = profile?.sources?.url || null;
     const runtime = dynamicRuntime({ sinceMs: Date.now() - 2 * 60 * 60 * 1000, url });
-    return { profile, runtime, profileSource: base.source };
+    return { profile, runtime, profileSource: base.source, explicitTier, hasProfile };
   };
 
   const tools = {
     audit_project: async (args) => {
-      const { audit } = await import(engineUrl('src/audit.mjs'));
       const dir = path.resolve(String(args?.dir || projectPath || ''));
-      const { profile, runtime, profileSource } = await resolveAuditPlan(dir, args);
-      const r = await audit(dir, { tier: args.tier ?? null, interactive: true, runTests: false, profile, runtime });
+      const { profile, runtime, profileSource, explicitTier, hasProfile } = await resolveAuditPlan(dir, args);
+      // fail-closed：主 agent 没拿到显式档位、项目里也没有 profile → 不猜，退回让模型先问用户。
+      // 返回结构化错误（而非抛异常），模型能直接看到 needAsk/dimensions/levels 去组织提问。
+      if (askBeforeAudit && !explicitTier && !hasProfile) {
+        const { CORE_DIMENSION_NAMES } = await import(engineUrl('src/profile.mjs'));
+        return {
+          error: t('先确认档位与维度：请用 ask_user 问清 L1/L2/L3 与要覆盖的维度，再调用 audit_project'),
+          needAsk: true,
+          dimensions: [...CORE_DIMENSION_NAMES],
+          levels: ['L1', 'L2', 'L3']
+        };
+      }
+      const { audit } = await import(engineUrl('src/audit.mjs'));
+      const r = await audit(dir, { tier: explicitTier, interactive: true, runTests: false, profile, runtime });
       recordAudit(dir, r).catch(() => {}); // 体检成功落项目档案；失败不影响工具结果
       return {
         verdict: r.conclusion.verdict,

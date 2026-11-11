@@ -2,7 +2,7 @@
 // 形状 { version: 1, events: [{ at, model, providerId, prompt, completion, cached }] }
 // 追加式；写入走 tmp+rename 原子替换；只保留最近 180 天、最多 5000 条。
 // 文件损坏时回退空账本并 warning，绝不阻塞对话。
-import { readFile, writeFile, mkdir, rename, stat } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, rename, stat, rm } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
@@ -97,7 +97,21 @@ async function writeLedger(ledger) {
   await mkdir(path.dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
   await writeFile(tmp, JSON.stringify(ledger), 'utf8');
-  await rename(tmp, file);
+  // Windows：账本正被读句柄占着时 rename 会 EPERM/EBUSY（Usage 页刷新与「按请求记账」并发写入）。
+  // 短暂退避重试，避免一条真实用量事件因瞬时占用被丢掉；重试仍失败交给调用方 catch（绝不阻塞对话）。
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await rename(tmp, file);
+      return;
+    } catch (e) {
+      const retryable = e && (e.code === 'EPERM' || e.code === 'EBUSY' || e.code === 'EACCES');
+      if (!retryable || attempt >= 8) {
+        await rm(tmp, { force: true }).catch(() => {});
+        throw e;
+      }
+      await new Promise((r) => setTimeout(r, 20 * (attempt + 1)));
+    }
+  }
 }
 
 // 进程内追加队列：并发 append 串行执行，避免读改写互相覆盖。

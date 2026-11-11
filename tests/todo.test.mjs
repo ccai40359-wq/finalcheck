@@ -4,6 +4,7 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import os from 'node:os';
+import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 
 process.env.FINALCHECK_SESSION_STORE = 'sqlite';
@@ -16,7 +17,7 @@ const { createTodoRegistry } = await import('../desktop/src/main/todo-list.mjs')
 const {
   validateTodoItems, todoCardFromTrace, latestTodoEntry, todoProgress,
   todoCardSummary, todoCollapseKey, readTodoCollapsed, writeTodoCollapsed, TODO_COLLAPSE_PREFIX,
-  displayStatus
+  displayStatus, todoFromMessage, latestTodoFromMessages, todoPanelAutoCollapsed, TODO_PANEL_MIN_WIDTH
 } = await import('../desktop/src/renderer/lib/todo.mjs');
 const { lintTodoReport } = await import('../desktop/src/main/swarm.mjs');
 const { hasTranslation } = await import('../desktop/src/renderer/i18n/core.mjs');
@@ -315,6 +316,95 @@ test('todo: 整卡折叠状态按 session + 任务 id 存/读', () => {
   assert.equal(writeTodoCollapsed(k1, true, broken), false);
 });
 
+/* ---------- ⑦b 会话级取数：面板只显示最新一份 ---------- */
+test('todo: 会话级只取最新一份验收单（流式读 events / 收尾读 trace / 跨回合常驻）', () => {
+  const oldItems = items3();
+  const oldMsg = {
+    role: 'assistant', streaming: false,
+    trace: [{ tool: 'todo_write', args: JSON.stringify({ items: oldItems }) }]
+  };
+  const liveItems = items3().map((it) => (
+    it.id === 's1' ? { ...it, status: 'done', evidence: 'src/a.mjs:12' } : it
+  ));
+  const liveMsg = {
+    role: 'assistant', streaming: true,
+    events: [{ type: 'tool', name: 'todo_write', args: JSON.stringify({ items: liveItems }) }]
+  };
+
+  assert.equal(latestTodoFromMessages([]), null);
+  assert.equal(latestTodoFromMessages(null), null);
+  assert.equal(todoFromMessage({ role: 'user', content: 'hi' }), null, '用户消息里没有验收单');
+  assert.equal(todoFromMessage(null), null);
+
+  // 同一会话里后一段助手消息还没写清单：继续显示上一份（清单常驻，不闪没）
+  const messages = [
+    { role: 'user', content: '开始' },
+    oldMsg,
+    { role: 'assistant', content: '中间回复' },
+    liveMsg,
+    { role: 'assistant', streaming: true, content: '新回合还没写清单' }
+  ];
+  const latest = latestTodoFromMessages(messages);
+  assert.equal(latest.index, 3, '指向真正带验收单的那条消息（消息流里靠这个下标去重）');
+  assert.equal(latest.live, true);
+  assert.deepEqual(latest.items.map((it) => it.status), ['done', 'pending', 'pending']);
+  assert.equal(latest.items[0].evidence, 'src/a.mjs:12');
+
+  // 收尾后走 trace：running 展示为已中断（live=false），数据不变
+  const done = latestTodoFromMessages([oldMsg]);
+  assert.equal(done.index, 0);
+  assert.equal(done.live, false);
+  assert.equal(done.error, null);
+  assert.equal(done.items[0].status, 'running');
+
+  // 参数坏了也要返回（面板显示错误，而不是整块消失）
+  const broken = latestTodoFromMessages([{ role: 'assistant', trace: [{ tool: 'todo_write', args: '{bad' }] }]);
+  assert.match(broken.error, /JSON/);
+  assert.deepEqual(broken.items, []);
+
+  // 消息里只有别的工具：没有验收单
+  assert.equal(latestTodoFromMessages([{ role: 'assistant', trace: [{ tool: 'run_command', args: '{}' }] }]), null);
+});
+
+/* ---------- ⑦c 面板窄屏自动折叠：右侧子代理/产物面板打开时只留一行 ---------- */
+test('todo: 面板自动折叠阈值——会话列变窄就折叠，首帧未测量按展开', () => {
+  assert.equal(TODO_PANEL_MIN_WIDTH, 840);
+  assert.equal(todoPanelAutoCollapsed(0), false, '首帧 clientWidth=0 不能先折叠再展开（闪一下）');
+  assert.equal(todoPanelAutoCollapsed(NaN), false);
+  assert.equal(todoPanelAutoCollapsed(-1), false);
+  assert.equal(todoPanelAutoCollapsed(undefined), false);
+
+  assert.equal(todoPanelAutoCollapsed(TODO_PANEL_MIN_WIDTH - 1), true);
+  assert.equal(todoPanelAutoCollapsed(TODO_PANEL_MIN_WIDTH), false);
+  assert.equal(todoPanelAutoCollapsed('1200'), false);
+
+  // 实际窗口：1440 宽 - 侧栏 260 = 1180（展开）；右侧子代理 620 打开 → 560（折叠）
+  assert.equal(todoPanelAutoCollapsed(1180), false);
+  assert.equal(todoPanelAutoCollapsed(560), true);
+});
+
+/* ---------- ⑦d 渲染形态：消息流不再内联最新卡，面板在滚动容器外 ---------- */
+test('todo: 消息流不再内联渲染最新卡，面板钉在滚动容器外，历史只留一行摘要', () => {
+  const dir = path.join(repoRoot, 'desktop', 'src', 'renderer', 'components');
+  const messageList = readFileSync(path.join(dir, 'MessageList.jsx'), 'utf8');
+  const todoCard = readFileSync(path.join(dir, 'TodoCard.jsx'), 'utf8');
+
+  assert.equal(/<TodoBlock\b/.test(messageList), false, '旧的内联整卡不能再出现在消息流里');
+  assert.match(messageList, /latestTodo\?\.index === i \? null : <TodoHistoryRow/, '最新一份由面板渲染，消息流里跳过');
+  assert.match(messageList, /data-testid="todo-panel-dock"/);
+  assert.match(messageList, /data-testid="message-scroll"/);
+
+  // 面板必须是滚动容器的兄弟：scroll 容器闭合后才轮到 aside（不随滚动走）
+  const scrollAt = messageList.indexOf('data-testid="message-scroll"');
+  const dockAt = messageList.indexOf('data-testid="todo-panel-dock"');
+  assert.ok(dockAt > scrollAt, '面板要排在滚动容器之后（兄弟节点）');
+
+  assert.match(todoCard, /export function TodoPanel/);
+  assert.match(todoCard, /export function TodoHistoryRow/);
+  assert.equal(/export function TodoBlock/.test(todoCard), false, '旧 TodoBlock 导出应删除');
+  assert.match(todoCard, /motion-reduce:animate-none/, 'prefers-reduced-motion 下不启用动画');
+});
+
 /* ---------- ⑧ i18n：新增文案都有英文 key ---------- */
 test('todo: 新增文案有英文译文', () => {
   const keys = [
@@ -323,7 +413,8 @@ test('todo: 新增文案有英文译文', () => {
     '报告不合格（验收单闸）',
     '任务 {id} 缺少 acceptance（验收标准）：先想清楚「怎么算完成」再调用 todo_write，把验收标准补上',
     '验收单里有 {n} 条标为 done 但没有证据：{labels}（先补 evidence 再交报告）',
-    '验收单里失败/跳过的任务未在 ## Not covered 点名：{labels}（缺一个即判不合格）'
+    '验收单里失败/跳过的任务未在 ## Not covered 点名：{labels}（缺一个即判不合格）',
+    '验收单面板', '本轮验收单 {done}/{total}', '窗口较窄，验收单自动折叠为一行'
   ];
   for (const k of keys) assert.equal(hasTranslation(k), true, `缺少英文译文：${k}`);
 });

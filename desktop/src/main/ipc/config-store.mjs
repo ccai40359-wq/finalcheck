@@ -3,7 +3,6 @@ import { randomUUID } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { resolveModel, modelIdsOf, pickUsableProvider } from '../model-config.mjs';
 import { setLanguage, resolveLanguage, t } from '../../renderer/i18n/core.mjs';
-import { isEnglish } from '../lang.mjs';
 import { testProviderConnection } from '../provider-test.mjs';
 
 // 配置 schema v2：{ providers: [{ id, name, baseUrl, apiFormat, apiKey, models, enabled }], activeProviderId }
@@ -60,7 +59,7 @@ export function createConfigStore({ app, getDataRoot, engineUrl }) {
     });
     const out = { ...cfg, providers: providers.map(normProvider) };
     out.permissionMode = cfg.permissionMode === 'full' ? 'full' : 'ask'; // 权限模式（仿 ZCode Full access）
-    // 界面语言：auto 跟随系统（中文系统→中文，其余→英文）；也接受旧配置缺省为 auto
+    // 界面语言只有 zh / en；旧配置的 auto 或缺失先保留为 auto，读取时按系统语言落成实际值（见 loadConfig）
     out.language = cfg.language === 'en' || cfg.language === 'zh' ? cfg.language : 'auto';
     out.activeModel = typeof cfg.activeModel === 'string' ? cfg.activeModel : '';
     out.thinkingEffort = ['low', 'medium', 'high', 'max', 'default'].includes(cfg.thinkingEffort) ? cfg.thinkingEffort : 'max';
@@ -78,23 +77,25 @@ export function createConfigStore({ app, getDataRoot, engineUrl }) {
     Array.isArray(cfg?.sandboxAllowPaths) ? cfg.sandboxAllowPaths.filter((x) => typeof x === 'string') : []
   );
 
-  // 语言跟随配置：auto 用 Electron 的系统 locale（中文系统→中文，其余→英文）
+  // 界面语言只影响 UI 文案；旧配置 auto/缺失在此落成 zh 或 en（不改写盘上文件，保存时写实际值）
   const applyLanguage = (cfg) => {
     let systemLang = '';
     try { systemLang = app.getLocale?.() || ''; } catch { /* app ready 之前取不到 locale，按 auto→英文 */ }
-    setLanguage(resolveLanguage(cfg?.language, systemLang));
+    const lang = resolveLanguage(cfg?.language, systemLang);
+    setLanguage(lang);
+    return lang;
   };
 
   const loadConfig = async () => {
     let cfg;
     try { cfg = await normalizeConfig(JSON.parse(await readFile(configFile(), 'utf8'))); } catch { cfg = await normalizeConfig({}); }
-    applyLanguage(cfg); // 任何读取配置的地方都同步主进程语言（提示词/错误文案都依赖它）
+    cfg.language = applyLanguage(cfg); // auto/缺失 → 实际 zh|en，UI 与后续保存都拿实际值
     return cfg;
   };
   const saveConfig = async (cfg) => {
     const next = await normalizeConfig(cfg);
+    next.language = applyLanguage(next); // 保存时写回 'zh' / 'en'，不再落 auto
     await writeFile(configFile(), JSON.stringify(next, null, 2), 'utf8');
-    applyLanguage(next);
     return true;
   };
 
@@ -118,9 +119,8 @@ export function createConfigStore({ app, getDataRoot, engineUrl }) {
         headers: { 'content-type': 'application/json', authorization: 'Bearer ' + prov.apiKey },
         body: JSON.stringify({
           model: firstModelId(prov),
-          messages: [{ role: 'user', content: (isEnglish()
-            ? 'Summarize the following conversation history into concise English bullet points. Keep key conclusions, paths and numbers. Output only the summary:\n\n'
-            : '请把以下对话历史压缩成中文要点摘要，保留关键结论、路径与数字，直接输出摘要本身：\n\n') + String(text).slice(0, maxChars) }],
+          // 摘要语言跟随对话本身（不看界面语言）：用户用英文聊就英文摘要
+          messages: [{ role: 'user', content: '请把以下对话历史压缩成要点摘要，使用与对话相同的语言，保留关键结论、路径与数字，直接输出摘要本身：\n\n' + String(text).slice(0, maxChars) }],
           max_tokens: maxTokens,
           stream: false
         }),
@@ -148,9 +148,8 @@ export function createConfigStore({ app, getDataRoot, engineUrl }) {
         body: JSON.stringify({
           model: firstModelId(prov),
           messages: [
-            { role: 'system', content: isEnglish()
-              ? 'You title conversations: at most 6 English words, describing what the user wants to do. Output only the title, no quotes, no period, no explanation.'
-              : '你负责给对话起标题：不超过 12 个汉字（英文不超过 6 个单词），概括用户要做什么；只输出标题本身，不要引号、不要句号、不要解释。' },
+            // 标题语言跟随对话本身（不看界面语言）
+            { role: 'system', content: '你负责给对话起标题：概括用户要做什么，使用与用户消息相同的语言，长度不超过 12 个汉字或 6 个英文单词；只输出标题本身，不要引号、不要句号、不要解释。' },
             { role: 'user', content: `用户：${String(user || '').slice(0, 600)}\n\n助手：${String(assistant || '').slice(0, 600)}` }
           ],
           max_tokens: 200, // 推理模型会先把预算烧在思考上，给足才拿得到正文标题

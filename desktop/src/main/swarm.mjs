@@ -957,6 +957,8 @@ const ERROR_CODE_LABELS = new Map([
   ['EMPTY_CONTENT', '没有返回内容'],
   ['INTERRUPTED', '已中断（用户停止）'],
   ['TRUNCATED', '输出被截断'],
+  ['ARGS_TRUNCATED', '工具参数被输出上限截断'],
+  ['ARGS_INVALID_JSON', '工具参数不是合法 JSON'],
   ['GATE_FAIL', '程序闸失败'],
   ['VERIFY_TIMEOUT', '复核超时未完成'],
 ]);

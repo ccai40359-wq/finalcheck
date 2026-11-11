@@ -5,6 +5,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import { api, Card } from '../lib/ui.jsx';
 import { t } from '../i18n/core.mjs';
 import { useLanguage } from '../i18n/index.jsx';
+import { startUsagePolling } from '../lib/usage-poll.mjs';
 
 const PALETTE = ['#e3c56b', '#c9a227', '#7aa2ff', '#6fd3c7', '#9b8cff', '#d38f6f', '#c6d36f', '#a9a2ff'];
 const OTHERS_COLOR = '#6d685f';
@@ -443,7 +444,7 @@ function TrendChart({ series, models }) {
       onPointerLeave={onPointerLeave}
       onPointerCancel={onPointerLeave}
     >
-      <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} className="w-full h-[260px] block" role="img" aria-label="Daily token trend"
+      <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} className="w-full h-[260px] block" role="img" aria-label={t('每日 Token 趋势')}
         style={{ touchAction: 'none' }}>
         {[0, 0.5, 1].map((r) => {
           const y = PT + innerH - r * innerH;
@@ -550,7 +551,7 @@ function ModelDonut({ slices, total }) {
   let acc = 0;
   const full = slices.length === 1 && slices[0].share >= 99.99;
   return (
-    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="shrink-0" role="img" aria-label="Model usage">
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="shrink-0" role="img" aria-label={t('模型用量')}>
       {slices.map((s, i) => {
         const angle = Math.max(0, (s.tokens / (sum(slices.map((x) => x.tokens)) || 1)) * 360);
         const start = acc;
@@ -572,7 +573,7 @@ function ModelDonut({ slices, total }) {
 }
 
 /* ---------------- 页面 ---------------- */
-export default function UsagePage() {
+export default function UsagePage({ running = false }) {
   useLanguage(); // 切换语言后本页跟着重渲染（t() 读的是模块级语言状态）
   const [days, setDays] = useState(30);
   const [stats, setStats] = useState(null);
@@ -583,7 +584,7 @@ export default function UsagePage() {
   const [diagMsg, setDiagMsg] = useState(null); // { key, vars? }：渲染时取译文
   const reqRef = useRef(0);
 
-  const load = useCallback(async (windowDays) => {
+  const load = useCallback(async (windowDays, { silent = false } = {}) => {
     const y = api();
     const seq = ++reqRef.current;
     if (!y?.usageStats) {
@@ -593,22 +594,31 @@ export default function UsagePage() {
       return;
     }
     setUnsupported(false);
-    setLoading(true);
-    setErr('');
+    // 自动轮询走静默刷新：不闪 loading、不禁用按钮，只换数字
+    if (!silent) setLoading(true);
+    if (!silent) setErr('');
     try {
       const r = await y.usageStats({ days: windowDays });
       if (seq !== reqRef.current) return;
       setStats(r && typeof r === 'object' ? r : null);
     } catch (e) {
       if (seq !== reqRef.current) return;
+      if (silent) return; // 自动刷新失败保持上一屏数字，不把页面打成错误态
       setErr(e?.message || String(e));
       setStats(null);
     } finally {
-      if (seq === reqRef.current) setLoading(false);
+      if (seq === reqRef.current && !silent) setLoading(false);
     }
   }, []);
 
   useEffect(() => { load(days); }, [days, load]);
+
+  // 回合进行中：每 5 秒静默刷新一次，数字跟着涨；回合结束（running=false）自动停，不常驻轮询。
+  useEffect(() => startUsagePolling({
+    running,
+    unsupported,
+    tick: () => { load(days, { silent: true }); }
+  }), [running, unsupported, days, load]);
 
   // 诊断包导出（配置脱敏由主进程做）；接口缺失时只提示，不影响页面
   const exportDiagnostics = async () => {
@@ -644,13 +654,13 @@ export default function UsagePage() {
       {/* 页头：与设置页其他分节一致（大标题 + 副标题 + 右侧操作） */}
       <div className="shrink-0 px-8 pt-6 pb-5 flex items-start justify-between gap-4">
         <div className="min-w-0">
-          <h1 className="font-kai text-[22px] leading-tight text-goldSoft">Usage stats</h1>
+          <h1 className="font-kai text-[22px] leading-tight text-goldSoft">{t('用量统计')}</h1>
           <p className="text-[12px] text-mute mt-1.5 leading-relaxed">{t('本机 token 活动、每日趋势与模型占比。')}</p>
         </div>
         <div className="flex items-center gap-2 shrink-0">
           <button onClick={exportDiagnostics} disabled={exporting}
             className="btn-ghost text-xs px-3 py-1.5 disabled:opacity-50">
-            {exporting ? 'Exporting…' : 'Export diagnostics'}
+            {exporting ? t('导出中…') : t('导出诊断')}
           </button>
           <button onClick={() => load(days)} disabled={loading}
             className="btn-ghost text-xs px-3 py-1.5 inline-flex items-center gap-1.5 disabled:opacity-50">
@@ -658,7 +668,7 @@ export default function UsagePage() {
               className={loading ? 'fc-spin' : ''}>
               <path d="M21 12a9 9 0 1 1-2.6-6.4" /><path d="M21 3v6h-6" />
             </svg>
-            {loading ? 'Refreshing…' : 'Refresh'}
+            {loading ? t('刷新中…') : t('刷新')}
           </button>
         </div>
       </div>
@@ -673,18 +683,18 @@ export default function UsagePage() {
 
           {/* 5 张统计卡 */}
           <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
-            <StatCard label="Total tokens" value={statValue(fmtTokens(view.totalTokens))} sub={t('全部历史')} accent />
-            <StatCard label="Peak tokens" value={statValue(fmtTokens(view.peakTokens))} sub={t('单日最高')} />
-            <StatCard label="Longest session" value={statValue(fmtDuration(view.longestSessionMs))} sub={t('单次会话时长')} />
-            <StatCard label="Current streak" value={statValue(streakDays(view.currentStreakDays))} sub={t('当前连续使用')} />
-            <StatCard label="Longest streak" value={statValue(streakDays(view.longestStreakDays))} sub={t('历史最长连续')} />
+            <StatCard label={t('总 tokens')} value={statValue(fmtTokens(view.totalTokens))} sub={t('全部历史')} accent />
+            <StatCard label={t('单日峰值')} value={statValue(fmtTokens(view.peakTokens))} sub={t('单日最高')} />
+            <StatCard label={t('最长会话')} value={statValue(fmtDuration(view.longestSessionMs))} sub={t('单次会话时长')} />
+            <StatCard label={t('当前连续')} value={statValue(streakDays(view.currentStreakDays))} sub={t('当前连续使用')} />
+            <StatCard label={t('最长连续')} value={statValue(streakDays(view.longestStreakDays))} sub={t('历史最长连续')} />
           </div>
 
           {/* Token 活动热力图 */}
           <Card className="p-4">
             <div className="flex items-start justify-between gap-4">
               <div>
-                <div className="text-sm text-ink font-medium">Token activity</div>
+                <div className="text-sm text-ink font-medium">{t('Token 活动')}</div>
                 <div className="mt-0.5 text-[11px] text-mute/60">{t('最近 {days} 天，每格一天，颜色越深用量越高', { days })}</div>
               </div>
               <HeatLegend />
@@ -718,7 +728,7 @@ export default function UsagePage() {
           <Card className="p-4">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
-                <div className="text-sm text-ink font-medium">Daily token trend</div>
+                <div className="text-sm text-ink font-medium">{t('每日 Token 趋势')}</div>
                 <div className="mt-0.5 text-[11px] text-mute/60">{t('按模型分色，X 轴日期，Y 轴 token')}</div>
               </div>
               <div className="flex items-center gap-1 rounded-full bg-white/[0.04] p-0.5">
@@ -726,7 +736,7 @@ export default function UsagePage() {
                   <button key={d} onClick={() => setDays(d)}
                     className={`rounded-full px-3 py-1 text-[11px] transition-colors duration-200 ${
                       days === d ? 'bg-gold/15 text-goldSoft shadow-[inset_0_0_0_1px_rgba(201,162,39,0.35)]' : 'text-mute/60 hover:text-ink'}`}>
-                    Last {d} days
+                    {t('最近 {d} 天', { d })}
                   </button>
                 ))}
               </div>
@@ -754,7 +764,7 @@ export default function UsagePage() {
 
           {/* 模型占比 */}
           <Card className="p-4">
-            <div className="text-sm text-ink font-medium">Model usage</div>
+            <div className="text-sm text-ink font-medium">{t('模型用量')}</div>
             <div className="mt-0.5 text-[11px] text-mute/60">{t('模型 token 占比，最多列 6 个，其余归入 others')}</div>
             {loadingEmpty ? (
               <div className="py-10 text-center text-xs text-mute/45">{t('正在读取用量…')}</div>

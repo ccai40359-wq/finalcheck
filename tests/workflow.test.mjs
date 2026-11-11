@@ -461,7 +461,7 @@ test('workflow: 不传 journalDir 行为与旧版一致（不落盘、无 reused
     const snaps = [];
     const out = await runWorkflow({
       goal: 'G',
-      steps: [{ id: 'a', name: 'A', prompt: 'PA' }, { id: 'b', name: 'B', prompt: 'PB', depends_on: ['a'] }],
+      steps: [{ id: 'a', name: '依赖供应链专员', prompt: 'PA' }, { id: 'b', name: '交付报告主编', prompt: 'PB', depends_on: ['a'] }],
       callStep: async ({ id, prompt }) => { calls.push({ id, prompt }); return { content: `C-${id}` }; },
       onUpdate: (s) => snaps.push(s),
     });
@@ -470,7 +470,8 @@ test('workflow: 不传 journalDir 行为与旧版一致（不落盘、无 reused
     assert.equal(calls.length, 2);
     assert.deepEqual(out.results.map((r) => r.content), ['C-a', 'C-b']);
     assert.deepEqual(out.steps.map((s) => s.id), ['a', 'b']);
-    assert.equal(out.summary, 'a A: 完成\nb B: 完成', '返回结构与旧版一致');
+    // 展示名契约改为「职位名」（模型给的合法 name 原样保留，不再是「步骤 N」）
+    assert.equal(out.summary, 'a 依赖供应链专员: 完成\nb 交付报告主编: 完成', '返回结构与旧版一致');
     assert.ok(!snaps.some((s) => s.steps.some((x) => x.reused === true)), '无 journal 不应出现 reused');
     assert.deepEqual(snaps.at(-1).phases, [['a'], ['b']]);
     assert.deepEqual(await readdir(dir), [], '不传 journalDir 不应写任何文件');

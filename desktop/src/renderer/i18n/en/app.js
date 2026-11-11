@@ -220,5 +220,13 @@ export const EN_APP = {
   '测试连接': 'Test connection',
   '保存中…': 'Saving…',
   '保存并开始': 'Save and start',
-  '稍后配置': 'Set up later'
+  '稍后配置': 'Set up later',
+
+  // 对话/项目操作失败提示（App.jsx）
+  '切换项目失败：{msg}': 'Failed to switch project: {msg}',
+  '打开会话失败：{msg}': 'Failed to open session: {msg}',
+  '（后台会话）{msg}': '(background session) {msg}',
+  '有一个过程事件渲染失败（已跳过，不影响本轮结果）': 'One process event failed to render and was skipped; this turn is unaffected',
+  '发送失败：{msg}（消息未发出，可直接重试）': 'Send failed: {msg} (message not sent; retry directly)',
+  '新建会话失败，消息未发送：{msg}': 'Failed to create a session; message not sent: {msg}'
 };

@@ -8,6 +8,7 @@ import { mergeRunningRun } from './lib/session-restore.mjs';
 import { applyAgentEvent, mergeTraceIntoEvents } from './chat/ProcessTimeline.jsx';
 import { ArtifactPanel } from './chat/ArtifactPanel.jsx';
 import { SubagentPanel } from './chat/SubagentPanel.jsx';
+import { shouldShowStepPanel } from './lib/panel-visibility.mjs';
 // 双语：t() 在英文模式查词典、中文模式原样返回；useLanguage() 只负责切换语言时触发重渲染
 import { t, setLanguage, resolveLanguage } from './i18n/core.mjs';
 import { useLanguage } from './i18n/index.jsx';
@@ -189,7 +190,12 @@ export default function App() {
   const [pastedBlocks, setPastedBlocks] = useState([]); // 长粘贴文本块：[{id,text,lines,expanded}]（发送时并入正文）
   const [showJump, setShowJump] = useState(false); // 聊天区不在底部时显示「回到底部」按钮
   const [artifact, setArtifact] = useState(null);
-  const [stepView, setStepView] = useState(null); // 右侧子代理上下文面板：{sessionId, stepId, name, role} // 右侧预览的已加载产物
+  const [stepView, setStepView] = useState(null); // 右侧子代理上下文面板：{sessionId, stepId, name, role}
+  // 子代理面板只属于它绑定的那次对话：进设置/用量或切工作区（换会话）就置空，
+  // 返回聊天时不会又自动弹回来（渲染侧另有 shouldShowStepPanel 兜底）。
+  useEffect(() => {
+    setStepView((cur) => (cur && !shouldShowStepPanel({ view: page, stepView: cur, activeSessionId: activeId }) ? null : cur));
+  }, [page, activeId]);
   const [artifactLoading, setArtifactLoading] = useState(false);
   const [artifactError, setArtifactError] = useState('');
   const [skills, setSkills] = useState([]); // 40 类方法论（slash 菜单）
@@ -1433,6 +1439,10 @@ export default function App() {
   const openStep = (s) => setStepView({ sessionId: activeId, stepId: s.id, name: s.name, role: s.role, kind: s.kind || null, opType: s.opType || s.op || null, key: Date.now() });
 
   const hasMsgs = messages.length > 0;
+  // 面板可见性：设置页/切换会话时不渲染（返回聊天也不会自动弹回来，因为状态已被上面的 effect 清空）
+  const showStepPanel = shouldShowStepPanel({ view: page, stepView, activeSessionId: activeId });
+  // 用量页自动刷新开关：任一会话正在跑（含后台/工作流）就 5 秒轮询，全部停下即停
+  const anyRunning = Object.values(runningIds).some(Boolean);
   const providers = (cfg?.providers || []).filter((p) => p.enabled !== false);
   const activeProv = (cfg?.providers || []).find((p) => p.id === sessCfg.providerId) || providers[0] || null;
   const activeModel = (sessCfg.model && modelIdsOf(activeProv).includes(sessCfg.model)) ? sessCfg.model : (modelIdsOf(activeProv)[0] || '');
@@ -1515,10 +1525,10 @@ export default function App() {
             />
           </>
         ) : (
-          <SettingsPage onBack={() => setPage('chat')} initialSection={page === 'usage' ? 'usage' : 'models'} />
+          <SettingsPage onBack={() => setPage('chat')} running={anyRunning} initialSection={page === 'usage' ? 'usage' : 'models'} />
         )}
       </main>
-      {stepView ? (
+      {showStepPanel ? (
         <SubagentPanel target={stepView} onClose={() => setStepView(null)} />
       ) : (artifact || artifactLoading || artifactError) && (
         <ArtifactPanel

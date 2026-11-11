@@ -15,7 +15,7 @@ import { buildHolesPromptSection, collectHoles, isSalvageText, salvageSubagentCo
 import { appendVerifyConclusions, buildUpstreamOnlyVerifyPrompt, clipStoredContent, existingNodeOutputPath, withFullOutputHint, writeNodeOutput } from './workflow-outputs.mjs';
 // 受限脚本 DSL（script 模式）解释器；它反向引用本文件的纯函数，ESM 函数声明在实例化阶段已可用
 import { runScriptWorkflow, SCRIPT_DEFAULT_CONCURRENCY, SCRIPT_MAX_CONCURRENCY } from './workflow-script.mjs';
-import { withOutputLanguage } from './lang.mjs';
+import { agentTitleFor } from './agent-titles.mjs';
 // 双语：失败原因/警告/摘要会显示在聊天与工作流卡里（zh 下 t() 原样返回源串）
 import { t } from '../renderer/i18n/core.mjs';
 
@@ -32,7 +32,8 @@ import { t } from '../renderer/i18n/core.mjs';
  * 规范化后的工作流步骤（normalizeSteps 输出；无 kind 的旧步骤保持原行为）。
  * @typedef {object} WorkflowStep
  * @property {string} id 只允许字母数字-_，最长 32
- * @property {string} name 展示名
+ * @property {string} name 展示名（职位名，如「注入面审查员」；不是「步骤 N」）
+ * @property {string} [originalName] 模型给的原始 name（可能为空串）：只参与取证判定，不参与展示
  * @property {string} role 子代理角色
  * @property {string} prompt 交给子代理的具体任务
  * @property {string[]} depends_on 依赖步骤 id（拓扑分层依据）
@@ -61,6 +62,7 @@ import { t } from '../renderer/i18n/core.mjs';
  * @typedef {object} CallStepContext
  * @property {string} id
  * @property {string} name
+ * @property {string|null} [originalName] 模型原始 name（空串=没给）：取证判定只看它
  * @property {string} role
  * @property {string} prompt 已注入上游结果的最终提示词
  * @property {string[]} depends_on
@@ -326,6 +328,23 @@ function isVerifyStep(step) {
 }
 
 /**
+ * 解析一次 step 调用的实际墙钟上限（纯函数，供 withStepDeadline 与测试共用）。
+ * 这里必须区分「普通步骤」与「盲验节点」：
+ *   普通步骤沿用 resolveMaxStepMs（显式 maxStepMs，clamp 上限 10 分钟）；
+ *   盲验节点用 resolveVerifyTimeoutMs（默认 60 分钟，上限 4 小时）。
+ * 曾经的 bug：盲验把 60 分钟写进 budget.maxStepMs，随后被 resolveMaxStepMs 的
+ * 10 分钟 clamp 截成 600s，所有盲验实际 10 分钟就被杀（2026-11-11 实测日志里的
+ * 「盲验超过 600s 被强制截止」）。
+ * @param {{kind?:string|null, autoInserted?:boolean, budget?:object|null}} [ctx]
+ * @returns {number} 毫秒；0 = 不限制
+ */
+export function resolveStepDeadlineMs(ctx = {}) {
+  const raw = ctx?.budget && typeof ctx.budget === 'object' ? ctx.budget.maxStepMs : undefined;
+  if (isVerifyStep(ctx)) return resolveVerifyTimeoutMs(raw);
+  return resolveMaxStepMs(ctx?.budget);
+}
+
+/**
  * 给 callStep 套一层可选中止：
  * - 默认 maxStepMs=0：不设任何墙钟超时，长任务不会被自动 abort；
  * - 显式 budget.maxStepMs>0：到点 abort（ctx.signal），失败原因写成「单步超时」并保留 partial content；
@@ -339,7 +358,7 @@ function isVerifyStep(step) {
 export function withStepDeadline(callStep, { abortGraceMs = STEP_ABORT_GRACE_MS, signal: outerSignal = null } = {}) {
   if (typeof callStep !== 'function') return callStep;
   return async (ctx = {}) => {
-    const maxMs = resolveMaxStepMs(ctx?.budget); // 0 = 不限制
+    const maxMs = resolveStepDeadlineMs(ctx); // 0 = 不限制；盲验走专属上限，不被普通 clamp 截断
     const budget = ctx?.budget && typeof ctx.budget === 'object' && !Array.isArray(ctx.budget)
       ? ctx.budget
       : { maxStepMs: maxMs };
@@ -441,19 +460,22 @@ export function stepHash(goal, step) {
 
 /** 纯函数：校验并规范化 steps；返回 { steps, levels, byId } 或 { error }
  * @param {any[]} steps
- * @param {{maxSteps?: number}} [opts]
+ * @param {{maxSteps?: number, goal?: string}} [opts] goal 只用于展示名关键词推断（不影响校验）
  * @returns {NormalizedWorkflow}
  */
-export function normalizeSteps(steps, { maxSteps = DEFAULT_MAX_STEPS } = {}) {
+export function normalizeSteps(steps, { maxSteps = DEFAULT_MAX_STEPS, goal = '' } = {}) {
   const stepLimit = clampInt(maxSteps, 1, MAX_STEPS_CAP, DEFAULT_MAX_STEPS);
   if (!Array.isArray(steps) || steps.length === 0) return { error: t('steps 不能为空：至少 1 个步骤') };
   if (steps.length > stepLimit) return { error: t('步骤最多 {limit} 个（当前 {n}）', { limit: stepLimit, n: steps.length }) };
   const list = [];
   for (let i = 0; i < steps.length; i += 1) {
     const s = steps[i] && typeof steps[i] === 'object' ? steps[i] : {};
+    // 模型给的原始 name：合法职位名原样保留；「步骤 1」/泛词/空 → 下面按 kind+关键词生成职位名
+    const givenName = String(s.name || s.title || '').trim();
     const item = {
       id: String(s.id || `s${i + 1}`).trim(),
-      name: String(s.name || s.title || `步骤 ${i + 1}`).trim().slice(0, 60),
+      name: '', // 展示名在 kind 归一化之后再算（关键词推断需要 kind 与 prompt）
+      originalName: givenName, // 只有它参与「要不要取证」的判定，展示名不改变执行语义
       role: String(s.role || '').trim().slice(0, 80),
       prompt: String(s.prompt || '').trim(),
       depends_on: Array.isArray(s.depends_on) ? s.depends_on.map((d) => String(d).trim()).filter(Boolean) : [],
@@ -473,6 +495,10 @@ export function normalizeSteps(steps, { maxSteps = DEFAULT_MAX_STEPS } = {}) {
         return { error: t('步骤 {id} 协议字段非法：{error}', { id: item.id, error: e?.message || e }) };
       }
     }
+    // 卡片上的主标题：职位名（「注入面审查员」），不是「步骤 N」；序号只在不兜底不出来时当后缀
+    item.name = agentTitleFor({
+      name: givenName, kind: item.kind, prompt: item.prompt, goal, index: i + 1, role: item.role,
+    }).slice(0, 60);
     list.push(item);
   }
   const ids = new Set();
@@ -690,7 +716,9 @@ const EVIDENCE_EN_RE = /\b(?:review|audit|scan|check|probe|test|verif)[a-z]*\b/i
  * - 名称/角色/任务文本命中取证关键词（审查/审计/扫描/分析…）→ 是。
  * - 保留原逻辑：prompt 点名可用工具或出现盘符路径（D:\ / C:/）→ 是。
  * - 其余（纯汇总、纯格式化、纯翻译）→ 否。
- * @param {{kind?:string|null,name?:string|null,role?:string|null,prompt?:string|null}} step
+ * - 展示名（name）可能是引擎生成的职位名（「审查员」自带取证关键词），所以有 originalName 时只认它：
+ *   生成职位名不许改变执行语义（模型没给 name 的纯文本步骤，不该因为改了个标题就被强制跑工具）。
+ * @param {{kind?:string|null,name?:string|null,originalName?:string|null,role?:string|null,prompt?:string|null}} step
  * @returns {boolean}
  */
 export function needsEvidence(step = {}) {
@@ -699,7 +727,9 @@ export function needsEvidence(step = {}) {
   // 汇总/仲裁明确豁免：report 只需综合上游，arbitrate 只读 claims 与证据原文，都不要求自己跑工具
   if (kind === 'report' || kind === 'arbitrate') return false;
   if (kind === 'find' || kind === 'verify') return true;
-  const text = [s.name, s.role, s.prompt].filter(Boolean).map(String).join('\n');
+  // 有 originalName（哪怕是空串）时，name 是展示名，不拿来判定
+  const nameForEvidence = Object.prototype.hasOwnProperty.call(s, 'originalName') ? s.originalName : s.name;
+  const text = [nameForEvidence, s.role, s.prompt].filter(Boolean).map(String).join('\n');
   if (EVIDENCE_CN_KEYWORDS.some((k) => text.includes(k))) return true;
   if (EVIDENCE_EN_RE.test(text)) return true;
   // 原有判定：prompt 里点名工具名或盘符绝对路径（这里同时兜住工具名清单的唯一来源 swarm.mjs）
@@ -710,7 +740,7 @@ export function needsEvidence(step = {}) {
 // 默认强制：只要工作流里有 LLM 取证步骤（kind=find 或 needsEvidence 命中）而没有 verify，
 // 就在调度前补一个盲验节点；只有 report/aggregate/gate 这种确定性汇总的工作流不补。
 export const ADVERSARIAL_VERIFY_ID = '__verify__';
-export const ADVERSARIAL_VERIFY_NAME = '对抗复核（盲验）';
+export const ADVERSARIAL_VERIFY_NAME = '红队复核员（盲验）';
 export const ADVERSARIAL_VERIFY_ROLE = '红队复核员';
 export const ADVERSARIAL_VERIFY_PROMPT = [
   '你是对抗复核员（红队），默认怀疑上游每一条结论。',
@@ -969,7 +999,7 @@ export async function runSubagentStep({
   const endpoint = String(baseUrl || '').replace(/\/+$/, '') + '/chat/completions';
   const headers = { 'content-type': 'application/json', ...(apiKey ? { authorization: 'Bearer ' + apiKey } : {}) };
   let messages = [
-    { role: 'system', content: withOutputLanguage(String(systemPrompt || '')) },
+    { role: 'system', content: String(systemPrompt || '') },
     { role: 'user', content: String(prompt || '') }
   ];
   let toolChoiceUnsupported = false;
@@ -1158,7 +1188,7 @@ export async function runWorkflow({
     return { error: t('steps 与 script 互斥：一次只能给一个（steps 模式或受限脚本模式）') };
   }
   const scriptMode = script !== undefined && script !== null;
-  const norm = scriptMode ? null : normalizeSteps(steps, { maxSteps });
+  const norm = scriptMode ? null : normalizeSteps(steps, { maxSteps, goal: goalText });
   if (!scriptMode && norm.error) return { error: norm.error };
   if (!scriptMode && typeof callStep !== 'function') return { error: t('当前通道不支持子代理调用') };
   // 默认强制对抗复核：有取证步骤且没有 verify 时，调度前自动补一个盲验节点
@@ -1540,6 +1570,8 @@ export async function runWorkflow({
         name: step.name,
         role: step.role,
         prompt,
+        // 原始 name（可能为空）：下游 callSubagent 用它判定「要不要取证」，展示名不参与执行语义
+        originalName: step.originalName === undefined ? null : step.originalName,
         depends_on: step.depends_on,
         runId, // 子代理 transcript 按 run 落盘（重开 App 后还能回看）
         // 预算透传：maxStepMs 缺省为 0（不设墙钟上限）；盲验节点例外，默认 60 分钟硬截止

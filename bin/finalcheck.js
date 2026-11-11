@@ -103,9 +103,12 @@ if (cmd === 'scan-download') {
       warnings: profile?.warnings || [],
     };
   }
+  // 审计本地目录默认就是「有源码」：没显式给 --sources 时按 code 处理，
+  // 否则证据等级会全部落成 unverified（明明读了源码却写"未验证"，是假谦虚）。
+  const effectiveSources = sources || { code: '.' };
   // 声明了 URL 但没有实测记录时，动态维度只能是 static-only（要实测请在 App 里跑 probe/stress）
   const runtime = null;
-  const res = await audit(root, { tier, interactive, runTests, profile, sources, runtime });
+  const res = await audit(root, { tier, interactive, runTests, profile, sources: effectiveSources, runtime });
   if (asJson) console.log(JSON.stringify(res, null, 2));
   else console.log(renderReport(res));
   // 退出码：0 过 / 1 拦 / 2 修完再过 / 3 无法验收（能力缺失）/ 4 待授权（缺用户点头，例如未跑测试）

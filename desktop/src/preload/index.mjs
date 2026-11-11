@@ -62,6 +62,8 @@ contextBridge.exposeInMainWorld('finalcheck', {
   testProvider: (p) => ipcRenderer.invoke('finalcheck:test-provider', p),
   // 自动更新（仅安装版生效；开发模式主进程返回友好错误）
   getVersion: () => ipcRenderer.invoke('finalcheck:update:version'),
+  // 更新详情：读随包 CHANGELOG.md，返回 { version, entries, raw }
+  changelogGet: () => ipcRenderer.invoke('finalcheck:update:changelog'),
   updateCheck: () => ipcRenderer.invoke('finalcheck:update:check'),
   updateDownload: () => ipcRenderer.invoke('finalcheck:update:download'),
   updateInstall: () => ipcRenderer.invoke('finalcheck:update:install'),

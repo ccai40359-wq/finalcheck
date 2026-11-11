@@ -14,7 +14,6 @@ import { SUBAGENT_TOOL_NAMES, deriveNodeErrorCode } from './swarm.mjs';
 // 中断/空回复的确定性 salvage：与 workflow 层共用同一份文案（不调模型、不烧 token）
 import { salvageSubagentContent } from './subagent-salvage.mjs';
 import { extractUsage } from './usage.mjs';
-import { withOutputLanguage } from './lang.mjs';
 import { t } from '../renderer/i18n/core.mjs';
 
 /**
@@ -210,7 +209,7 @@ export const TOOLS_SCHEMA = [
     type: 'function',
     function: {
       name: 'run_workflow',
-      description: '多 agent 工作流。第一步先判断任务形状，再二选一（互斥，只给一个）：步骤数量固定、方向并列/串行 → steps（自己设计 2-14 个步骤，每步一个独立子代理，引擎按 depends_on 拓扑排序、互不依赖的步骤并行执行，上游结果自动注入下游；互不依赖的步骤请用空 depends_on []，不要为了「看起来有顺序」串成链）；步骤数量由上游结果决定（按列表扇出/循环到满足条件/条件分支/递归/纯计算汇总）→ script（受限 JSON 指令 step/fanout/if/gate/verify/report/loop/recurse/aggregate，只解释执行，不运行代码）；判断不了 → 默认 steps。不要问用户用哪种，自己判断，最后用一句话说明用了哪种、为什么。不要自己串行假装并行',
+      description: '多 agent 工作流。第一步先判断任务形状，再二选一（互斥，只给一个）：步骤数量固定、方向并列/串行 → steps（自己设计 2-14 个步骤，每步一个独立子代理，引擎按 depends_on 拓扑排序、互不依赖的步骤并行执行，上游结果自动注入下游；互不依赖的步骤请用空 depends_on []，不要为了「看起来有顺序」串成链）；步骤数量由上游结果决定（按列表扇出/循环到满足条件/条件分支/递归/纯计算汇总）→ script（受限 JSON 指令 step/fanout/if/gate/verify/report/loop/recurse/aggregate，只解释执行，不运行代码）；判断不了 → 默认 steps。不要问用户用哪种，自己判断，最后用一句话说明用了哪种、为什么。每个步骤/节点都必须给 name：写成人名化职位名（4-10 字，如「SQL 注入审查员」「依赖供应链专员」「交付报告主编」），不许写「步骤 1」「分析」「检查」这种序号名或泛词。不要自己串行假装并行',
       parameters: {
         type: 'object',
         properties: {
@@ -222,7 +221,7 @@ export const TOOLS_SCHEMA = [
               type: 'object',
               properties: {
                 id: { type: 'string', description: '步骤 id（字母数字-_，唯一）' },
-                name: { type: 'string', description: '步骤短名（展示用）' },
+                name: { type: 'string', description: '步骤职位名（展示用，必填）：4-10 字的人名化职位，如「SQL 注入审查员」「依赖供应链专员」「交付报告主编」；不许写「步骤 1」「分析」「检查」这种序号名或泛词' },
                 role: { type: 'string', description: '子代理角色，如「SQL 注入专家」「代码审查员」' },
                 prompt: { type: 'string', description: '交给子代理的具体任务；要自包含（输入、要产出什么），上游结果会自动附上' },
                 depends_on: { type: 'array', items: { type: 'string' }, description: '依赖的步骤 id 列表；不需要上游结果就写空数组 []（=可立即并行），只有确实要消费上游产出才写依赖' },
@@ -242,7 +241,7 @@ export const TOOLS_SCHEMA = [
               properties: {
                 op: { type: 'string', enum: ['step', 'fanout', 'if', 'gate', 'verify', 'report', 'loop', 'recurse', 'aggregate'], description: '指令类型' },
                 id: { type: 'string', description: '指令/节点 id（字母数字-_，唯一）' },
-                name: { type: 'string', description: '可选：展示用短名' },
+                name: { type: 'string', description: '可选：展示用职位名（4-10 字，如「鉴权与越权审查员」）；fanout 的 step.name 是子节点职位名，会与扇出项拼成「/api/login 鉴权与越权审查员」' },
                 role: { type: 'string', description: '可选：子代理角色' },
                 prompt: { type: 'string', description: 'step 的任务；fanout/recurse 的 prompt 支持 ${变量} 插值' },
                 depends_on: { type: 'array', items: { type: 'string' }, description: '可选：只影响上游结果注入，不改变执行顺序' },
@@ -298,6 +297,11 @@ export const SUBAGENT_TOOLS_SCHEMA = AGENT_TOOLS_SCHEMA.filter((tool) => SUBAGEN
 const SYSTEM_BASE = [
   '你是 FinalCheck（终检）安全验收助手，连接用户与安全测试工具。',
   '职责：帮用户跑体检/下载闸/渗透探测/压测，并用大白话解释结果；发现必须带证据（文件:行或 HTTP 复现）说话，不编造。',
+  // 验收前置硬规则：放在所有工具说明之前（优先于下面的执行节奏与「信息足够就别打扰」）
+  '验收前置（硬规则，优先于下面所有工具说明）：用户提出「验收 / 体检 / 审计 / 帮我看看这个项目」时，必须先问清两件事再动手——(a) 档位 L1/L2/L3；(b) 要覆盖哪些维度。用户没有同时说清这两项 → 必须先调 ask_user，先问清楚，不许猜；不许先跑 audit_project，也不许用 dir / 文件列表猜目标代替提问。',
+  '问法（一次只问一件事，最多两次 ask_user）：① 档位单选——L1 底线（个人发布：查基础安全与依赖有没有硬伤）、L2 真实用户（再加交接 H1、可维护 Q3、动态探测）、L3 公司交付（再加许可证 C1、运维 O1、对抗性复核），每个选项带一句「查什么」；② 维度多选——列出 11 维（安全性 / 数据与隐私 / 供应链与许可证 / 可维护性 / 代码可读性 / 可测试性 / 鲁棒性 / 运行稳定性 / 性能 / 可观测性与可运维 / 可移交性），并标注「全选 = 完整验收」。',
+  '不要重复问：用户已经说清的部分不再问（例如说了「跑 L3」就不问档位，说了「只看安全性和可维护性」就不问维度，只补问缺的那一项）；档位与维度都说清 → 直接带 tier 和维度跑。项目根已有 finalcheck.profile.json → 视为档位与维度已声明，按它跑，不再问。',
+  '多候选不许猜：目标目录本身有歧义（工作区里有多个候选项目，用户说的是「我的 AI 助手」这类泛称）→ 必须先问是哪一个，不许用 dir / 猜路径代替提问；猜错目标等于答错题。',
   '你还有 run_command：像 coding agent 一样自由执行命令（Windows cmd 语法：dir /b、type、findstr、curl、node 等）——用户让你"看看某目录/某个盘"就用它探查后再回答，不要拒绝；灾难性命令会被系统拦截，不必自己判断。',
   '做渗透测试时必先查方法论库：先 list_playbooks 看 40 类目录，命中类目后 read_playbook(topic=编号或英文名) 读入口 SKILL.md，再按其「文件路由」用 file+offset 下钻附属手册；按手册的方法论执行测试，不要凭空瞎试。',
   '测试纪律：侦察（端口/指纹/目录/JS/API）→ 选类目 → 读方法论 → 用 probe_target / run_command 构造请求验证 → 只把已复现的写进结论，未复现的标「线索」。',
@@ -307,7 +311,7 @@ const SYSTEM_BASE = [
   '工具结果超长时会被截断为「头+尾」并完整落盘，按提示的 spill 路径用 run_command 检索，不要猜中间内容。',
   '修代码：先 read_file 看清原文，再用 edit_file 做最小替换（old_string 必须唯一）；新建文件用 write_file。改完明确告诉用户「改了哪个文件、+几行/-几行、为什么」。',
   '产出可预览文件（html / png / pdf / md 等）后，调用 present_artifact(path) 登记；用户在聊天里点一下就出现在右侧预览面板。',
-  '多 agent 工作流（第一步先判断任务形状，再二选一；不要问用户用哪种，你自己判断，最后用一句话说明用了哪种、为什么）：步骤数量固定、方向并列/串行 → 用 steps（每步一个独立子代理：角色 + 自包含任务 + depends_on，引擎按依赖并行；拿到各步结果后汇总成一份结论）；步骤数量由上游结果决定（按列表扇出、循环到满足条件、按类型递归、条件分支、纯计算汇总）→ 用 script（受限 JSON 指令 step/fanout/if/gate/verify/report/loop/recurse/aggregate，只解释执行、不运行代码）；判断不了 → 默认 steps。不要用「我要开始第 1 步」的文字模拟并行。',
+  '多 agent 工作流（第一步先判断任务形状，再二选一；不要问用户用哪种，你自己判断，最后用一句话说明用了哪种、为什么）：步骤数量固定、方向并列/串行 → 用 steps（每步一个独立子代理：角色 + 自包含任务 + depends_on，引擎按依赖并行；拿到各步结果后汇总成一份结论）；步骤数量由上游结果决定（按列表扇出、循环到满足条件、按类型递归、条件分支、纯计算汇总）→ 用 script（受限 JSON 指令 step/fanout/if/gate/verify/report/loop/recurse/aggregate，只解释执行、不运行代码）；判断不了 → 默认 steps。不要用「我要开始第 1 步」的文字模拟并行。每步 name 必须是职位名（4-10 字，如「SQL 注入审查员」「依赖供应链专员」），不许写「步骤 1」「分析」这种。',
   '拆步铁律（写 depends_on 前先自问）：每写完一步先问「这一步真的需要上一步的结果吗」——不需要就写 depends_on: []（空数组 = 可立即并行，多路同时跑）；只有确实要消费上游产出（读到它的结论、复用它的清单）才写依赖。为了「看起来有顺序」把步骤串成链，会让子代理排队、总耗时按步数翻倍。最小示例（3 步、2 步并行）：[{id:"s1",prompt:"查 A 的证据",depends_on:[]},{id:"s2",prompt:"查 B 的证据",depends_on:[]},{id:"s3",prompt:"汇总 s1 与 s2 的结论",depends_on:["s1","s2"]}] — s1 与 s2 同时跑，s3 等两者都完成；不要写成 s2 依赖 s1。',
   '复杂项目要主动开工作流：当项目较大（约 ≥2000 行 / 多语言 / 多服务）且任务能拆成互不依赖的几路（体检、下载闸、依赖供应链、鉴权越权、动态探测）时，直接调用 run_workflow 并行分头查，不必等用户说「用工作流」；步骤 3-8 个（特别大的项目可到 14 个），每步限定目录或类目（例如「只看 includes/ 的 SQL 与 nonce」），不要把「通读整个仓库」丢给一个子代理。小任务（单文件、单问题、顺手看一眼）不要用工作流，自己查更快。',
   '子代理是有工具的：它们能调用 read_file / run_command / audit_project / download_gate / probe_target / stress_target / list_playbooks / read_playbook（不能改文件、不能再起工作流）。所以每步 prompt 要写成「用哪个工具对什么跑什么、产出什么证据」的可执行任务（例：「用 audit_project 对 D:\\x 跑 L2，列出高危项」），让几个子代理并行跑不同测试，别把活全留给自己。',
@@ -316,7 +320,8 @@ const SYSTEM_BASE = [
   '验收档位纪律：用户说「按 L1 / L2 / L3 验收」时必须把 tier 显式传给 audit_project，不许自行降档；L2 会跑交接(H1)与可维护性(Q3)，L3 再加许可证(C1)与运维(O1)。返回的 gates.gaps 必须原样列给用户（「这关没跑，原因是…」），不许把没跑的关说成通过，也不许用「AI 看过了」替代没跑的闸。',
   '向用户提问：只在不问就无法继续、且答案会改变结论时调用 ask_user（例如「按 L2 还是 L3」「动态探测要不要授权」「两个方向只能选一个」）；信息足够时不要打扰用户。一次只问一件事，选项最多 6 个；纯开放式问题可以不给选项。一次回合最多问 3 次，第 4 次会被拒绝。',
   '验收单：任务要分几步做时，开工前先用 todo_write 写 3-8 条，每条 acceptance（怎么算完成）必填；做完一条立刻再调一次 todo_write 把 status 改成 done 并补 evidence（文件:行 / 命令输出 / HTTP 复现）。做不了或跳过的条目写 failed/skipped，最终回答的 ## Not covered 必须逐条点名它们——done 无证据、failed/skipped 没点名，报告闸会判不合格。',
-  '回答全中文、简洁，先结论后证据；用 markdown 排版（结论加粗、证据用列表、长输出用代码块）。'
+  // 不再绑定界面语言：模型用与用户提问相同的语言作答（界面中英文只影响 UI 文案）
+  '回答简洁，先结论后证据；用与用户提问相同的语言作答（用户写中文就用中文，写英文就用英文）。用 markdown 排版（结论加粗、证据用列表、长输出用代码块）。'
 ].join('\n');
 
 let systemPromise = null;
@@ -655,6 +660,150 @@ export function uiResultSummary(result, max = UI_RESULT_MAX_CHARS) {
   return out;
 }
 
+/* ---------- tool_call 参数完整性闸（截断 / 非法 JSON） ----------
+ * 用户实测（会话 ed8bc5d3，run_workflow）：模型把 4222 字符的 steps JSON 写成
+ * `{"id":"s6","summary","name":...}`（键后缺冒号），旧逻辑把 JSON.parse 的异常直接当工具结果，
+ * 卡片立刻变成红色错误条 —— 一个内部可自愈的 hiccup 被用户读成「回合跑到一半突然中断」。
+ * 两条规则：
+ *  1. finish_reason=length 且带 tool_calls：参数可能半截 → 一律不执行，整轮重发一次；
+ *  2. 参数 parse 失败：不执行那一个调用，把「错误码 + 位置 + 前后各 80 字符（脱敏）」当工具结果回给模型，
+ *     要求它只重发这一个调用；再失败才向用户报错。
+ * 两个原因码同时用于「不发车」与「不留 running part」。 */
+export const ARGS_TRUNCATED_CODE = 'ARGS_TRUNCATED';
+export const ARGS_INVALID_JSON_CODE = 'ARGS_INVALID_JSON';
+const ARGS_EXCERPT_RADIUS = 80;
+
+/** 脱敏：疑似密钥（sk-xxx / Bearer xxx / key/token/password 字段值）在回显给模型/卡片前一律打码 */
+export function redactArgSecrets(text) {
+  return String(text ?? '')
+    .replace(/\b(sk|pk|rk)-[A-Za-z0-9_-]{8,}/g, '$1-***')
+    .replace(/(Bearer\s+)[A-Za-z0-9._~+/-]{8,}/gi, '$1***')
+    .replace(/("(?:api[_-]?key|apikey|token|access[_-]?token|refresh[_-]?token|secret|password|passwd|authorization)"\s*:\s*")[^"]*(")/gi, '$1***$2');
+}
+
+/** 解析错误的字符位置：V8 的 "at position N" / 新版 "at line X column Y" 都认 */
+export function jsonErrorPosition(message) {
+  const m = String(message || '').match(/at position\s+(\d+)/i);
+  return m ? Number(m[1]) : null;
+}
+
+/**
+ * 错误位置前后各 radius 字符（脱敏、压成一行）——回给模型足够定位，又不把整段参数/密钥塞回上下文。
+ * @param {string} argsText
+ * @param {number|null} [position] 缺省取末尾（截断场景）
+ * @param {number} [radius]
+ * @returns {string}
+ */
+export function argsErrorExcerpt(argsText, position = null, radius = ARGS_EXCERPT_RADIUS) {
+  const text = String(argsText ?? '');
+  if (!text) return '';
+  const raw = Number(position);
+  const pos = Number.isFinite(raw) ? Math.min(Math.max(0, Math.trunc(raw)), text.length) : text.length;
+  const head = text.slice(Math.max(0, pos - radius), pos);
+  const tail = text.slice(pos, Math.min(text.length, pos + radius));
+  const snippet = `${pos > radius ? '…' : ''}${head}⟪错误位置⟫${tail}${pos + radius < text.length ? '…' : ''}`;
+  return redactArgSecrets(snippet.replace(/\s+/g, ' ').trim());
+}
+
+/**
+ * 逐个检查 tool_call 的参数是不是合法 JSON。
+ * @param {any[]} toolCalls
+ * @returns {{total:number, invalid:Array<{index:number,id:string|null,name:string,message:string,position:number|null,excerpt:string,chars:number}>}}
+ */
+export function inspectToolCallArgs(toolCalls) {
+  const list = Array.isArray(toolCalls) ? toolCalls : [];
+  const invalid = [];
+  list.forEach((tc, index) => {
+    const argsText = String(tc?.function?.arguments ?? '');
+    try {
+      JSON.parse(argsText || '{}');
+    } catch (e) {
+      const message = e?.message || String(e);
+      const position = jsonErrorPosition(message);
+      invalid.push({
+        index,
+        id: tc?.id == null ? null : String(tc.id),
+        name: String(tc?.function?.name || 'unknown'),
+        message,
+        position,
+        excerpt: argsErrorExcerpt(argsText, position),
+        chars: argsText.length
+      });
+    }
+  });
+  return { total: list.length, invalid };
+}
+
+/** 未执行调用的可读文案（卡片 + 返回值共用；不含 "in JSON at position" 字样，避免被 humanize 二次改写） */
+export function toolArgsFailurePayload(bad, { truncated = false } = {}) {
+  const code = truncated ? ARGS_TRUNCATED_CODE : ARGS_INVALID_JSON_CODE;
+  const posHint = bad?.position == null ? '' : t('（第 {pos} 字符附近）', { pos: bad.position });
+  const error = truncated
+    ? t('工具参数被输出长度上限截断{posHint}，本次调用未执行', { posHint })
+    : t('工具参数不是合法 JSON{posHint}，本次调用未执行', { posHint });
+  return {
+    error,
+    code,
+    ...(bad?.position == null ? {} : { position: bad.position }),
+    ...(Number.isFinite(Number(bad?.chars)) ? { chars: Number(bad.chars) } : {}),
+    ...(bad?.excerpt ? { excerpt: bad.excerpt } : {}),
+    ...(bad?.message ? { detail: redactArgSecrets(bad.message) } : {})
+  };
+}
+
+/**
+ * 给模型的纠错/缩短提示（作为 tool 结果内容或 [系统] 消息）。
+ * @param {string} toolName
+ * @param {{truncated?:boolean, position?:number|null, chars?:number, excerpt?:string}} [info]
+ * @returns {string}
+ */
+export function buildArgsRepairNotice(toolName, info = {}) {
+  const truncated = !!info.truncated;
+  const name = String(toolName || 'unknown');
+  const head = truncated
+    ? t('你上一次的工具调用「{name}」参数被输出长度上限截断了（{code}），这些调用没有执行。', { name, code: ARGS_TRUNCATED_CODE })
+    : t('你上一次的工具调用「{name}」参数不是合法 JSON（{code}），这个调用没有执行。', { name, code: ARGS_INVALID_JSON_CODE });
+  const where = info.position == null && !Number.isFinite(Number(info.chars))
+    ? ''
+    : t('解析失败位置：{pos}；参数总长：{chars} 字符。', {
+      pos: info.position == null ? t('未知') : t('第 {n} 个字符', { n: info.position }),
+      chars: Number.isFinite(Number(info.chars)) ? Number(info.chars) : t('未知')
+    });
+  const snippet = info.excerpt ? t('错误位置附近片段：{snippet}', { snippet: info.excerpt }) : '';
+  const ask = truncated
+    ? t('请把参数拆小/缩短后重新发起这一个工具调用（例如减少 steps、精简 prompt、改成分步调用）。')
+    : t('请只重新发起这一个工具调用，参数必须是合法 JSON：键值之间必须有冒号，字段之间必须有逗号，字符串里的引号要转义；参数太长时请拆小。');
+  return [head, where, snippet, ask].filter(Boolean).join('\n');
+}
+
+/**
+ * 未执行的工具调用也要闭合：start+end 立刻成对发（part 绝不会停在 running），
+ * 卡片显示原因码，模型拿到的 tool 结果里带纠错指令。
+ * @returns {Promise<{id:any, trace:{tool:string,args:string,result:any}, modelContent:string}>}
+ */
+async function skipToolCall(tc, code, notice, { onEvent, onToolLifecycle, detail = null } = {}) {
+  const name = String(tc?.function?.name || 'unknown');
+  const argsText = String(tc?.function?.arguments || '');
+  const callId = tc?.id == null ? null : String(tc.id);
+  const t0 = Date.now();
+  // 卡片看 error（短句）：detail.error 优先；模型看 hint（纠错指令，含脱敏片段）
+  const shortError = (detail && typeof detail === 'object' && detail.error) ? String(detail.error) : String(notice || '');
+  const payload = { ...(detail && typeof detail === 'object' ? detail : {}), error: shortError, code, hint: String(notice || '') };
+  onEvent?.({ kind: 'tool-start', id: tc?.id, name, args: argsText.slice(0, name === 'todo_write' ? 8000 : 2000), at: t0 });
+  onEvent?.({ kind: 'tool-end', id: tc?.id, name, ms: 0, ok: false, result: uiResultSummary(payload) });
+  if (typeof onToolLifecycle === 'function') {
+    const ev = { id: callId, name, args: argsText };
+    try { onToolLifecycle({ phase: 'start', ...ev, at: t0 }); } catch { /* 落库失败不阻断回合 */ }
+    try {
+      onToolLifecycle({
+        phase: 'end', ...ev, status: 'fail', result: payload, error: shortError, ms: 0,
+        code, cancelled: false, at: Date.now()
+      });
+    } catch { /* 落库失败不阻断回合 */ }
+  }
+  return { id: tc?.id, trace: { tool: name, args: argsText, result: payload }, modelContent: JSON.stringify(payload) };
+}
+
 // 执行单个工具调用：自带 tool-start/tool-end 事件，失败只返回自己的 {error}，不影响同批其它调用
 // onToolLifecycle（可选）：给持久化层用的「开始/结束」钩子（不推渲染层，避免结果大对象进 IPC）。
 async function runToolCall(tc, tools, onEvent, signal = null, onToolLifecycle = null) {
@@ -755,7 +904,36 @@ async function runToolCalls(toolCalls, { tools, onEvent, toolConcurrency, signal
   return results; // 按原始调用顺序返回，调用方按序回填 convo/trace
 }
 
-export async function runAgentTurn({ config, messages, confirmedHosts = [], onToken, onEvent, onToolLifecycle = null, tools, toolsSchema = null, systemPrompt: systemPromptOverride = null, forceFirstToolChoice = false, fetchImpl = fetch, summarize, signal, maxTurns = DEFAULT_MAX_TURNS, maxTurnMs: maxTurnMsOpt, maxTurnTokens: maxTurnTokensOpt, retryBaseMs = 600, noLimits = false, hooksConfig = null, hooksRunner = null, sessionId = null, drainSteer = null, resolveConfig = null, cwd = process.cwd() }) {
+/**
+ * 带参数闸的调度：合法的照常执行，非法的**不执行**但仍按原顺序占位——
+ * 结果数组与 toolCalls 一一对应（convo 里的 tool 消息必须覆盖每个 call id，否则下一轮请求会被网关拒绝）。
+ * @param {any[]} toolCalls
+ * @param {Array<{index:number,name:string}>} invalid inspectToolCallArgs().invalid
+ */
+async function runToolCallsGuarded(toolCalls, invalid, { tools, onEvent, toolConcurrency, signal = null, onToolLifecycle = null, code = ARGS_INVALID_JSON_CODE, noticeOf = null }) {
+  const badByIndex = new Map((Array.isArray(invalid) ? invalid : []).map((x) => [x.index, x]));
+  const valid = toolCalls.filter((_, i) => !badByIndex.has(i));
+  const executed = valid.length
+    ? await runToolCalls(valid, { tools, onEvent, toolConcurrency, signal, onToolLifecycle })
+    : [];
+  const results = [];
+  let cursor = 0;
+  for (let i = 0; i < toolCalls.length; i += 1) {
+    const bad = badByIndex.get(i);
+    if (!bad) { results.push(executed[cursor]); cursor += 1; continue; }
+    const notice = typeof noticeOf === 'function'
+      ? noticeOf(bad)
+      : buildArgsRepairNotice(bad.name, { truncated: code === ARGS_TRUNCATED_CODE, position: bad.position, chars: bad.chars, excerpt: bad.excerpt });
+    results.push(await skipToolCall(toolCalls[i], code, notice, {
+      onEvent,
+      onToolLifecycle,
+      detail: toolArgsFailurePayload(bad, { truncated: code === ARGS_TRUNCATED_CODE })
+    }));
+  }
+  return results;
+}
+
+export async function runAgentTurn({ config, messages, confirmedHosts = [], onToken, onEvent, onToolLifecycle = null, onUsage = null, tools, toolsSchema = null, systemPrompt: systemPromptOverride = null, forceFirstToolChoice = false, fetchImpl = fetch, summarize, signal, maxTurns = DEFAULT_MAX_TURNS, maxTurnMs: maxTurnMsOpt, maxTurnTokens: maxTurnTokensOpt, retryBaseMs = 600, noLimits = false, hooksConfig = null, hooksRunner = null, sessionId = null, drainSteer = null, resolveConfig = null, cwd = process.cwd() }) {
   if (signal?.aborted) return { cancelled: true, interrupted: true, partialContent: '', answer: '', trace: [] };
   if (!config?.baseUrl || !config?.apiKey) {
     return { error: t('尚未配置网关：请到左下角「模型设置」添加供应商（Base URL / API Key / 模型）并启用'), trace: [] };
@@ -841,7 +1019,7 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
     if (willCompact) onEvent?.({ kind: 'compact-end', scope: 'auto', before: beforeTokens, error: e?.message || String(e) });
     /* 压缩失败不阻断对话 */
   }
-  const convo = [{ role: 'system', content: withOutputLanguage(systemPromptOverride != null ? String(systemPromptOverride) : await getSystemPrompt()) }, ...viewMessages];
+  const convo = [{ role: 'system', content: String(systemPromptOverride != null ? systemPromptOverride : await getSystemPrompt()) }, ...viewMessages];
   // Steer：回合进行中用户从界面注入的消息。每次发起模型请求前 drain，追加为一条 user 消息
   // （不重置已完成的工具结果，直接计入本轮上下文），并推送给渲染层画「已注入」气泡。
   const applySteer = () => {
@@ -869,6 +1047,20 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
     if (u.prompt != null) usageTotal.prompt = (usageTotal.prompt ?? 0) + u.prompt;
     if (u.completion != null) usageTotal.completion = (usageTotal.completion ?? 0) + u.completion;
     if (u.cached != null) usageTotal.cached = (usageTotal.cached ?? 0) + u.cached;
+    // 按请求记账：一条账本 = 一次真实模型请求。provider/model 取「该次请求」实际使用的 liveConfig
+    // （运行中切模型后，新消耗不会记到旧供应商名下）；记账失败不许影响对话。
+    if (typeof onUsage === 'function') {
+      try {
+        onUsage({
+          at: Date.now(),
+          model: liveConfig.model,
+          providerId: liveConfig.providerId || null,
+          prompt: u.prompt,
+          completion: u.completion,
+          cached: u.cached
+        });
+      } catch { /* 记账回调异常不影响回合 */ }
+    }
   };
   // ---- 软预算（Wave 2 → 长时间自主工作）：默认全部不设上限；只有显式配置（入参 / config.maxTurnMs / config.maxTurnTokens / config.watchdogMs / config.finalizeWatchdogMs）才生效 ----
   // 任一显式预算超限就不再开新轮，走「禁止调工具」收尾请求（默认永不触发）
@@ -905,6 +1097,8 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
   let retriedForTools = false; // 首轮空转提醒只重试一次
   let emptyNudges = 0; // 空回复补交次数：最多 MAX_EMPTY_NUDGES 次（第一次普通催，第二次强制只输出正文）
   let forceAnswerNoTools = false; // 下一次请求带 tool_choice='none'（第二次补交用，成功发出后复位）
+  let argsTruncatedRetried = false; // finish_reason=length 且带 tool_calls：整轮重发一次（参数半截，一律不执行）
+  let argsRepaired = false; // 参数非法 JSON：纠错一次（把那一个调用回给模型重发），再失败才报错
   let turnsUsed = 0; // 已发起的主循环请求轮数（供上层定位 length 截断 / 模型自己停）
   const addTurnTokens = (usage, content) => {
     const p = Number(usage?.prompt_tokens ?? usage?.input_tokens);
@@ -1122,6 +1316,52 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
       onEvent?.({ kind: 'turn-end', ms: Date.now() - turnStart, error: true });
       return { error: t('检测到模型输出异常循环，已自动中止——这是模型问题不是你的问题。可重试，或到模型设置换一个模型。'), reasoning: reasoningAll, trace, roundsUsed: turnsUsed };
     }
+    // ---- 截断闸①：finish_reason=length 且这一轮带 tool_calls → 参数可能半截，一个都不执行 ----
+    // 旧逻辑直接把半截 JSON 丢给 runToolCall，parse 失败 → 卡片一条红条，用户以为回合断了。
+    if (toolCalls.length && String(finishReason || '') === 'length') {
+      const firstName = String(toolCalls[0]?.function?.name || 'unknown');
+      const lastArgs = String(toolCalls[toolCalls.length - 1]?.function?.arguments || '');
+      if (!argsTruncatedRetried) {
+        argsTruncatedRetried = true;
+        const notice = buildArgsRepairNotice(firstName, {
+          truncated: true,
+          position: null,
+          chars: toolCalls.reduce((n, tc) => n + String(tc?.function?.arguments || '').length, 0),
+          excerpt: argsErrorExcerpt(lastArgs, null)
+        });
+        // 不把半截 tool_calls 写进 convo：没有 assistant 行就没有悬空的 tool_call_id，重发请求是干净的一轮
+        convo.push({ role: 'user', content: `[系统] ${notice}` });
+        const msg = t('本轮工具参数被输出上限截断（{code}），已自动重发一次（未执行）。', { code: ARGS_TRUNCATED_CODE });
+        warnings.push(msg);
+        onEvent?.({ kind: 'warning', message: msg });
+        onEvent?.({ kind: 'activity', label: t('工具参数被截断，正在重发…') });
+        continue;
+      }
+      // 重发后仍然截断：不执行，按原因码收尾（start+end 成对发，part 不会停在 running）
+      const bad = toolCalls.map((tc, index) => ({
+        index,
+        id: tc?.id == null ? null : String(tc.id),
+        name: String(tc?.function?.name || 'unknown'),
+        message: '',
+        position: null,
+        excerpt: '',
+        chars: String(tc?.function?.arguments || '').length
+      }));
+      const results = await runToolCallsGuarded(toolCalls, bad, {
+        tools, onEvent, toolConcurrency: config.toolConcurrency, signal, onToolLifecycle,
+        code: ARGS_TRUNCATED_CODE
+      });
+      for (const r of results) trace.push(r.trace);
+      onEvent?.({ kind: 'turn-end', ms: Date.now() - turnStart, error: true });
+      return {
+        error: t('工具参数连续两次被输出上限截断（{code}），本轮已停止，这些调用没有执行。建议把参数拆小（减少 steps / 精简 prompt）后重试本步。', { code: ARGS_TRUNCATED_CODE }),
+        errorCode: ARGS_TRUNCATED_CODE,
+        trace,
+        reasoning: reasoningAll || undefined,
+        roundsUsed: turnsUsed,
+        warnings
+      };
+    }
     if (!toolCalls.length) {
       // 强制首轮工具却只回了话：追加 system 提醒后再请求一次（与旧 runSubagentStep 一致，最多一次）
       if (forceFirstToolChoice && turn === 0 && !retriedForTools) {
@@ -1182,14 +1422,47 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
     }
     forceAnswerNoTools = false; // 模型无视 'none' 继续调工具时复位，避免污染后续轮次
     convo.push({ role: 'assistant', content: content || null, tool_calls: toolCalls });
-    // 并行调度：连续 parallel 调用成批限流并发；serial 调用单独跑。结果按原始调用顺序回填 convo/trace
+    // ---- 参数闸②：非法 JSON 的那一个调用不执行，合法的照常跑 ----
+    // 非法的也占位一条 tool 结果（每个 tool_call_id 都必须有响应，否则下一轮请求被网关拒绝）：
+    // 内容 = 错误码 + 位置 + 前后各 80 字符（脱敏）+「只重发这一个调用」的指令。
+    const inspected = inspectToolCallArgs(toolCalls);
     const toolStartedAt = Date.now();
-    const toolResults = await runToolCalls(toolCalls, { tools, onEvent, toolConcurrency: config.toolConcurrency, signal, onToolLifecycle });
+    const toolResults = inspected.invalid.length
+      ? await runToolCallsGuarded(toolCalls, inspected.invalid, {
+        tools, onEvent, toolConcurrency: config.toolConcurrency, signal, onToolLifecycle,
+        code: ARGS_INVALID_JSON_CODE
+      })
+      : await runToolCalls(toolCalls, { tools, onEvent, toolConcurrency: config.toolConcurrency, signal, onToolLifecycle });
     toolWaitMs += Date.now() - toolStartedAt;
     for (const r of toolResults) {
       trace.push(r.trace);
       convo.push({ role: 'tool', tool_call_id: r.id, content: r.modelContent });
     }
+    if (inspected.invalid.length) {
+      const badNames = [...new Set(inspected.invalid.map((x) => x.name))].join('、');
+      if (!argsRepaired) {
+        // 纠错一次：错误已经作为 tool 结果回给模型（含位置/片段/要求），下一轮它只重发这一个调用
+        argsRepaired = true;
+        const msg = t('工具参数不是合法 JSON（{code}）：{tools} 未执行，已把解析错误回给模型重发一次。', { code: ARGS_INVALID_JSON_CODE, tools: badNames });
+        warnings.push(msg);
+        onEvent?.({ kind: 'warning', message: msg });
+        onEvent?.({ kind: 'activity', label: t('工具参数有误，正在让模型重发…') });
+        continue;
+      }
+      // 纠错后仍不合法：不再无限重试，按原因码向用户报错（卡片上是可读文案 + 原因码）
+      onEvent?.({ kind: 'turn-end', ms: Date.now() - turnStart, error: true });
+      return {
+        error: t('工具参数连续两次不是合法 JSON（{code}），本轮已停止，{tools} 没有执行。可重试本步，或让模型把参数拆小后重新发起。', { code: ARGS_INVALID_JSON_CODE, tools: badNames }),
+        errorCode: ARGS_INVALID_JSON_CODE,
+        trace,
+        reasoning: reasoningAll || undefined,
+        roundsUsed: turnsUsed,
+        warnings
+      };
+    }
+    // 这一轮参数全合法：重新武装纠错额度（只约束「连续失败」，长回合里后面的偶发笔误仍能自愈一次）
+    argsRepaired = false;
+    argsTruncatedRetried = false;
   }
 
   // 达到轮次上限/budget 上限不丢工作：追加一次「禁止调工具」的收尾请求（fail-soft），让模型就已有证据下结论
@@ -1372,6 +1645,7 @@ export async function runSubagentTurn({
   onTranscript = null,
   onToken: onTokenHook = null,
   onToolLifecycle = null,
+  onUsage = null,
   saveIntervalMs = 200,
   now = Date.now
 } = {}) {
@@ -1386,7 +1660,7 @@ export async function runSubagentTurn({
     : !!forceFirstToolChoice;
   const startedAt = now();
   const transcript = [
-    { role: 'system', content: withOutputLanguage(String(systemPrompt || '')) },
+    { role: 'system', content: String(systemPrompt || '') },
     { role: 'user', content: String(prompt || '') }
   ];
   let current = null; // 正在流式接收的 assistant 条目
@@ -1503,6 +1777,7 @@ export async function runSubagentTurn({
       onToken,
       onEvent,
       onToolLifecycle,
+      onUsage,
       signal,
       fetchImpl,
       maxTurns,

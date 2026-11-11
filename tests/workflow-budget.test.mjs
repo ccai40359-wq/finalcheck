@@ -9,7 +9,7 @@
 //  6. SYSTEM_BASE / run_workflow 描述教模型用空 depends_on 并行拆步
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { runWorkflow, resolveMaxStepMs, resolveVerifyTimeoutMs, stepTimeoutText, withStepDeadline, SUBAGENT_STEP_TIMEOUT_MS, VERIFY_TIMEOUT_MS, VERIFY_TIMEOUT_MAX_MS } from '../desktop/src/main/workflow.mjs';
+import { runWorkflow, resolveMaxStepMs, resolveVerifyTimeoutMs, resolveStepDeadlineMs, stepTimeoutText, withStepDeadline, SUBAGENT_STEP_TIMEOUT_MS, VERIFY_TIMEOUT_MS, VERIFY_TIMEOUT_MAX_MS } from '../desktop/src/main/workflow.mjs';
 import { errorCodeLabel } from '../desktop/src/main/swarm.mjs';
 import { getSystemPromptParts, runSubagentTurn, TOOLS_SCHEMA } from '../desktop/src/main/agent-service.mjs';
 
@@ -212,4 +212,18 @@ test('verify: verifyTimeoutMs=0 时盲验也不设墙钟（显式关闭）', asy
     }
   });
   assert.equal(verifyBudget?.maxStepMs, 0, '显式 0 必须关掉盲验上限');
+});
+
+// 盲验上限被普通 clamp 截断的回归（2026-11-11 现场：日志里「盲验超过 600s 被强制截止」）
+test('verify: 60 分钟上限不会被普通 maxStepMs 的 10 分钟 clamp 截断', () => {
+  // 普通步骤仍然按 10 分钟 clamp
+  assert.equal(resolveStepDeadlineMs({ budget: { maxStepMs: 3600000 } }), 600000);
+  // 盲验节点：同一个 budget 值必须原样生效（默认 60 分钟 = 3600000ms）
+  assert.equal(resolveStepDeadlineMs({ kind: 'verify', budget: { maxStepMs: VERIFY_TIMEOUT_MS } }), VERIFY_TIMEOUT_MS);
+  // 自动补的盲验（autoInserted）也算
+  assert.equal(resolveStepDeadlineMs({ autoInserted: true, budget: { maxStepMs: 120000 } }), 120000);
+  // 盲验没给 budget → 默认 60 分钟（不是 10 分钟）
+  assert.equal(resolveStepDeadlineMs({ kind: 'verify' }), VERIFY_TIMEOUT_MS);
+  // 盲验显式 0 = 关闭
+  assert.equal(resolveStepDeadlineMs({ kind: 'verify', budget: { maxStepMs: 0 } }), 0);
 });

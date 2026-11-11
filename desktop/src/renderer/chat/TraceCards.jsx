@@ -4,6 +4,8 @@ import React, { useEffect, useState } from 'react';
 import { sevLabel, SEV_ORDER, api } from '../lib/ui.jsx';
 import { humanizeToolError, summarizeToolArgs, formatToolArgs } from '../lib/humanize.js';
 import { errorCodeLabel } from '../../main/swarm.mjs'; // 纯函数（零依赖）：错误码 → 一句人话，与主进程共用同一份映射
+import { agentKindLabel } from '../../main/agent-titles.mjs'; // 纯函数（零依赖）：kind → 中文小标签
+import { stepDisplayName } from '../lib/step-view.mjs';
 import { RecoverButton } from './RecoverButton.jsx';
 import { buildContinueText } from '../lib/continue-prompt.mjs';
 import { t } from '../i18n/core.mjs';
@@ -363,10 +365,14 @@ const fmtWfDur = (ms) => {
 function SwarmStepMeta({ kind, claims = 0, confirmed = 0, className = '' }) {
   const nClaims = Number(claims) > 0 ? Number(claims) : 0;
   const nConfirmed = Number(confirmed) > 0 ? Number(confirmed) : 0;
-  if (!kind && !nClaims && !nConfirmed) return null;
+  // kind 是英文枚举（find/verify/report）：只显示中文小标签，不裸奔英文
+  const kindText = agentKindLabel(kind);
+  if (!kindText && !nClaims && !nConfirmed) return null;
   return (
     <span className={`flex items-center gap-1.5 min-w-0 overflow-hidden leading-none ${className}`}>
-      {kind ? <span className="shrink-0 text-[8.5px] text-mute/55 tracking-wide">{String(kind)}</span> : null}
+      {kindText ? (
+        <span className="shrink-0 rounded border border-gold/25 bg-gold/[0.10] px-1 py-px text-[8.5px] leading-none tracking-wide text-goldSoft/80">{kindText}</span>
+      ) : null}
       {nClaims > 0 ? <span className="shrink-0 text-[8.5px] tabular-nums text-mute/50">{t('{n} 条主张', { n: nClaims })}</span> : null}
       {nConfirmed > 0 ? <span className="shrink-0 text-[8.5px] tabular-nums text-goldSoft/70">✓ {nConfirmed}</span> : null}
     </span>
@@ -471,7 +477,7 @@ function PhaseLane({
             const dotTitle = `${t('{done}/{total} 完成', { done: phDone, total: list.length })}${phRunning ? ` · ${t('{n} 运行中', { n: phRunning })}` : ''}${phFailed ? ` · ${t('{n} 失败', { n: phFailed })}` : ''}`;
             // 单步阶段用步名（不会被重复显示）；多步阶段没有声明名，用「阶段 N」而不是拿第一步冒充
             const phaseName = list.length === 1
-              ? (list[0]?.name || list[0]?.role || t('阶段 {n}', { n: pi + 1 }))
+              ? (stepDisplayName(list[0]) || t('阶段 {n}', { n: pi + 1 }))
               : t('阶段 {n}', { n: pi + 1 });
             const isLast = pi === phases.length - 1;
             const nextRunning = !isLast && (phases[pi + 1] || []).some((id) => stepsById?.get(id)?.status === 'running');
@@ -496,7 +502,7 @@ function PhaseLane({
                 <div className="mt-1.5 space-y-1 pr-4">
                   {shown.map((s) => {
                     const st = WF_STATUS[s.status] || WF_STATUS.pending;
-                    const label = s.name || s.role || t('子代理');
+                    const label = stepDisplayName(s) || t('子代理');
                     const tools = toolsOf(s);
                     const ms = stepMsOf(s);
                     const meta = claimsMetaOf(s, allClaims);
@@ -512,7 +518,7 @@ function PhaseLane({
                       ? [
                           codeTip,
                           ...(errLine ? [errLine] : []),
-                          s.name || s.role,
+                          stepDisplayName(s) || s.role,
                           s.role ? t('角色：{role}', { role: s.role }) : '',
                           ms ? t('耗时：{duration}', { duration: fmtWfDur(ms) }) : '',
                           tools ? t('工具：{n} 次', { n: tools }) : '',
@@ -521,8 +527,8 @@ function PhaseLane({
                           t('点击查看它的上下文')
                         ].filter((x) => x !== '')
                       : [
-                          errLine || (s.name || s.role),
-                          ...(errLine ? [s.name || s.role] : []),
+                          errLine || stepDisplayName(s) || s.role,
+                          ...(errLine ? [stepDisplayName(s) || s.role] : []),
                           s.role ? t('角色：{role}', { role: s.role }) : '',
                           t('状态：{status}', { status: t(st.text) }),
                           ms ? t('耗时：{duration}', { duration: fmtWfDur(ms) }) : '',

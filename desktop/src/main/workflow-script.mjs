@@ -30,6 +30,7 @@ import { audit } from '../../../src/audit.mjs';
 import { checkQuality } from '../../../src/checks/quality.mjs';
 import { reviewDiff } from '../../../src/review-diff.mjs';
 import { t } from '../renderer/i18n/core.mjs';
+import { agentTitleFor, agentTitleForFanout, isRoleLikeName } from './agent-titles.mjs';
 
 export const SCRIPT_MAX_NODES = 200;
 // 硬上限：字面量 / 运行时解析出的扇出列表超过这个数直接报错（脚本写错了，不是规模问题）。
@@ -169,17 +170,43 @@ function setBodyAlias(ctx, opId, nodeId) {
   return null;
 }
 
+// 程序/调度节点的职位名：它们不调模型，但卡片上同样要像人（不出现「程序 1」「循环 2」）
+const PROGRAM_NODE_TITLES = Object.freeze({
+  gate: '程序校验员',
+  aggregate: '程序校验员',
+  if: '分支调度员',
+  loop: '轮次调度员',
+  recurse: '递归调度员',
+});
+
+/** 脚本节点展示名：模型给了像样的职位名就原样用，否则按 op/关键词生成（绝不拼「步骤 N」「验证 N」） */
+function scriptNodeTitle(op, { name = '', prompt = '', role = '', index = null } = {}) {
+  const given = String(name || '').trim();
+  if (isRoleLikeName(given)) return given.slice(0, 60);
+  if (PROGRAM_NODE_TITLES[op]) return PROGRAM_NODE_TITLES[op];
+  const kind = op === 'verify' ? 'verify' : op === 'report' ? 'report' : null;
+  return agentTitleFor({ name: given, kind, prompt, role, index }).slice(0, 60);
+}
+
 function makeFanoutChild(container, item, index) {
   const sub = container.step;
+  const asVars = { [container.as]: String(item) };
   // 卡片上显示的名字也要插值（否则会看到「审查 ${file} 1」这种原文模板）
-  const baseName = sub.name
-    ? interpolateScriptText(sub.name, { [container.as]: String(item) })
-    : container.name;
-  const name = baseName ? `${baseName} ${index + 1}` : `${container.name} #${index + 1}`;
+  const subGiven = sub.name ? interpolateScriptText(sub.name, asVars) : '';
+  const subPrompt = sub.prompt ? interpolateScriptText(String(sub.prompt), asVars) : '';
+  // 子节点名 = 扇出项 + 容器职位名（「/api/login 鉴权与越权审查员」），读得出「这是在审哪一项」
+  const derived = agentTitleFor({ name: subGiven, kind: null, prompt: subPrompt, role: sub.role });
+  // 子步骤自己推不出职位名（纯兜底「审查员」）时，用模型给 fanout 容器起的名字兜住
+  const containerTitle = isRoleLikeName(container.name) ? String(container.name).trim() : '';
+  const baseTitle = isRoleLikeName(subGiven)
+    ? String(subGiven).trim()
+    : (derived === '审查员' && containerTitle ? containerTitle : derived);
+  const name = agentTitleForFanout({ baseTitle, item, index });
   const rawOp = { op: 'step', id: `${container.id}#${index}`, name: sub.name || null, role: sub.role || null, prompt: sub.prompt };
   return {
     id: `${container.id}#${index}`,
     name: String(name).slice(0, 60),
+    originalName: String(sub.name || '').trim(), // 取证判定只看模型原始 name（空串=没给）
     role: String(sub.role || '').slice(0, 80),
     prompt: sub.prompt,
     template: sub.prompt,
@@ -194,10 +221,12 @@ function makeFanoutChild(container, item, index) {
   };
 }
 
-function makeSimpleNode({ id, name, role, prompt, depends_on, kind = null, opType, extra = {}, rawOp }) {
+function makeSimpleNode({ id, name, role, prompt, depends_on, kind = null, opType, extra = {}, rawOp, originalName = '' }) {
   return {
     id,
-    name: String(name || `步骤 ${id}`).slice(0, 60),
+    // 兜底也不再是「步骤 <id>」：按 kind + prompt 生成职位名
+    name: String(name || agentTitleFor({ kind, prompt, role })).slice(0, 60),
+    originalName: String(originalName || '').trim(),
     role: String(role || '').slice(0, 80),
     prompt: String(prompt || ''),
     depends_on: depends_on.map(String),
@@ -212,7 +241,8 @@ function makeSimpleNode({ id, name, role, prompt, depends_on, kind = null, opTyp
 function makeProgramNode({ id, name, role, depends_on, programType, extra = {}, rawOp, prompt = '' }) {
   return {
     id,
-    name: String(name || `程序 ${id}`).slice(0, 60),
+    name: String(name || PROGRAM_NODE_TITLES[programType] || '程序校验员').slice(0, 60),
+    originalName: '', // 程序节点本来就没有模型给的 name
     role: String(role || '程序检查').slice(0, 80),
     prompt: String(prompt || JSON.stringify(rawOp).slice(0, MAX_PROMPT_CHARS)),
     depends_on: depends_on.map(String),
@@ -315,7 +345,7 @@ export function injectScriptFinalReport(norm) {
   const rawOp = { op: 'report', id, from, ask, auto: true };
   const node = makeSimpleNode({
     id,
-    name: t('最终报告'),
+    name: '交付报告主编',
     role: t('汇总'),
     prompt: ask,
     depends_on: from,
@@ -573,7 +603,12 @@ function walkOps(ops, ctx, outItems, outNodes) {
     }
     // 分支/循环体节点 id 按规格派生；顶层节点用显式 id
     const baseId = ctx.topLevel && !ctx.forceDerived ? opId : `${ctx.prefix}.${i}`;
-    const name = text(raw.name) || `${op === 'report' ? '汇总' : op === 'verify' ? '验证' : op === 'gate' || op === 'aggregate' ? '程序' : op === 'loop' ? '循环' : op === 'recurse' ? '递归' : '步骤'} ${baseId}`;
+    // 展示名：模型给了像样的职位名就用；否则按 op + 关键词生成职位名（旧行为是「步骤/验证/汇总 <id>」）
+    const name = scriptNodeTitle(op, {
+      name: text(raw.name) || (isObj(raw.step) ? text(raw.step.name) : ''),
+      prompt: text(raw.prompt) || (isObj(raw.step) ? text(raw.step.prompt) : ''),
+      role: text(raw.role) || (isObj(raw.step) ? text(raw.step.role) : ''),
+    });
     const role = text(raw.role);
 
     if (op === 'step') {
@@ -591,6 +626,7 @@ function walkOps(ops, ctx, outItems, outNodes) {
       if (dependsOn.includes(baseId)) return t('节点 {id} 不能依赖自己', { id: baseId });
       const node = makeSimpleNode({
         id: baseId, name, role, prompt, depends_on: dependsOn, opType: 'step', rawOp: raw,
+        originalName: text(raw.name),
       });
       const claimError = claimResultId(ctx, baseId, opId);
       if (claimError) return claimError;
@@ -785,6 +821,7 @@ function walkOps(ops, ctx, outItems, outNodes) {
         kind: 'verify',
         opType: 'verify',
         extra: { blind: true },
+        originalName: text(raw.name),
         rawOp: raw,
       });
       const claimError = claimResultId(ctx, baseId, opId);
@@ -817,6 +854,7 @@ function walkOps(ops, ctx, outItems, outNodes) {
         kind: 'report',
         opType: 'report',
         extra: { delivered: false },
+        originalName: text(raw.name),
         rawOp: raw,
       });
       const claimError = claimResultId(ctx, baseId, opId);
@@ -1920,6 +1958,8 @@ export async function runScriptWorkflow({
       requiresTools = needsEvidence({
         kind: node.kind || null,
         name: node.name,
+        // 展示名是引擎生成的职位名：取证判定只认模型原始 name（空串=没给）
+        ...(Object.prototype.hasOwnProperty.call(node, 'originalName') ? { originalName: node.originalName } : {}),
         role: node.role,
         prompt: node.template || node.prompt,
       });

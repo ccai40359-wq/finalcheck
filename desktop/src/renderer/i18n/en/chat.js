@@ -188,6 +188,8 @@ export const EN_CHAT = {
   '没有返回内容': 'No content returned',
   '已中断（用户停止）': 'Interrupted (stopped by user)',
   '输出被截断': 'Output truncated',
+  '工具参数被输出上限截断': 'Tool arguments truncated by the output limit',
+  '工具参数不是合法 JSON': 'Tool arguments are not valid JSON',
   '程序闸失败': 'Program gate failed',
   '应用重启导致中断': 'Interrupted by app restart',
   '复核超时未完成': 'Verification timed out; not completed',
@@ -231,5 +233,13 @@ export const EN_CHAT = {
   // 整卡折叠（ZCode 样式：卡片右上角箭头）
   '进度': 'Progress',
   '展开验收单': 'Expand checklist',
-  '收起验收单': 'Collapse checklist'
+  '收起验收单': 'Collapse checklist',
+  // 常驻面板（会话内容区右上角）与历史回合的单行摘要
+  '验收单面板': 'Checklist panel',
+  '本轮验收单 {done}/{total}': 'Checklist · {done}/{total} this turn',
+  '窗口较窄，验收单自动折叠为一行': 'Window too narrow: checklist collapsed to one line',
+
+  // 输入区 / 通用复制按钮
+  '附件保存失败': 'Failed to save attachment',
+  '复制修复提示词': 'Copy fix prompt'
 };

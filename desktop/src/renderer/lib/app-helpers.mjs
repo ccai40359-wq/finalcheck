@@ -181,6 +181,7 @@ export const expandSkill = (text, skills) => {
 - 步骤数量固定、方向并列/串行 → 用 steps（DAG）：设计 2-8 个步骤（id/name/role/prompt/depends_on），互不依赖的步骤会并行执行；每步 prompt 必须自包含（要做什么、输入是什么、交付什么），上游结果引擎会自动附上。
 - 步骤数量由上游结果决定（按列表逐个处理、循环到满足条件、按类型递归、条件分支、纯计算汇总）→ 用 script（受限 JSON 指令）：step/fanout/if/gate/verify/report/loop/recurse/aggregate，只解释执行、不运行代码。
 - 判断不了 → 默认 steps。
+- 每个步骤/节点都要给 name，且必须是职位名（4-10 字，如「SQL 注入审查员」「依赖供应链专员」「交付报告主编」）；不许写「步骤 1」「分析」「检查」这种序号名或泛词。
 拿到各步结果后再汇总成一份结论——不要只列计划，也不要用文字模拟并行；最后用一句话说明本次用了哪种、为什么。${task ? `\n任务：${task}` : ''}`;
   }
   // 技能 token 可以嵌在正文里：逐个展开成 read_playbook 指令，保留其它文字

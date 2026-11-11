@@ -1,5 +1,30 @@
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
 import { humanizeUpdateError } from '../../renderer/lib/updater-state.mjs';
+import { parseChangelog } from '../../renderer/lib/changelog.mjs';
 import { t } from '../../renderer/i18n/core.mjs';
+
+// 更新详情：打包后读 extraResources 带进来的 CHANGELOG.md；开发态读仓库根。
+// 依次尝试多个候选路径，全部失败时返回空文本（界面显示「暂无更新记录」，不报错）。
+async function readChangelogText(app) {
+  const candidates = [];
+  // 打包后 extraResources 把 CHANGELOG.md 放到 resources 根；优先读它
+  if (process.resourcesPath) {
+    candidates.push(path.join(process.resourcesPath, 'CHANGELOG.md'));
+  }
+  try {
+    // electron-vite 开发态 app.getAppPath() 指向 desktop/，仓库根在上一级
+    candidates.push(path.resolve(app.getAppPath(), '..', 'CHANGELOG.md'));
+  } catch { /* 取不到 appPath 时继续用 cwd 候选 */ }
+  candidates.push(path.resolve(process.cwd(), 'CHANGELOG.md'));
+  candidates.push(path.resolve(process.cwd(), '..', 'CHANGELOG.md'));
+  for (const file of candidates) {
+    try {
+      return await readFile(file, 'utf8');
+    } catch { /* 试下一个候选路径 */ }
+  }
+  return '';
+}
 
 // ---- 自动更新（GitHub Release）：只有安装版（app.isPackaged）才联网检查 ----
 export function registerUpdaterIpc({ ipcMain, app, getWin }) {
@@ -76,6 +101,16 @@ export function registerUpdaterIpc({ ipcMain, app, getWin }) {
 
   // ---- 自动更新 IPC：任何分支都返回对象，不向渲染层抛异常 ----
   ipcMain.handle('finalcheck:update:version', () => app.getVersion());
+  // 更新详情：{ version, entries, raw }；读不到或解析失败也返回空 entries，由界面兜底
+  ipcMain.handle('finalcheck:update:changelog', async () => {
+    const version = app.getVersion();
+    try {
+      const raw = await readChangelogText(app);
+      return { version, entries: parseChangelog(raw), raw };
+    } catch {
+      return { version, entries: [], raw: '' };
+    }
+  });
   ipcMain.handle('finalcheck:update:check', async () => {
     const currentVersion = app.getVersion();
     if (!app.isPackaged) {
