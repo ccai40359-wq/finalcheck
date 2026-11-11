@@ -1,0 +1,172 @@
+{
+  "entries": [
+    {
+      "rule": "S3.history-private-key",
+      "file": "playbooks/web-vuln/04-前端JS与API信息收集/前端JS与API信息收集-JSAPIRecon.md",
+      "line": 87,
+      "hash": "e0b41fd59636f862cd112a0d379b32247548f3ce05882ba9e8f2e851205dcaf4",
+      "reason": "规则/手册中的教学示例，不是真实密钥（历史提交中的同一行仍为合成值）",
+      "expires": "2027-01-01"
+    },
+    {
+      "rule": "S3.private-key",
+      "file": "playbooks/web-vuln/04-前端JS与API信息收集/前端JS与API信息收集-JSAPIRecon.md",
+      "line": 87,
+      "hash": "e0b41fd59636f862cd112a0d379b32247548f3ce05882ba9e8f2e851205dcaf4",
+      "reason": "规则/手册中的教学示例，不是真实密钥",
+      "expires": "2027-01-01"
+    },
+    {
+      "rule": "S3.weak-default",
+      "file": "playbooks/web-vuln/21-越权访问-IDOR/越权访问-IDOR.md",
+      "line": 205,
+      "hash": "4c7cf8c817f899c581e099f0da1303f8da4bd55784d0759b957ac8f2507bad9e",
+      "reason": "规则/手册中的教学示例，不是真实密钥",
+      "expires": "2027-01-01"
+    },
+    {
+      "rule": "S3.secret-literal",
+      "file": "playbooks/web-vuln/25-业务逻辑漏洞-BusinessLogic/业务逻辑漏洞-BusinessLogic-SCENARIOS.md",
+      "line": 373,
+      "hash": "6bd3e2828753297c2e6841457ad72c0e9d19e9ecae93c6c8077687b975a6bc4f",
+      "reason": "规则/手册中的教学示例，不是真实密钥",
+      "expires": "2027-01-01"
+    },
+    {
+      "rule": "S3.history-private-key",
+      "file": "rules/RULES-L1.md",
+      "line": 10,
+      "hash": "1c2f7eafb3b8d62d12d10ca8dd0127d0abe96f809f55cf956e133112277378a3",
+      "reason": "规则/手册中的教学示例，不是真实密钥（历史提交中的同一行仍为合成值）",
+      "expires": "2027-01-01"
+    },
+    {
+      "rule": "S3.private-key",
+      "file": "rules/RULES-L1.md",
+      "line": 10,
+      "hash": "1c2f7eafb3b8d62d12d10ca8dd0127d0abe96f809f55cf956e133112277378a3",
+      "reason": "规则/手册中的教学示例，不是真实密钥",
+      "expires": "2027-01-01"
+    },
+    {
+      "rule": "S3.history-secret-literal",
+      "file": "tests/agent-tools.test.mjs",
+      "line": 193,
+      "hash": "94bc3ec8a771c6dc350fff5f176c415778c5e478c276788d4badc41f782fcafc",
+      "reason": "测试用合成密钥/夹具，不是真实凭据（历史提交中的同一行仍为合成值）",
+      "expires": "2027-01-01"
+    },
+    {
+      "rule": "S3.history-secret-literal",
+      "file": "tests/diagnostics.test.mjs",
+      "line": 26,
+      "hash": "177889b616c595d79eec94ce1b62f7b64013870acf6188c6bca8dcb31eb4edac",
+      "reason": "测试用合成密钥/夹具，不是真实凭据（历史提交中的同一行仍为合成值）",
+      "expires": "2027-01-01"
+    },
+    {
+      "rule": "S3.secret-literal",
+      "file": "tests/diagnostics.test.mjs",
+      "line": 70,
+      "hash": "3e2ec6a70db1d4cbfd42f6e271f9a50125dec154afc46a699e7821d3a6981f2e",
+      "reason": "测试用合成密钥/夹具，不是真实凭据",
+      "expires": "2027-01-01"
+    },
+    {
+      "rule": "S3.secret-value",
+      "file": "tests/diagnostics.test.mjs",
+      "line": 83,
+      "hash": "5df0d5a75efd3b69ee0b576040647836fbfdee22134f1f1bdefa3fa8d591fd9f",
+      "reason": "测试用合成密钥/夹具，不是真实凭据",
+      "expires": "2027-01-01"
+    },
+    {
+      "rule": "S3.history-secret-literal",
+      "file": "tests/diagnostics.test.mjs",
+      "line": 113,
+      "hash": "9ba26dfc1ba999f58a9b6dd34c2d6b67c52ddd1af1f99b0502e81057b40c03d1",
+      "reason": "测试用合成密钥/夹具，不是真实凭据（历史提交中的同一行仍为合成值）",
+      "expires": "2027-01-01"
+    },
+    {
+      "rule": "S3.secret-value",
+      "file": "tests/handover.test.mjs",
+      "line": 176,
+      "hash": "cb492af9a9b1d6cf3f43c6bbb65dba2871c871f01cb951ff7b9fec5de743ce42",
+      "reason": "测试用合成密钥/夹具，不是真实凭据",
+      "expires": "2027-01-01"
+    },
+    {
+      "rule": "S3.history-secret-literal",
+      "file": "tests/policy.test.mjs",
+      "line": 366,
+      "hash": "5aea7a9d850950505840dc4661b1bea64ab4967ddbbde411e0120b8b0e65e33f",
+      "reason": "测试用合成密钥/夹具，不是真实凭据（历史提交中的同一行仍为合成值）",
+      "expires": "2027-01-01"
+    },
+    {
+      "rule": "S3.secret-literal",
+      "file": "tests/profile.test.mjs",
+      "line": 232,
+      "hash": "c816f20f3082151b9132a1169e59ea6cad4f477f5a804da12c7a010492c2623a",
+      "reason": "测试用合成密钥/夹具，不是真实凭据",
+      "expires": "2027-01-01"
+    },
+    {
+      "rule": "S3.secret-literal",
+      "file": "tests/quality.test.mjs",
+      "line": 67,
+      "hash": "ad956f60e68b7495a7638c7bd34a5a302ad8bdc924970b73dc59fd15fb92b183",
+      "reason": "测试用合成密钥/夹具，不是真实凭据",
+      "expires": "2027-01-01"
+    },
+    {
+      "rule": "S3.secret-literal",
+      "file": "tests/readability.test.mjs",
+      "line": 202,
+      "hash": "b7c122a002e760762ad8bb92c6b2d119d7b89361d8b7a8f13a88e6335aebffee",
+      "reason": "测试用合成密钥/夹具，不是真实凭据",
+      "expires": "2027-01-01"
+    },
+    {
+      "rule": "S3.secret-literal",
+      "file": "tests/scan-prune.test.mjs",
+      "line": 83,
+      "hash": "52b6282ad356dbf27fb8a70fe5a02ac8c669239b759228b449344c1c70e123cf",
+      "reason": "测试用合成密钥/夹具，不是真实凭据",
+      "expires": "2027-01-01"
+    },
+    {
+      "rule": "S3.secret-literal",
+      "file": "tests/verdict.test.mjs",
+      "line": 147,
+      "hash": "f82e50a54b7ed9f4017addf321cb8f7cf79c35d686085896e07ed3ba9aadff38",
+      "reason": "测试用合成密钥/夹具，不是真实凭据",
+      "expires": "2027-01-01"
+    },
+    {
+      "rule": "S3.secret-value",
+      "file": "tmp-redteam/probe2.mjs",
+      "line": 24,
+      "hash": "ba3d5256b28d1fee9b1ff7c7ddffd876c034c8d49fc5e6953ab46ae3faa14aeb",
+      "reason": "红队临时脚本中的合成 payload，不是真实凭据",
+      "expires": "2027-01-01"
+    },
+    {
+      "rule": "S3.secret-literal",
+      "file": "tmp-redteam/sqlresidue.mjs",
+      "line": 15,
+      "hash": "354e9a65c56c042f70df99aaa9cb55dcd8b67e7967cae5cbf8afab928671e599",
+      "reason": "红队临时脚本中的合成 payload，不是真实凭据",
+      "expires": "2027-01-01"
+    },
+    {
+      "rule": "S3.secret-literal",
+      "file": "tmp-redteam/sqlresidue2.mjs",
+      "line": 13,
+      "hash": "354e9a65c56c042f70df99aaa9cb55dcd8b67e7967cae5cbf8afab928671e599",
+      "reason": "红队临时脚本中的合成 payload，不是真实凭据",
+      "expires": "2027-01-01"
+    }
+  ]
+}

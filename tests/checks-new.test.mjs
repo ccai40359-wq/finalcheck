@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkInject } from '../src/checks/inject.mjs';
+import { checkAuthCoverage } from '../src/checks/routes.mjs';
 import { checkAuthz } from '../src/checks/authz.mjs';
 import { checkPassword } from '../src/checks/password.mjs';
 import { extractRoutes } from '../src/extract-routes.mjs';
@@ -75,6 +76,27 @@ test('S2 path traversal and reflected XSS rules; clean control zero false positi
   assert.deepEqual(clean.findings, [], 'static sendFile and escaped send must not be flagged');
 });
 
+/* ---------- S1 鉴权覆盖 ---------- */
+
+test('S1 empty route table is structurally not-applicable, not a capability gap', async () => {
+  const r = await checkAuthCoverage({ routes: [], publicRoutes: [] });
+  assert.equal(r.checkId, 'S1');
+  assert.deepEqual(r.findings, []);
+  assert.equal(r.gapKind, 'not-applicable');
+  assert.match(String(r.coverageGap), /路由表为空/);
+  assert.match(String(r.coverageGap), /不适用/);
+});
+
+test('S1 still flags an unguarded route when the table is non-empty', async () => {
+  const r = await checkAuthCoverage({
+    routes: [{ method: 'get', path: '/orders/:id', file: 'routes.js', line: 3, hasGuard: false }],
+    publicRoutes: [],
+  });
+  assert.equal(r.findings.length, 1);
+  assert.equal(r.findings[0].rule, 'S1.no-guard');
+  assert.equal(r.coverageGap, null);
+});
+
 /* ---------- S7 越权 ---------- */
 
 test('S7 target routes without owner filter are flagged for manual confirmation', async () => {
@@ -100,23 +122,44 @@ test('S7 force becomes card at L3', async () => {
   assert.ok(r.findings.length >= 1 && r.findings.every((f) => f.force === 'card' && f.severity === 'high'));
 });
 
-test('S7 owner-filtered fixture yields zero findings', async () => {
+test('S7 owner-filtered fixture yields zero findings and no coverage gap', async () => {
   const routeResult = await extractRoutes(fx('authz-ok'));
   assert.ok(routeResult.routes.length >= 3, 'fixture routes must be extracted');
   const r = await checkAuthz(fx('authz-ok'), { tier: 'L3', routeResult });
   assert.deepEqual(r.findings, []);
+  assert.equal(r.coverageGap, null, '真的分析了 ≥1 条目标路由后才可能给过');
 });
 
-test('S7 excludes drop route files from judgement', async () => {
+test('S7 excludes dropping all target route files → coverageGap, not pass', async () => {
   const routeResult = await extractRoutes(fx('authz-no-owner'));
   const r = await checkAuthz(fx('authz-no-owner'), { tier: 'L2', routeResult, excludes: ['routes'] });
   assert.deepEqual(r.findings, []);
+  assert.match(String(r.coverageGap), /未验证/);
+  assert.match(String(r.coverageGap), /exclude/);
 });
 
-test('S7 without routeResult fails open with a warning', async () => {
+test('S7 without routeResult and no IPC → not-applicable, not a capability gap', async () => {
   const r = await checkAuthz(fx('authz-ok'), { tier: 'L2' });
   assert.deepEqual(r.findings, []);
-  assert.ok(r.warnings.length >= 1);
+  assert.equal(r.gapKind, 'not-applicable');
+  assert.match(String(r.coverageGap), /未发现 HTTP 路由或 IPC 权限面/);
+  assert.match(String(r.coverageGap), /不适用/);
+});
+
+test('S7 empty route table and no IPC → not-applicable, never a capability gap', async () => {
+  const r = await checkAuthz(fx('authz-ok'), { tier: 'L2', routeResult: { routes: [], publicRoutes: [], warnings: [] } });
+  assert.deepEqual(r.findings, []);
+  assert.equal(r.gapKind, 'not-applicable');
+  assert.match(String(r.coverageGap), /不适用/);
+});
+
+test('S7 route table without target routes → coverageGap, never pass', async () => {
+  const r = await checkAuthz(fx('authz-ok'), {
+    tier: 'L2',
+    routeResult: { routes: [{ method: 'get', path: '/health', file: 'routes/users.js', line: 3 }], publicRoutes: [], warnings: [] },
+  });
+  assert.deepEqual(r.findings, []);
+  assert.match(String(r.coverageGap), /未发现可分析的目标路由/);
 });
 
 /* ---------- S8 密码与会话 ---------- */

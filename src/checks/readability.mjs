@@ -1,9 +1,13 @@
-import { readdir, readFile, stat } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { parse } from '@babel/parser';
 import { t } from '../../desktop/src/renderer/i18n/core.mjs';
 import { findBinary } from '../which.mjs';
+import { listTextFiles, prunedWarning, fixturesWarning } from '../walk.mjs';
+import {
+  DEFAULT_NOISE_HINTS, noiseWarning, reportCap, truncationRecord, truncationWarning,
+} from '../report-caps.mjs';
 
 // Q4 可读性检查（纯静态启发式，不执行被审代码、不联网、不装依赖）。
 //
@@ -16,17 +20,15 @@ import { findBinary } from '../which.mjs';
 //   2. 嵌套过深      函数内控制流 > 4 层
 //   3. 注释密度过低  ≥200 行且注释行 < 3%（排除生成代码 / 头部 eslint-disable / minified）
 //   4. 魔法数        同一函数内 ≥3 个字面量数字（排除 0/1/-1/2/100/1000 与计时/尺寸上下文）
-//   5. 命名          单字母变量（排除 i/j/k/x/y/z、循环变量、解构占位、_ 前缀、全大写常量）
+//   5. 命名          单字母/无信息词/单字符函数名（排除循环变量、解构占位、_ 前缀、真正有初始值线索的局部临时量）
 //   6. 重复表达      同文件内 ≥3 处相同字符串字面量（≥12 字符）
 //   7. any/@ts-ignore ts/tsx 里的 any / as any / @ts-ignore
 //
 // 阈值全部可由 opts.thresholds 覆盖；默认值见 DEFAULT_THRESHOLDS。
 const CHECK_ID = 'Q4';
 
-const CODE_RE = /\.(?:ts|js|mjs|cjs|jsx|tsx)$/i;
 const TS_EXT_RE = /\.(?:ts|tsx)$/i;
-// 与 Q3 保持一致的剪枝口径
-const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', 'out', 'vendor']);
+// 文件收集统一走 walk.mjs（与 Q3/Q5 同一份构建产物/夹具/exclude 口径）
 const WALK_DEPTH_LIMIT = 12;
 const MAX_SNIPPET = 120;
 
@@ -41,7 +43,12 @@ const DEFAULT_THRESHOLDS = Object.freeze({
   magicNumberCount: 3,         // 同一函数内非豁免数字个数
   duplicateStringMinLength: 12,
   duplicateStringCount: 3,
-  maxFindingsPerRule: 10,      // 单文件单规则最多报几条，防刷屏
+  // 单文件单规则上限：默认 Infinity（不截断）。命令行/reportCaps["Q4.perFile"] 是正式开关；
+  // 这里保留旧阈值键作为兼容回落，显式传正整数时才按旧行为截断。
+  maxFindingsPerRule: Infinity,
+  // 跨文件全局限额：默认不截断（Infinity）。显式配置 reportCaps["Q4.perRule"] 时才按规则取前 N 条，
+  // 截断会同时写 warning 与 reportTruncations（报告 ## Not covered 点名）。只影响「报几条」，不改规则阈值。
+  maxFindingsPerRuleGlobal: Infinity,
 });
 
 const FUNCTION_TYPES = new Set([
@@ -75,6 +82,13 @@ const TIMING_FN_NAMES = new Set([
 
 // 允许的单字母名：循环变量 / 坐标 / 占位
 const NAMING_ALLOWED = new Set(['i', 'j', 'k', 'x', 'y', 'z']);
+// 明确无信息量的变量名：这些名字放到任何上下文里都看不出用途
+const NAMING_NOISE = new Set(['data', 'temp', 'tmp', 'foo', 'bar', 'obj', 'val', 'arr', 'str', 'num']);
+// 初始值本身说明不了含义的形态：没有初始值，或只是一个字面量/简单容器/直接引用
+const NAMING_OPAQUE_INIT_TYPES = new Set([
+  'NumericLiteral', 'StringLiteral', 'BooleanLiteral', 'NullLiteral', 'BigIntLiteral',
+  'RegExpLiteral', 'ObjectExpression', 'ArrayExpression', 'Identifier', 'TemplateLiteral',
+]);
 
 const SKIP_KEYS = new Set([
   'loc', 'start', 'end', 'range', 'extra', 'leadingComments', 'trailingComments',
@@ -110,6 +124,11 @@ function normalizeThresholds(raw, warnings) {
   for (const key of Object.keys(DEFAULT_THRESHOLDS)) {
     if (!Object.prototype.hasOwnProperty.call(raw, key)) continue;
     const value = Number(raw[key]);
+    // Infinity 是默认值的合法形态（不截断）；JSON 写不出来，但代码调用可以直接传
+    if (value === Infinity) {
+      out[key] = Infinity;
+      continue;
+    }
     if (!Number.isFinite(value) || value <= 0) {
       warnings.push(t('Q4：阈值 {key} 无效（{value}），使用默认 {def}', { key, value: String(raw[key]), def: DEFAULT_THRESHOLDS[key] }));
       continue;
@@ -278,60 +297,27 @@ function countCommentLines(lines) {
 
 // ---------------------------------------------------------------- 文件收集
 
-async function collectSourceFiles(projectDir, excludes, thresholds) {
-  const files = [];
-  const tooBig = [];
-  let overLimit = false;
-  const excluded = (rel) => excludes.some((x) => {
-    const n = String(x).replace(/\\/g, '/');
-    return rel === n || rel.startsWith(`${n}/`);
-  });
-
-  async function walk(dir, depth) {
-    if (overLimit || depth > WALK_DEPTH_LIMIT) return;
-    let entries;
-    try { entries = await readdir(dir, { withFileTypes: true }); } catch { return; }
-    entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-    for (const entry of entries) {
-      if (overLimit) return;
-      if (entry.isSymbolicLink()) continue;
-      const abs = path.join(dir, entry.name);
-      const rel = path.relative(projectDir, abs).replace(/\\/g, '/');
-      if (entry.isDirectory()) {
-        if (SKIP_DIRS.has(entry.name.toLowerCase()) || entry.name.startsWith('.')) continue;
-        if (excluded(rel)) continue;
-        await walk(abs, depth + 1);
-        continue;
-      }
-      if (!entry.isFile() || !CODE_RE.test(entry.name)) continue;
-      if (excluded(rel)) continue;
-      if (files.length >= thresholds.maxFiles) { overLimit = true; return; }
-      const info = await stat(abs).catch(() => null);
-      if (!info) continue;
-      if (info.size > thresholds.maxFileBytes) { tooBig.push(rel); continue; }
-      files.push(abs);
-    }
-  }
-  await walk(projectDir, 0);
-  return { files, tooBig, overLimit };
-}
-
 // ---------------------------------------------------------------- 单文件分析
 
-function makeEmitter(findings, warnings, file, thresholds) {
+function makeEmitter(findings, warnings, file, thresholds, perFile) {
   const counts = new Map();
   return function emit(rule, severity, line, message, snippet) {
     const seen = counts.get(rule) || 0;
-    if (seen >= thresholds.maxFindingsPerRule) {
+    counts.set(rule, seen + 1);
+    // reportCaps["Q4.perFile"]：按文件+规则截断，总量在扫描结束后统一记账（warning/Not covered 要写准确数字）
+    if (perFile) {
+      const key = `${file}\u0000${rule}`;
+      perFile.totals.set(key, (perFile.totals.get(key) || 0) + 1);
+      if (seen >= perFile.cap) return;
+    } else if (seen >= thresholds.maxFindingsPerRule) {
+      // 兼容旧阈值键：显式传 thresholds.maxFindingsPerRule 时才走这条老路
       if (seen === thresholds.maxFindingsPerRule) {
         warnings.push(t('Q4：{file} 的 {rule} 命中过多，仅报告前 {max} 条', {
           file, rule, max: thresholds.maxFindingsPerRule,
         }));
       }
-      counts.set(rule, seen + 1);
       return;
     }
-    counts.set(rule, seen + 1);
     const evidence = { file, line, snippet };
     findings.push({
       checkId: CHECK_ID,
@@ -493,20 +479,57 @@ function analyzeFile({ file, ext, text, thresholds, emit, warnings }) {
     }
   }
 
-  // 规则 5 单字母变量（只看 let/const/var 声明；函数参数另行人工复核）
+  // 规则 5 命名：只有「名字 + 初始值都看不出用途」才报。
+  // 不报：循环变量、解构占位、_ 前缀、i/j/k/x/y/z、真正常量；回调参数/catch(e) 本来就不在变量声明范围内。
+  // 单字母变量若初始值已经带了用途线索（Number(...)/String(...)/await loadX() 等），按误报处理，不报。
   for (const item of walkDeclarators(ast)) {
     const { node, parent, grandparent } = item;
     const id = node.id;
     if (!id || id.type !== 'Identifier') continue; // 解构声明占位不报
     const name = id.name;
-    if (name.length !== 1) continue;
-    if (NAMING_ALLOWED.has(name) || NAMING_ALLOWED.has(name.toLowerCase())) continue;
-    if (name === '_' || name.startsWith('_')) continue;
-    if (/^[A-Z]$/.test(name)) continue; // 全大写常量不报
-    if (isLoopVariable(parent, grandparent)) continue;
+    if (name.startsWith('_')) continue; // 约定忽略（含 _ 本身）
+    if (isLoopVariable(parent, grandparent)) continue; // 循环变量 i/j/k/n 等一律不按命名问题报
+    const kind = parent && parent.type === 'VariableDeclaration' ? parent.kind : '';
+    const single = name.length === 1;
+    const upper = single && /^[A-Z]$/.test(name);
+    const allCapsMutable = !single && /^[A-Z][A-Z0-9_]*$/.test(name) && kind !== 'const';
+    if (single && NAMING_ALLOWED.has(name.toLowerCase())) continue; // 坐标/循环约定
+    if (upper && kind === 'const') continue; // 全大写且 const：真常量不报
+    let reason = null;
+    if (upper) {
+      reason = t('变量 {name} 是全大写单字母但未声明为常量，看不出用途，建议改成有说明性的常量名', { name });
+    } else if (allCapsMutable) {
+      reason = t('变量 {name} 是全大写但声明为可变变量（非 const），看不出用途，建议改成有说明性的常量名', { name });
+    } else if (single) {
+      const init = node.init;
+      const opaque = !init || NAMING_OPAQUE_INIT_TYPES.has(init.type);
+      // 模块级 let 单字母即使有初始值也难判断用途（作用域大且可反复赋值）；
+      // 函数内临时量若有 Number()/await loadX() 这类线索，按误报处理不报。
+      const topLevelLet = kind === 'let' && isTopLevelVariable(parent, grandparent);
+      if (!opaque && !topLevelLet) continue;
+      reason = t('变量 {name} 看不出用途，建议改成能读懂用途的名字', { name });
+    } else if (NAMING_NOISE.has(name)) {
+      reason = t('变量 {name} 无信息量（data/temp/foo 这类名字看不出用途），建议改成能读懂用途的名字', { name });
+    }
+    if (!reason) continue;
     const line = id.loc ? id.loc.start.line : 0;
+    emit('Q4.naming', 'low', line, reason, snippetAt(lines, line));
+  }
+
+  // 单字符函数名：只报真正的函数名（函数声明 / 方法 / 具名函数表达式）。
+  // 箭头函数赋给变量属于变量命名问题，由上面的变量规则处理，避免同一处被报两次。
+  for (const entry of functions) {
+    const { node } = entry;
+    let fname = '';
+    if (node.id && node.id.type === 'Identifier') fname = node.id.name;
+    else if (node.key && node.key.type === 'Identifier') fname = node.key.name;
+    else if (node.key && node.key.type === 'StringLiteral') fname = node.key.value;
+    if (!fname || fname.length !== 1) continue;
+    if (fname.startsWith('_') || NAMING_ALLOWED.has(fname.toLowerCase())) continue;
+    if (/^[A-Z]$/.test(fname)) continue; // 大写单字母函数名（类/构造函数约定）不报
+    const line = node.loc ? node.loc.start.line : 0;
     emit('Q4.naming', 'low', line,
-      t('变量 {name} 语义不明，建议改成能读懂用途的名字', { name }),
+      t('函数 {name} 是单字符名，看不出用途，建议改成能读懂用途的名字', { name: fname }),
       snippetAt(lines, line));
   }
 
@@ -565,6 +588,15 @@ function isLoopVariable(parent, grandparent) {
   ));
 }
 
+function isTopLevelVariable(parent, grandparent) {
+  if (!parent || parent.type !== 'VariableDeclaration') return false;
+  return Boolean(grandparent && (
+    grandparent.type === 'Program'
+    || grandparent.type === 'ExportNamedDeclaration'
+    || grandparent.type === 'ExportDefaultDeclaration'
+  ));
+}
+
 // rust-code-analysis 是可选增强：查得到就试一次，任何失败静默回落到纯 Babel 结果
 function tryRustMetrics(projectDir) {
   try {
@@ -591,13 +623,29 @@ export async function checkReadability(projectDir, opts = {}) {
   const findings = [];
   const warnings = [];
   const thresholds = normalizeThresholds(opts.thresholds, warnings);
+  const globalCap = reportCap(opts.reportCaps, 'Q4.perRule', thresholds.maxFindingsPerRuleGlobal);
+  // 单文件单规则上限：默认 Infinity；显式 reportCaps["Q4.perFile"] 才截断（旧的 thresholds.maxFindingsPerRule 仅作兼容回落）
+  const perFileCapConfig = reportCap(opts.reportCaps, 'Q4.perFile', Infinity);
+  const perFile = perFileCapConfig === Infinity ? null : { cap: perFileCapConfig, totals: new Map() };
   const excludes = Array.isArray(opts.excludes) ? opts.excludes : [];
   const root = projectDir || '.';
 
-  const { files, tooBig, overLimit } = await collectSourceFiles(root, excludes, thresholds);
+  const {
+    files, skipped: tooBig, pruned, fixtures, overLimit,
+  } = await listTextFiles(root, excludes, {
+    codeOnly: true,
+    maxBytes: thresholds.maxFileBytes,
+    maxFiles: thresholds.maxFiles,
+    maxDepth: WALK_DEPTH_LIMIT,
+    includeFixtures: opts.includeFixtures === true,
+  });
   if (overLimit) {
     warnings.push(t('Q4：代码文件超过上限 {max} 个，只扫描前 {max} 个', { max: thresholds.maxFiles }));
   }
+  const pword = prunedWarning(pruned);
+  if (pword) warnings.push(t('Q4：{msg}', { msg: pword }));
+  const fword = fixturesWarning(fixtures);
+  if (fword) warnings.push(t('Q4：{msg}', { msg: fword }));
   if (tooBig.length) {
     warnings.push(t('Q4：跳过超过 1MB 的文件 {n} 个：{list}', {
       n: tooBig.length,
@@ -619,7 +667,7 @@ export async function checkReadability(projectDir, opts = {}) {
       warnings.push(t('Q4：无法读取 {file}，已跳过', { file }));
       continue;
     }
-    const emit = makeEmitter(findings, warnings, file, thresholds);
+    const emit = makeEmitter(findings, warnings, file, thresholds, perFile);
     const result = analyzeFile({
       file,
       ext: path.extname(abs).toLowerCase(),
@@ -640,7 +688,65 @@ export async function checkReadability(projectDir, opts = {}) {
     || (a.rule < b.rule ? -1 : a.rule > b.rule ? 1 : 0)
   ));
 
-  const out = { checkId: CHECK_ID, findings, coverageGap: null, warnings };
+  // 单文件单规则截断：warning 与 ## Not covered 都要写清「哪个文件、哪条规则、总量、上限、未列出条数」
+  const reportTruncations = [];
+  if (perFile) {
+    for (const [key, total] of perFile.totals) {
+      if (total <= perFile.cap) continue;
+      const [file, rule] = key.split('\u0000');
+      const tr = truncationRecord({
+        checkId: CHECK_ID,
+        rule,
+        configKey: 'Q4.perFile',
+        total,
+        reported: perFile.cap,
+        cap: perFile.cap,
+        file,
+      });
+      reportTruncations.push(tr);
+      warnings.push(truncationWarning(tr));
+    }
+  }
+
+  // 全局限额：默认 Infinity（不截断），findings 原样全部保留；
+  // 只有显式配置 reportCaps["Q4.perRule"] 时才按规则取前 N 条，并在 warning/Not covered 点名总量。
+  const totals = new Map();
+  for (const f of findings) totals.set(f.rule, (totals.get(f.rule) || 0) + 1);
+  let kept = findings;
+  if (globalCap !== Infinity) {
+    kept = [];
+    const keptCounts = new Map();
+    for (const f of findings) {
+      const count = keptCounts.get(f.rule) || 0;
+      keptCounts.set(f.rule, count + 1);
+      if (count < globalCap) kept.push(f);
+    }
+    for (const [rule, total] of totals) {
+      if (total <= globalCap) continue;
+      const tr = truncationRecord({
+        checkId: CHECK_ID,
+        rule,
+        configKey: 'Q4.perRule',
+        total,
+        reported: globalCap,
+        cap: globalCap,
+      });
+      reportTruncations.push(tr);
+      warnings.push(truncationWarning(tr));
+    }
+  }
+  // 未截断但单规则命中偏多：保留噪声提示，条目一条不少
+  for (const [rule, total] of totals) {
+    if (reportTruncations.some((tr) => tr.rule === rule)) continue;
+    if (total > DEFAULT_NOISE_HINTS['Q4.perRule']) {
+      warnings.push(noiseWarning({
+        checkId: CHECK_ID, rule, total, configKey: 'Q4.perRule',
+      }));
+    }
+  }
+  const out = { checkId: CHECK_ID, findings: kept, coverageGap: null, warnings };
+  // 只有真的发生截断才加字段：未配置时返回形状与旧版一致
+  if (reportTruncations.length) out.reportTruncations = reportTruncations;
   if (opts.rustMetrics !== false) {
     const rust = tryRustMetrics(root);
     if (rust) out.rustMetrics = rust;

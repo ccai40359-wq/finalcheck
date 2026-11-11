@@ -37,10 +37,29 @@ function isExcluded(rel, excludes) {
   });
 }
 
+// git 默认 core.quotepath=true：中文路径会输出成 "playbooks/...\345\211\215..."（C 风格八进制转义）。
+// JSON.parse 解不了八进制，直接去引号会把 \345 留在路径里，报告出现乱码目录。
+function decodeGitQuotedPath(body) {
+  const bytes = [];
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i];
+    if (ch !== '\\') { bytes.push(...Buffer.from(ch, 'utf8')); continue; }
+    const next = body[i + 1];
+    const oct = body.slice(i + 1, i + 4);
+    if (/^[0-7]{3}$/.test(oct)) { bytes.push(parseInt(oct, 8)); i += 3; continue; }
+    const esc = { n: 10, t: 9, r: 13, b: 8, f: 12, v: 11, '\\': 92, '"': 34 }[next];
+    if (esc !== undefined) { bytes.push(esc); i += 1; continue; }
+    if (next !== undefined) { bytes.push(...Buffer.from(next, 'utf8')); i += 1; }
+  }
+  return Buffer.from(bytes).toString('utf8');
+}
+
 function parseGitPath(raw) {
   let p = String(raw).trim();
   if (p.startsWith('"') && p.endsWith('"')) {
-    try { p = JSON.parse(p); } catch { p = p.slice(1, -1); }
+    const body = p.slice(1, -1);
+    if (/\\[0-7]{3}/.test(body)) p = decodeGitQuotedPath(body);
+    else { try { p = JSON.parse(p); } catch { p = body; } }
   }
   if (p === '/dev/null') return null;
   if (p.startsWith('b/') || p.startsWith('a/')) p = p.slice(2);

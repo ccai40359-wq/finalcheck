@@ -1,4 +1,5 @@
 import { DIMENSIONS } from './profile.mjs';
+import { truncationNotCoveredLine } from './report-caps.mjs';
 
 const SEV_ORDER = { high: 0, medium: 1, low: 2 };
 const SEV_MARK = { high: '🔴 高危', medium: '🟡 中危', low: '🔵 低危' };
@@ -14,10 +15,79 @@ const AUTH_STEP = { Q1: 'Q1 需要执行项目测试', Q2: 'Q2 需要执行项�
 // 不在任何维度检查清单里的项（目前只有按 finalcheck.quality.json 追加的 Q2）单独成组，不硬塞给某个维度
 const OTHER_GROUP = '其他检查';
 
+// 「低优先建议」聚合时用的短标签：报告里按规则聚成一行，避免 700+ 条逐条刷屏。
+// 未登记的规则统一计入「其他」，--show-low 时仍能看到每一条原文。
+const RULE_SUGGESTION_LABEL = {
+  'Q4.naming': '命名',
+  'Q4.fn-length': '函数过长',
+  'Q4.duplicate-string': '重复字符串',
+  'Q4.magic-number': '魔法数字',
+  'Q4.nesting-depth': '嵌套过深',
+  'Q4.comment-density': '注释过少',
+  'Q4.ts-any': 'any 类型',
+  'Q4.ts-ignore': 'ts-ignore',
+  'Q3.unused-export': '未使用导出',
+  'Q3.duplicate-block': '重复代码块',
+  'Q3.large-file': '超大文件',
+  'Q3.import-cycle': '循环依赖',
+  'Q5.await-in-loop': '循环内 await',
+  'Q5.n-plus-one': 'N+1 查询',
+  'Q5.sync-io-hotpath': '热路径同步 IO',
+  'Q5.json-deep-clone': 'JSON 深拷贝',
+};
+const MAX_NAMED_LOW_GROUPS = 8;
+
+const isBlockingFinding = (f) => f.force === 'card' || f.severity === 'high';
+
+// 三层：会卡交付的（card 或 high）→ 需要人工判断的（medium）→ 低优先建议（其余 low）。
+// 被上层吸收的条目不会重复出现在下层，保证三层条数相加 = findings 总数。
+function splitFindingLayers(findings) {
+  const blocking = findings.filter(isBlockingFinding);
+  const manual = findings.filter((f) => !isBlockingFinding(f) && f.severity === 'medium');
+  const low = findings.filter((f) => !isBlockingFinding(f) && f.severity !== 'medium');
+  return { blocking, manual, low };
+}
+
+function lowSuggestionSummary(low) {
+  const groups = new Map();
+  for (const f of low) groups.set(f.rule, (groups.get(f.rule) || 0) + 1);
+  const known = [];
+  let other = 0;
+  for (const [rule, count] of groups) {
+    const label = RULE_SUGGESTION_LABEL[rule];
+    if (label) known.push([label, count]);
+    else other += count;
+  }
+  known.sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  const shown = known.slice(0, MAX_NAMED_LOW_GROUPS);
+  const omitted = known.slice(MAX_NAMED_LOW_GROUPS).reduce((sum, [, count]) => sum + count, 0);
+  const parts = shown.map(([label, count]) => `${label} ${count}`);
+  if (omitted + other) parts.push(`其他 ${omitted + other}`);
+  return `风格与可读性建议 ${low.length} 条（${parts.join(' / ')}），默认不展开`;
+}
+
+function lowSectionHint(count) {
+  return `- 展开全文：加 \`--show-low\` 重新运行（共 ${count} 条全部保留在 JSON findings 中，未删除）`;
+}
+
 const gapText = (g) => {
   const reason = String(g.reason ?? g.text ?? '');
   return reason.startsWith(`${g.checkId}：`) ? reason : `${g.checkId}：${reason}`;
 };
+
+const gapItemsOf = (res) => res.gates.gapItems || [];
+const reasonOf = (g) => {
+  const reason = String(g.reason ?? g.text ?? '');
+  return reason.startsWith(`${g.checkId}：`) ? reason.slice(g.checkId.length + 1) : reason;
+};
+
+// N/A 是「结构上不适用」，不是「能力缺失」也不是「待授权」；但必须点名它没验证。
+// 维度报告与老格式报告共用这段文案。
+function notApplicableLines(res) {
+  return gapItemsOf(res)
+    .filter((g) => g.kind === 'not-applicable')
+    .map((g) => `- ${g.checkId} 不适用：${reasonOf(g)}（该项未验证，需人工确认）`);
+}
 
 function fixPrompt(f) {
   switch (f.rule) {
@@ -54,10 +124,14 @@ function sortedFindings(res) {
 function coverageLine(res) {
   const executed = res.gates.executed || [];
   const planned = res.gates.planned || [];
-  const notRun = planned.filter((id) => !executed.includes(id));
+  const naIds = new Set(gapItemsOf(res).filter((g) => g.kind === 'not-applicable').map((g) => g.checkId));
+  // N/A 不是「该跑没跑」：从「未跑」列表里摘出来，单独写「不适用」。
+  const notRun = planned.filter((id) => !executed.includes(id) && !naIds.has(id));
+  const notApplicable = planned.filter((id) => !executed.includes(id) && naIds.has(id));
   const notEnabled = Object.keys(CHECK_TITLE).filter((id) => !planned.includes(id));
   return `本轮覆盖：${executed.join('/') || '无'}`
     + (notRun.length ? `；未跑：${notRun.join('/')}` : '')
+    + (notApplicable.length ? `；不适用：${notApplicable.join('/')}` : '')
     + (notEnabled.length ? `；未启用：${notEnabled.join('/')}` : '') + '。';
 }
 
@@ -77,8 +151,12 @@ function headerLines(res) {
   const gapItems = res.gates.gapItems
     || (res.gates.gaps || []).map((g) => ({ checkId: String(g).split('：')[0] || '?', reason: g, kind: 'unavailable' }));
   const pendingAuth = gapItems.filter((g) => g.kind === 'unauthorized');
+  const notApplicable = gapItems.filter((g) => g.kind === 'not-applicable');
+  const unavailable = gapItems.filter((g) => g.kind !== 'unauthorized' && g.kind !== 'not-applicable');
   for (const g of pendingAuth) L.push(`  🟡 待授权：${gapText(g)}`);
-  for (const g of gapItems.filter((x) => x.kind !== 'unauthorized')) L.push(`  ⚠️ 覆盖不足：${gapText(g)}`);
+  // 结构上不适用不是「覆盖不足」：单独提示，避免桌面项目被误读成没查
+  for (const g of notApplicable) L.push(`  ℹ️ 不适用：${gapText(g)}`);
+  for (const g of unavailable) L.push(`  ⚠️ 覆盖不足：${gapText(g)}`);
   if (pendingAuth.length) {
     const steps = pendingAuth.map((g) => AUTH_STEP[g.checkId] || `${g.checkId} 需要授权执行`);
     L.push(`下一步：授权后重跑：${steps.join('；')}`);
@@ -103,14 +181,55 @@ function legacyFindingBlock(f) {
   ];
 }
 
-// 无 profile：保持原有按检查项输出，逐字不变（现有调用方与 780 测试依赖此格式）
-function renderLegacyReport(res) {
+function pushLegacyLayer(L, title, items, hint) {
+  L.push('');
+  L.push(`## ${title}（${items.length} 条${hint}）`);
+  if (!items.length) {
+    L.push('- 无');
+    return;
+  }
+  for (const f of items) L.push(...legacyFindingBlock(f));
+}
+
+function renderLegacyLow(L, low, showLow) {
+  L.push('');
+  L.push(`## 风格与可读性建议（低优先，共 ${low.length} 条${showLow ? '，已展开' : '，默认不展开'}）`);
+  if (!low.length) {
+    L.push('- 无');
+    return;
+  }
+  if (showLow) {
+    for (const f of low) L.push(...legacyFindingBlock(f));
+    return;
+  }
+  // 折叠只影响默认展示：条数与规则分布必须写清，--show-low 可逐条查看，JSON 里也一条不少
+  L.push(`- ${lowSuggestionSummary(low)}`);
+  L.push(lowSectionHint(low.length));
+}
+
+// 无 profile：按严重度分层输出。默认折叠低优先建议，避免 700+ 条把报告刷成噪声；
+// 卡条目/高危永远在最前面且带 file:line，不因折叠而丢失。
+function renderLegacyReport(res, { showLow = false } = {}) {
   const L = headerLines(res);
   const findings = sortedFindings(res);
   L.push('');
   L.push(coverageLine(res));
-  if (!findings.length) L.push('未发现程序可判定的问题。');
-  for (const f of findings) L.push(...legacyFindingBlock(f));
+  if (!findings.length) {
+    L.push('未发现程序可判定的问题。');
+  } else {
+    const layers = splitFindingLayers(findings);
+    pushLegacyLayer(L, '会卡交付的', layers.blocking, '：force=card 或 severity=high');
+    pushLegacyLayer(L, '需要人工判断的', layers.manual, '：medium');
+    renderLegacyLow(L, layers.low, showLow);
+  }
+  // 老格式没有完整的 Not covered 段：reportCaps 截断或结构性 N/A 时补一段
+  const naLines = notApplicableLines(res);
+  if ((res.reportTruncations && res.reportTruncations.length) || naLines.length) {
+    L.push('');
+    L.push('## Not covered');
+    L.push(...(res.reportTruncations || []).map((tr) => truncationNotCoveredLine(tr)));
+    L.push(...naLines);
+  }
   L.push('');
   return L.join('\n');
 }
@@ -137,8 +256,12 @@ function dimensionTable(res, dims) {
     const checks = dimensionChecks(name, d.level);
     const ev = evidenceOf(res, name);
     const notRun = checks.filter((id) => !executed.has(id) && gapItems.some((g) => g.checkId === id));
+    // N/A 显示「不适用」，不能混进「未跑」（那是该跑没跑的意思）
+    const na = notRun.filter((id) => gapItems.some((g) => g.checkId === id && g.kind === 'not-applicable'));
+    const pending = notRun.filter((id) => !na.includes(id));
     let covered = checks.length ? checks.join('、') : '无（该档位不要求检查）';
-    if (notRun.length) covered += `（未跑：${notRun.join('、')}）`;
+    if (pending.length) covered += `（未跑：${pending.join('、')}）`;
+    if (na.length) covered += `（不适用：${na.join('、')}）`;
     // 动态维度必须能一眼看出「实测过」还是「只是声明了授权」
     const dynamicNote = ev.dynamic
       ? (ev.dynamic.measured
@@ -174,20 +297,47 @@ function dimensionFindingBlock(f) {
   ];
 }
 
-function appendGroupedFindings(L, res) {
+function appendDimensionGroups(L, res, list) {
+  const groups = groupFindings(res, list);
+  let first = true;
+  for (const [name, group] of groups) {
+    if (!group.length) continue;
+    if (!first) L.push('');
+    first = false;
+    L.push(`### ${clean(name)}`);
+    for (const f of group) L.push(...dimensionFindingBlock(f));
+  }
+}
+
+function appendDimensionLayer(L, res, title, list, hint) {
+  L.push('');
+  L.push(`**${title}（${list.length} 条${hint}）**`);
+  if (!list.length) {
+    L.push('- 无');
+    return;
+  }
+  appendDimensionGroups(L, res, list);
+}
+
+// 维度报告与老格式共用同一套三层：维度表在前，Findings 里按「卡交付 → 人工判断 → 低优先折叠」排。
+function appendLayeredFindings(L, res, showLow) {
   const findings = sortedFindings(res);
   if (!findings.length) {
     L.push('未发现程序可判定的问题。');
     return;
   }
-  const groups = groupFindings(res, findings);
-  let first = true;
-  for (const [name, list] of groups) {
-    if (!list.length) continue;
-    if (!first) L.push('');
-    first = false;
-    L.push(`### ${clean(name)}`);
-    for (const f of list) L.push(...dimensionFindingBlock(f));
+  const layers = splitFindingLayers(findings);
+  appendDimensionLayer(L, res, '会卡交付的', layers.blocking, '：force=card 或 severity=high');
+  appendDimensionLayer(L, res, '需要人工判断的', layers.manual, '：medium');
+  L.push('');
+  L.push(`**风格与可读性建议（低优先，共 ${layers.low.length} 条${showLow ? '，已展开' : '，默认不展开'}）**`);
+  if (!layers.low.length) {
+    L.push('- 无');
+  } else if (showLow) {
+    appendDimensionGroups(L, res, layers.low);
+  } else {
+    L.push(`- ${lowSuggestionSummary(layers.low)}`);
+    L.push(lowSectionHint(layers.low.length));
   }
 }
 
@@ -205,6 +355,10 @@ function verifiedLines(res, dims) {
 // 「无法验收」必须带原因：维度缺口优先，其次证据面原因；证据等级 not-covered/unverified 的维度也一并点名。
 function notCoveredLines(res, dims) {
   const out = [];
+  // 显式 reportCaps 真的截断时，未列出的发现也属于「没覆盖」：报告正文必须点名，不能只藏在 warnings
+  for (const tr of res.reportTruncations || []) out.push(truncationNotCoveredLine(tr));
+  // 结构性不适用：结论不被封顶，但必须在 Not covered 点名「该项未验证」
+  out.push(...notApplicableLines(res));
   const gapItems = res.gates.gapItems || [];
   for (const [name, d] of Object.entries(dims)) {
     const ev = evidenceOf(res, name);
@@ -227,11 +381,15 @@ function notCoveredLines(res, dims) {
 }
 
 function skippedLines(res) {
-  const gapItems = res.gates.gapItems || [];
-  return gapItems.map((g) => `- ${gapText(g)}（${g.kind === 'unauthorized' ? '待授权，未执行' : '能力缺失，未执行'}）`);
+  return gapItemsOf(res).map((g) => {
+    const label = g.kind === 'unauthorized'
+      ? '待授权，未执行'
+      : g.kind === 'not-applicable' ? '不适用，未验证' : '能力缺失，未执行';
+    return `- ${gapText(g)}（${label}）`;
+  });
 }
 
-function renderDimensionReport(res) {
+function renderDimensionReport(res, { showLow = false } = {}) {
   const dims = res.tier.dimensions;
   const L = ['## Conclusion'];
   L.push(...headerLines(res));
@@ -242,7 +400,7 @@ function renderDimensionReport(res) {
   L.push(coverageLine(res));
   L.push('');
   L.push('## Findings');
-  appendGroupedFindings(L, res);
+  appendLayeredFindings(L, res, showLow);
   L.push('');
   L.push('## Verified');
   const verified = verifiedLines(res, dims);
@@ -259,8 +417,9 @@ function renderDimensionReport(res) {
   return L.join('\n');
 }
 
-export function renderReport(res) {
-  // 触发条件按约定只看 tier.dimensions：有 profile 才换维度视图，老调用方输出逐字不变。
-  if (res.tier && res.tier.dimensions) return renderDimensionReport(res);
-  return renderLegacyReport(res);
+export function renderReport(res, options = {}) {
+  // 触发条件按约定只看 tier.dimensions：有 profile 才换维度视图；
+  // options.showLow 只影响默认展示（false=折叠低优先建议），不删除任何 findings。
+  if (res.tier && res.tier.dimensions) return renderDimensionReport(res, options);
+  return renderLegacyReport(res, options);
 }

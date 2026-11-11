@@ -147,8 +147,8 @@ async function migrationHasDown(projectDir, dirRel) {
 }
 
 /** 备份/恢复：文件名命中（backup*.sh / restore-drill.md）或文本关键字命中 */
-async function hasBackupArtifacts(projectDir, excludes) {
-  const { files, skipped } = await listTextFiles(projectDir, excludes);
+async function hasBackupArtifacts(projectDir, excludes, includeFixtures) {
+  const { files, skipped } = await listTextFiles(projectDir, excludes, { includeFixtures });
   for (const abs of files) {
     const rel = path.relative(projectDir, abs).replace(/\\/g, '/');
     if (BACKUP_NAME_RE.test(path.basename(rel))) return { found: true, evidence: rel, skipped };
@@ -159,7 +159,7 @@ async function hasBackupArtifacts(projectDir, excludes) {
   return { found: false, evidence: null, skipped };
 }
 
-export async function checkOps(projectDir, { tier, excludes = [] } = {}) {
+export async function checkOps(projectDir, { tier, excludes = [], includeFixtures = false } = {}) {
   const findings = [];
   const warnings = [];
   const t = String(tier || 'L3').toUpperCase();
@@ -224,7 +224,7 @@ export async function checkOps(projectDir, { tier, excludes = [] } = {}) {
   }
 
   // 4) 备份/恢复：只在 L3 计分（L2 不产生 finding）
-  const backup = await hasBackupArtifacts(projectDir, excludes);
+  const backup = await hasBackupArtifacts(projectDir, excludes, includeFixtures);
   if (backup.skipped?.length) {
     warnings.push(`备份/恢复扫描跳过 ${backup.skipped.length} 个大文件（>512KB）`);
   }

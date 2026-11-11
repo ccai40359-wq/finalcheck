@@ -41,7 +41,7 @@ function isPublicPath(routePath, publicRoutes) {
   });
 }
 
-export async function checkExternal(projectDir, { tier, excludes = [] } = {}) {
+export async function checkExternal(projectDir, { tier, excludes = [], includeFixtures = false } = {}) {
   const findings = [];
   const warnings = [];
   const t = String(tier || 'L2').toUpperCase();
@@ -101,7 +101,7 @@ export async function checkExternal(projectDir, { tier, excludes = [] } = {}) {
   }
 
   // ---- (b) CORS 任意 Origin + credentials ----
-  const { files, skipped, pruned } = await listTextFiles(projectDir, excludes);
+  const { files, skipped, pruned } = await listTextFiles(projectDir, excludes, { includeFixtures });
   if (skipped.length) warnings.push(`S6：跳过大文件 ${skipped.length} 个（>512KB 未扫描）：${skipped.slice(0, 3).join('、')}${skipped.length > 3 ? '…' : ''}`);
   const pw = prunedWarning(pruned);
   if (pw) warnings.push(`S6：${pw}`);

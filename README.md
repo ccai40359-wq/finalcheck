@@ -1,7 +1,7 @@
 <img src="docs/assets/cover.png" alt="FinalCheck — pre-flight check for code" width="100%">
 
 [![CI](https://github.com/ccai40359-wq/finalcheck/actions/workflows/ci.yml/badge.svg)](https://github.com/ccai40359-wq/finalcheck/actions/workflows/ci.yml)
-![tests](https://img.shields.io/badge/tests-663%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-978%20passing-brightgreen)
 ![license](https://img.shields.io/badge/license-Apache--2.0-blue)
 
 **English** · [简体中文](README.zh-CN.md)
@@ -34,39 +34,113 @@ FinalCheck is a tiered production-readiness desk for people who write with AI bu
 | **Gates & playbooks** | Skill/hook integrations + `playbooks/` | Download gate (before installing/running third-party code) and delivery gate (before handing work over) |
 | **Rulebooks** | Text, per tier | What the AI must follow while writing code, so problems are prevented up front |
 
-## Download
+## Install
 
-Windows installer: [Releases](https://github.com/ccai40359-wq/finalcheck/releases/latest)
+### Prerequisites
 
-1. Download `FinalCheck-install.exe` from the latest release.
-2. Run it, pick the install folder (desktop shortcut included).
+- Windows 10/11 (the desktop app is Windows-first; the CLI also runs on macOS/Linux)
+- Node.js 22 or newer with npm 10 or newer
+- Git (needed for source installs and for the S3 git-history check)
+
+### Installed build
+
+1. Download `FinalCheck-install.exe` from [Releases](https://github.com/ccai40359-wq/finalcheck/releases/latest).
+2. Run it and pick the install folder (a desktop shortcut is included).
 3. On first launch open **Settings → Model settings** and add an OpenAI-compatible gateway (Base URL / API key / model).
 4. Later versions update themselves from the same Releases page.
 
 The build is not code-signed yet, so Windows SmartScreen may show "unrecognized app" — click **More info → Run anyway**.
 
-## Quick start
-
-**Installed build**
-
-1. Download `FinalCheck-install.exe` from [Releases](https://github.com/ccai40359-wq/finalcheck/releases).
-2. Run it, open **Settings → Model settings**, and add an OpenAI-compatible gateway (Base URL ending in `/v1`, API key, model name).
-3. Open a workspace (a folder), choose your tier, and start a session.
-
-**From source**
+### From source
 
 ```bash
 git clone https://github.com/ccai40359-wq/finalcheck
-cd finalcheck
-npm install
-npm test                     # 647 tests
-cd desktop && npm install
-npm run dev                  # launch the desktop app
+cd yanshou
+npm ci
+cd desktop && npm ci && npm run setup:sqlite
 ```
 
-To package a Windows build: `cd desktop && npm run dist`.
+`npm ci` uses the committed lockfiles. `npm run setup:sqlite` rebuilds the `better-sqlite3` binding for the Electron ABI; run it again after changing the Electron version.
 
-To smoke-test the built artifacts locally: `npm run smoke:e2e` (from the repo root, after `desktop/out` exists). It opens a real window against an isolated temp profile, so it never touches your real FinalCheck data.
+## Run
+
+### CLI audit
+
+```bash
+node bin/finalcheck.js audit . --tier L2
+```
+
+`--tier` accepts `L1`, `L2` or `L3`. Add `--json` for machine-readable output, `--no-tests` when auditing third-party code (the audit must never execute the audited code), and `--include-fixtures` only when checking intentionally broken samples.
+
+### Desktop app
+
+```bash
+cd desktop && npm run dev
+```
+
+For a production Windows build use `cd desktop && npm run dist`; artifacts land in `desktop/release/`.
+
+### Tests
+
+```bash
+npm test
+```
+
+To smoke-test built artifacts locally, run `npm run smoke:e2e` from the repo root after `desktop/out` exists. It opens a real window against an isolated temp profile, so it never touches your real FinalCheck data.
+
+## Environment variables
+
+Copy `.env.example` to `.env` if you want to override the defaults; the CLI and desktop app also run without any `.env` file. Variables used by the project:
+
+| Variable | Required | Purpose |
+|---|---|---|
+| `FINALCHECK_CONFIG_FILE` | No | Override the desktop `config.json` path |
+| `FINALCHECK_PROJECTS_FILE` | No | Override the workspace list file |
+| `FINALCHECK_SESSIONS_DIR` | No | Override the session storage directory |
+| `FINALCHECK_MEMORY_DIR` | No | Override the agent memory directory |
+| `FINALCHECK_SPILL_DIR` | No | Override the oversized-tool-output spill directory |
+| `FINALCHECK_USAGE_FILE` | No | Override the usage ledger file |
+| `FINALCHECK_HOOKS_FILE` | No | Override the hooks configuration file |
+| `FINALCHECK_SESSION_STORE` | No | Select the session store backend |
+| `FINALCHECK_DEFAULT_PROJECT` | No | Default workspace when none is supplied |
+| `FINALCHECK_MAX_TURNS` | No | Cap agent turns per session |
+| `FINALCHECK_STREAM_USAGE` | No | Enable streaming usage accounting |
+| `FINALCHECK_SQLITE_BINARY_HOST` | No | `better-sqlite3` prebuilt binary mirror |
+| `ELECTRON_RENDERER_URL` | No | Dev-server URL used by `electron-vite` |
+| `APPDATA` / `USERPROFILE` | Auto | Windows profile locations (set by the OS) |
+| `CI` / `PYTHON` / `SMOKE_TARGET` | No | Test and smoke-test helpers |
+
+The model API key is **not** read from an environment variable in the installed app: it is stored in the local `%APPDATA%\FinalCheck\config.json` (never committed, never written to reports) and edited through **Settings → Model settings**. `.env.example` contains names and placeholders only; never put a real key in it.
+
+## Deploy
+
+FinalCheck is a local desktop tool; "deploy" means building and distributing the Windows installer, not running a server.
+
+```bash
+cd desktop && npm run dist
+```
+
+This runs `electron-vite build` and then `electron-builder --win nsis --publish never`. The installer is written to `desktop/release/fc-setup-<version>.exe`; the version comes from `desktop/package.json`. Upload the artifact to the GitHub Releases page the updater reads.
+
+CI runs the test suite and the desktop build on every change; packaging is a manual release step.
+
+## Backup and restore
+
+Backups are explicit and local; nothing is uploaded.
+
+```bash
+node scripts/backup.mjs --out "D:\Backups\FinalCheck"
+```
+
+The script copies the profile data (`%APPDATA%\FinalCheck`: config, sessions, memory) and the project database (`.finalcheck/finalcheck.db`) into a timestamped zip such as `finalcheck-backup-20261111-194500.zip`. Model API keys in `config.json` are replaced with `[REDACTED]` before they enter the archive; secret-looking files (`.env`, `*.pem`, `*.key`, credentials files) are skipped. The newest **7** archives are kept by default; change it with `--keep <n>` or choose another profile/project with `--profile` / `--project`.
+
+Restore: close the app, unzip the archive, copy `config.json`, `sessions/` and `memory/` back to `%APPDATA%\FinalCheck`, and copy the database back to `<project>\.finalcheck\finalcheck.db`. Keep the previous backup until the restored app starts cleanly.
+
+## Rollback
+
+- **Desktop app:** reinstall the previous installer (for example `fc-setup-0.14.0.exe`) from the Releases page. User data stays in `%APPDATA%\FinalCheck`; take a backup first.
+- **Source tree:** use `git revert <commit>` for a single bad change, or `git checkout <previous-tag>` to return to the previous release. Re-run `cd desktop && npm run setup:sqlite` after switching Electron versions.
+- **Data:** restore the zip produced by `scripts/backup.mjs` using the steps above. Backups are the rollback path for sessions and memory because the app does not migrate data backwards.
 
 ## Language
 
@@ -92,12 +166,12 @@ desktop/      Electron app (main / preload / renderer)
 playbooks/    audit playbooks
 integrations/ skill + hook wiring for coding agents
 docs/         ACCEPTANCE.md — the single source of truth for the tiers
-tests/        node:test suites (647 passing)
+tests/        node:test suites (978 passing)
 ```
 
 ## Status
 
-Early but real: the engine, the desktop app, tiered gates, agent workflows (DAG + script DSL), adversarial verification and in-app updates are in place, with 647 tests passing on every change. Development follows the project's own L3 standard — a known violation of any L2 item in this repository counts as a bug.
+Early but real: the engine, the desktop app, tiered gates, agent workflows (DAG + script DSL), adversarial verification and in-app updates are in place, with 978 tests passing on every change. Development follows the project's own L3 standard — a known violation of any L2 item in this repository counts as a bug.
 
 ## Author
 

@@ -1,3 +1,5 @@
+import { readdir, stat } from 'node:fs/promises';
+import path from 'node:path';
 import { parse } from '@babel/parser';
 import { listTextFiles, readRel, prunedWarning } from '../walk.mjs';
 
@@ -157,12 +159,12 @@ function findHandlerCandidates(ast) {
   return kept;
 }
 
-export async function checkData(projectDir, { tier, excludes = [] } = {}) {
+export async function checkData(projectDir, { tier, excludes = [], includeFixtures = false } = {}) {
   const findings = [];
   const warnings = [];
   const t = String(tier || 'L2').toUpperCase();
   const force = t === 'L1' ? 'tip' : 'check';
-  const { files, skipped, pruned } = await listTextFiles(projectDir, excludes);
+  const { files, skipped, pruned } = await listTextFiles(projectDir, excludes, { includeFixtures });
   prunedToWarnings(warnings, skipped, pruned, 'D1');
   let parseFailures = 0;
 
@@ -206,54 +208,231 @@ export async function checkData(projectDir, { tier, excludes = [] } = {}) {
   return { checkId: 'D1', findings, coverageGap: null, warnings };
 }
 
-/* ---------- D2 备份/恢复 ---------- */
+/* ---------- D2 备份/恢复 ----------
+ *
+ * 证据分两级，只有 card 级实锤才允许判过：
+ *   card 级（可执行证据）：
+ *     - 备份命令：pg_dump / mysqldump / sqlite3 .backup / mongodump / rsync（需备份上下文）/ restic / borg
+ *       出现在脚本、配置或自动化文件中（文档里的命令示例不算）；
+ *     - 调度真配置：cron / systemd timer / Windows 计划任务 / CI schedule，且同一文件引用备份脚本或备份配置；
+ *     - 含保留期（retention/prune/keep）的显式备份配置项。
+ *   check 级（线索，不给过）：README 仅声明、文件名含 backup/dump、单独存在的 *.sql、只出现 backup 一词。
+ * README 声明 ≠ 可执行证据：记 coverageGap/unverified（「未验证（仅文档声明）」）。
+ */
 
-const BACKUP_NAME_RE = /backup|restore|dump/i;
-const BACKUP_CONFIG_RE = /pg_dump|mysqldump|sqlite3[\s\S]{0,60}\.backup|\b(?:backup|restore)\b|备份|恢复/i;
 const README_NAME_RE = /^readme(?:\.(?:md|markdown|txt))?$/i;
 const README_BACKUP_LINE_RE = /^\s*(?:#{1,6}\s*)?(?:backup|restore|备份|恢复)\s*(?:[:\-—]|$)/im;
-const CONFIG_LIKE_RE = /\.(?:yml|yaml|toml|ini|conf|cfg|sh|bash|ps1|bat|cmd|env)$/i;
+const BACKUP_NAME_RE = /\b(?:backup|dump)\b|备份|数据库备份/i;
+const RESTORE_NAME_RE = /restore|recovery|drill|恢复|演练/i;
+// 只认强备份词，不认单独的 restore/恢复、也不认 snapshot/快照：
+// session-restore 与「工作流快照」都是会话状态恢复，不是数据库/文件备份证据。
+const BACKUP_TERMS_RE = /\b(?:backup|dump|archive)\b|备份|归档/i;
+const RETENTION_RE = /\b(?:retention|retain|keep|prune|expire|rotate)\b|max[-_]?(?:age|count|backups)|保留期|保留天数|过期|轮转/i;
+// 调度必须像「真调度配置」：cron 五段式 / @daily / systemd OnCalendar / schtasks / K8s CronJob / schedule: 键。
+// 不收裸词 cron/systemd/timer —— 否则本检查源码里的说明文字会被自己当成调度证据。
+const SCHEDULE_RE = /@(?:daily|weekly|monthly|hourly|yearly|reboot)\b|\bOnCalendar=|\bOnBootSec=|\bschtasks\b|\bTask\s+Scheduler\b|\bkind\s*:\s*CronJob\b|^\s*schedule\s*:|^\s*(?:[\d*/-]+\s+){4}[\d*/-]+\s+\S|\bcrontab\b/i;
+const DOC_FILE_RE = /\.(?:md|markdown|txt|rst|adoc)$/i;
+// 「显式备份配置项（含保留期）」只认配置文件，不认普通源码里恰好出现 backup/retention 变量。
+const BACKUP_CONFIG_FILE_RE = /\.(?:json|ya?ml|toml|ini|conf|cfg|env)$/i;
+const D2_SPECIAL_FILE_RE = /^(?:Dockerfile|Makefile|Procfile|Jenkinsfile|crontab|Vagrantfile)$/i;
+const BACKUP_COMMANDS = [
+  { id: 'pg_dump', re: /\bpg_dump(?:all)?\b/i },
+  { id: 'mysqldump', re: /\b(?:mysqldump|mariadb-dump)\b/i },
+  { id: 'mongodump', re: /\bmongodump\b/i },
+  { id: 'sqlite-backup', re: /\bsqlite3\b[^\n]{0,120}\.backup\b/i },
+  { id: 'rsync', re: /\brsync\b/i },
+  { id: 'restic', re: /\brestic\b/i },
+  { id: 'borg', re: /\bborg(?:matic)?\b/i },
+];
+const D2_TEXT_EXT_RE = /\.(?:js|mjs|cjs|ts|tsx|jsx|json|md|markdown|yml|yaml|txt|py|php|sh|bash|zsh|sql|cfg|conf|ini|toml|ps1|bat|cmd|xml|service|timer|rst|adoc)$/i;
+const D2_SKIP_DIRS = new Set(['node_modules', '.git', '.finalcheck', 'workflow-runs', 'coverage', '.next', 'vendor']);
+const D2_BUILD_DIR_RE = /^(?:[A-Za-z0-9._-]+-unpacked|release-[A-Za-z0-9._-]+|dist-[A-Za-z0-9._-]+)$/i;
+const D2_BUILD_DIRS = new Set(['release', 'out', 'dist', 'build']);
 
-async function hasBackupEvidence(projectDir, excludes) {
-  const { files, skipped, pruned } = await listTextFiles(projectDir, excludes);
-  const basenameOf = (rel) => String(rel).replace(/\\/g, '/').split('/').pop();
-  for (const f of files) {
-    const { file, text } = await readRel(projectDir, f);
-    const base = basenameOf(file);
-    // 文件名即证据：backup.sh / restore-drill.md / dump.sql / backup.sqlite
-    if (BACKUP_NAME_RE.test(base)) return { found: true, files, skipped, pruned };
-    if (/\.sql$/i.test(base)) return { found: true, files, skipped, pruned };
-    // README 的备份段落（标题或行首「Backup:」）
-    if (README_NAME_RE.test(base) && README_BACKUP_LINE_RE.test(text)) return { found: true, files, skipped, pruned };
-    // 配置里的备份机制（pg_dump / mysqldump / backup 关键词）
-    if (CONFIG_LIKE_RE.test(file) && BACKUP_CONFIG_RE.test(text)) return { found: true, files, skipped, pruned };
+// D2 需要比通用 walker 更宽的文本类型（.service/.timer/Task Scheduler XML/ps1），
+// 但只在本检查内生效，不改变其它检查的扫描面。
+async function listBackupCandidates(projectDir, excludes, includeFixtures) {
+  const files = [];
+  const skipped = [];
+  const pruned = [];
+  const excluded = (rel) => excludes.some((x) => {
+    const n = String(x).replace(/\\/g, '/');
+    return rel === n || rel.startsWith(n + '/');
+  });
+  async function walk(dir, depth) {
+    if (depth > 8) return;
+    let entries;
+    try { entries = await readdir(dir, { withFileTypes: true }); } catch { return; }
+    entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    for (const e of entries) {
+      if (e.isSymbolicLink()) continue;
+      const p = path.join(dir, e.name);
+      const rel = path.relative(projectDir, p).replace(/\\/g, '/');
+      if (e.isDirectory()) {
+        if (excluded(rel)) continue;
+        // .github 例外：CI schedule（cron）是备份调度的合法证据位
+        if (e.name.startsWith('.') && e.name.toLowerCase() !== '.github') continue;
+        if (D2_SKIP_DIRS.has(e.name.toLowerCase())) continue;
+        if (!includeFixtures && e.name.toLowerCase() === 'fixtures') continue;
+        if (D2_BUILD_DIRS.has(e.name.toLowerCase()) || D2_BUILD_DIR_RE.test(e.name)) { pruned.push(rel); continue; }
+        await walk(p, depth + 1);
+        continue;
+      }
+      if (e.name.startsWith('.')) continue;
+      if (!D2_SPECIAL_FILE_RE.test(e.name) && !D2_TEXT_EXT_RE.test(e.name)) continue;
+      if (excluded(rel)) continue;
+      const st = await stat(p).catch(() => null);
+      if (!st) continue;
+      if (st.size > 512 * 1024) { skipped.push(rel); continue; }
+      files.push(p);
+    }
   }
-  return { found: false, files, skipped, pruned };
+  await walk(projectDir, 0);
+  return { files, skipped, pruned };
 }
 
-export async function checkBackup(projectDir, { tier, excludes = [] } = {}) {
+function isCommentLine(trimmed) {
+  return /^(?:#|\/\/|--|\*|<!--|;)/.test(trimmed);
+}
+
+// 正则/模式源码里的命令名不是可执行命令（例：本检查自己的 BACKUP_COMMANDS 常量）。
+// 与 S3 的「正则源码不算密钥」同一思路，避免 D2 自食。
+function looksLikePatternSource(line) {
+  return /\(\?:|\\[bBsSwWdDaAzZ]|\bRegExp\b/.test(line);
+}
+
+// 单文件证据判定：返回 { level:'hard'|'clue', kind, file, line, detail } 或 null。
+function backupEvidenceOf(file, text) {
+  const base = String(file).replace(/\\/g, '/').split('/').pop();
+  const isDoc = DOC_FILE_RE.test(file) || README_NAME_RE.test(base);
+  const isSql = /\.sql$/i.test(base);
+  const nameSaysBackup = BACKUP_NAME_RE.test(base);
+  const nameSaysRestore = RESTORE_NAME_RE.test(base);
+  const backupContext = BACKUP_TERMS_RE.test(text) || nameSaysBackup;
+
+  // 文档永远不能当实锤：README/文档里的命令示例仍是 check 级线索。
+  if (isDoc) {
+    // README 里任何备份声明（标题、行首「Backup:」或正文提及）都只是文档线索，永远不能判过。
+    if (README_NAME_RE.test(base) && (README_BACKUP_LINE_RE.test(text) || BACKUP_TERMS_RE.test(text))) {
+      return { level: 'clue', kind: 'doc-claim', file, line: 1, detail: 'README 备份段落' };
+    }
+    if (nameSaysBackup || nameSaysRestore) {
+      return { level: 'clue', kind: 'doc-claim', file, line: 1, detail: '备份/恢复文档' };
+    }
+    return null;
+  }
+
+  const lines = text.split('\n');
+  let command = null;
+  let schedule = null;
+  let retentionLine = null;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.length > 2000) continue;
+    const trimmed = line.trim();
+    if (isCommentLine(trimmed)) continue; // 注释里的命令不是可执行证据
+    if (looksLikePatternSource(line)) continue; // 正则/模式定义不是命令或调度
+    if (!schedule && SCHEDULE_RE.test(line)) {
+      schedule = { line: i + 1, snippet: trimmed.slice(0, 120) };
+    }
+    // 保留期可以写在配置的下一行（backup:\n  retention: 30d），所以按文件级上下文配对。
+    if (!retentionLine && RETENTION_RE.test(line)) {
+      retentionLine = { line: i + 1, snippet: trimmed.slice(0, 120) };
+    }
+    for (const cmd of BACKUP_COMMANDS) {
+      if (!cmd.re.test(line)) continue;
+      // rsync 只在与备份上下文/备份文件名同现时才算备份（否则多半是部署同步）
+      if (cmd.id === 'rsync' && !(BACKUP_TERMS_RE.test(line) || nameSaysBackup)) continue;
+      command = { id: cmd.id, line: i + 1, snippet: trimmed.slice(0, 120) };
+      break;
+    }
+  }
+
+  if (command) {
+    return { level: 'hard', kind: 'command', file, line: command.line, detail: `备份命令 ${command.id}` };
+  }
+  // 调度真配置 + 备份引用（如 crontab 指向 backup.sh、systemd timer 的 OnCalendar）
+  if (schedule && (backupContext || retentionLine)) {
+    return { level: 'hard', kind: 'schedule', file, line: schedule.line, detail: `调度配置（${schedule.snippet}）` };
+  }
+  // 显式备份配置项（含保留期）：如 backup: { retention: 30d }
+  if (backupContext && retentionLine && (BACKUP_CONFIG_FILE_RE.test(file) || D2_SPECIAL_FILE_RE.test(base))) {
+    return { level: 'hard', kind: 'config-retention', file, line: retentionLine.line, detail: '含保留期的备份配置' };
+  }
+
+  // 线索：只说明「看起来像备份」，不能证明可执行、可调度、可恢复。
+  if (isSql) return { level: 'clue', kind: 'sql-file', file, line: 1, detail: '仅存在 .sql 文件' };
+  if (nameSaysBackup) return { level: 'clue', kind: 'filename', file, line: 1, detail: '文件名含 backup/dump' };
+  if (nameSaysRestore && BACKUP_TERMS_RE.test(text)) return { level: 'clue', kind: 'filename', file, line: 1, detail: '文件名含 restore 且正文提到备份' };
+  // 只有配置项里的「backup」才算声明线索；普通源码里出现 backup 变量/文案不算备份声明。
+  if (BACKUP_CONFIG_FILE_RE.test(file) && BACKUP_TERMS_RE.test(text)) {
+    return { level: 'clue', kind: 'mention', file, line: 1, detail: '仅正文提及备份' };
+  }
+  return null;
+}
+
+async function findBackupEvidence(projectDir, excludes, includeFixtures) {
+  const { files, skipped, pruned } = await listBackupCandidates(projectDir, excludes, includeFixtures);
+  let firstClue = null;
+  for (const f of files) {
+    const { file, text } = await readRel(projectDir, f);
+    const ev = backupEvidenceOf(file, text);
+    if (!ev) continue;
+    if (ev.level === 'hard') return { evidence: ev, skipped, pruned };
+    if (!firstClue) firstClue = ev;
+  }
+  return { evidence: firstClue, skipped, pruned };
+}
+
+async function checkBackupImpl(projectDir, { tier, excludes = [], includeFixtures = false } = {}) {
   const findings = [];
   const warnings = [];
   const t = String(tier || 'L2').toUpperCase();
-  const { found, skipped, pruned } = await hasBackupEvidence(projectDir, excludes);
+  const { evidence, skipped, pruned } = await findBackupEvidence(projectDir, excludes, includeFixtures);
   prunedToWarnings(warnings, skipped, pruned, 'D2');
-  if (!found) {
-    const force = t === 'L3' ? 'card' : 'tip'; // L3 才要求；L2/L1 仅提示
+  if (evidence?.level === 'hard') {
+    warnings.push(`D2：已发现可执行备份证据（card 级实锤）：${evidence.file}${evidence.line ? ':' + evidence.line : ''}（${evidence.detail}）`);
+    return { checkId: 'D2', findings, coverageGap: null, warnings };
+  }
+  if (evidence?.level === 'clue') {
+    const force = t === 'L1' ? 'tip' : 'check';
     findings.push({
       checkId: 'D2',
       severity: 'medium',
       force,
-      file: '(全仓搜索)',
-      line: 0,
-      rule: 'D2.no-backup',
-      snippet: '未发现 backup/restore/dump 文件、*.sql、备份配置或 README 备份段落',
-      message: t === 'L3'
-        ? '未发现备份/恢复脚本、备份配置或 README 备份段落（L3 要求）——请补备份脚本与调度配置'
-        : '未发现备份/恢复脚本、备份配置或 README 备份段落（L2 仅提示；L3 将卡）',
+      file: evidence.file,
+      line: evidence.line || 0,
+      rule: 'D2.backup-unverified',
+      snippet: evidence.detail,
+      message: `仅发现 check 级备份线索（${evidence.detail}）——未发现可执行备份脚本/调度（cron/systemd timer/计划任务）或含保留期的备份配置，未验证（${evidence.kind === 'doc-claim' ? '仅文档声明' : '仅线索'}），需人工确认`,
       source: 'program',
     });
+    return {
+      checkId: 'D2',
+      findings,
+      coverageGap: `未发现可执行备份证据（${evidence.detail}，check 级线索），未验证（${evidence.kind === 'doc-claim' ? '仅文档声明' : '仅线索'}）`,
+      warnings,
+    };
   }
+  const force = t === 'L3' ? 'card' : 'tip'; // L3 才要求；L2/L1 仅提示
+  findings.push({
+    checkId: 'D2',
+    severity: 'medium',
+    force,
+    file: '(全仓搜索)',
+    line: 0,
+    rule: 'D2.no-backup',
+    snippet: '未发现备份命令、调度配置、含保留期的备份配置或 README 备份段落',
+    message: t === 'L3'
+      ? '未发现可执行备份证据（备份命令、cron/systemd timer/计划任务调度、或含保留期的备份配置）（L3 要求）——请补备份脚本与调度配置'
+      : '未发现可执行备份证据（L2 仅提示；L3 将卡）',
+    source: 'program',
+  });
   return { checkId: 'D2', findings, coverageGap: null, warnings };
+}
+
+export async function checkBackup(projectDir, opts = {}) {
+  return checkBackupImpl(projectDir, opts);
 }
 
 /* ---------- D3 隐私 ---------- */
@@ -264,7 +443,7 @@ const USER_DATA_RE = /\b(?:user|users|customer|account|profile|email|phone|mobil
 const PERSIST_CALL_RE = /\b(?:save|create|insert|upsert|setItem|writeFile|writeFileSync|store|persist)\s*\(|\.\s*(?:save|create|insert|upsert|setItem|writeFile|writeFileSync|store|persist)\s*\(/i;
 // SQL 落盘：ORM 之外的 schema/migration/原生 SQL 也要算「用户数据落盘」
 const SQL_PERSIST_RE = /\b(?:insert\s+into|update\s+[A-Za-z_][\w.]*\s+set|create\s+table)\b/i;
-const RETENTION_RE = /retention|retain|erase|purge|anonymi[sz]e|cleanup|clean[_-]?up|delete|数据保留|保留期|删除|清理|匿名化/i;
+const D3_RETENTION_RE = /retention|retain|erase|purge|anonymi[sz]e|cleanup|clean[_-]?up|delete|数据保留|保留期|删除|清理|匿名化/i;
 
 // 去掉字符串字面量，只留下“可能是变量”的代码部分；模板串保留 ${...} 里的表达式
 function stripStringLiterals(s) {
@@ -282,10 +461,10 @@ function sanitizeSnippet(raw) {
   return String(raw).trim().slice(0, 120);
 }
 
-async function scanPrivacy(projectDir, excludes) {
+async function scanPrivacy(projectDir, excludes, includeFixtures) {
   const logFindings = [];
   const warnings = [];
-  const { files, skipped, pruned } = await listTextFiles(projectDir, excludes);
+  const { files, skipped, pruned } = await listTextFiles(projectDir, excludes, { includeFixtures });
   prunedToWarnings(warnings, skipped, pruned, 'D3');
   let persisted = null; // { file, line, snippet }
   let retentionSeen = false;
@@ -294,7 +473,7 @@ async function scanPrivacy(projectDir, excludes) {
     const { file, text } = await readRel(projectDir, f);
     const isDoc = DOC_RE.test(file);
     const isLock = LOCK_RE.test(file);
-    if (retentionSeen === false && !isLock && RETENTION_RE.test(text)) retentionSeen = true;
+    if (retentionSeen === false && !isLock && D3_RETENTION_RE.test(text)) retentionSeen = true;
 
     if (isDoc || isLock) continue; // 日志与落盘判定只看代码/配置文本
     const lines = text.split('\n');
@@ -333,9 +512,9 @@ async function scanPrivacy(projectDir, excludes) {
   return { logFindings, warnings, persisted, retentionSeen };
 }
 
-export async function checkPrivacy(projectDir, { tier, excludes = [] } = {}) {
+export async function checkPrivacy(projectDir, { tier, excludes = [], includeFixtures = false } = {}) {
   const t = String(tier || 'L2').toUpperCase();
-  const { logFindings, warnings, persisted, retentionSeen } = await scanPrivacy(projectDir, excludes);
+  const { logFindings, warnings, persisted, retentionSeen } = await scanPrivacy(projectDir, excludes, includeFixtures);
   const findings = logFindings.map((f) => ({ ...f, force: t === 'L1' ? 'tip' : 'check' }));
   if (persisted && !retentionSeen) {
     findings.push({

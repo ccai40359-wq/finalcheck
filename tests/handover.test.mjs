@@ -444,3 +444,11 @@ test('H1 有 CI 配置 → 不报无部署线索', async (t) => {
   const r = await checkHandover(dir, { tier: 'L2' });
   assert.equal(byRule(r, 'H1.no-deploy-clue').length, 0);
 });
+
+test('H1 git clone 后的 cd <仓库目录> 不误报缺失（目录 clone 时才创建）', async (t) => {
+  const dir = await tmp(t);
+  const repoName = path.basename(dir);
+  await writeBase(dir, { readme: replaceSection(README_OK, 'Install', '```bash\ngit clone https://github.com/example/repo\ncd ' + repoName + '\nnpm ci\n```') });
+  const r = await checkHandover(dir, { tier: 'L2' });
+  assert.equal(byRule(r, 'H1.command-missing-file').length, 0, 'clone target directory must not be reported as missing');
+});

@@ -222,9 +222,14 @@ con = sqlite3.connect(uri, uri=True, timeout=5)
 try:
     tables = [row[0] for row in con.execute("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")]
     counts = {}
-    for table in ("session", "message", "part"):
+    # 表名只做白名单比对，SQL 全部是固定字面量：不做任何字符串拼接。
+    for table, sql in (
+        ("session", "SELECT COUNT(*) FROM session"),
+        ("message", "SELECT COUNT(*) FROM message"),
+        ("part", "SELECT COUNT(*) FROM part"),
+    ):
         if table in tables:
-            counts[table] = con.execute("SELECT COUNT(*) FROM " + table).fetchone()[0]
+            counts[table] = con.execute(sql).fetchone()[0]
     last_user = None
     if "message" in tables:
         row = con.execute("SELECT content FROM message WHERE role = 'user' ORDER BY created_at DESC, seq DESC LIMIT 1").fetchone()

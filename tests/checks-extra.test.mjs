@@ -312,27 +312,32 @@ test('D2：无任何备份证据 → L3 medium/card；L2 medium/tip', async (t) 
   assert.equal(l2.findings[0].force, 'tip');
 });
 
-test('D2：README 备份段落视为已有备份 → 零发现', async (t) => {
+test('D2：README 备份段落只是 check 级线索 → 记 backup-unverified + coverageGap', async (t) => {
   const dir = await fixture({
     'README.md': '# Demo\n\n## Backup\n\n每日全量备份到 S3。\n',
   });
   t.after(() => rm(dir, { recursive: true, force: true }));
   const r = await checkBackup(dir, { tier: 'L3' });
   assertResult(r, 'D2');
-  assert.deepEqual(r.findings, []);
+  assert.equal(r.findings.length, 1, '文档声明不再当可执行证据，要报未验证');
+  assert.equal(r.findings[0].rule, 'D2.backup-unverified');
+  assert.match(r.findings[0].message, /仅文档声明/);
+  assert.match(String(r.coverageGap), /未验证/);
 });
 
-test('D2：backup 脚本或 *.sql dump 均视为已有备份 → 零发现', async (t) => {
+test('D2：backup 脚本含 pg_dump → 零发现；单独 *.sql 只是线索 → backup-unverified', async (t) => {
   const scriptDir = await fixture({ 'scripts/backup.sh': '#!/bin/sh\npg_dump "$DATABASE_URL" > dump.sql\n' });
   const sqlDir = await fixture({ 'db/schema.sql': 'CREATE TABLE orders (id INT);\n' });
   t.after(() => rm(scriptDir, { recursive: true, force: true }));
   t.after(() => rm(sqlDir, { recursive: true, force: true }));
   const a = await checkBackup(scriptDir, { tier: 'L3' });
   assertResult(a, 'D2');
-  assert.deepEqual(a.findings, []);
+  assert.deepEqual(a.findings, [], '真实备份命令是可执行证据');
   const b = await checkBackup(sqlDir, { tier: 'L3' });
   assertResult(b, 'D2');
-  assert.deepEqual(b.findings, []);
+  assert.equal(b.findings.length, 1, '单独 .sql 文件不是可执行备份证据');
+  assert.equal(b.findings[0].rule, 'D2.backup-unverified');
+  assert.match(String(b.coverageGap), /未验证/);
 });
 
 test('D2：excludes 排除备份证据后仍报缺失', async (t) => {

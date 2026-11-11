@@ -41,10 +41,56 @@ const RULES = [
   { id: 'S3.weak-default', re: new RegExp(`(?:${SECRET_KEY})["']?\\s*[:=]\\s*['"](admin|admin123|123456|12345678|password|root|qwerty)['"]`, 'i'), msg: '弱默认口令' },
 ];
 
-export async function checkSecrets(projectDir, { excludes = [] } = {}) {
+// exclude 对 S3 只允许用于夹具/构建产物；真实配置文件（desktop/config.json 等）永远不能排除。
+// 白名单按路径段判定，避免 `tests` / `playbooks` / 运行时目录把真实密钥一起藏起来。
+const S3_SAFE_EXCLUDE_SEG_RE = /^(?:fixtures|node_modules|coverage|dist|build|out|release|release-[A-Za-z0-9._-]+|dist-[A-Za-z0-9._-]+|[A-Za-z0-9._-]+-unpacked)$/i;
+
+export function sanitizeS3Excludes(excludes = []) {
+  const list = Array.isArray(excludes) ? excludes : [];
+  return list.filter((x) => String(x).replace(/\\/g, '/').split('/').filter(Boolean)
+    .some((seg) => S3_SAFE_EXCLUDE_SEG_RE.test(seg)));
+}
+
+// 真实配置文件的形状：config/settings/secrets/credentials/keys/providers + 配置扩展名。
+// 只对命中了密钥规则的这类文件做「未入库但落盘」提示；普通测试源码不在此列。
+const CONFIG_CANDIDATE_RE = /(?:^|[./])(?:config|settings|secrets?|credentials?|keys?|providers?)\.(?:json|json5|ya?ml|toml|ini|conf|cfg|js|mjs|cjs|ts|tsx)$/i;
+
+async function applyUntrackedConfigHints(projectDir, findings, warnings) {
+  const configFiles = [...new Set(findings.map((f) => f.file).filter((f) => CONFIG_CANDIDATE_RE.test(String(f || ''))))];
+  if (!configFiles.length) return findings;
+  let gitUsable = true;
+  for (const file of configFiles) {
+    const tracked = await runProcess('git', ['-C', projectDir, 'ls-files', '--', file], { timeoutMs: 10000 });
+    if (tracked.status === null || tracked.status !== 0) { gitUsable = false; continue; }
+    if (String(tracked.stdout || '').trim()) continue; // 已入库：保持正常 high/card 判定
+    const ignored = await runProcess('git', ['-C', projectDir, 'check-ignore', '--', file], { timeoutMs: 10000 });
+    if (ignored.status === null) { gitUsable = false; continue; }
+    if (ignored.status !== 0) continue; // 未入库但也未被 gitignore：保持原判定
+    // 本机明文密钥文件：只报 check 级提示，报告不回显任何值/行内容。
+    const lines = findings.filter((f) => f.file === file).map((f) => Number(f.line)).filter((n) => Number.isFinite(n) && n > 0);
+    findings = findings.filter((f) => f.file !== file);
+    findings.push({
+      checkId: 'S3',
+      severity: 'medium',
+      force: 'check',
+      file,
+      line: lines.length ? Math.min(...lines) : 0,
+      rule: 'S3.untracked-secret-file',
+      snippet: `${file}（本机文件，未入库）`,
+      message: '本机存在明文密钥文件，未入库但落盘——请改用环境变量或系统密钥存储；报告不回显密钥值',
+      source: 'program',
+    });
+    warnings.push(`S3：${file} 是本机未入库的明文密钥文件，已按 check 级提示（不回显值）`);
+  }
+  if (!gitUsable) warnings.push('git 不可用或不在仓库内，未入库密钥文件判定未跑');
+  return findings;
+}
+
+export async function checkSecrets(projectDir, { excludes = [], includeFixtures = false } = {}) {
   const findings = [];
   const warnings = [];
-  const { files, skipped, pruned } = await listTextFiles(projectDir, excludes);
+  const effectiveExcludes = sanitizeS3Excludes(excludes);
+  const { files, skipped, pruned } = await listTextFiles(projectDir, effectiveExcludes, { includeFixtures });
   if (skipped.length) warnings.push(`跳过大文件 ${skipped.length} 个（>512KB 未扫描）：${skipped.slice(0, 3).join('、')}${skipped.length > 3 ? '…' : ''}`);
   const pw = prunedWarning(pruned);
   if (pw) warnings.push(pw);
@@ -93,24 +139,32 @@ export async function checkSecrets(projectDir, { excludes = [] } = {}) {
   }
   // Gitleaks 增强（§7 必装；缺失或运行失败 → 覆盖不足按 §5 封顶）
   const glPath = findBinary('gitleaks');
+  let coverageGap = null;
   if (glPath) {
     const rep = path.join(projectDir, '.finalcheck-gitleaks.tmp.json');
     const run = await runProcess(glPath, ['detect', '--source', projectDir, '--report-format', 'json', '--report-path', rep, '--no-git', '--exit-code', '0', '--no-banner', '--redact'], { timeoutMs: 120000 });
-    if (run.error) return { checkId: 'S3', findings, coverageGap: 'gitleaks 运行失败', warnings };
-    let leaks = null;
-    try { leaks = JSON.parse(await readFile(rep, 'utf8')); } catch { /* 报告缺失 */ }
-    await rm(rep, { force: true }).catch(() => {});
-    if (run.status !== 0 || !Array.isArray(leaks)) {
-      // P1#4：跑挂了绝不能计为"已执行"
-      return { checkId: 'S3', findings, coverageGap: 'gitleaks 报告缺失或异常', warnings };
+    if (run.error) {
+      coverageGap = 'gitleaks 运行失败';
+    } else {
+      let leaks = null;
+      try { leaks = JSON.parse(await readFile(rep, 'utf8')); } catch { /* 报告缺失 */ }
+      await rm(rep, { force: true }).catch(() => {});
+      if (run.status !== 0 || !Array.isArray(leaks)) {
+        // P1#4：跑挂了绝不能计为"已执行"
+        coverageGap = 'gitleaks 报告缺失或异常';
+      } else {
+        for (const l of leaks) {
+          const relFile = String(l.File || '').replace(/\\/g, '/');
+          // P1#5：夹具/构建产物排除对 gitleaks 同样生效；真实配置文件不在白名单内，不能被 exclude 藏掉
+          if (effectiveExcludes.some((x) => { const n = String(x).replace(/\\/g, '/'); return relFile === n || relFile.startsWith(n + '/'); })) continue;
+          const isDoc = /\.(md|txt)$/i.test(relFile);
+          findings.push({ checkId: 'S3', severity: isDoc ? 'medium' : 'high', force: isDoc ? 'tip' : 'card', file: relFile, line: l.StartLine || 0, rule: 'S3.gitleaks', snippet: `gitleaks 规则 ${l.RuleID} 命中`, message: 'gitleaks 检出疑似密钥', source: 'program' });
+        }
+      }
     }
-    for (const l of leaks) {
-      const relFile = String(l.File || '').replace(/\\/g, '/');
-      if (excludes.some((x) => { const n = String(x).replace(/\\/g, '/'); return relFile === n || relFile.startsWith(n + '/'); })) continue; // P1#5：夹具排除对 gitleaks 同样生效
-      const isDoc = /\.(md|txt)$/i.test(relFile);
-      findings.push({ checkId: 'S3', severity: isDoc ? 'medium' : 'high', force: isDoc ? 'tip' : 'card', file: relFile, line: l.StartLine || 0, rule: 'S3.gitleaks', snippet: `gitleaks 规则 ${l.RuleID} 命中`, message: 'gitleaks 检出疑似密钥', source: 'program' });
-    }
-    return { checkId: 'S3', findings, coverageGap: null, warnings };
+  } else {
+    warnings.push('gitleaks 未安装：自研 4 规则覆盖（广度有限，装 gitleaks 可增强至 600+ 规则）');
   }
-  return { checkId: 'S3', findings, coverageGap: null, warnings: [...warnings, 'gitleaks 未安装：自研 4 规则覆盖（广度有限，装 gitleaks 可增强至 600+ 规则）'] };
+  const finalized = await applyUntrackedConfigHints(projectDir, findings, warnings);
+  return { checkId: 'S3', findings: finalized, coverageGap, warnings };
 }

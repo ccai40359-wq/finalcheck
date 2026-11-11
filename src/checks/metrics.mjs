@@ -1,14 +1,18 @@
-import { readdir, readFile, stat } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { listTextFiles, prunedWarning, fixturesWarning } from '../walk.mjs';
+import {
+  DEFAULT_NOISE_HINTS, noiseWarning, reportCap, truncateList, truncationRecord, truncationWarning,
+} from '../report-caps.mjs';
 
 // Q3 可维护性度量（L2/L3 静态闸）：纯静态、不执行命令、不装第三方依赖。
 // 指标：超大文件 / 跨文件重复块 / 相对导入环 / 未使用导出。
 // 边界：只扫代码文件（ts/js/mjs/cjs/jsx/tsx），≤500 个文件、单文件 ≤1MB，超限写 warning。
-const CODE_RE = /\.(?:ts|js|mjs|cjs|jsx|tsx)$/i;
-const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', 'coverage', 'vendor', '.next', '.git', 'release', 'out']);
+// 文件收集统一走 walk.mjs：构建产物（release*/out/dist/build/*-unpacked）、依赖元数据、
+// 夹具默认豁免、用户 exclude 全部由同一处规则决定，不在本检查里各写一份。
 const MAX_FILES = 500;
 const MAX_BYTES = 1024 * 1024;
-const DEPTH_LIMIT = 12;
+const DEFAULT_MAX_LARGE_FILES = Infinity; // 默认不截断；显式 reportCaps["Q3.largeFile"] 才截断（不改 800/1500 行阈值）
 const WINDOW = 6;
 const DEFAULT_MAX_LINES = 800;
 const HIGH_LINES = 1500;
@@ -37,46 +41,6 @@ async function loadMetricConfig(projectDir) {
     if (e && e.code === 'ENOENT') return { maxFileLines: DEFAULT_MAX_LINES, warning: null };
     return { maxFileLines: DEFAULT_MAX_LINES, warning: `Q3：${CONFIG_FILE} 解析失败，使用默认阈值 ${DEFAULT_MAX_LINES}` };
   }
-}
-
-async function collectSourceFiles(root, excludes) {
-  const files = [];
-  const skipped = [];
-  let overLimit = false;
-  const excluded = (rel) => excludes.some((x) => {
-    const n = String(x).replace(/\\/g, '/');
-    return rel === n || rel.startsWith(n + '/');
-  });
-
-  async function walk(dir, depth) {
-    if (overLimit || depth > DEPTH_LIMIT) return;
-    let entries;
-    try { entries = await readdir(dir, { withFileTypes: true }); } catch { return; }
-    entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-    for (const e of entries) {
-      if (overLimit) return;
-      if (e.isSymbolicLink()) continue;
-      const abs = path.join(dir, e.name);
-      const rel = path.relative(root, abs).replace(/\\/g, '/');
-      if (e.isDirectory()) {
-        if (SKIP_DIRS.has(e.name.toLowerCase())) continue;
-        if (e.name.startsWith('.')) continue;
-        if (excluded(rel)) continue;
-        await walk(abs, depth + 1);
-        continue;
-      }
-      if (!e.isFile() || !CODE_RE.test(e.name)) continue;
-      if (excluded(rel)) continue;
-      // 只有真的遇到第 501 个代码文件才报超限；恰好 500 个不该误报
-      if (files.length >= MAX_FILES) { overLimit = true; return; }
-      const st = await stat(abs).catch(() => null);
-      if (!st) continue;
-      if (st.size > MAX_BYTES) { skipped.push(rel); continue; }
-      files.push(abs);
-    }
-  }
-  await walk(root, 0);
-  return { files, skipped, overLimit };
 }
 
 // 去注释但保留行号（块注释跨行时用空行占位）；只用于声明/引用/导入识别
@@ -198,22 +162,35 @@ function cyclePath(graph, scc) {
   return walk(start) || [...scc].sort().concat(start);
 }
 
-export async function checkMetrics(projectDir, { tier, excludes = [] } = {}) {
+export async function checkMetrics(projectDir, { tier, excludes = [], includeFixtures = false, reportCaps } = {}) {
   const findings = [];
   const warnings = [];
   const t = String(tier || 'L2').toUpperCase();
-  // 与 quality/authz 同一矩阵口径：L2 查（check），L3 卡（card）
-  const force = t === 'L3' ? 'card' : 'check';
+  // 与 quality/authz 同一矩阵口径：L2 查（check），L3 卡（card）。
+  // 低优先建议（如未使用导出）在 L3 也只报不卡：否则 200+ 条 low 会全部挤进「会卡交付的」，
+  // 报告分层与结论引擎都会把风格建议当成交付阻断项。
+  const forceFor = (severity) => (t === 'L3' && severity !== 'low' ? 'card' : 'check');
+  const largeCap = reportCap(reportCaps, 'Q3.largeFile', DEFAULT_MAX_LARGE_FILES);
+  const unusedCap = reportCap(reportCaps, 'Q3.unusedExport', Infinity);
+  const duplicateBlockCap = reportCap(reportCaps, 'Q3.duplicateBlock', Infinity);
   const push = (rule, severity, file, line, snippet, message) => findings.push({
-    checkId: 'Q3', severity, force, file, line, rule,
+    checkId: 'Q3', severity, force: forceFor(severity), file, line, rule,
     snippet: String(snippet).slice(0, 120), message, source: 'program',
   });
 
   const { maxFileLines, warning } = await loadMetricConfig(projectDir);
   if (warning) warnings.push(warning);
 
-  const { files, skipped, overLimit } = await collectSourceFiles(projectDir, excludes);
+  const {
+    files, skipped, pruned, fixtures, overLimit,
+  } = await listTextFiles(projectDir, excludes, {
+    codeOnly: true, maxBytes: MAX_BYTES, maxFiles: MAX_FILES, maxDepth: 12, includeFixtures,
+  });
   if (overLimit) warnings.push('Q3：文件数超限，只扫前 500 个');
+  const pword = prunedWarning(pruned);
+  if (pword) warnings.push(`Q3：${pword}`);
+  const fword = fixturesWarning(fixtures);
+  if (fword) warnings.push(`Q3：${fword}`);
   if (skipped.length) warnings.push(`Q3：跳过超过 1MB 的文件 ${skipped.length} 个：${skipped.slice(0, 3).join('、')}${skipped.length > 3 ? '…' : ''}`);
   if (!files.length) {
     warnings.push('Q3：未找到可扫描的代码文件（ts/js/mjs/cjs/jsx/tsx）');
@@ -226,6 +203,7 @@ export async function checkMetrics(projectDir, { tier, excludes = [] } = {}) {
   const fingerprints = new Map(); // fp -> [{file, line}]
   const exportDecls = [];
   const filesWithIdent = new Map(); // ident -> Set(files)
+  const largeFiles = []; // 先全部收集，再按显式配置截断；默认不截断
 
   for (const abs of files) {
     const file = relOf(abs);
@@ -238,11 +216,9 @@ export async function checkMetrics(projectDir, { tier, excludes = [] } = {}) {
     const lines = text.split('\n');
     if (lines.length && lines[lines.length - 1] === '') lines.pop();
 
-    // 1) 超大文件
+    // 1) 超大文件（阈值 > maxFileLines；默认全部报告，显式 reportCaps 才截断）
     if (lines.length > maxFileLines) {
-      const severity = lines.length > HIGH_LINES ? 'high' : 'medium';
-      push('Q3.large-file', severity, file, 0, `${lines.length} 行 > 阈值 ${maxFileLines}`,
-        `超大文件：${file}（${lines.length} 行，阈值 ${maxFileLines}${lines.length > HIGH_LINES ? '，超过 1500 行为高危' : ''}）`);
+      largeFiles.push({ file, lines: lines.length });
     }
 
     const stripped = stripCommentLines(text);
@@ -289,7 +265,36 @@ export async function checkMetrics(projectDir, { tier, excludes = [] } = {}) {
     }
   }
 
-  // 2) 重复块判定：同一指纹 ≥3 次且跨文件；最多 5 条，重叠窗口去重
+  const reportTruncations = [];
+  const { kept: largeKept, truncation } = truncateList(largeFiles, largeCap);
+  for (const lf of largeKept) {
+    const severity = lf.lines > HIGH_LINES ? 'high' : 'medium';
+    push('Q3.large-file', severity, lf.file, 0, `${lf.lines} 行 > 阈值 ${maxFileLines}`,
+      `超大文件：${lf.file}（${lf.lines} 行，阈值 ${maxFileLines}${lf.lines > HIGH_LINES ? '，超过 1500 行为高危' : ''}）`);
+  }
+  if (truncation) {
+    const tr = truncationRecord({
+      checkId: 'Q3',
+      rule: 'Q3.large-file',
+      configKey: 'Q3.largeFile',
+      total: truncation.total,
+      reported: truncation.reported,
+      cap: truncation.cap,
+    });
+    reportTruncations.push(tr);
+    warnings.push(truncationWarning(tr));
+  } else if (largeFiles.length > DEFAULT_NOISE_HINTS['Q3.largeFile']) {
+    // 未截断但数量偏多：保留噪声提示，条目全部保留
+    warnings.push(noiseWarning({
+      checkId: 'Q3',
+      rule: 'Q3.large-file',
+      total: largeFiles.length,
+      configKey: 'Q3.largeFile',
+    }));
+  }
+
+  // 2) 重复块判定：同一指纹 ≥3 次且跨文件；默认全部报告，显式 reportCaps["Q3.duplicateBlock"] 才截断。
+  //    重叠窗口先去重，再按「实际可报告块数」计数，截断时总量不把被重叠过滤的窗口算进去。
   const candidates = [...fingerprints.entries()]
     .filter(([, occ]) => occ.length >= 3 && new Set(occ.map((o) => o.file)).size >= 2)
     .sort((a, b) => b[1].length - a[1].length || b[0].length - a[0].length || (a[0] < b[0] ? -1 : 1));
@@ -300,20 +305,41 @@ export async function checkMetrics(projectDir, { tier, excludes = [] } = {}) {
     for (const l of set) if (Math.abs(l - o.line) < WINDOW) return true;
     return false;
   };
-  let dupCount = 0;
+  const duplicateBlocks = [];
   for (const [, occ] of candidates) {
-    if (dupCount >= 5) break;
     if (occ.every(nearReported)) continue; // 与已报块重叠（同一块的不同滑窗）
+    duplicateBlocks.push(occ);
+    for (const o of occ) {
+      if (!reportedLines.has(o.file)) reportedLines.set(o.file, new Set());
+      reportedLines.get(o.file).add(o.line);
+    }
+  }
+  const { kept: duplicateKept, truncation: duplicateTruncation } = truncateList(duplicateBlocks, duplicateBlockCap);
+  for (const occ of duplicateKept) {
     const first = occ[0];
     const distinctFiles = new Set(occ.map((o) => o.file));
     const fileList = [...distinctFiles].slice(0, 5).join('、');
     push('Q3.duplicate-block', 'medium', first.file, first.line, `${first.file}:${first.line} × ${occ.length}`,
       `重复代码块：共 ${occ.length} 处，涉及 ${distinctFiles.size} 个文件（${fileList}${distinctFiles.size > 5 ? '…' : ''}）`);
-    for (const o of occ) {
-      if (!reportedLines.has(o.file)) reportedLines.set(o.file, new Set());
-      reportedLines.get(o.file).add(o.line);
-    }
-    dupCount++;
+  }
+  if (duplicateTruncation) {
+    const tr = truncationRecord({
+      checkId: 'Q3',
+      rule: 'Q3.duplicate-block',
+      configKey: 'Q3.duplicateBlock',
+      total: duplicateTruncation.total,
+      reported: duplicateTruncation.reported,
+      cap: duplicateTruncation.cap,
+    });
+    reportTruncations.push(tr);
+    warnings.push(truncationWarning(tr));
+  } else if (duplicateBlocks.length > DEFAULT_NOISE_HINTS['Q3.duplicateBlock']) {
+    warnings.push(noiseWarning({
+      checkId: 'Q3',
+      rule: 'Q3.duplicate-block',
+      total: duplicateBlocks.length,
+      configKey: 'Q3.duplicateBlock',
+    }));
   }
 
   // 3) 循环依赖：每个 SCC / 自环 → high
@@ -326,18 +352,40 @@ export async function checkMetrics(projectDir, { tier, excludes = [] } = {}) {
     push('Q3.import-cycle', 'high', cyc[0], 0, p, `循环依赖：${p.slice(0, 300)}`);
   }
 
-  // 4) 未使用导出：其它文件零引用；同文件内部引用不算；最多 10 条
+  // 4) 未使用导出：其它文件零引用；同文件内部引用不算；默认全部报告，显式 reportCaps["Q3.unusedExport"] 才截断
   const unused = exportDecls.filter((d) => {
     const hit = filesWithIdent.get(d.name);
     return !hit || ![...hit].some((f) => f !== d.file);
   }).sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line);
-  if (unused.length > 10) warnings.push(`Q3：未使用导出共 ${unused.length} 个，仅报告前 10 条`);
-  for (const d of unused.slice(0, 10)) {
+  const { kept: unusedKept, truncation: unusedTruncation } = truncateList(unused, unusedCap);
+  for (const d of unusedKept) {
     push('Q3.unused-export', 'low', d.file, d.line, `export ${d.kind} ${d.name}`,
       `导出 ${d.name}（${d.kind}）在其它文件中零引用——可能已废弃，或仅供外部包使用`);
   }
+  if (unusedTruncation) {
+    const tr = truncationRecord({
+      checkId: 'Q3',
+      rule: 'Q3.unused-export',
+      configKey: 'Q3.unusedExport',
+      total: unusedTruncation.total,
+      reported: unusedTruncation.reported,
+      cap: unusedTruncation.cap,
+    });
+    reportTruncations.push(tr);
+    warnings.push(truncationWarning(tr));
+  } else if (unused.length > DEFAULT_NOISE_HINTS['Q3.unusedExport']) {
+    warnings.push(noiseWarning({
+      checkId: 'Q3',
+      rule: 'Q3.unused-export',
+      total: unused.length,
+      configKey: 'Q3.unusedExport',
+    }));
+  }
 
-  return { checkId: 'Q3', findings, coverageGap: null, warnings };
+  const out = { checkId: 'Q3', findings, coverageGap: null, warnings };
+  // 只有真的发生截断才加字段：未配置时返回形状与旧版一致
+  if (reportTruncations.length) out.reportTruncations = reportTruncations;
+  return out;
 }
 
 // 命名别名：调用方按矩阵编号找入口时可直接用 checkQ3

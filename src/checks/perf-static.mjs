@@ -1,7 +1,11 @@
-import { readdir, readFile, stat } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { parse } from '@babel/parser';
 import { t } from '../../desktop/src/renderer/i18n/core.mjs';
+import { listTextFiles, prunedWarning, fixturesWarning } from '../walk.mjs';
+import {
+  DEFAULT_NOISE_HINTS, noiseWarning, reportCap, truncationRecord, truncationWarning,
+} from '../report-caps.mjs';
 
 // Q5 静态性能反模式（L2 查 / L3 卡）：纯静态、不执行被审代码、不装新依赖。
 // 规则：请求路径同步 IO / 循环内 await / 疑似 N+1 / 无上限查询 / SELECT * /
@@ -9,12 +13,11 @@ import { t } from '../../desktop/src/renderer/i18n/core.mjs';
 // 文案全部走 t()：中文模式原样返回，英文词典由主会话补；代码片段不翻译。
 // 启发式结论一律 force='check'（提醒级线索），只有「请求路径里的阻塞调用」在 L3 才升 card。
 const CHECK_ID = 'Q5';
-const CODE_RE = /\.(?:ts|js|mjs|cjs|jsx|tsx)$/i;
-const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', 'out', 'vendor', 'coverage', '.next']);
+// 文件收集统一走 walk.mjs（与 Q3/Q4 同一份构建产物/夹具/exclude 口径）
 const MAX_FILES = 500;
 const MAX_BYTES = 1024 * 1024;
-const DEPTH_LIMIT = 12;
-const MAX_FINDINGS_PER_RULE = 20;
+const WALK_DEPTH_LIMIT = 12;
+const DEFAULT_MAX_FINDINGS_PER_RULE = Infinity; // 默认不截断；显式 reportCaps["Q5.perRule"] 才截断（不改规则判定）
 const SNIPPET_LIMIT = 120;
 
 const HOT_PATH_RE = /(?:handle|route|controller|api)/i;
@@ -133,46 +136,6 @@ function parseSource(text) {
     try { return parse(text, options); } catch (e) { lastError = e; }
   }
   throw lastError || new Error('parse failed');
-}
-
-async function collectSourceFiles(root, excludes) {
-  const files = [];
-  const skipped = [];
-  let overLimit = false;
-  const excluded = (rel) => excludes.some((x) => {
-    const n = String(x).replace(/\\/g, '/');
-    return rel === n || rel.startsWith(n + '/');
-  });
-
-  async function walk(dir, depth) {
-    if (overLimit || depth > DEPTH_LIMIT) return;
-    let entries;
-    try { entries = await readdir(dir, { withFileTypes: true }); } catch { return; }
-    entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-    for (const e of entries) {
-      if (overLimit) return;
-      if (e.isSymbolicLink()) continue;
-      const abs = path.join(dir, e.name);
-      const rel = path.relative(root, abs).replace(/\\/g, '/');
-      if (e.isDirectory()) {
-        if (SKIP_DIRS.has(e.name.toLowerCase())) continue;
-        if (e.name.startsWith('.')) continue;
-        if (excluded(rel)) continue;
-        await walk(abs, depth + 1);
-        continue;
-      }
-      if (!e.isFile() || !CODE_RE.test(e.name)) continue;
-      if (excluded(rel)) continue;
-      // 恰好吃满上限不报警；只有真的要扫第 501 个才记为覆盖不足
-      if (files.length >= MAX_FILES) { overLimit = true; return; }
-      const st = await stat(abs).catch(() => null);
-      if (!st) continue;
-      if (st.size > MAX_BYTES) { skipped.push(rel); continue; }
-      files.push(abs);
-    }
-  }
-  await walk(root, 0);
-  return { files, skipped, overLimit };
 }
 
 function functionNameMap(ast) {
@@ -377,7 +340,8 @@ function isJsonDeepClone(node) {
  * @returns {Promise<{checkId:string, findings:Array, coverageGap:string|null, warnings:string[]}>}
  */
 export async function checkPerfStatic(dir, opts = {}) {
-  const { tier, excludes = [] } = opts || {};
+  const { tier, excludes = [], includeFixtures = false } = opts || {};
+  const perRuleCap = reportCap(opts.reportCaps, 'Q5.perRule', DEFAULT_MAX_FINDINGS_PER_RULE);
   const findings = [];
   const warnings = [];
   const force = String(tier || 'L2').toUpperCase() === 'L3' ? 'card' : 'check';
@@ -396,8 +360,16 @@ export async function checkPerfStatic(dir, opts = {}) {
     });
   };
 
-  const { files, skipped, overLimit } = await collectSourceFiles(dir, excludes);
+  const {
+    files, skipped, pruned, fixtures, overLimit,
+  } = await listTextFiles(dir, excludes, {
+    codeOnly: true, maxBytes: MAX_BYTES, maxFiles: MAX_FILES, maxDepth: WALK_DEPTH_LIMIT, includeFixtures,
+  });
   if (overLimit) warnings.push(t('Q5：文件数超限，只扫描前 {n} 个代码文件', { n: MAX_FILES }));
+  const pword = prunedWarning(pruned);
+  if (pword) warnings.push(t('Q5：{msg}', { msg: pword }));
+  const fword = fixturesWarning(fixtures);
+  if (fword) warnings.push(t('Q5：{msg}', { msg: fword }));
   if (skipped.length) {
     warnings.push(t('Q5：跳过大文件 {n} 个（>{kb}KB）：{list}', {
       n: skipped.length,
@@ -531,28 +503,59 @@ export async function checkPerfStatic(dir, opts = {}) {
     };
   }
 
-  // 同规则限额 + 去重（同一行同一规则只报一次），保证报告可读且可复现
+  // 同规则限额 + 去重（同一行同一规则只报一次），保证报告可复现；
+  // 默认不限额（Infinity）；只有显式 reportCaps["Q5.perRule"] 才截断并点名总量。
   const seen = new Set();
-  const perRule = new Map();
-  const kept = [];
   const ordered = findings
     .map((f, i) => ({ f, i }))
-    .sort((a, b) => a.f.file.localeCompare(b.f.file) || a.f.line - b.f.line || a.i - b.i);
-  for (const { f } of ordered) {
-    const key = `${f.rule}|${f.file}|${f.line}|${f.snippet}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    const count = perRule.get(f.rule) || 0;
-    if (count >= MAX_FINDINGS_PER_RULE) continue;
-    perRule.set(f.rule, count + 1);
-    kept.push(f);
+    .sort((a, b) => a.f.file.localeCompare(b.f.file) || a.f.line - b.f.line || a.i - b.i)
+    .map(({ f }) => f)
+    .filter((f) => {
+      const key = `${f.rule}|${f.file}|${f.line}|${f.snippet}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  const reportTruncations = [];
+  const totals = new Map();
+  for (const f of ordered) totals.set(f.rule, (totals.get(f.rule) || 0) + 1);
+  let kept = ordered;
+  if (perRuleCap !== Infinity) {
+    const keptCounts = new Map();
+    kept = [];
+    for (const f of ordered) {
+      const count = keptCounts.get(f.rule) || 0;
+      keptCounts.set(f.rule, count + 1);
+      if (count < perRuleCap) kept.push(f);
+    }
+    for (const [rule, total] of totals) {
+      if (total <= perRuleCap) continue;
+      const tr = truncationRecord({
+        checkId: CHECK_ID,
+        rule,
+        configKey: 'Q5.perRule',
+        total,
+        reported: perRuleCap,
+        cap: perRuleCap,
+      });
+      reportTruncations.push(tr);
+      warnings.push(truncationWarning(tr));
+    }
   }
-  for (const [rule, count] of perRule) {
-    if (count < MAX_FINDINGS_PER_RULE) continue;
-    warnings.push(t('Q5：{rule} 命中过多，仅报告前 {n} 条', { rule, n: MAX_FINDINGS_PER_RULE }));
+  // 未截断但单规则命中偏多：保留噪声提示，条目一条不少
+  for (const [rule, total] of totals) {
+    if (reportTruncations.some((tr) => tr.rule === rule)) continue;
+    if (total > DEFAULT_NOISE_HINTS['Q5.perRule']) {
+      warnings.push(noiseWarning({
+        checkId: CHECK_ID, rule, total, configKey: 'Q5.perRule',
+      }));
+    }
   }
 
-  return { checkId: CHECK_ID, findings: kept, coverageGap: null, warnings };
+  const out = { checkId: CHECK_ID, findings: kept, coverageGap: null, warnings };
+  // 只有真的发生截断才加字段：未配置时返回形状与旧版一致
+  if (reportTruncations.length) out.reportTruncations = reportTruncations;
+  return out;
 }
 
 // 别名：与其它检查项的 checkXxx 命名保持一致，接线时可用 checkQ5

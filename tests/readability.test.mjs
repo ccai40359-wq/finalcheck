@@ -136,6 +136,46 @@ test('Q4 命名：单字母变量报，i/j/k/x/y/z、循环变量、解构、_ �
   assert.match(hits[0].message, /变量 q/);
 });
 
+test('Q4 命名收紧：循环变量、回调参数、catch(e)、解构占位、props 简写都不报', async (t) => {
+  const dir = await tmpProject(t, {
+    'callback.js': 'function sum(n) {\n'
+      + '  let total = 0;\n'
+      + '  for (let i = 0; i < n; i += 1) total += i;\n'
+      + '  return total;\n'
+      + '}\n'
+      + 'function parse(text) {\n'
+      + '  try { return JSON.parse(text); } catch (e) { return null; }\n'
+      + '}\n'
+      + 'function double(arr) { return arr.map((x) => x * 2); }\n'
+      + 'const props = { value: 1 };\n'
+      + 'export function longFunctionName(props) { return props.value; }\n',
+  });
+  const result = await checkReadability(dir, { rustMetrics: false });
+  assert.equal(byRule(result, 'Q4.naming').length, 0, '约定俗成的 i/x/e/n 与解构/props 不应按命名问题报');
+});
+
+test('Q4 命名收紧：无初始线索的单字母、无信息词、全大写非常量、单字符函数名各给明确 reason', async (t) => {
+  const dir = await tmpProject(t, {
+    'report.js': 'let d = computeThing();\n'
+      + 'const foo = 2;\n'
+      + 'let A = 3;\n'
+      + 'let MAGIC = 4;\n'
+      + 'function f() { return 1; }\n'
+      + "const data = 'x';\n",
+  });
+  const result = await checkReadability(dir, { rustMetrics: false });
+  const hits = byRule(result, 'Q4.naming');
+  assert.equal(hits.length, 6);
+  assert.ok(hits.every((f) => f.severity === 'low'));
+  const messages = hits.map((f) => f.message).join('\n');
+  assert.match(messages, /变量 d 看不出用途/);
+  assert.match(messages, /变量 foo 无信息量/);
+  assert.match(messages, /变量 A 是全大写单字母但未声明为常量/);
+  assert.match(messages, /变量 MAGIC 是全大写但声明为可变变量/);
+  assert.match(messages, /变量 data 无信息量/);
+  assert.match(messages, /函数 f 是单字符名/);
+});
+
 test('Q4 重复字符串：≥3 处且 ≥12 字符才报，短串/两处不报', async (t) => {
   const dir = await tmpProject(t, {
     'repeat.js': "const firstValue = 'please-run-this-command';\n"

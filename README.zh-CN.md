@@ -1,7 +1,7 @@
 <img src="docs/assets/cover.png" alt="FinalCheck 终检" width="100%">
 
 [![CI](https://github.com/ccai40359-wq/finalcheck/actions/workflows/ci.yml/badge.svg)](https://github.com/ccai40359-wq/finalcheck/actions/workflows/ci.yml)
-![tests](https://img.shields.io/badge/tests-663%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-978%20passing-brightgreen)
 ![license](https://img.shields.io/badge/license-Apache--2.0-blue)
 
 [English](README.md) · **简体中文**
@@ -56,11 +56,10 @@ Windows 安装包：[Releases](https://github.com/ccai40359-wq/finalcheck/releas
 
 ```bash
 git clone https://github.com/ccai40359-wq/finalcheck
-cd finalcheck
-npm install
-npm test                     # 647 项测试
-cd desktop && npm install
-npm run dev                  # 启动桌面端
+cd yanshou
+npm ci
+cd desktop && npm ci && npm run setup:sqlite
+cd desktop && npm run dev      # 启动桌面端
 ```
 
 打包 Windows 安装包：`cd desktop && npm run dist`。
@@ -91,12 +90,12 @@ desktop/      Electron 桌面端（main / preload / renderer）
 playbooks/    体检 playbook
 integrations/ 编码 agent 的 skill + hook 接线
 docs/         ACCEPTANCE.md（分级验收的唯一事实源）
-tests/        node:test 测试（当前 647 项全绿）
+tests/        node:test 测试（当前 978 项全绿）
 ```
 
 ## 状态
 
-已能真用但仍在早期：引擎、桌面端、分级闸门、Agent 工作流（DAG + 脚本 DSL）、对抗复核与内置更新都已落地，每次改动跑 647 项测试。本项目自身按 L3 标准开发——本仓库违反 L2 矩阵任何一条，都算 bug。
+已能真用但仍在早期：引擎、桌面端、分级闸门、Agent 工作流（DAG + 脚本 DSL）、对抗复核与内置更新都已落地，每次改动跑 978 项测试。本项目自身按 L3 标准开发——本仓库违反 L2 矩阵任何一条，都算 bug。
 
 ## 作者
 

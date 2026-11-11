@@ -18,6 +18,9 @@ test('walk: release/out 构建产物被跳过，并且跳过行为可见（不�
   await write('out/main/index.js');
   await write('desktop/out/renderer/index.js');
   await write('release-next/win-unpacked/resources/src/app.js');
+  await write('release-0110/win-unpacked/resources/src/app.js');
+  await write('dist/bundle.js');
+  await write('build/bundle.js');
   await write('node_modules/x.js');
 
   const { files, pruned } = await listTextFiles(dir);
@@ -25,7 +28,10 @@ test('walk: release/out 构建产物被跳过，并且跳过行为可见（不�
   assert.ok(pruned.includes('release'));
   assert.ok(pruned.includes('out'));
   assert.ok(pruned.includes('desktop/out'), '任意层级的 out 都按构建产物跳过');
-  assert.ok(pruned.includes('release-next/win-unpacked'), 'electron-builder 的 *-unpacked 目录按形态跳过');
+  assert.ok(pruned.includes('release-next'), 'release-* 目录按形态跳过（不再只认字面 release）');
+  assert.ok(pruned.includes('release-0110'), 'release-0110 这类打包副本目录按形态跳过');
+  assert.ok(pruned.includes('dist'), 'dist 按构建产物跳过并明示');
+  assert.ok(pruned.includes('build'), 'build 按构建产物跳过并明示');
   assert.match(prunedWarning(pruned), /构建产物目录/);
   assert.equal(prunedWarning([]), null);
 });

@@ -1,9 +1,9 @@
 import { listTextFiles, readRel } from '../walk.mjs';
 
 // S5 危险配置（CORS *、debug、限流缺失）。L2 起 CORS 一律非 *（reviewer 修正案）
-export async function checkConfig(projectDir, tier, { excludes = [] } = {}) {
+export async function checkConfig(projectDir, tier, { excludes = [], includeFixtures = false } = {}) {
   const findings = [];
-  const { files, skipped } = await listTextFiles(projectDir, excludes);
+  const { files, skipped } = await listTextFiles(projectDir, excludes, { includeFixtures });
   const warnings = skipped.length ? [`跳过大文件 ${skipped.length} 个（>512KB 未扫描）`] : [];
   let sawRateLimit = false;
   for (const f of files) {

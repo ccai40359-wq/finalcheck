@@ -116,6 +116,19 @@ test('Q3 未使用导出 → low；同文件内部引用不算，其它文件引
   assert.ok(!hits.some((f) => f.snippet.includes('usedValue')));
 });
 
+test('Q3 L3 只让 medium/high 变 card；low 未使用导出仍为 check，不挤进会卡交付层', async (t) => {
+  const dir = await tmp(t);
+  await writeFile(path.join(dir, 'orphan.mjs'), 'export function orphanHelper() {\n  return 1;\n}\n');
+  const r = await checkMetrics(dir, { tier: 'L3' });
+  const hit = byRule(r, 'Q3.unused-export')[0];
+  assert.equal(hit.severity, 'low');
+  assert.equal(hit.force, 'check');
+
+  await writeLines(dir, 'big.js', 850);
+  const medium = byRule(await checkMetrics(dir, { tier: 'L3' }), 'Q3.large-file')[0];
+  assert.equal(medium.force, 'card');
+});
+
 test('Q3 文件数超过 500 → 只扫前 500 并记 warning', async (t) => {
   const dir = await tmp(t);
   for (let i = 0; i < 501; i++) {

@@ -110,7 +110,7 @@
     "autoprefixer": "^10.4.20",
     "dompurify": "^3.2.4",
     "electron": "^33.2.0",
-    "electron-builder": "^26.18.0",
+    "electron-builder": "^26.18.1",
     "electron-vite": "^2.3.0",
     "marked": "^15.0.6",
     "postcss": "^8.4.49",

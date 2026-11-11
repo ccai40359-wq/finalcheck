@@ -7,6 +7,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { parse } from '@babel/parser';
+import { isPublicPath, isRelativeSource, joinPath, prefixMatches, staticPathValue } from './route-path.mjs';
 
 const ROUTE_METHODS = new Set(['get', 'post', 'put', 'delete', 'patch']);
 // Loose match over the spec'd guard names (auth/requireAuth/.../jwt/passport/session).
@@ -128,49 +129,6 @@ function routeMwNames(mwArgs) {
   return names;
 }
 
-function staticPathValue(n) {
-  if (!n) return undefined;
-  if (n.type === 'StringLiteral') return n.value;
-  if (n.type === 'TemplateLiteral' && n.expressions.length === 0) {
-    return n.quasis[0].value.cooked ?? n.quasis[0].value.raw;
-  }
-  return undefined;
-}
-
-function joinPath(prefix, sub) {
-  let base = prefix || '';
-  let rest = sub || '';
-  if (!rest || rest === '/') return base || '/';
-  if (!rest.startsWith('/')) rest = '/' + rest;
-  base = base.replace(/\/+$/, '');
-  if (!base || base === '/') return rest;
-  return base + rest;
-}
-
-// Express use-guard scope: guard on '/api' covers '/api' and '/api/...'.
-function prefixMatches(routePath, guardPrefix) {
-  if (!guardPrefix || guardPrefix === '/') return true;
-  if (routePath === guardPrefix) return true;
-  return routePath.startsWith(guardPrefix.endsWith('/') ? guardPrefix : guardPrefix + '/');
-}
-
-function isPublicPath(routePath, publicRoutes) {
-  return publicRoutes.some((entry) => {
-    if (entry === '*' || entry === '/*') return true;
-    if (entry === routePath) return true;
-    if (entry.endsWith('/*')) {
-      const base = entry.slice(0, -2);
-      return routePath === base || routePath.startsWith(base + '/');
-    }
-    if (entry.endsWith('*')) return routePath.startsWith(entry.slice(0, -1));
-    return routePath.startsWith(entry + '/');
-  });
-}
-
-function isRelativeSource(source) {
-  return typeof source === 'string' &&
-    (source.startsWith('./') || source.startsWith('../') || source.startsWith('/') || /^[A-Za-z]:[\\/]/.test(source));
-}
 
 // Resolve "./x.js" also to "./x.ts" / ".tsx" (TS ESM convention), etc.
 function resolveImportPath(fromDir, source) {

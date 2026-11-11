@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import os from 'node:os';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { audit } from '../src/audit.mjs';
 import { checkQ1 } from '../src/checks/q1.mjs';
 import { renderReport } from '../src/report.mjs';
@@ -33,6 +33,18 @@ const README = [
   'This paragraph exists only to push the README past the 400-character handover threshold. ',
 ].join('\n');
 
+// S7 只有在真的分析到 ≥1 条目标路由时才可能给过；临时项目带一条带守卫+属主过滤的路由，
+// 让「无 gap」类断言仍能测结论引擎，而不是被 S7 的覆盖缺口压成无法验收。
+const PROTECTED_ROUTE = [
+  "const express = require('express');",
+  'const app = express();',
+  "app.get('/users/:id', requireAuth, (req, res) => {",
+  '  const user = db.findOne({ where: { userId: req.user.id } });',
+  '  res.json(user);',
+  '});',
+  'module.exports = app;',
+].join('\n');
+
 async function makeProject(t, { lock = true, app = "const greeting = 'hello';\nconsole.log(greeting);\n" } = {}) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'fc-verdict-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
@@ -43,6 +55,8 @@ async function makeProject(t, { lock = true, app = "const greeting = 'hello';\nc
   if (lock) await writeFile(path.join(dir, 'package-lock.json'), JSON.stringify(LOCK), 'utf8');
   await writeFile(path.join(dir, 'README.md'), README, 'utf8');
   await writeFile(path.join(dir, 'app.js'), app, 'utf8');
+  await mkdir(path.join(dir, 'routes'), { recursive: true });
+  await writeFile(path.join(dir, 'routes', 'users.js'), PROTECTED_ROUTE, 'utf8');
   return dir;
 }
 

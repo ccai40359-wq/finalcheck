@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import os from 'node:os';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { audit } from '../src/audit.mjs';
 import { renderReport } from '../src/report.mjs';
 import { CORE_DIMENSION_NAMES } from '../src/profile.mjs';
@@ -32,6 +32,17 @@ const README = [
   'This paragraph exists only to push the README past the 400-character handover threshold. ',
 ].join('\n');
 
+// S7 只有分析到真实目标路由才可能给过；带一条守卫+属主过滤的路由，避免覆盖缺口污染维度结论测试。
+const PROTECTED_ROUTE = [
+  "const express = require('express');",
+  'const app = express();',
+  "app.get('/users/:id', requireAuth, (req, res) => {",
+  '  const user = db.findOne({ where: { userId: req.user.id } });',
+  '  res.json(user);',
+  '});',
+  'module.exports = app;',
+].join('\n');
+
 async function makeProject(t) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'fc-dims-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
@@ -42,6 +53,8 @@ async function makeProject(t) {
   await writeFile(path.join(dir, 'package-lock.json'), JSON.stringify(LOCK), 'utf8');
   await writeFile(path.join(dir, 'README.md'), README, 'utf8');
   await writeFile(path.join(dir, 'app.js'), "const greeting = 'hello';\nconsole.log(greeting);\n", 'utf8');
+  await mkdir(path.join(dir, 'routes'), { recursive: true });
+  await writeFile(path.join(dir, 'routes', 'users.js'), PROTECTED_ROUTE, 'utf8');
   return dir;
 }
 
@@ -126,7 +139,7 @@ test('profile + 源码和 URL：动态维度按 dynamicAuth 降级，静态维�
   assert.match(rowOf(text, '安全性'), /\| (过|修完再过|拦|待授权|无法验收|不适用) \| static-only（未授权，无实测） \|/);
 });
 
-test('不传 profile：旧输出逐字不变（黄金样本 + 真实审计都不出现维度表）', async (t) => {
+test('不传 profile：老格式按严重度分层，低优先建议默认折叠；真实审计不出现维度表', async (t) => {
   const legacyRes = {
     projectDir: 'D:/demo/probe',
     tier: { requested: null, suggested: 'L2', effective: 'L2', signals: ['未找到 package.json'], conservativeNote: null },
@@ -158,20 +171,29 @@ test('不传 profile：旧输出逐字不变（黄金样本 + 真实审计都不
     '',
     '本轮覆盖：S3；未跑：Q1；未启用：S1/S2/S4/S5/S6/S7/S8/D1/D2/D3/Q2/H1/Q3/Q4/Q5/C1/O1。',
     '',
+    '## 会卡交付的（1 条：force=card 或 severity=high）',
+    '',
     '🔴 高危｜密钥与弱默认（S3）｜硬编码密钥',
     "   证据：app.js:3  const k = 'abcdef1234567890';",
     '   判定来源：S3.secret-literal（程序判定/实锤）',
     '   修复提示词（粘回 AI）：把密钥移入 .env（并确认 .gitignore 含 .env），代码改用 process.env 读取；若该密钥曾提交过 git，视为已泄漏，立即作废并轮换。',
     '',
+    '## 需要人工判断的（0 条：medium）',
+    '- 无',
+    '',
+    '## 风格与可读性建议（低优先，共 0 条，默认不展开）',
+    '- 无',
+    '',
   ].join('\n');
-  assert.equal(renderReport(legacyRes), GOLDEN, '无 profile 时输出必须与旧格式逐字相同');
+  assert.equal(renderReport(legacyRes), GOLDEN, '老格式必须按三层输出，低优先默认折叠');
 
   const dir = await makeProject(t);
   const res = await audit(dir, { tier: 'L2', interactive: true, runTests: true });
   const text = renderReport(res);
   assert.ok(!('dimensions' in res.tier));
-  assert.doesNotMatch(text, /## Conclusion|维度结论表|## Not covered/);
+  assert.doesNotMatch(text, /## Conclusion|维度结论表/);
   assert.match(text, /本轮覆盖：/);
+  assert.match(text, /## 会卡交付的/);
 });
 
 test('发现按维度分组：标题用维度名，不出现 Q4 可读性度量 这类内部名', async (t) => {

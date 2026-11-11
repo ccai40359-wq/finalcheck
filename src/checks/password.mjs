@@ -21,12 +21,12 @@ function sanitize(raw) {
     .replace(/[A-Z0-9]{16,}/g, '***');
 }
 
-export async function checkPassword(projectDir, { tier, excludes = [] } = {}) {
+export async function checkPassword(projectDir, { tier, excludes = [], includeFixtures = false } = {}) {
   const findings = [];
   const warnings = [];
   const t = String(tier || 'L2').toUpperCase();
   const force = t === 'L3' ? 'card' : 'check'; // 矩阵：L2 查 / L3 卡（L1 不调用）
-  const { files, skipped } = await listTextFiles(projectDir, excludes);
+  const { files, skipped } = await listTextFiles(projectDir, excludes, { includeFixtures });
   if (skipped.length) warnings.push(`跳过大文件 ${skipped.length} 个（>512KB 未扫描）：${skipped.slice(0, 3).join('、')}${skipped.length > 3 ? '…' : ''}`);
   for (const f of files) {
     const { file, text } = await readRel(projectDir, f);

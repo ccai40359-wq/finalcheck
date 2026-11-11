@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import os from 'node:os';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import {
   DIMENSIONS, CORE_DIMENSION_NAMES, OPTIONAL_DIMENSION_NAMES, LEVELS, PROFILE_FILE,
   UNIMPLEMENTED_REASON, EVIDENCE_LEVELS, DEFAULT_LOAD_LIMIT,
@@ -33,6 +33,17 @@ const README = [
   'This paragraph exists only to push the README past the 400-character handover threshold. ',
 ].join('\n');
 
+// S7 需要真实目标路由才能给过；临时项目带一条带守卫+属主过滤的路由，保证维度结论测的是检查结果本身。
+const PROTECTED_ROUTE = [
+  "const express = require('express');",
+  'const app = express();',
+  "app.get('/users/:id', requireAuth, (req, res) => {",
+  '  const user = db.findOne({ where: { userId: req.user.id } });',
+  '  res.json(user);',
+  '});',
+  'module.exports = app;',
+].join('\n');
+
 async function tmpDir(t) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'fc-profile-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
@@ -48,6 +59,8 @@ async function probeProject(t, { app = "const greeting = 'hello';\nconsole.log(g
   await writeFile(path.join(dir, 'package-lock.json'), JSON.stringify(LOCK), 'utf8');
   await writeFile(path.join(dir, 'README.md'), README, 'utf8');
   await writeFile(path.join(dir, 'app.js'), app, 'utf8');
+  await mkdir(path.join(dir, 'routes'), { recursive: true });
+  await writeFile(path.join(dir, 'routes', 'users.js'), PROTECTED_ROUTE, 'utf8');
   return dir;
 }
 

@@ -66,13 +66,13 @@ function sanitize(raw) {
     .replace(/[A-Z0-9]{16,}/g, '***');
 }
 
-export async function checkInject(projectDir, { tier, excludes = [], routeResult = null } = {}) {
+export async function checkInject(projectDir, { tier, excludes = [], routeResult = null, includeFixtures = false } = {}) {
   void routeResult; // S2 不消费路由表；参数仅为与接线契约一致
   const findings = [];
   const warnings = [];
   const t = String(tier || 'L2').toUpperCase();
   const force = t === 'L1' ? 'check' : 'card'; // 矩阵：L1 查 / L2 卡 / L3 卡
-  const { files, skipped, pruned } = await listTextFiles(projectDir, excludes);
+  const { files, skipped, pruned } = await listTextFiles(projectDir, excludes, { includeFixtures });
   if (skipped.length) warnings.push(`跳过大文件 ${skipped.length} 个（>512KB 未扫描）：${skipped.slice(0, 3).join('、')}${skipped.length > 3 ? '…' : ''}`);
   const pw = prunedWarning(pruned);
   if (pw) warnings.push(pw);
