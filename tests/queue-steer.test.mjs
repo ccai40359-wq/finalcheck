@@ -76,6 +76,100 @@ test('queue: moveToInput 取回编辑——文本与附件一并带回并从队�
   assert.equal(miss.rest, list);
 });
 
+/* ---------- Steer：消息立刻上屏 + 中断当前回合 + 用同一条消息重开一回合 ---------- */
+
+// Steer 的状态迁移同样在 App.jsx 里用标记段隔离（无 React/无副作用），提取后单测。
+function loadSteerHelpers() {
+  const src = readFileSync(path.join(repoRoot, 'desktop', 'src', 'renderer', 'App.jsx'), 'utf8');
+  const m = src.match(/\/\* STEER-HELPERS-BEGIN \*\/([\s\S]*?)\/\* STEER-HELPERS-END \*\//);
+  assert.ok(m, 'App.jsx 必须保留 STEER-HELPERS-BEGIN/END 标记段');
+  const factory = new Function(`${m[1]}\nreturn { steerMessageText, insertUserBubble, planSteer };`);
+  return factory();
+}
+
+// 队列泵闸门 / 停止看门狗：同样按标记段提取（纯函数）。
+function loadPumpHelpers() {
+  const src = readFileSync(path.join(repoRoot, 'desktop', 'src', 'renderer', 'App.jsx'), 'utf8');
+  const m = src.match(/\/\* PUMP-HELPERS-BEGIN \*\/([\s\S]*?)\/\* PUMP-HELPERS-END \*\//);
+  assert.ok(m, 'App.jsx 必须保留 PUMP-HELPERS-BEGIN/END 标记段');
+  const factory = new Function(`${m[1]}\nreturn { turnOutcomeOf, canAutoPump, holdsQueue, expiredStopping, STOPPING_WATCHDOG_MS };`);
+  return factory();
+}
+const P = loadPumpHelpers();
+
+const S = loadSteerHelpers();
+// 复刻 sendOnce 组装 wire history 的过滤条件：占位气泡必须被过滤掉（否则真实消息 + 占位 = 两条）
+const wireOf = (msgs) => msgs
+  .filter((m) => !m.error && !m.local && !m.steer && (m.role === 'user' || m.role === 'assistant'))
+  .map((m) => ({ role: m.role, content: m.content }));
+
+test('steer: 点 Steer 后消息立刻以用户气泡出现在对话里，同时从排队区出队', () => {
+  const item = { id: 'q1', text: 'hi 换成只看 C 盘', pasted: [], previews: [] };
+  const queue = [msg('a', '后面那条'), item];
+  const messages = [
+    { role: 'user', content: '旧问题' },
+    { role: 'assistant', content: '正在输出…', streaming: true }
+  ];
+  const plan = S.planSteer(queue, messages, 'q1');
+  assert.equal(plan.item.id, 'q1');
+  assert.deepEqual(plan.queue.map((x) => x.id), ['a'], 'Steer 的这条必须从队列移除，别的条目顺序不变');
+  assert.equal(plan.messages.length, 3, '对话里必须多出一条（这就是「消失但什么都没出现」的修复点）');
+  const bubble = plan.messages[1];
+  assert.equal(bubble.role, 'user');
+  assert.equal(bubble.content, 'hi 换成只看 C 盘');
+  assert.equal(bubble.local, true, '占位气泡要标 local，sendOnce 才会把它排除在 wire history 之外');
+  // 插在流式气泡之前：最后一条仍是 streaming assistant，token/turn-end 归约链不断
+  assert.equal(plan.messages[2].role, 'assistant');
+  assert.equal(plan.messages[2].streaming, true);
+  assert.equal(messages.length, 2, 'planSteer 不能改动入参数组');
+});
+
+test('steer: 不会重复两条——占位气泡不进 wire history，真实消息只由 sendOnce 追加一次', () => {
+  const item = { id: 'q1', text: '再来一次', pasted: [], previews: [] };
+  const plan = S.planSteer([item], [{ role: 'user', content: '旧问题' }], 'q1');
+  // sendOnce 的行为：baseList = 过滤后的历史，再追加一次 {role:'user', content:finalText}
+  const wire = [...wireOf(plan.messages), { role: 'user', content: plan.text }];
+  assert.equal(wire.filter((m) => m.content === '再来一次').length, 1, '同一条 Steer 消息在发给模型的上下文里只能出现一次');
+  assert.equal(wire[wire.length - 1].content, '再来一次');
+});
+
+test('steer: 幂等——同一条已出队的消息再点一次不会重复上屏', () => {
+  const item = { id: 'q1', text: 'hi', pasted: [], previews: [] };
+  const first = S.planSteer([item], [], 'q1');
+  const second = S.planSteer(first.queue, first.messages, 'q1');
+  assert.equal(second.item, null);
+  assert.equal(second.text, '');
+  assert.equal(second.messages, first.messages, '已出队的 id 再点必须原样返回（不新增气泡）');
+  assert.equal(second.messages.length, 1);
+  // 未知 id 同理
+  const miss = S.planSteer([msg('a', 'A')], [], 'nope');
+  assert.equal(miss.item, null);
+  assert.equal(miss.messages.length, 0);
+});
+
+test('steer: 正文按 正文 → 粘贴块 → 附件 组装；只有附件也不算空', () => {
+  const attach = { path: 'C:/x/shot.png', name: 'shot.png', size: 1, preview: null };
+  const item = { id: 'q1', text: '  看这张  ', pasted: ['第一段粘贴', ''], previews: [attach] };
+  const text = S.steerMessageText(item);
+  assert.equal(text, '看这张\n\n第一段粘贴\n\n[附件]\n- C:/x/shot.png');
+  assert.ok(text.indexOf('看这张') < text.indexOf('第一段粘贴'), '正文在粘贴块之前');
+  assert.ok(text.indexOf('第一段粘贴') < text.indexOf('[附件]'), '附件清单在最后');
+  assert.equal(S.steerMessageText({ id: 'q2', text: '', pasted: [], previews: [attach] }).startsWith('[附件]'), true);
+  assert.equal(S.steerMessageText({ id: 'q3', text: '  ', pasted: [''] }), '', '全空消息 → 空串，调用方据此拒绝 Steer');
+});
+
+test('steer: 尾部不是流式消息时（例如刚停止/已中断）气泡追加在最后，不插到历史中间', () => {
+  const messages = [
+    { role: 'user', content: '旧问题' },
+    { role: 'assistant', content: '半句', interrupted: true }
+  ];
+  const next = S.insertUserBubble(messages, '新指令');
+  assert.equal(next.length, 3);
+  assert.equal(next[2].role, 'user');
+  assert.equal(next[2].content, '新指令');
+  assert.equal(next[1].interrupted, true, '已中断的助手消息保持原位');
+});
+
 /* ---------- agent-service：Steer 注入 ---------- */
 
 function sse(chunks) {
@@ -171,4 +265,50 @@ test('steer: 一次 drain 多条按顺序注入；drainSteer 抛错不阻断回�
     drainSteer
   });
   assert.equal(out.answer, '答');
+});
+
+/* ---------- 队列泵闸门 / 停止看门狗（F4） ---------- */
+test('队列泵：回合以 stopped / error 收尾后不再自动消费队列；正常结束继续自动发', () => {
+  const base = { sid: 's1', busy: false, stopping: false, pumping: false, inflight: false, steering: false };
+  assert.equal(P.canAutoPump({ ...base, outcome: 'stopped' }), false, '用户点了停止：绝不能自己又发下一条');
+  assert.equal(P.canAutoPump({ ...base, outcome: 'error' }), false, '回合报错收尾：也不自动发（避免错误连环）');
+  assert.equal(P.canAutoPump({ ...base, outcome: 'ok' }), true, '正常结束：队列照旧自动发送');
+  assert.equal(P.canAutoPump({ ...base, outcome: undefined }), true, '还没跑过回合：保持原行为');
+  assert.equal(P.holdsQueue('stopped'), true);
+  assert.equal(P.holdsQueue('error'), true);
+  assert.equal(P.holdsQueue('ok'), false);
+});
+
+test('队列泵：忙 / 停止中 / 正在泵 / send 未收尾 / Steer 中都不消费（闸门优先级不被 outcome 覆盖）', () => {
+  const ok = { sid: 's1', outcome: 'ok' };
+  for (const key of ['busy', 'stopping', 'pumping', 'inflight', 'steering']) {
+    assert.equal(P.canAutoPump({ ...ok, [key]: true }), false, `${key} 时必须拦下自动发送`);
+  }
+  assert.equal(P.canAutoPump({ ...ok, sid: null }), false, '没有会话时不消费');
+  assert.equal(P.canAutoPump({}), false, '空参数不崩、不消费');
+});
+
+test('agent-chat 返回体 → 收尾类型：cancelled/已取消 是 stopped，其它 error 是 error', () => {
+  assert.equal(P.turnOutcomeOf({ cancelled: true }), 'stopped');
+  assert.equal(P.turnOutcomeOf({ error: '已取消' }), 'stopped');
+  assert.equal(P.turnOutcomeOf({ error: '模型未配置' }), 'error');
+  assert.equal(P.turnOutcomeOf({ answer: '完成' }), 'ok');
+  assert.equal(P.turnOutcomeOf(null), 'ok');
+});
+
+test('stopping 看门狗：15s 超时后强制解除停止态（否则每次发送只入队）', () => {
+  const now = 1_000_000;
+  assert.deepEqual(P.expiredStopping({ a: now - 1_000 }, now), [], '刚点停止：还在正常等待');
+  assert.deepEqual(P.expiredStopping({ a: now - P.STOPPING_WATCHDOG_MS }, now), ['a'], '到点必须恢复');
+  assert.deepEqual(P.expiredStopping({ a: now - 20_000, b: now - 100 }, now), ['a'], '只恢复超时的那一个');
+  assert.deepEqual(P.expiredStopping({}, now), [], '没有停止中的会话时什么都不做');
+  assert.deepEqual(P.expiredStopping(null, now), [], '非对象入参不崩');
+  assert.equal(P.STOPPING_WATCHDOG_MS, 15000);
+});
+
+test('队列泵：重启后恢复的「待发送」条目（hold）不会被自动消费，点发送才发', () => {
+  const base = { sid: 's1', busy: false, stopping: false, pumping: false, inflight: false, steering: false, outcome: 'ok' };
+  assert.equal(P.canAutoPump({ ...base, headHeld: true }), false, '恢复出来的队列必须等用户点发送');
+  assert.equal(P.canAutoPump({ ...base, headHeld: false }), true, '普通排队消息照旧自动发送');
+  assert.equal(P.canAutoPump(base), true);
 });

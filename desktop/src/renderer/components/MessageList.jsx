@@ -204,7 +204,7 @@ export default function MessageList({
             <div key={i} className={`w-full border-l-2 pl-4 transition-all duration-200 ${m.error ? 'border-red-500/50' : m.interrupted ? 'border-gold/25' : 'border-gold/45'}`}>
               <ProcessTimeline msg={m} />
               {/* 验收单：实时（events）/ 历史（trace 的 todo_write tool part）都从同一条数据还原 */}
-              <TodoBlock msg={m} />
+              <TodoBlock msg={m} sessionId={activeId} />
               {m.streaming && m.workflow ? <WorkflowLiveCard data={m.workflow} sessionId={activeId} providers={providers}
                 onRecover={(text) => onSendRecover(text)}
                 onOpenStep={(s) => onOpenStep(s)} /> : null}

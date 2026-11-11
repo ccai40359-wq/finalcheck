@@ -46,6 +46,15 @@ export function registerSessionIpc({ ipcMain, state, sessionProjectPathOf, runSe
     return ok;
   });
   ipcMain.handle('finalcheck:sessions:rename', (_e, id, title) => sessions.renameSession(id, title));
+  // 排队消息存档（F8）：重启后恢复成「待发送」，不静默丢；空数组 = 清档
+  ipcMain.handle('finalcheck:sessions:queue-get', async (_e, id) => {
+    await ensureSessionDirRegistered(id); // 会话可能在旧项目目录：先登记再读
+    return sessions.loadSessionQueue(id);
+  });
+  ipcMain.handle('finalcheck:sessions:queue-save', async (_e, id, items) => {
+    await ensureSessionDirRegistered(id);
+    return sessions.saveSessionQueue(id, items);
+  });
   ipcMain.handle('finalcheck:sessions:flags', (_e, id, flags) => sessions.setSessionFlags(id, flags));
   ipcMain.handle('finalcheck:sessions:rewind', (_e, id, keepUserTurns) => sessions.rewindToUserTurn(id, keepUserTurns));
   ipcMain.handle('finalcheck:sessions:set-model', async (_e, id, cfg) => {

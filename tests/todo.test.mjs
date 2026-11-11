@@ -13,7 +13,11 @@ const sessions = await import('../desktop/src/main/sessions.mjs');
 const { createAgentTools } = await import('../desktop/src/main/agent-tools.mjs');
 const { AGENT_TOOLS_SCHEMA, SUBAGENT_TOOLS_SCHEMA } = await import('../desktop/src/main/agent-service.mjs');
 const { createTodoRegistry } = await import('../desktop/src/main/todo-list.mjs');
-const { validateTodoItems, todoCardFromTrace, latestTodoEntry, todoProgress } = await import('../desktop/src/renderer/lib/todo.mjs');
+const {
+  validateTodoItems, todoCardFromTrace, latestTodoEntry, todoProgress,
+  todoCardSummary, todoCollapseKey, readTodoCollapsed, writeTodoCollapsed, TODO_COLLAPSE_PREFIX,
+  displayStatus
+} = await import('../desktop/src/renderer/lib/todo.mjs');
 const { lintTodoReport } = await import('../desktop/src/main/swarm.mjs');
 const { hasTranslation } = await import('../desktop/src/renderer/i18n/core.mjs');
 
@@ -222,10 +226,100 @@ test('todo: 报告闸——done 必须有 evidence，failed/skipped 必须写进
   assert.deepEqual(lintTodoReport(report('None'), { items: onlyPending }), []);
 });
 
-/* ---------- ⑥ i18n：新增文案都有英文 key ---------- */
+/* ---------- ⑤b 展示态：回合结束后 running 不再转圈（变成「已中断」） ---------- */
+test('todo: 展示态——回合仍在流式时 running 是「进行中」，停止/收尾后显示「已中断」且不改数据', () => {
+  const running = { id: 'b', task: '读报告', acceptance: 'x', status: 'running' };
+
+  const live = displayStatus(running, true);
+  assert.equal(live.status, 'running');
+  assert.equal(live.pulse, true, '真在跑才允许脉冲');
+  assert.equal(live.label, '进行中');
+
+  const dead = displayStatus(running, false);
+  assert.equal(dead.status, 'interrupted', '回合已结束：running 展示为已中断，而不是永远转圈');
+  assert.equal(dead.raw, 'running', '原始 status 必须保持 running（报告闸/历史语义不变）');
+  assert.equal(dead.pulse, false, '已中断不能再脉冲');
+  assert.equal(dead.label, '已中断');
+  assert.equal(running.status, 'running', 'displayStatus 不能改入参');
+
+  // 其它状态与 live 无关
+  for (const s of ['pending', 'done', 'failed', 'skipped']) {
+    assert.equal(displayStatus({ status: s }, false).status, s);
+    assert.equal(displayStatus({ status: s }, false).pulse, false);
+  }
+  // 缺省/非法状态按 pending 展示，不抛错
+  assert.equal(displayStatus(null, false).status, 'pending');
+  assert.equal(displayStatus({}, true).status, 'pending');
+});
+
+/* ---------- ⑥ 卡片头部摘要：计数 / 百分比 / 首条任务 / 折叠单行文案 ---------- */
+test('todo: 卡片摘要计数、百分比与折叠单行文案', () => {
+  const items = [
+    { id: 'a', task: '跑体检', acceptance: 'x', status: 'done' },
+    { id: 'b', task: '读报告', acceptance: 'x', status: 'running' },
+    { id: 'c', task: '写结论', acceptance: 'x', status: 'failed' },
+    { id: 'd', task: '补文档', acceptance: 'x', status: 'skipped' }
+  ];
+  const s = todoCardSummary(items);
+  assert.equal(s.total, 4);
+  assert.equal(s.done, 1);
+  assert.equal(s.failed, 1);
+  assert.equal(s.skipped, 1);
+  assert.equal(s.percent, 25);
+  assert.equal(s.firstTask, '跑体检');
+  assert.equal(s.label, '验收单 · 1/4', '折叠后一行要带计数');
+
+  // 空清单不除零、不抛错
+  assert.deepEqual(todoCardSummary([]), { done: 0, total: 0, failed: 0, skipped: 0, percent: 0, firstTask: '', label: '验收单 · 0/0' });
+  assert.equal(todoCardSummary(null).total, 0);
+  assert.equal(todoCardSummary([{ id: 'a', status: 'done' }]).firstTask, '', '没有 task 时不拿验收标准冒充概览');
+  assert.equal(todoCardSummary([{ id: 'a', task: '一', status: 'done' }, { id: 'b', task: '二', status: 'done' }]).percent, 100);
+});
+
+/* ---------- ⑦ 折叠持久化：key 稳定（不含 status），存储不可用不抛错 ---------- */
+test('todo: 整卡折叠状态按 session + 任务 id 存/读', () => {
+  const before = [
+    { id: 'a', task: '跑体检', acceptance: 'x', status: 'pending' },
+    { id: 'b', task: '读报告', acceptance: 'x', status: 'pending' }
+  ];
+  const finished = before.map((it) => ({ ...it, status: 'done', evidence: 'e' }));
+
+  const k1 = todoCollapseKey('sess-1', before);
+  assert.ok(k1.startsWith(TODO_COLLAPSE_PREFIX));
+  assert.equal(k1, todoCollapseKey('sess-1', finished), '状态变化不能换 key（否则折叠状态会丢）');
+  assert.notEqual(k1, todoCollapseKey('sess-2', before), '不同会话要隔离');
+  assert.notEqual(k1, todoCollapseKey('sess-1', [before[0]]), '不同任务签名要隔离');
+  assert.match(todoCollapseKey(null, before), /a,b$/, '没有 sessionId 时退化为任务 id 签名');
+  assert.equal(todoCollapseKey(null, []), `${TODO_COLLAPSE_PREFIX}default`);
+
+  // 假的 localStorage：只实现 getItem/setItem
+  const mem = new Map();
+  const storage = { getItem: (k) => (mem.has(k) ? mem.get(k) : null), setItem: (k, v) => mem.set(k, v) };
+  assert.equal(readTodoCollapsed(k1, storage), false, '默认展开');
+  assert.equal(writeTodoCollapsed(k1, true, storage), true);
+  assert.equal(readTodoCollapsed(k1, storage), true);
+  const again = todoCollapseKey('sess-1', finished);
+  assert.equal(readTodoCollapsed(again, storage), true, '刷新后（同一签名）仍保持折叠');
+  assert.equal(writeTodoCollapsed(k1, false, storage), true);
+  assert.equal(readTodoCollapsed(k1, storage), false);
+
+  // 隔离：别的 key 不受影响
+  assert.equal(readTodoCollapsed(todoCollapseKey('sess-2', before), storage), false);
+
+  // 存储缺失 / 抛错 / 空 key：一律当作未折叠，不阻塞渲染
+  assert.equal(readTodoCollapsed(k1, null), false);
+  assert.equal(writeTodoCollapsed(k1, true, null), false);
+  assert.equal(readTodoCollapsed('', storage), false);
+  const broken = { getItem() { throw new Error('denied'); }, setItem() { throw new Error('denied'); } };
+  assert.equal(readTodoCollapsed(k1, broken), false);
+  assert.equal(writeTodoCollapsed(k1, true, broken), false);
+});
+
+/* ---------- ⑧ i18n：新增文案都有英文 key ---------- */
 test('todo: 新增文案有英文译文', () => {
   const keys = [
     '验收单', '{done}/{total} 完成', '验收：{acceptance}', '证据：{evidence}',
+    '进度', '展开验收单', '收起验收单', '已中断',
     '报告不合格（验收单闸）',
     '任务 {id} 缺少 acceptance（验收标准）：先想清楚「怎么算完成」再调用 todo_write，把验收标准补上',
     '验收单里有 {n} 条标为 done 但没有证据：{labels}（先补 evidence 再交报告）',

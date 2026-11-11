@@ -238,8 +238,10 @@ app.whenReady().then(async () => {
     for (const p of ordered) await scanSessionsDir(projects.sessionDirOf(p.path)).catch(() => {});
     // 上次进程崩溃/被强杀时挂着的「运行中」工具调用：启动即标成 interrupted，
     // 否则卡片永远转圈，工作流恢复入口也不知道该重放什么。
+    // 传会话目录（与 scanSessionsDir 同一处库）：项目根只有 <proj>/.finalcheck/finalcheck.db，
+    // 直接传 p.path 会去查 <proj>/finalcheck.db 而永远 no-op。
     let interrupted = 0;
-    for (const p of ordered) interrupted += await sessions.markInterruptedRunningParts(p.path).catch(() => 0);
+    for (const p of ordered) interrupted += await sessions.markInterruptedRunningParts(projects.sessionDirOf(p.path)).catch(() => 0);
     if (interrupted) writeLog(`启动收尾：${interrupted} 个遗留的工具调用已标记为「应用重启导致中断」`);
   }
 

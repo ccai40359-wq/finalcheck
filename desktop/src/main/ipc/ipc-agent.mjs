@@ -110,20 +110,28 @@ export function registerAgentIpc({
     return { ok: true, queued: list.length };
   });
   ipcMain.handle('finalcheck:agent-cancel', (_e, sessionId = null) => {
-    if (sessionId && state.activeChats.has(sessionId)) {
+    // 全局停止：只有调用方没给 sessionId 时才允许动所有会话。
+    if (!sessionId) {
+      let n = 0;
+      askUsers.cancelAll();
+      for (const ac of state.activeChats.values()) { try { ac.abort(); n++; } catch { /* 忽略 */ } }
+      state.activeChats.clear();
+      state.steerBuffers.clear();
+      return { cancelled: n };
+    }
+    const target = String(sessionId);
+    if (state.activeChats.has(target)) {
       // 先 resolve 挂起的提问（工具返回「用户取消」），再 abort 回合
-      askUsers.cancelSession(sessionId);
-      try { state.activeChats.get(sessionId).abort(); } catch { /* 忽略 */ }
-      state.activeChats.delete(sessionId);
-      state.steerBuffers.delete(sessionId); // 回合被中断：残留的注入不再跨回合生效
+      askUsers.cancelSession(target);
+      try { state.activeChats.get(target).abort(); } catch { /* 忽略 */ }
+      state.activeChats.delete(target);
+      state.steerBuffers.delete(target); // 回合被中断：残留的注入不再跨回合生效
       return { cancelled: 1 };
     }
-    let n = 0;
-    askUsers.cancelAll();
-    for (const ac of state.activeChats.values()) { try { ac.abort(); n++; } catch { /* 忽略 */ } }
-    state.activeChats.clear();
-    state.steerBuffers.clear();
-    return { cancelled: n };
+    // 显式指定会话但该会话没有在跑（已经结束/刚收尾）：什么都不做。
+    // 以前这里落到下面的全量分支 → 停止一个已结束的会话会把别人的回合一起杀掉。
+    state.steerBuffers.delete(target); // 该会话已无回合，残留注入同样不该跨回合生效
+    return { cancelled: 0 };
   });
   // 工作流控制台：暂停/继续/停止 + 改最大并发/子代理模型（运行中即时生效）
   ipcMain.handle('finalcheck:workflow-control', (_e, sessionId, payload = {}) => {
@@ -545,6 +553,9 @@ export function registerAgentIpc({
       cwd: turnProjectPath,
       onToken: (text) => getWin()?.webContents.send('finalcheck:agent-token', { sessionId, text }),
       onEvent: (ev) => getWin()?.webContents.send('finalcheck:agent-event', { sessionId, ev }),
+      // 工具层的「长命令仍在跑」提示（F7）：run_command 超过 60s 每 30s 推一条，只带耗时；
+      // 不设硬超时（尊重「不要默认墙钟超时」），只把「还在动」变成可见。
+      onActivity: (ev) => getWin()?.webContents.send('finalcheck:agent-event', { sessionId, ev }),
       // 工具调用级落库（SQLite 后端）：开始写 running part、结束补 status/result/error/ms；
       // 不 await（落库慢不拖工具执行），withQueue 按会话串行保证 start→end→回合收尾的顺序。
       onToolLifecycle: sessionId ? (ev) => {
@@ -571,6 +582,7 @@ export function registerAgentIpc({
         hooksConfig: hooksCfg,
         sessionId,
         commandIdleMs: cfg.commandIdleMs,
+        onActivity: (ev) => getWin()?.webContents.send('finalcheck:agent-event', { sessionId, ev }),
         // 只有主 agent 有 ask_user；子代理/工作流 gate 不注册（避免并行弹多张卡）
         askUser: (args, ctx) => askUsers.ask({ ...(args || {}), sessionId, signal: ctx?.signal || chatAbort.signal }),
         // 验收单同理：todo_write 只在主 agent 工具表；台账按会话存，回合末跑报告闸

@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
-import { assembleContext, estimateTokens, estimateMessagesTokens, microcompact, fullCompact, contextBudget } from './context.mjs';
+import { assembleContext, estimateTokens, estimateMessagesTokens, microcompact, fullCompact, contextBudget, needsCompaction } from './context.mjs';
 import { crossTurnBudgetTokens } from './model-config.mjs';
 // token 估算/两级压缩原语实现放在 context.mjs（与上下文视图同源）；这里重新导出，单测可直接从 agent-service 取
 export { estimateTokens, estimateMessagesTokens, microcompact, fullCompact, contextBudget } from './context.mjs';
@@ -383,8 +383,10 @@ export function buildEmptyNudgeDigest(messages, {
   return text.length > maxChars ? `${text.slice(0, maxChars)}…` : text;
 }
 
-// onChunk：每收到一个数据块就回调一次（静默看门狗靠它重置「距上一字节」计时）
-async function consumeStream(res, onToken, onEvent, ctl, onChunk = null) {
+// onChunk：每收到一个数据块就回调一次，参数 chunkHasProgress 表示这一块是否带「真实进度」
+// （content / reasoning / tool_calls / usage）。静默看门狗只认真实进度：
+// 网关的 SSE 注释 / 空 data / 只有 role 的块是心跳，不能让 180s 静默阈值永久失效。
+export async function consumeStream(res, onToken, onEvent, ctl, onChunk = null) {
   let content = '';
   let reasoning = '';
   const toolCalls = [];
@@ -432,6 +434,8 @@ async function consumeStream(res, onToken, onEvent, ctl, onChunk = null) {
   const dec = new TextDecoder();
   let lineBuf = '';
   let aborted = false;
+  // 当前数据块的「真实进度」：解析到 content / reasoning / tool_calls / usage 才置 true。
+  let chunkProgress = false;
   const handleLine = (line) => {
     const s = line.trim();
     if (!s.startsWith('data:')) return;
@@ -439,13 +443,14 @@ async function consumeStream(res, onToken, onEvent, ctl, onChunk = null) {
     if (data === '[DONE]') return;
     let j;
     try { j = JSON.parse(data); } catch { return; }
-    if (j.usage) usage = j.usage;
+    if (j.usage) { usage = j.usage; chunkProgress = true; }
     if (j.choices?.[0]?.finish_reason) finishReason = j.choices[0].finish_reason;
     const d = j.choices?.[0]?.delta || {};
     // 思考流：不同网关字段名不同（DeepSeek reasoning_content / 本网关 reasoning / thinking）
     const think = [d.reasoning_content, d.reasoning, d.thinking].find((x) => typeof x === 'string' && x);
-    if (think) { reasoning += think; onEvent?.({ kind: 'reasoning', text: think }); }
+    if (think) { reasoning += think; chunkProgress = true; onEvent?.({ kind: 'reasoning', text: think }); }
     if (d.content) {
+      chunkProgress = true;
       if (!act.contentSeen) {
         act.contentSeen = true;
         // 正文开始流式输出；同一响应里已经在流工具参数时（少数网关先给参数后给话）按「写脚本」提示
@@ -470,19 +475,20 @@ async function consumeStream(res, onToken, onEvent, ctl, onChunk = null) {
       if (tc.function?.arguments) toolCalls[idx].function.arguments += tc.function.arguments;
       sawToolDelta = true;
     }
-    if (sawToolDelta) noteToolDelta(); // 首次出现 → Writing <tool>…；之后按 512 字符/500ms 节流更新
+    if (sawToolDelta) { chunkProgress = true; noteToolDelta(); } // 首次出现 → Writing <tool>…；之后按 512 字符/500ms 节流更新
   };
   try {
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
-      try { onChunk?.(); } catch { /* 观测回调失败不影响流 */ }
+      chunkProgress = false; // 每块重新判定：心跳块（SSE 注释/空 data）不算进度
       const chunk = dec.decode(value, { stream: true });
       raw += chunk;
       lineBuf += chunk;
       const lines = lineBuf.split('\n');
       lineBuf = lines.pop();
       for (const line of lines) handleLine(line);
+      try { onChunk?.(chunkProgress); } catch { /* 观测回调失败不影响流 */ }
     }
   } catch (e) {
     // dsh 语义：中断不截断——已流出的内容原样保留，返回 aborted 标记交给上层合成「已中断」收尾
@@ -627,6 +633,28 @@ function awaitWithAbort(promise, signal, graceMs = TOOL_ABORT_GRACE_MS) {
   });
 }
 
+// 推给渲染层的 tool-end 结果摘要上限：只让「用户该看见的东西」（note/error/code…）过 IPC，
+// 大对象截成 preview。没有它，运行中的工具行只能显示静态文字，用户不知道「已转后台」。
+export const UI_RESULT_MAX_CHARS = 400;
+
+/**
+ * tool-end 的结果摘要（≤ max 字）。小对象原样返回（note 等结构化字段都保留）；
+ * 大对象只留 note，或截断 preview —— 绝不把整块 stdout / 大 JSON 塞进事件流。
+ * @param {any} result
+ * @param {number} [max]
+ */
+export function uiResultSummary(result, max = UI_RESULT_MAX_CHARS) {
+  if (result == null) return null;
+  if (typeof result !== 'object') return String(result).slice(0, max);
+  let text = '';
+  try { text = JSON.stringify(result) ?? ''; } catch { text = ''; }
+  if (text.length <= max) return result; // 小结果：原样（含 note），不多造形状
+  const out = { truncated: true, chars: text.length };
+  if (typeof result.note === 'string' && result.note.trim()) out.note = result.note.slice(0, max);
+  else out.preview = text.slice(0, max);
+  return out;
+}
+
 // 执行单个工具调用：自带 tool-start/tool-end 事件，失败只返回自己的 {error}，不影响同批其它调用
 // onToolLifecycle（可选）：给持久化层用的「开始/结束」钩子（不推渲染层，避免结果大对象进 IPC）。
 async function runToolCall(tc, tools, onEvent, signal = null, onToolLifecycle = null) {
@@ -654,7 +682,7 @@ async function runToolCall(tc, tools, onEvent, signal = null, onToolLifecycle = 
     lifecycle({ phase: 'end', id: callId, name, args: argsText, status: 'fail', result, error: String(result.error), ms: 0, cancelled: true, at: Date.now() });
     return { id: tc?.id, trace: { tool: name, args: argsText, result }, modelContent: JSON.stringify(result) };
   }
-  onEvent?.({ kind: 'tool-start', id: tc?.id, name, args: previewArgs(argsText) });
+  onEvent?.({ kind: 'tool-start', id: tc?.id, name, args: previewArgs(argsText), at: t0 });
   lifecycle({ phase: 'start', id: callId, name, args: argsText, at: t0 });
   let result;
   try {
@@ -666,7 +694,7 @@ async function runToolCall(tc, tools, onEvent, signal = null, onToolLifecycle = 
   } catch (e) {
     result = { error: e?.message || String(e) };
   }
-  onEvent?.({ kind: 'tool-end', id: tc?.id, name, ms: Date.now() - t0, ok: !result?.error, ...(result?.cancelled ? { cancelled: true } : {}) });
+  onEvent?.({ kind: 'tool-end', id: tc?.id, name, ms: Date.now() - t0, ok: !result?.error, ...(result?.cancelled ? { cancelled: true } : {}), result: uiResultSummary(result) });
   // 工具结果策略（对齐 dsh）：超长不整块喂模型——头+尾进上下文，全文落盘给 spill 路径
   let modelContent;
   let traceResult;
@@ -797,12 +825,22 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
     ? Math.trunc(crossTurnExplicit)
     : (hasWindowCfg ? crossTurnBudgetTokens(config.contextWindow, config.maxOutputTokens) : null);
   let viewMessages = messages;
+  // 压缩开始/结束各发一个事件：渲染层据此显示「正在压缩上下文…」（等同一次任务在跑）。
+  // 必须在 await assembleContext 之前发 start——里面的 LLM 摘要可能等几秒，压缩完才提示等于没有进行中状态。
+  const compactOpts = crossTurnBudget ? { budgetTokens: crossTurnBudget } : {};
+  const willCompact = needsCompaction(messages, compactOpts);
+  const beforeTokens = willCompact ? estimateMessagesTokens(messages) : 0;
+  if (willCompact) onEvent?.({ kind: 'compact-start', scope: 'auto', before: beforeTokens });
   try {
     viewMessages = (await assembleContext(messages, {
       summarize,
-      ...(crossTurnBudget ? { budgetTokens: crossTurnBudget } : {})
+      ...compactOpts
     })).messages;
-  } catch { /* 压缩失败不阻断对话 */ }
+    if (willCompact) onEvent?.({ kind: 'compact-end', scope: 'auto', before: beforeTokens, after: estimateMessagesTokens(viewMessages) });
+  } catch (e) {
+    if (willCompact) onEvent?.({ kind: 'compact-end', scope: 'auto', before: beforeTokens, error: e?.message || String(e) });
+    /* 压缩失败不阻断对话 */
+  }
   const convo = [{ role: 'system', content: withOutputLanguage(systemPromptOverride != null ? String(systemPromptOverride) : await getSystemPrompt()) }, ...viewMessages];
   // Steer：回合进行中用户从界面注入的消息。每次发起模型请求前 drain，追加为一条 user 消息
   // （不重置已完成的工具结果，直接计入本轮上下文），并推送给渲染层画「已注入」气泡。
@@ -848,6 +886,8 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
     : (Number.isFinite(Number(silenceRaw)) && Number(silenceRaw) > 0 ? Math.trunc(Number(silenceRaw)) : 0);
   const RETRY_BASE_MS = positiveNum(retryBaseMs, 600); // 指数退避基数：测试可注入极小值，生产默认 600ms
   const silenceSec = (ms) => Math.max(1, Math.round(ms / 1000));
+  // 纯心跳提示节流（毫秒）：网关只发 SSE 注释/空块时，多久在 UI 上刷新一次「网关只发心跳 Ns」
+  const HEARTBEAT_NOTICE_MS = 5000;
   const SILENCE_REASON = t('网关静默 {s}s 无任何响应', { s: silenceSec(SILENCE_MS) });
   const maxTurnMs = noLimits ? Number.POSITIVE_INFINITY : positiveNum(maxTurnMsOpt ?? config.maxTurnMs, Number.POSITIVE_INFINITY); // 时间预算默认不限；工具执行时间不计（toolWaitMs）
   const maxTurnTokens = noLimits ? Number.POSITIVE_INFINITY : positiveNum(maxTurnTokensOpt ?? config.maxTurnTokens, Number.POSITIVE_INFINITY); // 累计 prompt+completion；默认不限
@@ -878,22 +918,34 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
   };
   const compactNow = () => {
     if (compactFails >= 3) return; // 熔断后不再尝试
+    // 进行中状态：这里的压缩是本地同步的两级裁剪，事件只用来让界面在需要时点亮「压缩中」
+    // （渲染层有 120ms 延迟出现，瞬时压缩不会闪一下）；失败时同样要发 end，不能让界面一直转圈。
+    let announced = false;
+    let before = 0;
     try {
       const tokens = estimateMessagesTokens(convo);
-      if (tokens >= tokenBudget.fullThreshold) {
-        microcompact(convo); // 先清掉旧工具结果，降低正文压缩的切除量
-        fullCompact(convo);  // 再把最老的成对 user/assistant 正文换成 [历史摘要]
-      } else if (tokens >= tokenBudget.microThreshold) {
-        microcompact(convo);
+      if (tokens >= tokenBudget.microThreshold) {
+        before = tokens;
+        announced = true;
+        onEvent?.({ kind: 'compact-start', scope: 'auto', before });
+        if (tokens >= tokenBudget.fullThreshold) {
+          microcompact(convo); // 先清掉旧工具结果，降低正文压缩的切除量
+          fullCompact(convo);  // 再把最老的成对 user/assistant 正文换成 [历史摘要]
+        } else {
+          microcompact(convo);
+        }
       }
       compactFails = 0; // 成功一次即重置「连续失败」计数
     } catch (e) {
       compactFails++;
+      if (announced) onEvent?.({ kind: 'compact-end', scope: 'auto', before, error: e?.message || String(e) });
       if (compactFails >= 3 && !compactWarned) {
         compactWarned = true;
         onEvent?.({ kind: 'compact-warning', reason: e?.message || String(e) });
       }
+      return;
     }
+    if (announced) onEvent?.({ kind: 'compact-end', scope: 'auto', before, after: estimateMessagesTokens(convo) });
   };
   // 仿 dsh：网关抖动（5xx/429/网络错误）自动重试，最多 5 次，指数退避
   const RETRYABLE = new Set([408, 425, 429, 500, 502, 503, 504]);
@@ -979,12 +1031,28 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
         }
         if (res.ok && res.body) {
           let firstChunk = true;
-          streamOut = await consumeStream(res, onToken, onEvent, ctl, () => {
-            silence.touch();
-            if (firstChunk) {
-              firstChunk = false;
-              // 首块到达 = 网关还活着；若这一块没有正文/工具增量，至少把文案从「等待网关」切回「思考」
-              onEvent?.({ kind: 'activity', label: 'Thinking…', request: turn + 1, attempt });
+          let lastProgressAt = Date.now();
+          let lastHeartbeatNotice = 0;
+          streamOut = await consumeStream(res, onToken, onEvent, ctl, (progress) => {
+            const now = Date.now();
+            if (progress) {
+              // 真实内容进度才重置静默计时（content / reasoning / tool_calls / usage）
+              lastProgressAt = now;
+              silence.touch();
+              if (firstChunk) {
+                firstChunk = false;
+                // 首块到达 = 网关还活着；把文案从「等待网关」切回「思考」
+                onEvent?.({ kind: 'activity', label: 'Thinking…', request: turn + 1, attempt });
+              }
+              return;
+            }
+            // 心跳块（SSE 注释 / 空 data / 只有 role）：只更新「最近心跳」，不喂静默看门狗。
+            // 否则网关一直发心跳就能永久骗过 180s 静默阈值，界面看着像卡死却永远不报错。
+            firstChunk = false;
+            const silentSec = Math.round((now - lastProgressAt) / 1000);
+            if (silentSec >= 1 && now - lastHeartbeatNotice >= HEARTBEAT_NOTICE_MS) {
+              lastHeartbeatNotice = now;
+              onEvent?.({ kind: 'activity', label: t('网关只发心跳 {s}s…', { s: silentSec }), heartbeat: true, request: turn + 1, attempt });
             }
           });
           if (streamOut.aborted && silenceHit) {

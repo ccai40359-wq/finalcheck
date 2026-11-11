@@ -20,7 +20,9 @@ import ChatHeader from './components/ChatHeader.jsx';
 import MessageList from './components/MessageList.jsx';
 import EmptyState from './components/EmptyState.jsx';
 import Composer from './components/Composer.jsx';
+import CompactionStatus from './components/CompactionStatus.jsx';
 import Dialogs from './components/Dialogs.jsx';
+import { IDLE as COMPACTION_IDLE, reduce as reduceCompaction } from './lib/compaction.mjs';
 // 兼容原来的模块出口（外部若按旧路径取这两个函数/组件仍可用）
 export { needsFirstRunSetup, formatDemoAuditSummary } from './lib/app-helpers.mjs';
 export { default as FirstRunCard } from './components/FirstRunCard.jsx';
@@ -43,6 +45,67 @@ const moveToInput = (list, id) => {
   return { item, rest: item ? l.filter((x) => x && x.id !== id) : l };
 };
 /* QUEUE-HELPERS-END */
+
+// ---- Steer（照 ZCode：消息立刻上屏 + 中断当前回合 + 用这条消息重开一回合）的纯函数 ----
+// 同样用 BEGIN/END 标记隔离，供 tests/queue-steer.test.mjs 提取单测：无副作用、无 React、无 JSX。
+/* STEER-HELPERS-BEGIN */
+// 排队项 → 真正发出去的正文（与 sendOnce 的组装顺序一致：正文 → 粘贴块 → 附件清单）
+const steerMessageText = (item) => {
+  const typed = String((item && item.text) || '').trim();
+  const pasted = ((item && item.pasted) || []).filter((x) => String(x || '').trim());
+  const previews = (item && item.previews) || [];
+  const attach = previews.length ? '[附件]\n' + previews.map((a) => `- ${a.path}`).join('\n') : '';
+  return [typed, ...pasted, attach].filter((x) => String(x || '').trim()).join('\n\n');
+};
+// 乐观上屏：插在「正在流式的助手气泡」之前（保持「最后一条是 assistant」的归约约定），
+// local:true 表示只是本地占位——sendOnce 组织 wire history 时会过滤掉它，
+// 真实消息随后由 sendOnce 自己入列，避免同一条消息出现两条。
+const insertUserBubble = (messages, text) => {
+  const list = Array.isArray(messages) ? messages : [];
+  const bubble = { role: 'user', content: String(text || ''), local: true };
+  const i = list.length - 1;
+  if (i >= 0 && list[i] && list[i].role === 'assistant' && list[i].streaming) {
+    return [...list.slice(0, i), bubble, list[i]];
+  }
+  return [...list, bubble];
+};
+// Steer 的一次原子状态迁移：取排队项 → 出队 + 上屏。item=null 表示这条已经不在了（幂等）。
+const planSteer = (queue, messages, id) => {
+  const list = Array.isArray(queue) ? queue : [];
+  const item = list.find((x) => x && x.id === id) || null;
+  if (!item) return { item: null, queue: list, messages: Array.isArray(messages) ? messages : [], text: '' };
+  const text = steerMessageText(item);
+  return { item, queue: list.filter((x) => x && x.id !== id), messages: insertUserBubble(messages, text), text };
+};
+/* STEER-HELPERS-END */
+
+// ---- 队列泵闸门 / 停止看门狗（纯函数，供 tests/queue-steer.test.mjs 提取单测） ----
+// 事故：用户点了停止（或回合以报错收尾）后，队列泵只看「不忙」就自动发下一条，
+// 于是「停止」之后又自己跑起来一轮；另外 stoppingIds 若因窄竞态没被 turn-end 清掉，
+// 会话会永久停在「停止中…」，之后每次发送只入队、永不发出。
+/* PUMP-HELPERS-BEGIN */
+// 回合收尾类型：'ok' 正常结束 / 'stopped' 用户停止 / 'error' 失败收尾
+const turnOutcomeOf = (r) => {
+  if (!r || typeof r !== 'object') return 'ok';
+  if (r.cancelled || r.error === '已取消') return 'stopped';
+  if (r.error) return 'error';
+  return 'ok';
+};
+// 是否允许自动发队首（用户没在看时也不抢跑）：stopped / error 收尾必须由用户手动点发送
+const holdsQueue = (outcome) => outcome === 'stopped' || outcome === 'error';
+const canAutoPump = ({ sid, busy, stopping, pumping, inflight, steering, outcome, headHeld } = {}) => {
+  if (!sid || busy || stopping || pumping || inflight || steering) return false;
+  if (headHeld) return false; // 重启后恢复的「待发送」：必须用户点发送，不能自己跑
+  return !holdsQueue(outcome);
+};
+// 「停止中…」看门狗：超过 timeoutMs 还没等到 turn-end 的会话 id
+const STOPPING_WATCHDOG_MS = 15000;
+const expiredStopping = (stoppingAt, now, timeoutMs = STOPPING_WATCHDOG_MS) => {
+  const map = stoppingAt && typeof stoppingAt === 'object' ? stoppingAt : {};
+  const at = Number(now) || 0;
+  return Object.keys(map).filter((id) => at - Number(map[id] || 0) >= timeoutMs);
+};
+/* PUMP-HELPERS-END */
 
 // 主进程 error-guard 的失败返回体（{ error, code:'IPC_FAILED' }）→ 抛成异常：
 // 调用点已有的 catch 就能给出可见提示，而不是把错误对象当数据继续渲染（= 界面空白/卡住）。
@@ -75,6 +138,7 @@ export default function App() {
   const [editing, setEditing] = useState(null); // {index, keepTurns}：编辑历史消息，发送后从该条重开
   const [runningIds, setRunningIds] = useState({}); // 会话 id → 是否正在跑（多会话可同时跑）
   const [stoppingIds, setStoppingIds] = useState({}); // 会话 id → 已点停止、等待主进程收尾
+  const [steeringIds, setSteeringIds] = useState({}); // 会话 id → 正在 Steer（中断旧回合 → 起新回合），按钮禁用
   const [sessCfg, setSessCfg] = useState({ providerId: '', model: '', effort: '' }); // 当前会话自己的模型配置
   const [effortPos, setEffortPos] = useState(null); // 拖动中的连续位置（0-4，可为小数；松手后按最近档位落库）
   const activeIdRef = useRef(null);   // 供异步回调判断「现在看的是哪个会话」
@@ -83,14 +147,20 @@ export default function App() {
   const runsRef = useRef(new Map());  // sid → { content, events, startedAt }（后台会话的实时流）
   const stoppedRef = useRef(new Set()); // 手动停止过的会话：屏蔽迟到的流式事件把消息变回 streaming
   const stoppingRef = useRef(new Set()); // 已发出停止请求的会话：阻止重复点击
+  const steerRef = useRef(new Set()); // 正在 Steer 的会话：连点不能并发起两个新回合
   const approvalsRef = useRef([]);    // 排队中的审批（并行子代理可能同时要命令审批）
   const pumpingRef = useRef(false);   // 正在消费队首 → 防止 effect 在 runningIds 落定前重复派发
+  const turnOutcomeRef = useRef(new Map()); // sid → 上一轮收尾类型（ok/stopped/error）：stopped/error 不自动发队列
   const inflightRef = useRef(new Set()); // 仍在 send 里的会话：回合收尾前不自动发下一条（防旧 finally 清掉新一轮状态）
   const jumpingRef = useRef(false);   // 平滑回到底部动画中：滚动事件不要重新弹出箭头
   const [queueBySession, setQueueBySession] = useState({}); // 会话 id → 待发消息 FIFO：[{id,text,pasted,previews}]（必须先于 queueItems 声明）
   const busy = !!runningIds[activeId];
   const stopping = !!stoppingIds[activeId];
   const queueItems = queueBySession[activeId || 'draft'] || []; // 当前会话的排队消息（切会话各自独立）
+  // 上下文压缩的进行中状态（idle/running/done/failed）：只表示「当前会话」的压缩，
+  // 由主进程 compact-start/compact-end 事件驱动，手动 /compact 另有本地兜底（reducer 幂等）。
+  const [compaction, setCompaction] = useState(COMPACTION_IDLE);
+  const compactionRef = useRef(COMPACTION_IDLE); // 异步回调（stop / runCompact）里读最新值
   const [approval, setApproval] = useState(null); // 待审批：{callId, tool, summary}（主进程 fail-closed 推送）
   const [askCards, setAskCards] = useState([]); // 回合中途提问卡（实时）：[{callId,sessionId,question,options,multiSelect,status,...}]
   const askCardsRef = useRef([]); // 与 askCards 同步：回合收尾/停止回调里读最新值
@@ -129,6 +199,8 @@ export default function App() {
   const [openWorkflowRaw, setOpenWorkflowRaw] = useState(null); // 哪条 workflow 消息展开了原始指令
   // 切换会话时清掉「编辑中」状态（避免把上一条会话的内容发到新会话）
   useEffect(() => { setEditing(null); }, [activeId]);
+  // 压缩状态只属于某个会话：切走就清空（事件层已按会话过滤，这里防「切回来还挂着上一条的动画」）
+  useEffect(() => { compactionRef.current = COMPACTION_IDLE; setCompaction(COMPACTION_IDLE); }, [activeId]);
   useEffect(() => { activeIdRef.current = activeId; }, [activeId]);
 
   // 会话级模型默认值：新会话继承全局默认，之后各会话互不影响
@@ -421,6 +493,22 @@ export default function App() {
       setMessages(merged.messages);
       setStepView(null); // 面板属于某个会话的某一步：切会话就收起，别留着上一条的上下文
       setPage('chat');
+      // 排队消息存档：重启后恢复成「待发送」（hold=true），并明确告知；绝不自动发送/静默丢。
+      // 本进程里已经有更新的队列时不覆盖（用户刚入队的那几条更可信）。
+      try {
+        const hadLocal = (queueBySession[s.id] || []).length > 0;
+        if (!hadLocal && y.sessions?.queueGet) {
+          const stored = await y.sessions.queueGet(s.id);
+          const restored = Array.isArray(stored) ? stored : [];
+          if (restored.length) {
+            setQueueBySession((prev) => {
+              if ((prev[s.id] || []).length) return prev;
+              return { ...prev, [s.id]: restored.map((it) => ({ ...it, hold: true })) };
+            });
+            setMessages((prev) => [...prev, { role: 'notice', content: t('已恢复 {n} 条排队消息为「待发送」：点「发送」才会发出', { n: restored.length }) }]);
+          }
+        }
+      } catch { /* 读档失败不阻断打开会话 */ }
       refreshSessions(projectId || activeProjectIdRef.current); // markRead 已在主进程清掉 unread → 绿点消失
     } catch (e) {
       // 会话打不开（文件损坏/被外部删掉）：明确说一句，别让用户以为「点了没反应」
@@ -641,6 +729,14 @@ export default function App() {
       const sid = p && typeof p === 'object' ? p.sessionId : null;
       const ev = p && typeof p === 'object' ? p.ev : p;
       if (!ev) return;
+      // 上下文压缩：只更新「当前会话」的活动行状态，不并进过程时间线（它不是一个工具步骤）
+      if (ev.kind === 'compact-start' || ev.kind === 'compact-end') {
+        if (!sid || activeIdRef.current !== sid) return; // 后台会话的压缩不打扰当前对话
+        const next = reduceCompaction(compactionRef.current, ev);
+        compactionRef.current = next;
+        setCompaction(next);
+        return;
+      }
       // 主进程 notice（进程级异常兜底，sessionId 可能为 null）与回合 warning：
       // 以前这些事件被 reducer 的 default 分支丢掉，用户完全看不到「主进程出事了」。
       if (ev.kind === 'notice' || ev.kind === 'warning') {
@@ -660,6 +756,12 @@ export default function App() {
         if (ev.kind === 'turn-end') {
           setStoppingIds((prev) => { if (!prev[sid]) return prev; const n = { ...prev }; delete n[sid]; return n; });
           stoppingRef.current.delete(sid);
+          // 兜底：回合已收尾但压缩的 end 事件丢了（极端情况）→ 不能留一个永远转的圈
+          if (activeIdRef.current === sid && compactionRef.current.phase === 'running') {
+            const next = reduceCompaction(compactionRef.current, { kind: 'compact-end', scope: compactionRef.current.scope, cancelled: true });
+            compactionRef.current = next;
+            setCompaction(next);
+          }
         }
         if (activeIdRef.current !== sid) return;
         // Steer：用户中途注入当前回合。插在流式助手消息之前，画一条带徽标的用户气泡；
@@ -817,14 +919,29 @@ export default function App() {
   // 只由 send() 在「整条消息就是 /compact」时调用：没有活动会话不新建，直接提示用户先打开会话
   const runCompact = async (sid = activeId) => {
     if (!y?.compactSession || !sid || busy || compacting) return;
+    // 语义上完全等同一次任务在跑：占住 runningIds → 输入区可停止、消息进队列（沿用现有规则），
+    // 同时点亮活动行。主进程也会推 compact-start/end；本地这一份是兜底，reducer 对重复事件幂等。
+    const mark = (ev) => {
+      const next = reduceCompaction(compactionRef.current, { at: Date.now(), ...ev });
+      compactionRef.current = next;
+      setCompaction(next);
+    };
     setCompacting(true);
+    mark({ kind: 'compact-start', scope: 'manual' });
+    setRunningIds((prev) => ({ ...prev, [sid]: true }));
     try {
       const r = await y.compactSession(sid);
-      if (r?.error) setMessages((prev) => [...prev, { role: 'notice', content: r.error }]);
+      // 失败原因交给活动行显示（「压缩失败：…」），不再往消息流里塞一条重复提示
+      if (r?.cancelled) mark({ kind: 'compact-end', scope: 'manual', cancelled: true });
+      else if (r?.error) mark({ kind: 'compact-end', scope: 'manual', error: r.reason || r.error });
       else await openSession(sid);
     } catch (e) {
-      setMessages((prev) => [...prev, { role: 'notice', content: t('压缩失败：{msg}', { msg: e.message }) }]);
-    } finally { setCompacting(false); setMenu(null); }
+      mark({ kind: 'compact-end', scope: 'manual', error: e?.message || String(e) });
+    } finally {
+      setCompacting(false);
+      setMenu(null);
+      setRunningIds((prev) => { if (!prev[sid]) return prev; const n = { ...prev }; delete n[sid]; return n; });
+    }
   };
   const chooseSlash = (item) => {
     if (!item) return;
@@ -1015,6 +1132,7 @@ export default function App() {
     const startedAt = Date.now();
     inflightRef.current.add(sid);
     stoppedRef.current.delete(sid); // 新一轮开始：解除上一轮手动停止的迟到事件屏蔽
+    turnOutcomeRef.current.delete(sid); // 新一轮开始：上一轮的 stopped/error 不再拦队列泵
     stoppingRef.current.delete(sid);
     setStoppingIds((prev) => { if (!prev[sid]) return prev; const n = { ...prev }; delete n[sid]; return n; });
     runsRef.current.set(sid, { content: '', events: [], startedAt, userMessage: finalText });
@@ -1027,6 +1145,7 @@ export default function App() {
 
     try {
       const r = await y.agentChat(wireHistory, [], sid);
+      turnOutcomeRef.current.set(sid, turnOutcomeOf(r)); // 停止/报错收尾：队列泵不再自动发下一条
       if (isActive()) {
         setMessages((prev) => {
           const next = [...prev];
@@ -1052,6 +1171,7 @@ export default function App() {
           .sort((a, b) => (b.createdAt || b.updatedAt) - (a.createdAt || a.updatedAt)));
       }
     } catch (e) {
+      turnOutcomeRef.current.set(sid, 'error'); // 意外异常收尾：同样不自动发下一条
       if (isActive()) {
         setMessages((prev) => {
           const next = [...prev];
@@ -1089,14 +1209,25 @@ export default function App() {
   const sendRef = useRef(null);
   sendRef.current = send;
 
-  // 队列自动发送：当前会话空闲（且不在停止中）时消费队首一条；切到别的会话不消费它的队列
+  // 队列自动发送：当前会话空闲（且不在停止中、上一轮不是停止/报错收尾）时消费队首一条；
+  // 切到别的会话不消费它的队列。停止/报错后必须由用户手动点「发送」，否则「停止」等于没停。
   useEffect(() => {
     const sid = activeId;
-    if (!sid || busy || stopping || pumpingRef.current) return;
-    if (inflightRef.current.has(sid)) return; // 上一轮 send 还没收尾（例如刚点停止），不抢跑
+    if (!sid) return;
     const q = queueBySession[sid] || [];
     if (!q.length) return;
     const head = q[0];
+    const ok = canAutoPump({
+      sid,
+      busy,
+      stopping,
+      pumping: pumpingRef.current,
+      inflight: inflightRef.current.has(sid), // 上一轮 send 还没收尾（例如刚点停止），不抢跑
+      steering: steerRef.current.has(sid),     // 正在 Steer（中断旧回合 → 重开一回合）：避免抢在 Steer 前发下一条
+      outcome: turnOutcomeRef.current.get(sid),
+      headHeld: head?.hold === true             // 重启后恢复的排队消息：等用户点发送
+    });
+    if (!ok) return;
     pumpingRef.current = true;
     setQueueBySession((prev) => {
       const cur = prev[sid] || [];
@@ -1107,7 +1238,42 @@ export default function App() {
     Promise.resolve().then(() => sendRef.current?.(head));
   }, [activeId, busy, stopping, queueBySession]);
 
-  // ---- 队列卡片操作：Steer（注入当前回合）/ 取回编辑 / 移除 ----
+  // 排队消息存档（F8）：任何会话的队列变化都写 session_meta（重启不丢）。
+  // 草稿（还没建会话，key=draft）没有 id，不存。同一份内容不重复写（签名对比）。
+  const queueSavedRef = useRef(new Map()); // sid → JSON 签名
+  useEffect(() => {
+    const save = y?.sessions?.queueSave;
+    if (!save) return;
+    for (const [sid, list] of Object.entries(queueBySession)) {
+      if (!sid || sid === 'draft') continue;
+      const sig = JSON.stringify(list || []);
+      if (queueSavedRef.current.get(sid) === sig) continue;
+      queueSavedRef.current.set(sid, sig);
+      try {
+        Promise.resolve(save(sid, list || [])).catch(() => { queueSavedRef.current.delete(sid); });
+      } catch { queueSavedRef.current.delete(sid); }
+    }
+  }, [queueBySession, y]);
+
+  // 「停止中…」看门狗：turn-end 因窄竞态丢了就永远发不出去（每次发送只入队）。
+  // 15s 后强制解除停止态并明确提示；stoppedRef 保留，迟到事件仍然不能把消息变回 streaming。
+  useEffect(() => {
+    if (!Object.keys(stoppingIds).length) return undefined;
+    const timer = setInterval(() => {
+      const expired = expiredStopping(stoppingIds, Date.now());
+      if (!expired.length) return;
+      for (const id of expired) stoppingRef.current.delete(id);
+      setStoppingIds((prev) => {
+        const next = { ...prev };
+        for (const id of expired) delete next[id];
+        return next;
+      });
+      pushNotice(t('等待回合收尾超过 {n}s，已恢复可发送（若刚才的回合仍在后台运行，它的结果仍会落库）', { n: STOPPING_WATCHDOG_MS / 1000 }));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [stoppingIds]);
+
+  // ---- 队列卡片操作：Steer（中断当前回合并用这条消息重开）/ 取回编辑 / 移除 ----
   const removeQueueItem = (id) => {
     if (!activeId) return;
     setQueueBySession((prev) => ({ ...prev, [activeId]: removeById(prev[activeId], id) }));
@@ -1130,23 +1296,71 @@ export default function App() {
     }
     requestAnimationFrame(() => inputRef.current?.focus());
   };
+  // 手动发送某条排队消息：停止/报错收尾后队列不再自动发，这条路径就是「点发送」。
+  // 只发这一条，不打断任何回合；与自动泵共用 pumpingRef，避免同一拍抢队首。
+  const sendQueueItemNow = (id) => {
+    const sid = activeIdRef.current ?? activeId;
+    if (!sid) return;
+    const item = (queueBySession[sid] || []).find((x) => x && x.id === id);
+    if (!item) return;
+    if (runningIds[sid] || stoppingIds[sid] || inflightRef.current.has(sid)) {
+      pushNotice(t('当前回合仍在运行，无法立即发送排队消息（可等它结束或点停止）'));
+      return;
+    }
+    pumpingRef.current = true;
+    setQueueBySession((prev) => ({ ...prev, [sid]: removeById(prev[sid], id) }));
+    Promise.resolve().then(() => sendRef.current?.(item)); // send 的 finally 会释放 pumpingRef
+  };
+  // 等旧回合真正收尾：sendOnce 的 finally 会清 inflightRef/stoppingRef/runsRef。
+  // 必须等（而不是只发 abort 就走），否则旧回合收尾时的 setMessages 会覆盖新回合的流式气泡，
+  // 旧 finally 的 setRunningIds(delete) 也会把新回合的「运行中」误清掉（与队列泵的守卫同一个原因）。
+  const waitTurnSettled = async (sid, timeoutMs = 8000) => {
+    const t0 = Date.now();
+    while (inflightRef.current.has(sid) || stoppingRef.current.has(sid) || runsRef.current.has(sid)) {
+      if (Date.now() - t0 >= timeoutMs) return false;
+      await new Promise((r) => setTimeout(r, 40));
+    }
+    return true;
+  };
+  // Steer（照 ZCode）：排队项立刻作为「用户消息」上屏 → 中断当前回合 → 用同一条消息重开一个回合。
+  // 旧回合迟到的 token/turn-end 由 stop() 已有的 stoppedRef 机制屏蔽，这里不另造一套。
   const steerQueueItem = async (item) => {
-    const sid = activeId;
+    const sid = activeIdRef.current ?? activeId;
     const note = (content) => setMessages((prev) => [...prev, { role: 'notice', content }]);
     if (!sid || !item) return;
-    if (!runningIds[sid] || stoppingIds[sid]) { note(t('当前没有运行中的回合，无法 Steer')); return; }
-    if (!y?.agentSteer) { note(t('当前版本不支持 Steer')); return; }
-    const text = [
-      String(item.text || '').trim(),
-      ...(item.pasted || []),
-      ...(item.previews?.length ? ['[附件]\n' + item.previews.map((a) => `- ${a.path}`).join('\n')] : [])
-    ].filter((x) => String(x || '').trim()).join('\n\n');
+    if (steerRef.current.has(sid)) return; // 上一次 Steer 还在进行：连点直接忽略（不能并发起两个新回合）
+    if (stoppingRef.current.has(sid)) return; // 正在中断：同一会话同一时刻只允许一条控制链
+    const plan = planSteer(queueBySession[sid] || [], messages, item.id);
+    if (!plan.item) return; // 已被取回/移除：幂等，什么都不做
+    if (!plan.text) { note(t('这条排队消息是空的，无法 Steer')); return; }
+    steerRef.current.add(sid);
+    setSteeringIds((prev) => ({ ...prev, [sid]: true }));
+    // ① 立刻可见：本地占位气泡（local:true，不参与 wire history）
+    setMessages((prev) => insertUserBubble(prev, plan.text));
+    scrollDown();
+    // ④ 无论后面成败都出队：点过 Steer 的这条不再留在排队区
+    setQueueBySession((prev) => ({ ...prev, [sid]: removeById(prev[sid], item.id) }));
     try {
-      const r = await y.agentSteer(sid, text);
-      if (r?.error) { note(r.error); return; } // 失败保留在队列，用户可重试或等回合结束
-      setQueueBySession((prev) => ({ ...prev, [sid]: removeById(prev[sid], item.id) }));
+      // ② 中断当前回合（stop() 会置 stoppedRef/stoppingRef 再 cancelChat，迟到事件只补内容不回退状态）
+      if (runningIds[sid] || stoppingIds[sid] || inflightRef.current.has(sid)) await stop();
+      // ③ 等旧回合收尾，再用同一条消息开新回合
+      if (!(await waitTurnSettled(sid))) {
+        note(t('旧回合没有及时停止，这条消息已保留在对话里；等它停下来后请手动重发'));
+        return;
+      }
+      // 等旧回合的这段时间用户可能切走了：sendOnce 按「当前 activeId」发送，绝不能把这条发到别的会话
+      if (activeIdRef.current !== sid) {
+        note(t('会话已切换，这条 Steer 消息没有发送（已从排队区移除）'));
+        return;
+      }
+      // 真实消息由 sendOnce 自己入列并上屏（占位气泡会被过滤掉），不 await 整轮以免锁死按钮
+      const p = sendRef.current?.({ text: item.text || '', pasted: item.pasted || [], previews: item.previews || [] });
+      if (p?.catch) p.catch(() => {}); // send 内部已兜异常，这里只防未处理的拒绝
     } catch (e) {
-      note(t('Steer 失败：{msg}', { msg: e?.message || e }));
+      note(t('Steer 失败：{msg}（这条消息已保留在对话里）', { msg: e?.message || e }));
+    } finally {
+      steerRef.current.delete(sid);
+      setSteeringIds((prev) => { if (!prev[sid]) return prev; const n = { ...prev }; delete n[sid]; return n; });
     }
   };
 
@@ -1156,9 +1370,27 @@ export default function App() {
   const stop = async () => {
     const sid = activeIdRef.current ?? activeId;
     if (!sid || stoppingRef.current.has(sid)) return; // 重复点击直接忽略
+    // 压缩中且没有回合在跑：停止只收掉压缩（cancelChat 是给回合用的，误发会打掉下一轮）
+    if (compactionRef.current.phase === 'running' && !inflightRef.current.has(sid)) {
+      stoppingRef.current.add(sid);
+      const next = reduceCompaction(compactionRef.current, { kind: 'compact-end', scope: compactionRef.current.scope, cancelled: true });
+      compactionRef.current = next;
+      setCompaction(next);
+      setCompacting(false);
+      setRunningIds((prev) => { if (!prev[sid]) return prev; const n = { ...prev }; delete n[sid]; return n; });
+      try { await y?.compactCancel?.(sid); } catch { /* 取消失败：主进程最多 30s 超时自行收尾 */ }
+      stoppingRef.current.delete(sid);
+      return;
+    }
     stoppingRef.current.add(sid);
     stoppedRef.current.add(sid);
-    setStoppingIds((prev) => ({ ...prev, [sid]: true }));
+    // 回合里正在压缩（自动路径的 LLM 摘要）→ 停止时一并收掉活动行，别让它在停止后还转
+    if (compactionRef.current.phase === 'running') {
+      const next = reduceCompaction(compactionRef.current, { kind: 'compact-end', scope: compactionRef.current.scope, cancelled: true });
+      compactionRef.current = next;
+      setCompaction(next);
+    }
+    setStoppingIds((prev) => ({ ...prev, [sid]: Date.now() })); // 值=点击时刻，供看门狗判断超时
     setMessages((prev) => {
       const next = [...prev];
       const last = next[next.length - 1];
@@ -1258,11 +1490,15 @@ export default function App() {
                 setMessages={setMessages} setInput={setInput} inputRef={inputRef} />
             )}
 
+            {/* 上下文压缩进行中/失败：贴在输入区上方的活动行（完成提示仍走会话里的 notice） */}
+            <CompactionStatus state={compaction} />
+
             {/* 输入区（与消息区同宽） */}
             <Composer
               y={y} input={input} setInput={setInput} attachments={attachments} setAttachments={setAttachments}
               pastedBlocks={pastedBlocks} setPastedBlocks={setPastedBlocks}
               editing={editing} dragging={dragging} busy={busy} stopping={stopping} compacting={compacting}
+              steering={!!steeringIds[activeId]}
               approval={approval} queueItems={queueItems} menu={menu} providerMenu={providerMenu}
               permMode={permMode} ctxStats={ctxStats} skills={skills} cfg={cfg} sessCfg={sessCfg}
               effortPos={effortPos} activeId={activeId} slashIndex={slashIndex} setSlashIndex={setSlashIndex}
@@ -1272,7 +1508,9 @@ export default function App() {
               setSessCfg={setSessCfg} setCfg={setCfg} setPermMode={setPermMode}
               cancelEdit={cancelEdit} chooseSlash={chooseSlash} decideApproval={decideApproval}
               steerQueueItem={steerQueueItem} moveQueueItemToInput={moveQueueItemToInput}
-              removeQueueItem={removeQueueItem} send={send} stop={stop}
+              removeQueueItem={removeQueueItem} sendQueueItemNow={sendQueueItemNow}
+              queueHeld={queueItems.length > 0 && (queueItems[0]?.hold === true || holdsQueue(turnOutcomeRef.current.get(activeId)))}
+              send={send} stop={stop}
               onGoSettings={() => setPage('settings')}
             />
           </>

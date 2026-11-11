@@ -103,9 +103,15 @@ export function createConfigStore({ app, getDataRoot, engineUrl }) {
   const firstModelId = (prov) => resolveModel(prov, null)?.id || '';
 
   // 非流式摘要：上下文压缩 / 手动 /compact 共用（失败由调用方兜底）
-  async function summarizeWithProvider(prov, text, { maxChars = 30000, maxTokens = 800 } = {}) {
+  // signal：调用方的取消信号（手动压缩点「停止」），与内部 30s 超时取或
+  async function summarizeWithProvider(prov, text, { maxChars = 30000, maxTokens = 800, signal = null } = {}) {
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), 30000);
+    const onAbort = () => ctl.abort();
+    if (signal) {
+      if (signal.aborted) ctl.abort();
+      else signal.addEventListener('abort', onAbort, { once: true });
+    }
     try {
       const res = await fetch(prov.baseUrl.replace(/\/+$/, '') + '/chat/completions', {
         method: 'POST',
@@ -125,7 +131,10 @@ export function createConfigStore({ app, getDataRoot, engineUrl }) {
       const s = j.choices?.[0]?.message?.content;
       if (!s || !String(s).trim()) throw new Error(t('空摘要'));
       return String(s).trim();
-    } finally { clearTimeout(timer); }
+    } finally {
+      clearTimeout(timer);
+      if (signal) signal.removeEventListener('abort', onAbort);
+    }
   }
 
   // 会话标题（dsh 式 AI 命名）：首轮结束后用一句短 prompt 生成，失败就保留第一条消息当标题

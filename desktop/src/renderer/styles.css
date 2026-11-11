@@ -31,6 +31,25 @@ h1, h2, .brand, .font-kai {
 @keyframes fc-spin { to { transform: rotate(360deg); } }
 .fc-spin { animation: fc-spin 1s steps(8, end) infinite; transform-origin: 50% 50%; }
 
+/* 上下文压缩活动行：延迟 120ms 再出现——本地两级压缩是同步的，只跨一两帧，
+   不延迟的话会闪一下；真的等 LLM 摘要时这 120ms 无感。三个点错峰呼吸。 */
+@keyframes fc-compact-in {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes fc-compact-breathe {
+  0%, 100% { opacity: .25; transform: scale(.8); }
+  50% { opacity: 1; transform: scale(1); }
+}
+.fc-compact-row { animation: fc-compact-in .18s ease-out .12s both; }
+.fc-compact-dot { animation: fc-compact-breathe 1.25s ease-in-out infinite; }
+.fc-compact-dots .fc-compact-dot:nth-child(2) { animation-delay: .16s; }
+.fc-compact-dots .fc-compact-dot:nth-child(3) { animation-delay: .32s; }
+@media (prefers-reduced-motion: reduce) {
+  .fc-compact-row { animation: none; }
+  .fc-compact-dot { animation: none; opacity: .9; }
+}
+
 /* ============ 液态玻璃（Apple Liquid Glass 风格） ============ */
 :root {
   --glass-tint: rgba(20, 20, 24, 0.55);

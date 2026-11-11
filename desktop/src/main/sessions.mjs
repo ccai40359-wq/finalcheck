@@ -295,11 +295,21 @@ function sqliteBindingOptions() {
   return { nativeBinding: bin };
 }
 
+/**
+ * 入参既可能是「会话目录」(<proj>/.finalcheck/sessions)，也可能是「项目根」(<proj>)。
+ * 项目根必须落到 <proj>/.finalcheck/finalcheck.db —— 否则启动收尾会去查 <proj>/finalcheck.db
+ * （永远不存在）而静默 no-op，遗留的 running 工具就永远转圈。
+ * 只在项目根下已有库时才改写：没跑过会话的项目不该被建一个空库。
+ */
 function dbFileFor(sessionsDir) {
   const dir = path.resolve(sessionsDir);
   if (path.basename(dir).toLowerCase() === 'sessions') {
     const parent = path.dirname(dir);
     if (path.basename(parent).toLowerCase() === '.finalcheck') return path.join(parent, DB_FILE);
+  }
+  if (path.basename(dir).toLowerCase() !== '.finalcheck') {
+    const projectDb = path.join(dir, '.finalcheck', DB_FILE);
+    if (existsSync(projectDb)) return projectDb;
   }
   return path.join(dir, DB_FILE);
 }
@@ -1168,6 +1178,72 @@ async function sqliteSaveSummary(id, summary) {
   });
 }
 
+// ---- 排队消息持久化（F8）：写 session_meta，重启/切走再回来都还在 ----
+// 不写进 message 表：它还不是对话内容，重启后必须由用户确认再发。
+export const MAX_QUEUED_MESSAGES = 50;
+export const MAX_QUEUE_TEXT = 20000;
+
+/**
+ * 归一化排队项：只留可恢复字段；附件预览（base64 data URL）不落库，只留路径/名字/大小。
+ * 脏数据（非数组、空文本且无附件）直接丢弃，不让它变成一条「点开发送没内容」的幽灵消息。
+ * @param {any} items
+ * @returns {Array<{id:string,text:string,pasted:string[],previews:Array<{path:string,name?:string,size?:number}>,hold:boolean}>}
+ */
+export function normalizeQueuedItems(items) {
+  const list = Array.isArray(items) ? items.slice(0, MAX_QUEUED_MESSAGES) : [];
+  const out = [];
+  for (const raw of list) {
+    if (!raw || typeof raw !== 'object') continue;
+    const text = String(raw.text ?? '').slice(0, MAX_QUEUE_TEXT);
+    const pasted = (Array.isArray(raw.pasted) ? raw.pasted : [])
+      .map((x) => String(x ?? '').slice(0, MAX_QUEUE_TEXT))
+      .filter((x) => x.trim());
+    const previews = (Array.isArray(raw.previews) ? raw.previews : [])
+      .filter((a) => a && typeof a === 'object' && String(a.path || '').trim())
+      .map((a) => ({
+        path: String(a.path),
+        ...(a.name ? { name: String(a.name).slice(0, 300) } : {}),
+        ...(Number.isFinite(a.size) ? { size: Number(a.size) } : {})
+      }));
+    if (!text.trim() && !pasted.length && !previews.length) continue;
+    out.push({
+      id: String(raw.id || '').slice(0, 80) || `q${out.length + 1}`,
+      text,
+      pasted,
+      previews,
+      hold: raw.hold !== false // 恢复出来的消息默认「等待用户点发送」
+    });
+  }
+  return out;
+}
+
+function queueKeyOf(id) { return 'queue:' + id; }
+
+async function sqliteSaveSessionQueue(id, items) {
+  const norm = normalizeQueuedItems(items);
+  const dir = dirFor(id);
+  if (!existsSync(dbFileFor(dir))) return { id, count: 0 }; // 会话没有库：不写（更不能凭空建）
+  return withQueue(id, async () => {
+    const { db } = await openDb(dir);
+    requireSession(db, id);
+    const tx = db.transaction(() => {
+      if (!norm.length) delMeta(db, queueKeyOf(id));
+      else setMeta(db, queueKeyOf(id), JSON.stringify(norm));
+    });
+    tx();
+    return { id, count: norm.length };
+  });
+}
+
+async function sqliteLoadSessionQueue(id) {
+  const dir = dirFor(id);
+  if (!existsSync(dbFileFor(dir))) return []; // 没有库就没有存档：别为读一次队列建空库
+  const { db } = await openDb(dir);
+  const raw = getMeta(db, queueKeyOf(id));
+  if (!raw) return [];
+  return normalizeQueuedItems(parseJson(raw, []));
+}
+
 async function sqliteAppendNotice(id, content, kind = 'notice') {
   return withQueue(id, async () => {
     const { db } = await openDb(dirFor(id));
@@ -1793,6 +1869,34 @@ export async function setSessionFlags(id, flags = {}) {
  */
 export async function markRead(id) {
   try { return await setSessionFlags(id, { unread: false }); } catch { return null; }
+}
+
+/**
+ * 保存某会话的待发送队列（session_meta，不进 message 表）。
+ * 空数组 = 清掉存档（用户已经发完/删光）。JSON 后端 no-op（它没有 meta 表）。
+ * @param {string} id
+ * @param {Array<{id?:string,text?:string,pasted?:string[],previews?:Array<object>,hold?:boolean}>} items
+ * @returns {Promise<{id:string, count:number}>}
+ */
+export async function saveSessionQueue(id, items) {
+  if (!OK_ID.test(id)) throw new Error('非法会话 ID');
+  if (!useSqliteStore()) return { id, count: 0 };
+  return sqliteSaveSessionQueue(id, items);
+}
+
+/**
+ * 读取某会话的待发送队列（重启后恢复用）。没有存档 → []。
+ * 读出来的条目一律 hold=「等待用户点发送」，避免恢复后自己又跑起来。
+ * @param {string} id
+ * @returns {Promise<Array<object>>}
+ */
+export async function loadSessionQueue(id) {
+  if (!OK_ID.test(id)) return [];
+  if (!useSqliteStore()) return [];
+  try {
+    const list = await sqliteLoadSessionQueue(id);
+    return list.map((it) => ({ ...it, hold: true }));
+  } catch { return []; }
 }
 
 /**

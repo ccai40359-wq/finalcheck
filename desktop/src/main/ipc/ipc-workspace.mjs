@@ -54,6 +54,17 @@ export function registerWorkspaceIpc({ ipcMain, getWin, getDataRoot, imageMime, 
   ipcMain.handle('finalcheck:clipboard:write', (_e, text) => { clipboard.writeText(String(text || '')); return true; });
 
   // 手动 /compact（dsh 式）：把会话压成摘要，后续请求只带摘要+最近 6 条，UI 历史保留
+  // 进行中/结束各推一个事件给渲染层（只用于显示「正在压缩上下文…」，不落库）。
+  const compactAborts = new Map(); // sessionId → AbortController（正在跑的手动压缩，供「停止」中断）
+  const emitCompact = (sessionId, ev) => {
+    try { getWin()?.webContents.send('finalcheck:agent-event', { sessionId, ev }); } catch { /* 窗口已关也继续压缩 */ }
+  };
+  ipcMain.handle('finalcheck:compact-cancel', (_e, sessionId) => {
+    const ctl = compactAborts.get(String(sessionId ?? ''));
+    if (!ctl) return { ok: false };
+    ctl.abort();
+    return { ok: true };
+  });
   ipcMain.handle('finalcheck:compact-session', async (_e, sessionId) => {
     const cfg = await store.loadConfig();
     const prov = store.pickActiveProvider(cfg);
@@ -64,13 +75,26 @@ export function registerWorkspaceIpc({ ipcMain, getWin, getDataRoot, imageMime, 
       .map((m) => `[${m.role}] ${String(m.content || '')}`)
       .join('\n').slice(-30000);
     if (!text.trim()) return { error: t('没有可压缩的对话') };
+    const key = String(sessionId ?? '');
+    const ctl = new AbortController();
+    compactAborts.set(key, ctl);
+    emitCompact(sessionId, { kind: 'compact-start', scope: 'manual', before: text.length });
     try {
-      const summary = await store.summarizeWithProvider(prov, text);
+      const summary = await store.summarizeWithProvider(prov, text, { signal: ctl.signal });
       await sessions.saveSummary(sessionId, summary);
       await sessions.appendNotice(sessionId, t('上下文已压缩：{before} 字符 → 摘要 {after} 字符；后续请求只带摘要 + 最近 6 条。', { before: text.length, after: summary.length }), 'compact');
+      emitCompact(sessionId, { kind: 'compact-end', scope: 'manual', before: text.length, after: summary.length });
       return { ok: true, summary, before: text.length, after: summary.length };
     } catch (e) {
-      return { error: t('压缩失败：{msg}', { msg: e.message }) };
+      if (ctl.signal.aborted) {
+        emitCompact(sessionId, { kind: 'compact-end', scope: 'manual', before: text.length, cancelled: true });
+        return { cancelled: true };
+      }
+      emitCompact(sessionId, { kind: 'compact-end', scope: 'manual', before: text.length, error: e?.message || String(e) });
+      // reason：给渲染层的短原因（事件里已带原文，界面用 reason 拼「压缩失败：…」，避免前缀重复）
+      return { error: t('压缩失败：{msg}', { msg: e.message }), reason: e?.message || String(e) };
+    } finally {
+      if (compactAborts.get(key) === ctl) compactAborts.delete(key);
     }
   });
 }

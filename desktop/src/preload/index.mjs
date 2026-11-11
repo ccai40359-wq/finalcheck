@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('finalcheck', {
   copyText: (text) => ipcRenderer.invoke('finalcheck:clipboard:write', text),
   skillsList: () => ipcRenderer.invoke('finalcheck:skills:list'),
   compactSession: (id) => ipcRenderer.invoke('finalcheck:compact-session', id),
+  compactCancel: (id) => ipcRenderer.invoke('finalcheck:compact-cancel', id),
   contextStats: (payload) => ipcRenderer.invoke('finalcheck:context:stats', payload),
   usageStats: (payload) => ipcRenderer.invoke('finalcheck:usage:stats', payload),
   exportDiagnostics: () => ipcRenderer.invoke('finalcheck:diagnostics:export'),
@@ -32,7 +33,10 @@ contextBridge.exposeInMainWorld('finalcheck', {
     flags: (id, flags) => ipcRenderer.invoke('finalcheck:sessions:flags', id, flags),
     rewind: (id, keepUserTurns) => ipcRenderer.invoke('finalcheck:sessions:rewind', id, keepUserTurns),
     setModel: (id, cfg) => ipcRenderer.invoke('finalcheck:sessions:set-model', id, cfg),
-    move: (id, targetProjectId) => ipcRenderer.invoke('finalcheck:sessions:move', id, targetProjectId)
+    move: (id, targetProjectId) => ipcRenderer.invoke('finalcheck:sessions:move', id, targetProjectId),
+    // 排队消息存档：重启后恢复为「待发送」（不静默丢失）
+    queueGet: (id) => ipcRenderer.invoke('finalcheck:sessions:queue-get', id),
+    queueSave: (id, items) => ipcRenderer.invoke('finalcheck:sessions:queue-save', id, items)
   },
   projects: {
     list: () => ipcRenderer.invoke('finalcheck:projects:list'),

@@ -962,6 +962,14 @@ export function CommandDetail({ args, result }) {
           ))}
         </div>
       ) : null}
+      {r.note ? (
+        // 「已转后台（PID=xxx）」「仍在运行但已 Ns 无输出」这类提示必须看得见：
+        // 以前只存在 result.note 里，CommandDetail 从不渲染，用户会以为命令卡死。
+        <div data-testid="cmd-note" className="flex gap-2.5 rounded-md bg-gold/10 py-2 pl-2.5 pr-3 text-xs text-goldSoft/90 leading-relaxed">
+          <span aria-hidden className="w-[2px] shrink-0 self-stretch rounded-full bg-gold/50" />
+          <span className="min-w-0 break-words">{r.note}</span>
+        </div>
+      ) : null}
       {r.blocked ? (
         <div className="flex gap-2.5 rounded-md bg-red-500/10 py-2 pl-2.5 pr-3 text-xs text-red-300 leading-relaxed">
           <span aria-hidden className="w-[2px] shrink-0 self-stretch rounded-full bg-red-500/50" />

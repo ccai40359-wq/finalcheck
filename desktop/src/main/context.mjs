@@ -35,15 +35,29 @@ function truncateTool(m) {
   return { ...m, content: text.slice(0, TOOL_KEEP_CHARS) + `…[截断 ${text.length - TOOL_KEEP_CHARS} 字符]` };
 }
 
-export async function assembleContext(messages, { budgetTokens, budgetChars = 80000, summarize } = {}) {
+// 是否超预算（与 assembleContext 同一口径）。调用方在真正开始压缩前用它决定要不要发
+// 「压缩中」状态：assembleContext 里的 LLM 摘要可能要等几秒，不能等压缩完才提示。
+export function needsCompaction(messages, { budgetTokens, budgetChars = 80000 } = {}) {
+  const { total, limit } = measureContext(messages, { budgetTokens, budgetChars });
+  return total > limit;
+}
+
+// 预算口径唯一实现：token 优先，没给 token 预算时沿用旧的字符口径
+function measureContext(messages, { budgetTokens, budgetChars = 80000 } = {}) {
   const list = Array.isArray(messages) ? messages : [];
-  // 传了正数 budgetTokens 就按 token 估（长上下文模型），否则沿用旧的 80k 字符口径
   const tokenBudget = Number(budgetTokens);
   const useTokens = Number.isFinite(tokenBudget) && tokenBudget > 0;
   const limit = useTokens ? tokenBudget : budgetChars;
   const total = useTokens
     ? estimateMessagesTokens(list)
     : list.reduce((n, m) => n + charLen(m), 0);
+  return { total, limit, useTokens };
+}
+
+export async function assembleContext(messages, { budgetTokens, budgetChars = 80000, summarize } = {}) {
+  const list = Array.isArray(messages) ? messages : [];
+  // 传了正数 budgetTokens 就按 token 估（长上下文模型），否则沿用旧的 80k 字符口径
+  const { total, limit, useTokens } = measureContext(list, { budgetTokens, budgetChars });
   if (total <= limit) return { messages: list, compacted: false };
 
   // 从尾部往回累积；最近 KEEP_RECENT 条无条件保留，更早的进"被压缩区"

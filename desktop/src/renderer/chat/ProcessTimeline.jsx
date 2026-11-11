@@ -81,7 +81,8 @@ export function applyAgentEvent(msg, ev) {
     }
     case 'tool-start':
       finalizeThought(events);
-      events.push({ type: 'tool', name: ev.name || 'tool', args: String(ev.args || ''), status: 'running' });
+      // at：真实开始时刻（主进程带上）；卡片用它显示「已耗时 Ns」，而不是只显示静态 running
+      events.push({ type: 'tool', name: ev.name || 'tool', args: String(ev.args || ''), status: 'running', at: Number(ev.at) || Date.now() });
       // 兜底：即使 activity 事件迟到/缺失，工具开始也会把底部文案切到 Calling <tool>…
       return { ...msg, events, activityLabel: `Calling ${ev.name || 'tool'}…`, activityTone: 'activity' };
     case 'tool-end': {
@@ -322,9 +323,23 @@ function DiffDetail({ result }) {
 }
 
 /* 工具条目：图标 + 类型名 + 具体对象（文件/命令/URL）+ +N -M + 耗时，点开展开详情 */
+// 运行中的秒数走表：没有它「正在跑」和「卡死」在界面上完全一样。
+function useElapsedSince(startedAt, active) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active || !startedAt) return undefined;
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [active, startedAt]);
+  if (!startedAt || !active) return 0;
+  return Math.max(0, now - startedAt);
+}
+
 function ToolEntry({ e, cardInBody }) {
   const [open, setOpen] = useState(false);
   const running = e.status === 'running';
+  const elapsedMs = useElapsedSince(e.at, running);
   const expandable = running || !!e.args || e.result !== undefined;
   const meta = toolMeta(e);
   const summary = summarizeToolArgs(e.name, e.args);
@@ -357,7 +372,7 @@ function ToolEntry({ e, cardInBody }) {
         {meta.extra ? <span className="shrink-0 text-[10px] text-mute/40">{meta.extra}</span> : null}
         {meta.added != null ? <span className="shrink-0 text-[11px] text-jade">+{meta.added}</span> : null}
         {meta.removed != null ? <span className="shrink-0 text-[11px] text-red-400">-{meta.removed}</span> : null}
-        {running ? <span className="ml-auto shrink-0 text-[10px] text-goldSoft/70">running</span>
+        {running ? <span className="ml-auto shrink-0 tabular-nums text-[10px] text-goldSoft/70" data-testid="tool-elapsed">{t('已耗时 {n}s', { n: Math.floor(elapsedMs / 1000) })}</span>
           : e.ms > 0 ? <span className="ml-auto shrink-0 text-[10px] tabular-nums text-mute/40">· {fmtToolMs(e.ms)}</span> : null}
         {expandable ? <Chevron open={open} /> : null}
       </button>

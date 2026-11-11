@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import os from 'node:os';
 import { mkdtemp, rm } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 
 const require = createRequire(new URL('../desktop/package.json', import.meta.url));
@@ -354,10 +355,15 @@ test('agent-service：onToolLifecycle 发出开始/结束（不进 onEvent 的�
   assert.equal(endBad.status, 'fail');
   assert.equal(endBad.error, 'boom');
   assert.deepEqual(endBad.result, { error: 'boom' });
-  // 渲染层事件形状不变：tool-start/tool-end 仍然存在且不带 result
+  // 渲染层事件：tool-start 带 at（运行中显示已耗时）；tool-end 带裁剪后的 result 摘要
+  // （F5：没有 result，「已转后台 PID xxx」这类 note 就到不了界面；但不允许把大对象塞进 IPC）
   const rendered = renderEvents.filter((e) => e.kind === 'tool-start' || e.kind === 'tool-end');
   assert.equal(rendered.length, 4);
-  assert.ok(rendered.filter((e) => e.kind === 'tool-end').every((e) => !('result' in e)));
+  assert.ok(rendered.filter((e) => e.kind === 'tool-start').every((e) => Number.isFinite(e.at)), 'tool-start 要带开始时刻');
+  const renderedEnds = rendered.filter((e) => e.kind === 'tool-end');
+  assert.ok(renderedEnds.every((e) => 'result' in e), 'tool-end 必须带摘要，界面才能显示 note');
+  assert.ok(renderedEnds.every((e) => JSON.stringify(e.result ?? null).length <= 600), '摘要必须裁剪，不能把大对象塞进事件流');
+  assert.deepEqual(renderedEnds.find((e) => e.id === 'id-ok').result, { ok: true }, '小结果原样保留');
 });
 
 // 启动收尾（P1，2026-11-11）：进程崩溃/被强杀遗留的 running 工具必须变成 interrupted，
@@ -392,6 +398,35 @@ test('启动收尾：没有库的项目目录不会凭空建库', async (t) => {
   const dir = await freshDir(t, 'fc-interrupted-empty-');
   const n = await sessions.markInterruptedRunningParts(dir);
   assert.equal(n, 0);
-  const { existsSync } = await import('node:fs');
   assert.equal(existsSync(dbIn(dir)), false, '没跑过会话的项目不该被建一个空库');
+});
+
+// 生产调用语义（P1，2026-11-11）：index.mjs 传给收尾函数的是「项目根」。
+// 库在 <项目>/.finalcheck/finalcheck.db，如果不识别项目根，就会去查 <项目>/finalcheck.db（不存在）
+// → 永远 return 0，遗留 running 工具跨重启一直转圈。
+test('启动收尾：传项目根（生产调用语义）也能清掉遗留 running，且库在 .finalcheck 下', async (t) => {
+  const proj = await freshDir(t, 'fc-interrupted-root-');
+  const sessDir = path.join(proj, '.finalcheck', 'sessions');
+  process.env.FINALCHECK_SESSIONS_DIR = sessDir; // 和 index.mjs 的 sessionDirOf 一致
+  const s = await sessions.newSession('项目根收尾');
+  await sessions.appendToolStart(s.id, { callId: 'call-root', name: 'run_command', args: { cmd: 'sleep 999' } });
+
+  const projectDb = path.join(proj, '.finalcheck', 'finalcheck.db');
+  assert.ok(existsSync(projectDb), '会话库必须落在 <项目>/.finalcheck/finalcheck.db');
+
+  const n = await sessions.markInterruptedRunningParts(proj); // ← 传项目根，不是 sessions 目录
+  assert.equal(n, 1, '传项目根也必须收尾，不能静默 no-op');
+
+  const raw = openRaw(path.join(proj, '.finalcheck'));
+  try {
+    const row = raw.prepare("SELECT data_json FROM part WHERE type='tool'").get();
+    assert.equal(JSON.parse(row.data_json).status, 'interrupted');
+  } finally { raw.close(); }
+});
+
+test('启动收尾：项目根下没有 .finalcheck 库时不建库（不污染项目目录）', async (t) => {
+  const proj = await freshDir(t, 'fc-interrupted-root-empty-');
+  assert.equal(await sessions.markInterruptedRunningParts(proj), 0);
+  assert.equal(existsSync(path.join(proj, 'finalcheck.db')), false, '不能在项目根建库');
+  assert.equal(existsSync(path.join(proj, '.finalcheck', 'finalcheck.db')), false, '没跑过会话就不该建库');
 });

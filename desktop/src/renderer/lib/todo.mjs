@@ -89,6 +89,47 @@ export function validateTodoItems(input) {
   return { ok: true, items };
 }
 
+/** 展示用文案（键会进 i18n 字典） */
+export const TODO_DISPLAY_LABELS = Object.freeze({
+  pending: '待做',
+  running: '进行中',
+  done: '完成',
+  failed: '失败',
+  skipped: '跳过',
+  interrupted: '已中断'
+});
+
+/** 展示用符号：已中断用空心圆，和「真的在跑」（◐ + 脉冲）区分开 */
+export const TODO_DISPLAY_MARKS = Object.freeze({
+  pending: '☐',
+  running: '◐',
+  done: '✓',
+  failed: '✕',
+  skipped: '—',
+  interrupted: '◌'
+});
+
+/**
+ * 展示态：running 只有在「这条消息所属回合仍在流式」时才算真的在跑。
+ * 为什么需要：卡片是从最后一次 todo_write 的 args 还原的（重启/停止后也一样），
+ * 停止、报错、崩溃都不会往会话里写终态，于是 running 会永远转圈。
+ * 这里只改展示，原始 status 数据一个字都不动（历史/报告闸仍读到 running 原值）。
+ * @param {{status?:string}|string} item
+ * @param {boolean} live 这条卡片所属回合是否仍在流式
+ * @returns {{status:string, raw:string, label:string, mark:string, pulse:boolean}}
+ */
+export function displayStatus(item, live = true) {
+  const raw = normalizeTodoStatus(item && typeof item === 'object' ? item.status : item) || 'pending';
+  const status = raw === 'running' && !live ? 'interrupted' : raw;
+  return {
+    status,
+    raw,
+    label: t(TODO_DISPLAY_LABELS[status]),
+    mark: TODO_DISPLAY_MARKS[status],
+    pulse: status === 'running'
+  };
+}
+
 /**
  * 合并式更新：同一 id 的 evidence 沿用旧值，避免「第二次调用只改状态」把已有证据冲掉。
  * acceptance 每次必填（校验层保证），所以只合并 evidence。
@@ -114,6 +155,69 @@ export function todoProgress(items) {
     failed: count('failed'),
     skipped: count('skipped')
   };
+}
+
+/* ---------- 卡片渲染层（折叠 / 计数 / 持久化）---------- */
+
+export const TODO_COLLAPSE_PREFIX = 'fc.todo.collapsed:';
+
+/**
+ * 卡片头部一句话摘要：计数、百分比、第一条任务、折叠后的单行文案。
+ * label 只用于折叠态的一行标题（如「验收单 · 3/7」），不含状态，刷新后仍可比较。
+ * @returns {{done:number,total:number,failed:number,skipped:number,percent:number,firstTask:string,label:string}}
+ */
+export function todoCardSummary(items) {
+  const list = Array.isArray(items) ? items : [];
+  const total = list.length;
+  const done = list.filter((it) => it?.status === 'done').length;
+  const failed = list.filter((it) => it?.status === 'failed').length;
+  const skipped = list.filter((it) => it?.status === 'skipped').length;
+  const percent = total ? Math.round((done / total) * 100) : 0;
+  const firstTask = list.find((it) => it && text(it.task, 500))?.task || '';
+  return {
+    done, total, failed, skipped, percent,
+    firstTask: text(firstTask, 500),
+    label: `${t('验收单')} · ${done}/${total}`
+  };
+}
+
+/**
+ * 整卡折叠状态的 localStorage key：sessionId + 任务 id 签名（不含 status，
+ * 否则每完成一条就换 key，折叠状态会丢）。没有 sessionId 时退化为纯签名。
+ */
+export function todoCollapseKey(sessionId, items) {
+  const sid = sessionId == null ? '' : String(sessionId).trim();
+  const ids = (Array.isArray(items) ? items : [])
+    .map((it) => text(it?.id, 80))
+    .filter(Boolean)
+    .join(',');
+  const parts = [];
+  if (sid) parts.push(`s:${sid}`);
+  if (ids) parts.push(`i:${ids}`);
+  return `${TODO_COLLAPSE_PREFIX}${parts.join('|') || 'default'}`;
+}
+
+// SSR（没有 window）与隐私模式下 localStorage 可能不可用：一律当作「没有存储」，不抛错。
+function resolveStorage(storage) {
+  if (storage && typeof storage.getItem === 'function') return storage;
+  try {
+    if (globalThis.localStorage && typeof globalThis.localStorage.getItem === 'function') return globalThis.localStorage;
+  } catch { /* 访问被拒绝 */ }
+  return null;
+}
+
+/** 读整卡折叠状态：只有存过 '1' 才算折叠，其余（缺省/读失败）一律展开 */
+export function readTodoCollapsed(key, storage) {
+  const store = resolveStorage(storage);
+  if (!store || !key) return false;
+  try { return store.getItem(key) === '1'; } catch { return false; }
+}
+
+/** 写整卡折叠状态；返回是否写成功（存储不可用时不阻塞渲染） */
+export function writeTodoCollapsed(key, collapsed, storage) {
+  const store = resolveStorage(storage);
+  if (!store || !key) return false;
+  try { store.setItem(key, collapsed ? '1' : '0'); return true; } catch { return false; }
 }
 
 /**

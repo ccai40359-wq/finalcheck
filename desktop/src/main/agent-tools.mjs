@@ -65,7 +65,26 @@ function terminateTree(proc) {
   try { proc.unref?.(); } catch { /* 忽略 */ }
 }
 
-export function runCommandWithSignal(command, { cwd, timeoutMs, idleMs = DEFAULT_COMMAND_IDLE_MS, background = false, env: envInput, signal = null } = {}) {
+// 长命令可见性（F7）：不设默认硬超时（用户明确要求），但「还在跑」必须看得见。
+// idle_ms:0 = 关掉空闲转后台兜底 → 命令可能长时间无输出；从 60s 起每 30s 推一条活动提示，
+// 只带「仍在运行 Ns」，不带任何输出内容（不把大对象塞进 IPC）。
+export const RUNNING_PING_START_MS = 60000;
+export const RUNNING_PING_EVERY_MS = 30000;
+
+/** 第 n 次活动提示应该在什么时刻（相对命令开始，毫秒）；不在提示点上时返回下一个提示点 */
+export function planRunningPings(elapsedMs, startMs = RUNNING_PING_START_MS, everyMs = RUNNING_PING_EVERY_MS) {
+  const el = Math.max(0, Number(elapsedMs) || 0);
+  const start = Math.max(0, Number(startMs) || 0);
+  const every = Math.max(1, Number(everyMs) || 1);
+  if (el < start) return { due: null, nextAt: start };
+  const due = start + Math.floor((el - start) / every) * every;
+  return { due, nextAt: due + every };
+}
+
+export function runCommandWithSignal(command, {
+  cwd, timeoutMs, idleMs = DEFAULT_COMMAND_IDLE_MS, background = false, env: envInput, signal = null,
+  onActivity = null, pingStartMs = RUNNING_PING_START_MS, pingEveryMs = RUNNING_PING_EVERY_MS
+} = {}) {
   return new Promise((resolve) => {
     const cmd = String(command || '').trim();
     if (!cmd) return resolve({ blocked: false, code: 1, stdout: '', stderr: '命令为空' });
@@ -86,10 +105,13 @@ export function runCommandWithSignal(command, { cwd, timeoutMs, idleMs = DEFAULT
       env.PATH = sys + old;
       env.Path = env.PATH;
     }
-    let out = '', err = '', settled = false, proc = null, timer = null, idleTimer = null;
+    let out = '', err = '', settled = false, proc = null, timer = null, idleTimer = null, pingTimer = null;
+    const t0 = Date.now();
+    let nextPingAt = Math.max(0, Number(pingStartMs) || 0); // 下一次活动提示的「已运行毫秒」
     const cleanup = () => {
       if (timer) clearTimeout(timer);
       if (idleTimer) clearTimeout(idleTimer);
+      if (pingTimer) clearTimeout(pingTimer);
       if (signal && onAbort) signal.removeEventListener('abort', onAbort);
     };
     const finish = (value) => {
@@ -97,6 +119,27 @@ export function runCommandWithSignal(command, { cwd, timeoutMs, idleMs = DEFAULT
       settled = true;
       cleanup();
       resolve({ ...value, stdout: String(value.stdout ?? out).slice(0, 8000), stderr: String(value.stderr ?? err).slice(0, 4000) });
+    };
+    // 「仍在运行 Ns」活动提示：只报耗时，不带 stdout/stderr。
+    // 目的：idle_ms:0 或超长命令时，UI 上看得见它在动，而不是像卡死。
+    const armPing = () => {
+      if (settled || wantsBackground || typeof onActivity !== 'function') return;
+      if (pingTimer) clearTimeout(pingTimer);
+      const elapsed = Date.now() - t0;
+      const delay = Math.max(20, nextPingAt - elapsed);
+      pingTimer = setTimeout(() => {
+        if (settled) return;
+        const now = Date.now() - t0;
+        if (now < nextPingAt) { armPing(); return; } // 定时器早醒：等真正的提示点
+        const plan = planRunningPings(now, pingStartMs, pingEveryMs);
+        const at = plan.due == null ? now : plan.due;
+        nextPingAt = at + Math.max(1, Number(pingEveryMs) || RUNNING_PING_EVERY_MS);
+        try {
+          onActivity({ kind: 'activity', tool: 'run_command', tone: 'activity', label: t('仍在运行 {n}s', { n: Math.max(1, Math.round(at / 1000)) }) });
+        } catch { /* 提示失败不影响命令 */ }
+        armPing();
+      }, delay);
+      pingTimer.unref?.(); // 提示计时器不自己撑住事件循环
     };
     const onAbort = () => {
       if (settled) return;
@@ -170,10 +213,11 @@ export function runCommandWithSignal(command, { cwd, timeoutMs, idleMs = DEFAULT
       return finish({ blocked: false, background: true, code: null, pid, note: backgroundNote(pid), stdout: out, stderr: err });
     }
     armIdle();
+    armPing(); // 前 60s 静默；之后每 30s 一条「仍在运行 Ns」（不含输出内容）
   });
 }
 
-export function createAgentTools({ repoRoot, permissions, recordAudit = async () => {}, playbookRoot, runWorkflow = null, projectPath = null, policy = null, hooksConfig = null, hooksRunner = null, sessionId = null, cwd = null, signal = null, commandIdleMs = DEFAULT_COMMAND_IDLE_MS, askUser = null, todoWrite = null } = {}) {
+export function createAgentTools({ repoRoot, permissions, recordAudit = async () => {}, playbookRoot, runWorkflow = null, projectPath = null, policy = null, hooksConfig = null, hooksRunner = null, sessionId = null, cwd = null, signal = null, commandIdleMs = DEFAULT_COMMAND_IDLE_MS, askUser = null, todoWrite = null, onActivity = null } = {}) {
   if (!repoRoot) throw new Error('createAgentTools 需要 repoRoot');
   const engineUrl = (rel) => pathToFileURL(path.join(repoRoot, rel)).href;
   const note = (url) => permissions?.noteTarget?.(url);
@@ -464,7 +508,8 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
         idleMs,
         background: args?.background === true,
         env,
-        signal: toolSignal
+        signal: toolSignal,
+        onActivity
       });
     }
   };

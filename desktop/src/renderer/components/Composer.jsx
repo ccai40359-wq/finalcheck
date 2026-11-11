@@ -56,13 +56,14 @@ function AttachmentChip({ item, onRemove }) {
 }
 
 export default function Composer({
-  y, input, setInput, attachments, setAttachments, pastedBlocks, setPastedBlocks, editing, dragging, busy, stopping, compacting,
+  y, input, setInput, attachments, setAttachments, pastedBlocks, setPastedBlocks, editing, dragging, busy, stopping, steering, compacting,
   approval, queueItems, menu, providerMenu, permMode, ctxStats, skills, cfg, sessCfg, effortPos, activeId, onNotice,
   slashIndex, setSlashIndex,
   inputRef, modelMenuRef,
   setDragging, setMenu, setProviderMenu, setEffortPos, setSessCfg, setCfg, setPermMode,
   cancelEdit, chooseSlash,
-  decideApproval, steerQueueItem, moveQueueItemToInput, removeQueueItem, send, stop, onGoSettings
+  decideApproval, steerQueueItem, moveQueueItemToInput, removeQueueItem, sendQueueItemNow, queueHeld = false,
+  send, stop, onGoSettings
 }) {
   // ---- 输入框下方的模型 / 思考强度 / 技能菜单（按当前会话的配置显示） ----
   const allProviders = cfg?.providers || [];
@@ -200,7 +201,11 @@ export default function Composer({
           <div className="mb-2.5 space-y-1.5" data-testid="queue-list">
             <div className="flex items-center gap-2 px-1">
               <span className="badge bg-gold/15 text-goldSoft border border-gold/35">{t('排队 {n}', { n: queueItems.length })}</span>
-              <span className="text-[10px] text-mute/55">{t('当前回合结束后自动发送（Steer 可注入本回合）')}</span>
+              <span className="text-[10px] text-mute/55" data-testid="queue-hint">
+                {queueHeld
+                  ? t('有 {n} 条排队消息，点发送', { n: queueItems.length })
+                  : t('当前回合结束后自动发送（Steer 会中断当前回合并重发）')}
+              </span>
             </div>
             {queueItems.map((item, idx) => (
               <div key={item.id} data-testid="queue-item"
@@ -213,9 +218,12 @@ export default function Composer({
                     : t('(空)'))}
                 </span>
                 {item.previews?.length ? <span className="shrink-0 text-[10px] text-mute/50">{t('附件 {n}', { n: item.previews.length })}</span> : null}
-                <button type="button" data-testid="queue-steer" onClick={() => steerQueueItem(item)}
-                  title={busy && !stopping ? t('注入当前回合（下一次模型请求前生效）') : t('当前回合未在运行，无法 Steer')}
-                  className="shrink-0 rounded-md border border-gold/40 px-2 py-0.5 text-[10px] text-goldSoft hover:bg-gold/15 transition-colors">Steer</button>
+                <button type="button" data-testid="queue-send" onClick={() => sendQueueItemNow(item.id)} disabled={busy || stopping || steering}
+                  title={(busy || stopping) ? t('当前回合仍在运行，无法立即发送排队消息（可等它结束或点停止）') : t('立即发送这条（停止/报错收尾后队列不再自动发送）')}
+                  className="shrink-0 rounded-md border border-jade/40 px-2 py-0.5 text-[10px] text-jade hover:bg-jade/15 transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent">{t('发送')}</button>
+                <button type="button" data-testid="queue-steer" onClick={() => steerQueueItem(item)} disabled={steering}
+                  title={steering ? t('正在中断当前回合…') : (busy && !stopping ? t('中断当前回合，并用这条消息重开一个新回合') : t('当前回合未在运行，无法 Steer'))}
+                  className="shrink-0 rounded-md border border-gold/40 px-2 py-0.5 text-[10px] text-goldSoft hover:bg-gold/15 transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent">Steer</button>
                 <button type="button" data-testid="queue-edit" onClick={() => moveQueueItemToInput(item.id)}
                   title={t('取回编辑（从队列移除，内容放回输入框）')}
                   className="shrink-0 rounded-md p-1 text-mute/55 hover:text-goldSoft hover:bg-white/5 transition-colors">

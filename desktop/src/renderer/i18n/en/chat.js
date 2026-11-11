@@ -13,10 +13,18 @@ export const EN_CHAT = {
   '网关无响应': 'No response from gateway',
   '网关已静默 {sec}s…': 'Gateway silent for {sec}s…',
   '网关已静默 {s}s…': 'Gateway silent for {s}s…',
+  '网关只发心跳 {s}s…': 'Gateway is only sending heartbeats ({s}s)…',
+  '仍在运行 {n}s': 'Still running {n}s',
+  '已耗时 {n}s': '{n}s elapsed',
   '等待网关响应…': 'Waiting for gateway…',
   '补交结论…': 'Submitting conclusion…',
   '补交结论（{n}/{max}）…': 'Submitting conclusion ({n}/{max})…',
   '重试 {attempt}/{max}': 'Retrying {attempt}/{max}',
+
+  // 上下文压缩活动行（CompactionStatus.jsx / lib/compaction.mjs）
+  // '压缩失败：{msg}' 与 app.js 的同名条目共用，这里不重复登记
+  '正在压缩上下文…': 'Compressing context…',
+  '未知原因': 'Unknown reason',
 
   // 工具错误 / 入参摘要（humanize.js）
   '执行失败（原因未记录）': 'Run failed (reason not recorded)',
@@ -208,6 +216,7 @@ export const EN_CHAT = {
   '跳过 {n}': '{n} skipped',
   '待做': 'To do',
   '进行中': 'In progress',
+  '已中断': 'Interrupted',
   '已跳过': 'Skipped',
   '(未命名任务)': '(untitled task)',
   '(未写验收标准)': '(no acceptance criteria)',
@@ -218,5 +227,9 @@ export const EN_CHAT = {
   '{n} 已完成': '{n} completed',
   '全部完成': 'All done',
   '展开已完成条目': 'Show completed items',
-  '收起已完成条目': 'Hide completed items'
+  '收起已完成条目': 'Hide completed items',
+  // 整卡折叠（ZCode 样式：卡片右上角箭头）
+  '进度': 'Progress',
+  '展开验收单': 'Expand checklist',
+  '收起验收单': 'Collapse checklist'
 };
