@@ -23,7 +23,6 @@ async function writeRel(dir, rel, text) {
 }
 
 const bigFile = (n = 850) => Array.from({ length: n }, (_, i) => `const value${i} = ${i};`).join('\n') + '\n';
-const codeFindings = (result) => result.findings.filter((f) => ['Q3', 'Q4', 'Q5'].includes(f.checkId));
 
 test('① 跨副本去重：release-x 副本与真实 src/a.js 只报 1 条，保留真实源码路径', async (t) => {
   const dir = await tmpDir(t, 'fc-dedupe-');
