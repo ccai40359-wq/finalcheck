@@ -69,6 +69,14 @@ export const EN_APP = {
   '看目录、读代码、跑命令，像 coding agent 一样': 'Browse the tree, read code, run commands — like a coding agent',
   '体检中…示例项目 L2 正在跑': 'Auditing… demo workspace running L2',
 
+  // 能力卡点击后插入输入框的 prompt（与 app-helpers.mjs 的 CAPABILITIES.prompt 逐字对应）
+  '对当前项目做一次 L2 安全体检：先给目录概览，再按检查项跑，结论要带文件:行证据。': 'Run an L2 security audit on this workspace: start with a directory overview, then go through the checks, and back every conclusion with file:line evidence.',
+  '我要做渗透测试，目标 URL 是：\n（把目标地址补在这行后面）\n先侦察端口/指纹，再按方法论跑最小验证集，不要爆破。': 'I want to run a penetration test. Target URL:\n（append the target address to this line）\nRecon ports/fingerprint first, then run the smallest verification set by methodology; no brute force.',
+  '对当前项目做下载闸安检：安装脚本、投毒、外呼、README 注入。': 'Run a download-gate check on this workspace: install scripts, supply-chain poisoning, outbound calls, README injection.',
+  '用工作流分头查这个项目的三个方向：依赖与供应链、鉴权与越权、动态探测；最后汇总成一份结论。': 'Use a workflow to investigate this workspace across three directions in parallel: dependencies and supply chain, auth and privilege escalation, dynamic probing; then merge them into one verdict.',
+  '对当前项目跑一次体检，并生成可预览的完整报告。': 'Run an audit on this workspace and produce a full previewable report.',
+  '先看一下当前项目的目录结构和 README，再用三句话告诉我这是个什么项目。': 'Take a look at this workspace’s directory layout and README, then tell me in three sentences what this project is.',
+
   // 权限审批 / 排队 / 编辑态
   'Agent 请求修改文件，需要你的授权': 'Agent wants to edit a file and needs your approval',
   'Agent 请求写入文件，需要你的授权': 'Agent wants to write a file and needs your approval',

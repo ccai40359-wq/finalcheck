@@ -43,7 +43,7 @@ export default function EmptyState({ y, demoBusy, setDemoBusy, setMessages, setI
             const Icon = CAP_ICON[c.icon] || IconSparkle;
             const isDemo = c.id === 'demo';
             return (
-              <button key={c.id} onClick={() => (isDemo ? runDemoAudit() : pickSuggestion(c.prompt))}
+              <button key={c.id} onClick={() => (isDemo ? runDemoAudit() : pickSuggestion(t(c.prompt)))}
                 disabled={isDemo && demoBusy}
                 className="glass-row group flex items-start gap-3 rounded-2xl px-4 py-3.5 text-left disabled:opacity-50">
                 <span className="mt-0.5 text-goldSoft/85 group-hover:text-goldSoft transition-colors"><Icon /></span>
