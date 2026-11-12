@@ -234,10 +234,18 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
     runner: hooksRunner || undefined
   });
 
-  // hook ask 批准后下发的一次性免审券：target 必须与工具内部 requestApproval 前的免批键一致
+  // hook ask 批准后下发的一次性免审券：target 必须与工具内部 requestApproval 前的免批键一致。
+  // 文件类工具内部用的是 assertPathAllowed 返回的规范化真实路径，这里必须同样规范化；
+  // 否则 Windows 8.3 短路径（C:\Users\RUNNER~1\...）会与真实路径不匹配，导致重复弹审批。
+  const canonicalApprovalTarget = (raw, write, tool) => {
+    const abs = path.resolve(String(raw || ''));
+    if (!policy) return abs;
+    const check = assertPathAllowed(policy, abs, { write, tool });
+    return check.ok ? check.path : abs;
+  };
   const approvalTarget = (name, args) => {
-    if (name === 'edit_file' || name === 'write_file') return path.resolve(String(args?.path || ''));
-    if (name === 'quality_gate') return path.resolve(String(args?.dir || projectPath || ''));
+    if (name === 'edit_file' || name === 'write_file') return canonicalApprovalTarget(args?.path, true, name);
+    if (name === 'quality_gate') return canonicalApprovalTarget(args?.dir || projectPath, false, name);
     if (name === 'run_command') {
       const cmd = String(args?.command ?? '');
       return typeof permissions?.commandPrefix === 'function' ? permissions.commandPrefix(cmd) : cmd;

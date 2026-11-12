@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import os from 'node:os';
+import { realpathSync } from 'node:fs';
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import server from './fixtures/dynamic-target/app.mjs';
 import { createAgentTools } from '../desktop/src/main/agent-tools.mjs';
@@ -161,7 +162,7 @@ test('agent-tools: policy——项目外读取/只读写入/黑名单命令被�
 
   const insideRead = await tools.read_file({ path: inside });
   assert.match(insideRead.content, /inside-content/);
-  assert.equal(insideRead.path, inside, '路径经策略规范化后交给 fs-tools');
+  assert.equal(insideRead.path, realpathSync.native(inside), '路径经策略规范化后交给 fs-tools');
 
   const readonly = createPolicy({ projectPath: dir, mode: 'readonly' });
   const roTools = createAgentTools({ repoRoot, permissions: fakePermissions(), policy: readonly, projectPath: dir });
@@ -258,7 +259,7 @@ test('agent-tools: PreToolUse 返回 args 时按合并后的参数执行', async
     hooksRunner: async () => hookReply({ args: { path: rewritten, limit: 5000 } })
   });
   const r = await tools.read_file({ path: original });
-  assert.equal(r.path, rewritten);
+  assert.equal(r.path, realpathSync.native(rewritten));
   assert.match(r.content, /rewritten-content/);
 });
 
