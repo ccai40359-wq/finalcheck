@@ -20,3 +20,28 @@ test('versions: CHANGELOG has an entry for the desktop package version', () => {
   const changelog = readFileSync(path.join(root, 'CHANGELOG.md'), 'utf8');
   assert.ok(changelog.includes(`## [${desktopPkg.version}]`), `CHANGELOG.md must contain ${desktopPkg.version}`);
 });
+
+test('versions: both READMEs advertise the same test count', () => {
+  const readme = readFileSync(path.join(root, 'README.md'), 'utf8');
+  const readmeZh = readFileSync(path.join(root, 'README.zh-CN.md'), 'utf8');
+  const badge = (text) => {
+    const m = text.match(/img\.shields\.io\/badge\/tests-(\d+)%20passing/);
+    assert.ok(m, 'README must carry a tests-<n>%20passing badge');
+    return Number(m[1]);
+  };
+  const badgeEn = badge(readme);
+  const badgeZh = badge(readmeZh);
+  assert.equal(badgeEn, badgeZh, 'English and Chinese README test badges must match');
+
+  const bodyNumbers = (text) => {
+    const patterns = [
+      /(\d+)\s+tests passing/g,
+      /\(\s*(\d+)\s+passing\s*\)/g,
+      /(\d+)\s+项全绿/g,
+      /(\d+)\s+项测试/g,
+    ];
+    return patterns.flatMap((re) => [...text.matchAll(re)].map((m) => Number(m[1])));
+  };
+  for (const n of bodyNumbers(readme)) assert.equal(n, badgeEn, 'README.md prose must match the badge count');
+  for (const n of bodyNumbers(readmeZh)) assert.equal(n, badgeZh, 'README.zh-CN.md prose must match the badge count');
+});
