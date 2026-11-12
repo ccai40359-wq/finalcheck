@@ -1,7 +1,7 @@
 <img src="docs/assets/cover.png" alt="FinalCheck 终检" width="100%">
 
 [![CI](https://github.com/ccai40359-wq/finalcheck/actions/workflows/ci.yml/badge.svg)](https://github.com/ccai40359-wq/finalcheck/actions/workflows/ci.yml)
-![tests](https://img.shields.io/badge/tests-978%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-1081%20passing-brightgreen)
 ![license](https://img.shields.io/badge/license-Apache--2.0-blue)
 
 [English](README.md) · **简体中文**
@@ -29,9 +29,11 @@
 | 件 | 形态 | 干什么 |
 |---|---|---|
 | **桌面端** | Electron（Windows） | 聊天 + 体检台：分级验收、子代理工作流、实时工具轨迹、产物预览、用量统计 |
-| **引擎** | 独立 CLI（`npx finalcheck audit <目录>`） | 静态关卡（密钥 / 依赖 / 坏模式 / 鉴权矩阵 / 语义检查）→ 评分卡 + 缺口工单 |
+| **引擎** | 独立 CLI（`node bin/finalcheck.js audit <目录>`） | 静态关卡（密钥 / 依赖 / 坏模式 / 鉴权矩阵 / 语义检查）→ 评分卡 + 缺口工单 |
 | **Agent 运行时** | 内建于桌面端 | DAG 工作流 **与** 受限脚本 DSL、每条结论强制对抗复核、journal 断点续跑、盲区检查 |
 | **闸门与手册** | skill/hook 接线 + `playbooks/` | 下载闸（装/跑外部项目之前）+ 交活闸（把活交出去之前）；规则手册按档写清 AI 该守什么 |
+
+npm 包 `finalcheck` 目前是占位包，只打印用法；真正的命令行在仓库里运行（`node bin/finalcheck.js audit ...`）。完整体验请用桌面版。
 
 ## 下载
 
@@ -66,6 +68,12 @@ cd desktop && npm run dev      # 启动桌面端
 
 想在本地跑构建产物冒烟：在仓库根执行 `npm run smoke:e2e`（需先有 `desktop/out`）。它会开真实窗口并只用临时隔离配置，不碰你本机的真实 FinalCheck 数据。
 
+## 排障
+
+- **导出诊断**：**用量统计 → 导出诊断**（**设置 → 关于与更新** 里也有入口）。导出的是脱敏 JSON：版本、系统、最近 200 行日志、规则命中、配置（API Key 已打码）；不会自动上传。
+- **报告太吵**：先建基线（`--write-baseline`），之后用 `--fail-on new` 只卡新引入的卡项。
+- **gitleaks / osv-scanner 没装**：S3 会继续用内置规则并写明「广度有限」；装上或配好路径后规则会扩展。
+
 ## 语言
 
 界面中英双语，**默认中文**（中文系统 + "跟随系统" 时保持中文）。
@@ -90,12 +98,12 @@ desktop/      Electron 桌面端（main / preload / renderer）
 playbooks/    体检 playbook
 integrations/ 编码 agent 的 skill + hook 接线
 docs/         ACCEPTANCE.md（分级验收的唯一事实源）
-tests/        node:test 测试（当前 978 项全绿）
+tests/        node:test 测试（当前 1081 项全绿）
 ```
 
 ## 状态
 
-已能真用但仍在早期：引擎、桌面端、分级闸门、Agent 工作流（DAG + 脚本 DSL）、对抗复核与内置更新都已落地，每次改动跑 978 项测试。本项目自身按 L3 标准开发——本仓库违反 L2 矩阵任何一条，都算 bug。
+已能真用但仍在早期：引擎、桌面端、分级闸门、Agent 工作流（DAG + 脚本 DSL）、对抗复核与内置更新都已落地，每次改动跑 1081 项测试。本项目自身按 L3 标准开发——本仓库违反 L2 矩阵任何一条，都算 bug。
 
 ## 作者
 

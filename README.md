@@ -1,7 +1,7 @@
 <img src="docs/assets/cover.png" alt="FinalCheck — pre-flight check for code" width="100%">
 
 [![CI](https://github.com/ccai40359-wq/finalcheck/actions/workflows/ci.yml/badge.svg)](https://github.com/ccai40359-wq/finalcheck/actions/workflows/ci.yml)
-![tests](https://img.shields.io/badge/tests-978%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-1081%20passing-brightgreen)
 ![license](https://img.shields.io/badge/license-Apache--2.0-blue)
 
 **English** · [简体中文](README.zh-CN.md)
@@ -29,10 +29,12 @@ FinalCheck is a tiered production-readiness desk for people who write with AI bu
 | Piece | Form | What it does |
 |---|---|---|
 | **Desktop app** | Electron (Windows) | Chat + audit desk: tiered acceptance, agent workflows, live tool traces, artifact preview, usage stats |
-| **Engine** | CLI (`npx finalcheck audit <dir>`) | Static gates (secrets, dependencies, risky patterns, auth matrix, semantic checks) → scorecard + issue tickets |
+| **Engine** | CLI (`node bin/finalcheck.js audit <dir>`) | Static gates (secrets, dependencies, risky patterns, auth matrix, semantic checks) → scorecard + issue tickets |
 | **Agent runtime** | Built into the desktop app | DAG workflows **and** a restricted-script DSL, adversarial verification of every claim, journal-based resume, blind spot checks |
 | **Gates & playbooks** | Skill/hook integrations + `playbooks/` | Download gate (before installing/running third-party code) and delivery gate (before handing work over) |
 | **Rulebooks** | Text, per tier | What the AI must follow while writing code, so problems are prevented up front |
+
+The npm package `finalcheck` is currently a placeholder that prints usage; the real CLI runs from this repository (`node bin/finalcheck.js audit ...`). Use the desktop app for the full experience.
 
 ## Install
 
@@ -141,6 +143,12 @@ Restore: close the app, unzip the archive, copy `config.json`, `sessions/` and `
 - **Desktop app:** reinstall the previous installer (for example `fc-setup-0.15.0.exe`) from the Releases page. User data stays in `%APPDATA%\FinalCheck`; take a backup first.
 - **Source tree:** use `git revert <commit>` for a single bad change, or `git checkout <previous-tag>` to return to the previous release. Re-run `cd desktop && npm run setup:sqlite` after switching Electron versions.
 - **Data:** restore the zip produced by `scripts/backup.mjs` using the steps above. Backups are the rollback path for sessions and memory because the app does not migrate data backwards.
+
+## Troubleshooting
+
+- **Export diagnostics:** use **Usage → Export diagnostics** (also available in **Settings → About & updates**). The exported JSON contains the app version, OS, the last 200 log lines, rule hits, and config with API keys masked. Nothing is uploaded automatically.
+- **Reports look too noisy:** run a baseline first (`--write-baseline`), then use `--fail-on new` so only newly introduced blocking findings fail.
+- **gitleaks/osv-scanner are missing:** S3 keeps its built-in rules and the report says so; install the tools or set their paths to enable the wider rule set.
 
 ## Language
 
