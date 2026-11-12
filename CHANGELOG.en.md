@@ -6,6 +6,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.16.1] - 2026-11-12
+
+### Fixed
+
+- When the model appends an extra `}` after otherwise valid tool-argument JSON, the extra closing delimiter is removed and the call executes instead of showing "arguments are not valid JSON" and retrying; only a prefix that parses is trimmed, so genuinely missing braces still fail as before.
+- Tool-argument JSON errors, output-limit truncation and "resending" notices are now fully translated in the English UI instead of falling back to Chinese.
+- Added regressions for trailing-brace repair and English error strings (currently 1149 tests).
+
 ## [0.16.0] - 2026-11-12
 
 ### Added
