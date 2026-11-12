@@ -4,7 +4,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import SettingsPage from './pages/SettingsPage.jsx';
 import { api } from './lib/ui.jsx';
-import { mergeRunningRun } from './lib/session-restore.mjs';
+import { mergeRunningRun, shouldReloadSessionFromDisk } from './lib/session-restore.mjs';
+import { filterAskCardsByTrace, hideAskTracesForCards } from './lib/ask-cards.mjs';
 import { applyAgentEvent, mergeTraceIntoEvents } from './chat/ProcessTimeline.jsx';
 import { ArtifactPanel } from './chat/ArtifactPanel.jsx';
 import { SubagentPanel } from './chat/SubagentPanel.jsx';
@@ -474,6 +475,14 @@ export default function App() {
   // projectId：这条会话所属项目（跨项目点会话时先 select 再 open，刷新缓存也落到该项目）
   const openSession = async (id, projectId = null) => {
     if (!y) return;
+    // 这条会话已经激活且本进程还在跑这一回合：不再从磁盘重建（否则磁盘 pending 副本
+    // 会和内存实时副本叠成两份，pending assistant 还会被误标「已停止」）。
+    if (!shouldReloadSessionFromDisk({
+      activeId: activeIdRef.current,
+      sessionId: id,
+      liveRun: runsRef.current.has(id),
+      inflight: inflightRef.current.has(id)
+    })) return;
     try {
       const s = unwrapIpc(await y.sessions.open(id));
       // 归属：调用方传入的项目 → 会话缓存里的目录登记 → 当前项目（老会话/未登记时兜底）
@@ -1439,6 +1448,12 @@ export default function App() {
   const openStep = (s) => setStepView({ sessionId: activeId, stepId: s.id, name: s.name, role: s.role, kind: s.kind || null, opType: s.opType || s.op || null, key: Date.now() });
 
   const hasMsgs = messages.length > 0;
+  // 实时提问卡与历史 trace 的互斥渲染（同 callId 只出一张卡）：
+  // - 已收尾的 ask 以历史卡为准，藏掉实时卡；
+  // - 仍在进行的 ask 以实时卡为准，从展示用消息里摘掉它的历史 trace 条目。
+  const activeAskCards = activeId ? askCards.filter((c) => c.sessionId == null || c.sessionId === activeId) : [];
+  const visibleAskCards = filterAskCardsByTrace(activeAskCards, messages);
+  const chatMessages = hideAskTracesForCards(messages, visibleAskCards);
   // 面板可见性：设置页/切换会话时不渲染（返回聊天也不会自动弹回来，因为状态已被上面的 effect 清空）
   const showStepPanel = shouldShowStepPanel({ view: page, stepView, activeSessionId: activeId });
   // 用量页自动刷新开关：任一会话正在跑（含后台/工作流）就 5 秒轮询，全部停下即停
@@ -1486,13 +1501,13 @@ export default function App() {
 
             {hasMsgs ? (
               <MessageList
-                messages={messages} activeId={activeId} providers={providers} artifactPath={artifact?.path}
+                messages={chatMessages} activeId={activeId} providers={providers} artifactPath={artifact?.path}
                 openWorkflowRaw={openWorkflowRaw} setOpenWorkflowRaw={setOpenWorkflowRaw}
                 scrollRef={scrollRef} stickRef={stickRef} jumpingRef={jumpingRef}
                 showJump={showJump} setShowJump={setShowJump} y={y}
                 onSendRecover={(text) => send({ text, pasted: [] })}
                 onOpenArtifact={openArtifact} onEditMessage={editMessage} onOpenStep={openStep}
-                askCards={activeId ? askCards.filter((c) => c.sessionId == null || c.sessionId === activeId) : []}
+                askCards={visibleAskCards}
                 onAskUserAnswer={answerAskUser}
               />
             ) : (
