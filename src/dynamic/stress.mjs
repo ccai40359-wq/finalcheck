@@ -10,6 +10,7 @@ export function stressTarget(url, { duration = 10, connections = 10 } = {}) {
       const p975 = res.latency?.p97_5;
       resolve({
         url, duration, connections,
+        samples: Number(res.requests?.total) || 0,
         rpsAvg: Math.round(res.requests?.average || 0),
         p97_5LatencyMs: typeof p975 === 'number' ? Math.round(p975 * 10) / 10 : null,
         // 错误数 = 连接/请求错误 + HTTP 4xx/5xx；3xx 不算错误（重定向是正常语义）。

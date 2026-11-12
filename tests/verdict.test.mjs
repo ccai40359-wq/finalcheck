@@ -16,6 +16,16 @@ const LOCK = {
 };
 const README = [
   '# Probe project',
+  '## Installation',
+  'Install with npm install.',
+  '## Running',
+  'Run with npm test.',
+  '## Environment',
+  'No environment variables required.',
+  '## Deployment',
+  'Run node app.js on the target machine.',
+  '## Rollback',
+  'Rollback to the previous version.',
   '',
   'Minimal Node.js project used by FinalCheck verdict tests. To install, run the test script:',
   '',
@@ -131,7 +141,7 @@ test('无 gap：L2 全过 → 过', async (t) => {
   const res = await audit(dir, { tier: 'L2', interactive: true, runTests: true });
 
   assert.deepEqual(res.gates.gapItems, []);
-  assert.equal(res.conclusion.verdict, '过');
+  assert.equal(res.conclusion.verdict, '过', JSON.stringify(res.findings));
 });
 
 test('无 gap：中危卡条目 → 修完再过', async (t) => {

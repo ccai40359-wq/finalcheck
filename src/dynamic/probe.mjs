@@ -4,7 +4,7 @@
 // 自食教训（2026-11-08 真站自查）：
 //   只看状态码会把典型 SPA 判成 7/7 复现——任何未知路径都回 200 + index.html。
 //   现在必须看「返回的是什么」：HTML 外壳/与首页同体/200 但正文是未授权错误 → 都不算复现；
-//   真接口（JSON）与真调试页（与首页不同的 HTML）仍然算复现。
+//   匿名可访问的数据/调试页只记线索，公开意图和敏感性仍需人工确认。
 const TIMEOUT = 5000;
 const MAX_BODY_BYTES = 8192; // 只读前 8KB：判定只需开头，不把大响应整个拉进内存
 const SNIPPET_CHARS = 160;
@@ -90,7 +90,16 @@ function classify(r, homeBody) {
   if (!r.body.trim()) return { reproduced: false, note: `${r.status} 空响应体（无法确认返回了数据）` };
   if (isSpaShell(r, homeBody)) return { reproduced: false, note: '返回 HTML 外壳（疑似 SPA 兜底页），不是接口数据' };
   if (looksJson(r) && AUTH_ERROR_RE.test(r.body)) return { reproduced: false, note: '返回 200 但正文是未授权错误' };
-  return { reproduced: true, note: r.bodyTruncated ? '返回数据（正文已按 8KB 截断）' : '返回数据' };
+  if (looksJson(r)) {
+    try {
+      const value = JSON.parse(r.body);
+      const errorCode = Number(value?.code ?? value?.status ?? value?.statusCode);
+      if (errorCode >= 400 || value?.success === false || value?.ok === false || value?.error || /not[ -]?found|no such|不存在|未找到/i.test(String(value?.message || value?.msg || ''))) {
+        return { reproduced: false, note: '返回业务错误，未证实数据泄漏' };
+      }
+    } catch { return { reproduced: false, note: '响应正文无法解析，未证实数据泄漏' }; }
+  }
+  return { reproduced: false, accessible: true, note: `匿名可访问，需确认是否应公开及是否含敏感数据${r.bodyTruncated ? '（正文已按 8KB 截断）' : ''}` };
 }
 
 // 最近秩次百分位：p50 ≤ p95 恒成立；空样本返回 null（调用方决定怎么展示）
@@ -146,6 +155,7 @@ export async function probeTarget(baseUrl, { requests = 10 } = {}) {
         status: r.status,
         contentType: r.contentType,
         reproduced: verdict.reproduced,
+        accessible: Boolean(verdict.accessible),
         note: verdict.note,
         bodySnippet: r.body.slice(0, SNIPPET_CHARS),
         bodyTruncated: r.bodyTruncated,
@@ -167,7 +177,7 @@ export async function probeTarget(baseUrl, { requests = 10 } = {}) {
   for (let i = 0; i < sampleCount; i++) {
     try {
       const r = await fetchPage(base + '/');
-      samples.push({ totalMs: r.totalMs, ttfbMs: r.ttfbMs });
+      if (r.status >= 200 && r.status < 400) samples.push({ totalMs: r.totalMs, ttfbMs: r.ttfbMs });
       if (!headerSample) headerSample = r;
     } catch (e) {
       headerError = e;
@@ -178,5 +188,5 @@ export async function probeTarget(baseUrl, { requests = 10 } = {}) {
   } else {
     results.push({ kind: 'security-headers', missing: [], error: headerError?.message || 'unreachable' });
   }
-  return { target: base, results, latency: latencyStats(samples) };
+  return { target: base, results, samples: samples.length, latency: latencyStats(samples) };
 }

@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { listTextFiles, readRel, prunedWarning } from '../walk.mjs';
 import { extractRoutes } from '../extract-routes.mjs';
+import { sourceModel, routeHandlers, someCall, memberName } from '../source-analysis.mjs';
 
 // S6 外部入口（ACCEPTANCE §4-A）。只报两类确定性证据，宁窄勿宽：
 //   (a) 公开的 webhook/callback 路由所在文件里看不到验签关键词（hmac/signature/verify）；
@@ -10,7 +11,7 @@ import { extractRoutes } from '../extract-routes.mjs';
 // 路由表复用 extract-routes 的判定（不在这里手写递归遍历）；文件清单仍走 walk.mjs。
 
 const WEBHOOK_PATH_RE = /(?:webhook|callback|hook)/i;
-const VERIFY_RE = /hmac|signature|verify/i; // 同文件内任一关键词即视为有验签线索（宁漏勿误）
+const VERIFY_RE = /hmac|signature|verify/i;
 const CORS_WILDCARD_RES = [
   /origin\s*:\s*(?:['"]\*['"]|true)/i,
   /Access-Control-Allow-Origin['"]?\s*[,:]\s*['"]?\*/i,
@@ -79,7 +80,9 @@ export async function checkExternal(projectDir, { tier, excludes = [], includeFi
       const rel = String(r.file || '');
       const text = await readText(rel);
       if (text == null) continue;
-      if (VERIFY_RE.test(text)) continue; // 同文件有验签关键词 → 不报
+      const model = sourceModel(text);
+      const handlers = routeHandlers(model, r);
+      if (someCall(handlers.nodes, (call) => VERIFY_RE.test(memberName(call.callee) || call.callee?.name || ''))) continue;
       const routeLine = Number(r.line) || 1;
       const lineText = text.split('\n')[routeLine - 1] || '';
       if (lineText.includes('finalcheck:allow')) continue;

@@ -53,8 +53,9 @@ FinalCheck 原本只有安全类闸门（S1–S8）和「测试能不能跑」�
 
 ## 怎么跑
 
-- CLI：`npx finalcheck audit . --tier L2 --interactive`（默认 `runTests=true`；外部项目必须加 `--no-tests`，此时 Q2 只记缺口不执行）
-- 桌面端：跟助手说「跑一下质量闸 / 这里的 lint/测试/bench 过没过」，助手调用 `quality_gate`，**执行前会在输入框上方弹出授权条**，允许后逐条跑；`audit_project` 本身仍是 `runTests=false`，不会偷偷执行
+- CLI：`node bin/finalcheck.js audit . --tier L2` **默认只做静态审计、不执行** 项目测试与质量命令，此时 Q2 只记 `coverageGap`。确认项目可信并要真正执行时显式加 `--run-tests`；`--no-tests` 优先于 `--run-tests`，同时出现时一律禁止执行。
+- 桌面端：跟助手说「跑一下质量闸 / 这里的 lint/测试/bench 过没过」，助手调用 `quality_gate`，**执行前会在输入框上方弹出授权条**，允许后逐条跑；`audit_project` 本身仍是 `runTests=false`，不会偷偷执行。`readonly` 模式直接拒绝质量命令。
+- 质量闸的审批目标绑定 `finalcheck.quality.json` 归一化后的命令配置指纹（`目录#sha256`），并执行审批时的配置快照；授权后修改配置需要重新审批。
 - MCP：`quality_gate` **默认拒绝执行项目命令**（MCP 无用户确认通道）；确需执行时必须用 `--root <dir>` 显式指定项目根，并设置 `FINALCHECK_MCP_ALLOW_COMMANDS=1`，且 `dir` 必须在该根内
 
 ## 判定原则（照旧不越界）
@@ -63,6 +64,7 @@ FinalCheck 原本只有安全类闸门（S1–S8）和「测试能不能跑」�
 - 没有 `finalcheck.quality.json` → Q2 不进计划，也不会在报告里说「质量没问题」
 - 命令输出里的 `KEY=… / token: …` 一类值会被打码后进报告
 - Q2 只回答「声明过的命令跑没跑过」，不是代码质量打分器：没声明 lint，就不会有 lint 结论
+- 没授权执行（默认 `runTests=false` 或显式 `--no-tests`）时，Q2 只记 `coverageGap`，结论不会被包装成「质量没问题」；覆盖缺口与未解决的中高危项分别按 `无法验收` / `修完再过` 处理
 
 ## 现场示例
 
@@ -72,3 +74,5 @@ FinalCheck 原本只有安全类闸门（S1–S8）和「测试能不能跑」�
 | 类型/可转接性 | `tsc --noEmit`（类型不兼容会直接失败） |
 | 稳定性 | `npm test` + `minPercent` + `maxMs` |
 | 性能/延迟 | 自己的 bench 脚本 + `expect: "p95="` + `maxMs` |
+
+实现范围、权限边界与人工证据契约见 [RELIABILITY.md](RELIABILITY.md)。

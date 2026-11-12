@@ -190,13 +190,17 @@ test('F5/Q1: 覆盖率产物 <40% → card finding；≥40% 才允许过', async
   t.after(() => rm(low, { recursive: true, force: true }));
   t.after(() => rm(ok, { recursive: true, force: true }));
 
-  const lowRes = await checkQ1(low, { tier: 'L3', testRunner: fakeTestRunner });
+  const runner = (dir, percent) => async () => {
+    await writeFile(path.join(dir, 'coverage/coverage-summary.json'), JSON.stringify({ total: { lines: { pct: percent, covered: percent, total: 100 } } }));
+    return fakeTestRunner();
+  };
+  const lowRes = await checkQ1(low, { tier: 'L3', testRunner: runner(low, 20) });
   assert.ok(notPass(lowRes), '20% < 40% 不能判过');
   assert.equal(lowRes.findings[0].rule, 'Q1.coverage-below-threshold');
   assert.equal(lowRes.findings[0].force, 'card');
   assert.equal(lowRes.coverageGap, null);
 
-  const okRes = await checkQ1(ok, { tier: 'L3', testRunner: fakeTestRunner });
+  const okRes = await checkQ1(ok, { tier: 'L3', testRunner: runner(ok, 80) });
   assert.equal(okRes.coverageGap, null);
   assert.deepEqual(okRes.findings, []);
   assert.match(String(okRes.warnings.join('\n')), /覆盖率门槛已实测/);

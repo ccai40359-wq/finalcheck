@@ -325,14 +325,14 @@ test('D2：README 备份段落只是 check 级线索 → 记 backup-unverified +
   assert.match(String(r.coverageGap), /未验证/);
 });
 
-test('D2：backup 脚本含 pg_dump → 零发现；单独 *.sql 只是线索 → backup-unverified', async (t) => {
+test('D2：backup 脚本含 pg_dump 仍需调度与恢复确认；单独 *.sql 只是线索', async (t) => {
   const scriptDir = await fixture({ 'scripts/backup.sh': '#!/bin/sh\npg_dump "$DATABASE_URL" > dump.sql\n' });
   const sqlDir = await fixture({ 'db/schema.sql': 'CREATE TABLE orders (id INT);\n' });
   t.after(() => rm(scriptDir, { recursive: true, force: true }));
   t.after(() => rm(sqlDir, { recursive: true, force: true }));
   const a = await checkBackup(scriptDir, { tier: 'L3' });
   assertResult(a, 'D2');
-  assert.deepEqual(a.findings, [], '真实备份命令是可执行证据');
+  assert.deepEqual(a.findings.map((f) => f.rule), ['D2.schedule-missing', 'D2.restore-unverified']);
   const b = await checkBackup(sqlDir, { tier: 'L3' });
   assertResult(b, 'D2');
   assert.equal(b.findings.length, 1, '单独 .sql 文件不是可执行备份证据');

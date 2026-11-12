@@ -1,7 +1,7 @@
 <img src="docs/assets/cover.png" alt="FinalCheck — pre-flight check for code" width="100%">
 
 [![CI](https://github.com/ccai40359-wq/finalcheck/actions/workflows/ci.yml/badge.svg)](https://github.com/ccai40359-wq/finalcheck/actions/workflows/ci.yml)
-![tests](https://img.shields.io/badge/tests-1088%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-1146%20passing-brightgreen)
 ![license](https://img.shields.io/badge/license-Apache--2.0-blue)
 
 **English** · [简体中文](README.zh-CN.md)
@@ -72,7 +72,11 @@ cd desktop && npm ci && npm run setup:sqlite
 node bin/finalcheck.js audit . --tier L2
 ```
 
-`--tier` accepts `L1`, `L2` or `L3`. Add `--json` for machine-readable output, `--no-tests` when auditing third-party code (the audit must never execute the audited code), and `--include-fixtures` only when checking intentionally broken samples.
+`--tier` accepts `L1`, `L2` or `L3`. `--json` produces machine-readable output, and `--include-fixtures` pulls `**/fixtures/**` into the product verdict only when checking intentionally broken samples.
+
+The audit is **static by default**: it does not run the audited project's test suite or quality commands, and Q1/Q2 are reported as coverage gaps instead of passes. Add `--run-tests` only for a project you trust and explicitly want executed; `--no-tests` wins over `--run-tests` when both are present. `scan-download` exits non-zero whenever it has a coverage gap, so "could not verify" never looks like a pass.
+
+Implemented scope, limits and the manual-evidence contract are in [docs/RELIABILITY.md](docs/RELIABILITY.md).
 
 ### Desktop app
 
@@ -161,7 +165,9 @@ The UI ships in Chinese and English.
 ## Safety model
 
 - The API key lives **only** in the local `config.json` (`%APPDATA%\FinalCheck` in the installed build). It is never written to sessions, logs or reports.
-- Path and command access is controlled by a policy: `workspace` (writes inside the project only), `readonly`, or `off`. Sensitive locations (`.ssh`, `.aws`, `.gnupg`, Git credentials, private keys) are blocked in every mode, and a command blacklist applies on top.
+- Path and command access is controlled by a policy: `workspace` (writes inside the project only), `readonly`, or `off`. `workspace` is an application-level path policy, not an OS sandbox. Sensitive locations (`.ssh`, `.aws`, `.gnupg`, Git credentials, private keys) are blocked in every mode, and a command blacklist applies on top.
+- `readonly` rejects commands, quality-gate commands and project-memory writes. Path checks resolve junctions/symlinks to their real target before deciding whether a path is inside the workspace.
+- Approvals are isolated per session, project and tool; "always allow this session" never leaks across sessions or projects. The quality gate binds its approval to the normalized command config fingerprint and runs the approved config snapshot, so changing `finalcheck.quality.json` after approval requires a new approval.
 - Dynamic targets (probes, stress tests) require an explicit, per-target confirmation and are capped at 60s / 50 connections.
 - Removing a workspace from the list never deletes anything on disk.
 
@@ -173,13 +179,13 @@ src/          audit engine (checks, probe/stress, MCP surface)
 desktop/      Electron app (main / preload / renderer)
 playbooks/    audit playbooks
 integrations/ skill + hook wiring for coding agents
-docs/         ACCEPTANCE.md — the single source of truth for the tiers
-tests/        node:test suites (1088 passing)
+docs/         ACCEPTANCE.md — tier SSOT; RELIABILITY.md — implemented scope and evidence limits
+tests/        node:test suites (1146 passing)
 ```
 
 ## Status
 
-Early but real: the engine, the desktop app, tiered gates, agent workflows (DAG + script DSL), adversarial verification and in-app updates are in place, with 1088 tests passing on every change. Development follows the project's own L3 standard — a known violation of any L2 item in this repository counts as a bug.
+Early but real: the engine, the desktop app, tiered gates, agent workflows (DAG + script DSL), adversarial verification and in-app updates are in place, with 1146 tests passing on every change. Development follows the project's own L3 standard — a known violation of any L2 item in this repository counts as a bug.
 
 ## Author
 

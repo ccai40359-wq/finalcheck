@@ -16,6 +16,16 @@ const LOCK = {
 };
 const README = [
   '# Probe project',
+  '## Installation',
+  'Install with npm install.',
+  '## Running',
+  'Run with npm test.',
+  '## Environment',
+  'No environment variables required.',
+  '## Deployment',
+  'Run node app.js on the target machine.',
+  '## Rollback',
+  'Rollback to the previous version.',
   '',
   'Minimal Node.js project used by FinalCheck profile tests. To install, run the test script:',
   '',
@@ -348,20 +358,23 @@ test('evidenceMatrix 只有 URL + dynamicAuth：没有实测记录只能 static-
   const noRun = evidenceMatrix(profile);
   for (const name of ['安全性', '鲁棒性', '性能', '运行稳定性']) {
     assert.equal(noRun[name].level, 'static-only', `${name}：只是声明了授权，没跑过 probe/stress 不能算 full`);
-    assert.match(noRun[name].reason, /没有 probe\/stress 实测记录/);
+    assert.match(noRun[name].reason, /没有.*有效 probe\/stress 实测记录/);
     assert.equal(noRun[name].dynamic.declared, true);
     assert.equal(noRun[name].dynamic.measured, false);
   }
   assert.equal(noRun['供应链与许可证'].level, 'static-only');
   assert.equal(noRun.可维护性.level, 'not-covered');
 
-  // 真的跑过一条 probe → 动态维度才升 full，并把次数/耗时写进证据
+  // probe 只补足安全维度；性能、稳定与鲁棒性还需要有样本的 stress。
   const measured = evidenceMatrix(profile, { probe: [{ ms: 120, samples: 1, at: Date.now() }] });
+  assert.equal(measured.安全性.level, 'full');
+  for (const name of ['鲁棒性', '性能', '运行稳定性']) assert.equal(measured[name].level, 'static-only');
+  const complete = evidenceMatrix(profile, { probe: [{ ms: 120, samples: 1 }], stress: [{ ms: 500, samples: 100 }] });
   for (const name of ['安全性', '鲁棒性', '性能', '运行稳定性']) {
-    assert.equal(measured[name].level, 'full');
-    assert.match(measured[name].reason, /probe 1 次/);
-    assert.equal(measured[name].dynamic.measured, true);
-    assert.equal(measured[name].dynamic.probe.count, 1);
+    assert.equal(complete[name].level, 'full');
+    assert.match(complete[name].reason, /probe 1 次/);
+    assert.equal(complete[name].dynamic.measured, true);
+    assert.equal(complete[name].dynamic.probe.count, 1);
   }
 });
 

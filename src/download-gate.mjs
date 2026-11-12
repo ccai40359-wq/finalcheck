@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
+import semver from 'semver';
 import { listTextFiles, readRel, prunedWarning } from './walk.mjs';
 
 // X 下载闸（ACCEPTANCE §4-X）：只跑静态关 + registry 元数据查询，禁止执行被审项目任何代码
@@ -21,13 +22,26 @@ const X4_PATTERNS = [
 ];
 const NAME_RE = /^(@[\w.-]+\/)?[\w.-]+$/;
 
-// registry 元数据：进程级内存缓存（同包只请求一次）
-const metaCache = new Map(); // name → 解析后的 meta | null（请求失败也缓存，避免离线时反复打）
-const dlCache = new Map();   // name → 周下载量 number | null
+// 只缓存成功结果，5 分钟内有效；失败不缓存，下一次调用重试。
+// metaCache 按 name@spec 隔离——同包不同版本必须各自解析（v1.0.0 有 postinstall、v2.0.0 没有）。
+const CACHE_MS = 5 * 60 * 1000;
+const metaCache = new Map(); // `${name}@${range}` → { value, at }
+const dlCache = new Map();   // name → { value, at }
 
-const newNet = () => ({ requests: 0, failures: 0, skipped: new Set() });
+const newNet = () => ({
+  requests: 0,
+  failures: 0,
+  skipped: new Set(),          // registry 元数据因请求上限跳过
+  unresolved: new Set(),       // 版本/来源未解析（registry 失败或范围无法匹配）
+  downloadsUnverified: 0,      // 仅下载量接口失败：警告级，不进 coverageGap
+});
 
-async function fetchJson(url, net) {
+export function parsePackageSpec(spec) {
+  const match = /^(@[\w.-]+\/[\w.-]+|[\w.-]+)(?:@(.+))?$/.exec(String(spec || '').replace(/^['"]|['"]$/g, ''));
+  return match && NAME_RE.test(match[1]) ? { name: match[1], range: match[2] || 'latest' } : null;
+}
+
+async function fetchJson(url, net, { downloads = false } = {}) {
   if (net.requests >= REQUEST_CAP) return undefined; // undefined = 超上限，本次没发请求
   net.requests += 1;
   const ac = new AbortController();
@@ -35,26 +49,30 @@ async function fetchJson(url, net) {
   try {
     const res = await fetch(url, { signal: ac.signal, headers: { accept: 'application/json' } });
     if (!res.ok) {
-      if (res.status >= 500) net.failures += 1; // 404=包不存在不算 registry 故障
+      // registry 元数据故障 = 覆盖缺口；下载量接口故障只降级为“下载量未验证”，不计入缺口。
+      if (!downloads && res.status >= 500) net.failures += 1; // 404=包不存在不算 registry 故障
       return null;
     }
     return await res.json();
   } catch {
-    net.failures += 1;
+    if (!downloads) net.failures += 1;
     return null;
   } finally {
     clearTimeout(timer);
   }
 }
 
-// 注意：不用 /latest —— 它不带 time 字段，X3 的"发布时间"必须读完整 packument
-function parseRegistryDoc(doc) {
+// 注意：不用 /latest —— 它不带 time 字段，X3 的"发布时间"必须读完整 packument。
+// 按请求版本/范围解析：dist-tag 优先，其次精确版本，最后 semver 范围取最高匹配版本。
+function parseRegistryDoc(doc, range = 'latest') {
   if (!doc || typeof doc !== 'object' || typeof doc.versions !== 'object') return null;
-  const latest = doc['dist-tags']?.latest;
-  const v = latest ? doc.versions[latest] : null;
+  const version = doc['dist-tags']?.[range] || (semver.valid(range) ? range
+    : semver.validRange(range) ? semver.maxSatisfying(Object.keys(doc.versions), range) : null);
+  const v = version ? doc.versions[version] : null;
+  if (!v) return null;
   return {
     name: doc.name,
-    version: v?.version || latest || '',
+    version: v.version || version,
     scripts: v?.scripts && typeof v.scripts === 'object' ? v.scripts : {},
     dependencies: v?.dependencies && typeof v.dependencies === 'object' ? v.dependencies : {},
     time: doc.time && typeof doc.time === 'object' ? doc.time : null,
@@ -62,22 +80,31 @@ function parseRegistryDoc(doc) {
 }
 
 // 返回 undefined=超上限未请求 | null=请求失败/不存在 | meta
-async function getRegistryMeta(name, net) {
-  if (metaCache.has(name)) return metaCache.get(name);
-  if (net.requests >= REQUEST_CAP) { net.skipped.add(name); return undefined; }
+async function getRegistryMeta(name, net, range = 'latest') {
+  const key = `${name}@${range}`;
+  const cached = metaCache.get(key);
+  if (cached && Date.now() - cached.at < CACHE_MS) return cached.value;
+  if (net.requests >= REQUEST_CAP) { net.skipped.add(key); return undefined; }
   const doc = await fetchJson(`https://registry.npmjs.org/${encodeURIComponent(name)}`, net);
-  const meta = parseRegistryDoc(doc);
-  metaCache.set(name, meta);
+  const meta = doc?.name === name ? parseRegistryDoc(doc, range) : null;
+  if (meta) metaCache.set(key, { value: meta, at: Date.now() });
+  else net.unresolved.add(key); // 失败不写缓存，避免把一次网络故障固化成“安全”
   return meta;
 }
 
-// 返回 undefined=超上限 | null=失败 | number
+// 返回 undefined=超上限 | null=失败/非数字 | number
 async function getDownloads(name, net) {
-  if (dlCache.has(name)) return dlCache.get(name);
-  if (net.requests >= REQUEST_CAP) { net.skipped.add(name); return undefined; }
-  const doc = await fetchJson(`https://api.npmjs.org/downloads/point/last-week/${encodeURIComponent(name)}`, net);
-  const n = doc && typeof doc.downloads === 'number' ? doc.downloads : null;
-  dlCache.set(name, n);
+  const cached = dlCache.get(name);
+  if (cached && Date.now() - cached.at < CACHE_MS) return cached.value;
+  if (net.requests >= REQUEST_CAP) { net.downloadsUnverified += 1; return undefined; }
+  const doc = await fetchJson(`https://api.npmjs.org/downloads/point/last-week/${encodeURIComponent(name)}`, net, { downloads: true });
+  const n = doc && typeof doc.downloads === 'number' && Number.isFinite(doc.downloads) ? doc.downloads : null;
+  if (n === null) {
+    // 下载量接口不可用/返回非数字：X3 降级为“下载量未验证”，不阻断安装。
+    net.downloadsUnverified += 1;
+    return null;
+  }
+  dlCache.set(name, { value: n, at: Date.now() });
   return n;
 }
 
@@ -129,28 +156,44 @@ function x3Finding(meta, judge) {
 }
 
 // BFS 解析包图：depth0=目标包（localMeta 给出则不走网络），依赖层 1..MAX_DEPTH
-// 返回 Map<name, { meta, depth }>
-async function resolveGraph(rootName, localMeta, net) {
+// 返回 Map<name@version, { meta, depth }>；lockfile 中的锁定版本优先于 package.json 范围。
+async function resolveGraph(rootName, localMeta, net, { range = 'latest', locks = new Map() } = {}) {
   const nodes = new Map();
-  const queued = new Set([rootName]);
-  let frontier = [{ name: rootName, depth: 0, local: localMeta || null }];
+  const queued = new Set([rootName, `${rootName}@${range}`]);
+  let frontier = [{ name: rootName, range, lockPath: '', depth: 0, local: localMeta || null }];
   while (frontier.length) {
     const next = [];
     await Promise.all(frontier.map(async (job) => {
       let meta = job.local;
       if (!meta) {
-        const m = await getRegistryMeta(job.name, net);
-        if (!m) return; // undefined=超上限（已计 skipped），null=失败（已计 failures）
+        const m = await getRegistryMeta(job.name, net, job.range);
+        if (!m) return; // undefined=超上限（已计 skipped），null=失败（已计 unresolved/failures）
         meta = m;
         const dl = await getDownloads(job.name, net);
         meta = { ...meta, weeklyDownloads: typeof dl === 'number' ? dl : null };
       }
-      if (!nodes.has(job.name)) nodes.set(job.name, { meta, depth: job.depth });
+      const key = job.local ? job.name : `${job.name}@${meta.version}`;
+      if (!nodes.has(key)) nodes.set(key, { meta, depth: job.depth });
       if (job.depth >= MAX_DEPTH) return;
-      for (const dep of Object.keys(meta.dependencies || {})) {
-        if (!NAME_RE.test(dep) || queued.has(dep)) continue;
-        queued.add(dep);
-        next.push({ name: dep, depth: job.depth + 1, local: null });
+      for (const [dep, requested] of Object.entries(meta.dependencies || {})) {
+        if (!NAME_RE.test(dep)) continue;
+        let cursor = job.lockPath;
+        let locked = null;
+        for (;;) {
+          const candidate = (cursor ? cursor + '/' : '') + 'node_modules/' + dep;
+          if (locks.has(candidate)) { locked = { ...locks.get(candidate), lockPath: candidate }; break; }
+          if (!cursor) break;
+          const cut = cursor.lastIndexOf('/node_modules/');
+          cursor = cut < 0 ? '' : cursor.slice(0, cut);
+        }
+        const depRange = locked?.version || String(requested || 'latest');
+        if (locked?.resolved && !/^https:\/\/(?:registry\.npmjs\.org|registry\.npmmirror\.com|registry\.yarnpkg\.com)\//.test(locked.resolved)) {
+          net.unresolved.add(`${dep}@${depRange}（非 registry 锁定来源）`); continue;
+        }
+        const queueKey = `${dep}@${depRange}`;
+        if (queued.has(queueKey)) continue;
+        queued.add(queueKey);
+        next.push({ name: dep, range: depRange, lockPath: locked?.lockPath || '', depth: job.depth + 1, local: null });
       }
     }));
     frontier = next;
@@ -160,7 +203,8 @@ async function resolveGraph(rootName, localMeta, net) {
 
 function collectGraphFindings(nodes, rootName) {
   const findings = [];
-  for (const [name, node] of nodes) {
+  for (const [, node] of nodes) {
+    const name = node.meta.name;
     const isRoot = name === rootName && node.depth === 0;
     findings.push(...lifecycleFindings(node.meta.scripts, { name, version: node.meta.version, file: 'package.json' }));
     if (isRoot && !node.meta.weeklyDownloads && node.meta.weeklyDownloads !== 0) continue; // 本地根不算 X3
@@ -171,6 +215,7 @@ function collectGraphFindings(nodes, rootName) {
 }
 
 function finalizeNet(net, findings, warnings) {
+  if (net.unresolved.size) warnings.push(`依赖版本/来源未解析：${[...net.unresolved].slice(0, 10).join('、')}`);
   if (net.skipped.size > 0) {
     findings.push({
       checkId: 'X1', severity: 'low', force: 'tip', file: 'package.json', line: 0,
@@ -180,6 +225,30 @@ function finalizeNet(net, findings, warnings) {
     });
   }
   if (net.failures > 0) warnings.push(`registry 不可达或请求失败（${net.failures} 次），X1/X3 网络部分覆盖不全`);
+  if (net.downloadsUnverified > 0) warnings.push(`下载量未验证（api.npmjs.org/downloads 失败或返回非数字，${net.downloadsUnverified} 个包），X3 的周下载量信号缺失`);
+}
+
+// 只把 registry 元数据/版本解析缺口算作 coverageGap；下载量未验证是警告，不阻断安装。
+const netGap = (net) => net.failures || net.skipped.size || net.unresolved.size
+  ? `X1/X3 覆盖不足：registry 失败 ${net.failures}，请求上限跳过 ${net.skipped.size}，版本/来源未解析 ${net.unresolved.size}` : null;
+
+async function readNpmLocks(projectDir) {
+  for (const file of ['npm-shrinkwrap.json', 'package-lock.json']) {
+    try {
+      const lock = JSON.parse(await readFile(path.join(projectDir, file), 'utf8'));
+      const entries = new Map(Object.entries(lock.packages || {}).filter(([key]) => key));
+      const visit = (deps, parent = '') => {
+        for (const [name, entry] of Object.entries(deps || {})) {
+          const key = (parent ? parent + '/' : '') + 'node_modules/' + name;
+          if (!entries.has(key)) entries.set(key, entry);
+          visit(entry.dependencies, key);
+        }
+      };
+      visit(lock.dependencies);
+      return entries;
+    } catch { /* Try the other npm lockfile; unresolved package metadata remains explicit. */ }
+  }
+  return new Map();
 }
 
 // X2 外呼清单：项目文件静态提取 http(s) 主机名去重，非常见域名黄牌
@@ -334,7 +403,7 @@ async function effectiveExcludes(projectDir, excludes) {
 }
 
 // 全项目扫描：X1+X3（本地根 + registry 依赖树）+ X2 + X4
-// 返回 { findings, warnings }，finding 形状同其他 checks
+// 返回 { findings, warnings, coverageGap }，finding 形状同其他 checks
 export async function scanDownload(projectDir, { excludes = [] } = {}) {
   const ex = await effectiveExcludes(projectDir, excludes);
   const findings = [];
@@ -352,7 +421,8 @@ export async function scanDownload(projectDir, { excludes = [] } = {}) {
 
   if (rootPkg && typeof rootPkg === 'object') {
     // X1+X3 依赖树：根=本地 package.json（不走网络，安装脚本经包图统一产出），
-    // 直接依赖（含 devDependencies，它们同样会被装）+2 层全部走 registry
+    // 直接依赖（含 devDependencies，它们同样会被装）+2 层全部走 registry；
+    // 有 lockfile 时按锁定版本解析，避免把 package.json 的范围解析成另一个版本。
     const name = rootPkg.name || path.basename(projectDir);
     const deps = { ...rootPkg.dependencies, ...rootPkg.devDependencies };
     const localMeta = {
@@ -361,7 +431,7 @@ export async function scanDownload(projectDir, { excludes = [] } = {}) {
       dependencies: deps,
       time: null,
     };
-    const nodes = await resolveGraph(name, localMeta, net);
+    const nodes = await resolveGraph(name, localMeta, net, { locks: await readNpmLocks(projectDir) });
     findings.push(...collectGraphFindings(nodes, name));
   }
 
@@ -372,66 +442,82 @@ export async function scanDownload(projectDir, { excludes = [] } = {}) {
   if (pw) warnings.push(pw);
   if (x2.skipped?.length) warnings.push(`X2 跳过大文件 ${x2.skipped.length} 个（>512KB 未扫描，外呼清单可能不全）`);
   findings.push(...await scanReadmeInjection(projectDir, ex));
-  return { findings, warnings };
+  return { findings, warnings, coverageGap: netGap(net) || (!rootPkg ? '没有有效 package.json，项目依赖未验证' : null) };
 }
 
-// 单包扫描（hook 用）：目标包本身 + 其依赖 2 层的 X1+X3
+// 单包扫描（hook 用）：目标包本身 + 其依赖 2 层的 X1+X3，按请求版本/范围解析
 export async function scanSinglePackage(name) {
   const findings = [];
   const warnings = [];
-  if (!NAME_RE.test(String(name))) {
+  const spec = parsePackageSpec(name);
+  if (!spec) {
     warnings.push(`无效包名 ${name}，跳过`);
-    return { findings, warnings };
+    return { findings, warnings, coverageGap: '不支持或无效的包来源，未验证' };
   }
   const net = newNet();
-  const nodes = await resolveGraph(name, null, net);
-  const root = nodes.get(name);
+  const nodes = await resolveGraph(spec.name, null, net, { range: spec.range });
+  const root = [...nodes.values()].find((node) => node.depth === 0);
   if (!root) {
     if (net.failures > 0) warnings.push(`registry 不可达，${name} 的 X1/X3 未跑`);
     else warnings.push(`registry 上查不到 ${name}`);
-    return { findings, warnings };
+    return { findings, warnings, coverageGap: `目标 ${name} 未解析，X1/X3 未验证` };
   }
-  findings.push(...collectGraphFindings(nodes, name));
+  findings.push(...collectGraphFindings(nodes, spec.name));
   finalizeNet(net, findings, warnings);
-  return { findings, warnings };
+  return { findings, warnings, coverageGap: netGap(net) };
 }
 
-// 纯函数（供 hook 与测试）：从 install/npx 命令解析包名列表
+/* ---------- hook 命令解析：包装前缀归一化 ---------- */
+
+// 纯函数（供 hook 与测试）：从 install/npx 命令解析包名（含 @版本/范围，解析阶段保留）。
 const VALUE_FLAGS = new Set(['--registry', '--tag', '--audit-level', '--before', '--scope', '--workspace', '--cpu', '--os', '--libc', '--cache', '--prefix', '--userconfig', '--fetch-retries', '-p', '--package']);
 const NPM_CMDS = new Set(['npm', 'npm.cmd', 'npm.exe']);
 const NPX_CMDS = new Set(['npx', 'npx.cmd', 'npx.exe']);
 const INSTALL_SUBS = new Set(['i', 'install', 'ci', 'add']);
+const SIMPLE_WRAPPERS = new Set(['sudo', 'env', 'time', 'nice', 'command', 'nohup', 'exec', 'builtin', 'timeout', 'xargs', 'stdbuf', 'setsid']);
+const SHELL_WRAPPERS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'cmd', 'cmd.exe', 'powershell', 'powershell.exe', 'pwsh', 'pwsh.exe']);
+const SUDO_VALUE_FLAGS = new Set(['-u', '--user', '-g', '--group', '-h', '--host', '-p', '--prompt', '-C', '--close-from', '-r', '--role', '-t', '--type', '-U', '--other-user']);
+const ENV_VALUE_FLAGS = new Set(['-u', '--unset', '-C', '--chdir']);
+const NICE_VALUE_FLAGS = new Set(['-n', '--adjustment']);
+const TIMEOUT_VALUE_FLAGS = new Set(['-k', '--kill-after', '-s', '--signal']);
+const XARGS_VALUE_FLAGS = new Set(['-n', '-L', '-P', '-s', '-d', '-E', '-I', '--max-args', '--max-lines', '--max-procs', '--max-chars', '--delimiter', '--eof', '--replace']);
+const STDBUF_VALUE_FLAGS = new Set(['-i', '-o', '-e', '--input', '--output', '--error']);
+const EXEC_VALUE_FLAGS = new Set(['-a']);
+const CUSTOM_INSTALL_FLAG_RE = /^--(?:prefix|workspace|registry|userconfig)(?:=|$)/;
+// 非 registry 来源：URL/git/file/tarball/本地路径/GitHub 简写
+const UNSUPPORTED_SOURCE_RE = /(?:https?:|git[+:]|file:|\.tgz$|^[./]|^[\w.-]+\/[\w.-]+$)/;
 
 function stripSpec(t) {
   if (t.includes('://') || t.startsWith('.') || t.startsWith('/') || t.endsWith('.tgz')) return null; // git/tarball/本地路径跳过
-  let name = t;
-  const i = name.startsWith('@') ? name.indexOf('@', 1) : name.indexOf('@');
-  if (i > 0) name = name.slice(0, i);
-  return NAME_RE.test(name) ? name : null;
+  return parsePackageSpec(t) ? String(t).replace(/^['"]|['"]$/g, '') : null;
 }
 
 // npx/npm exec 目标收集：第一个位置参数（bin 名）+ 全流任意位置的 -p/--package 值（值形式与 = 形式）。
+// 指定 --package 时位置参数是该包提供的 bin，不一定与 registry 包同名，因此只扫显式包。
 // -- 之后全是传给命令的参数，不再解析。
 function collectNpxTargets(tokens, start, out) {
   let took = false;
+  let positional = null;
+  const explicit = [];
   for (let j = start; j < tokens.length; j++) {
     const a = tokens[j];
     if (a === '--') break;
     if (a.startsWith('-')) {
       if (a === '-p' || a === '--package') {
         const v = tokens[j + 1];
-        if (v) { const n = stripSpec(v); if (n) out.push(n); }
+        if (v) { const n = stripSpec(v); if (n) explicit.push(n); }
         j++;
       } else if (a.startsWith('--package=') || a.startsWith('-p=')) {
         const n = stripSpec(a.slice(a.indexOf('=') + 1));
-        if (n) out.push(n);
+        if (n) explicit.push(n);
       } else if (VALUE_FLAGS.has(a)) {
         j++;
       }
       continue;
     }
-    if (!took) { const n = stripSpec(a); if (n) out.push(n); took = true; } // 只取第一个位置参数
+    if (!took) { positional = stripSpec(a); took = true; }
   }
+  out.push(...(explicit.length ? explicit : positional ? [positional] : []));
 }
 
 // npm install 分支：从 subcommand 后一位收集位置参数
@@ -464,4 +550,228 @@ export function parseInstallCommand(cmd) {
     }
   }
   return [...new Set(out)].slice(0, 20); // hook 防御：一次最多查 20 个包
+}
+
+/* ---------- hook 命令解析：shell 包装前缀与检测 ---------- */
+
+const isShellQuoted = (t) => (t.startsWith('"') && t.endsWith('"')) || (t.startsWith("'") && t.endsWith("'"));
+const unquote = (t) => (isShellQuoted(t) ? t.slice(1, -1) : t);
+const isAssignmentToken = (t) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(t);
+const commandName = (t) => unquote(t).toLowerCase();
+
+// 保留引号内空格（shell 包装的 -c 参数是一个整体），引号外的管道/连接符拆段。
+function shellTokens(input) {
+  const tokens = [];
+  const re = /"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^\s"']+/g;
+  let m;
+  while ((m = re.exec(String(input || '')))) tokens.push(m[0]);
+  return tokens;
+}
+
+function shellSegments(input) {
+  const segments = [];
+  let current = [];
+  const flush = () => { if (current.length) { segments.push(current); current = []; } };
+  for (const token of shellTokens(input)) {
+    if (isShellQuoted(token)) { current.push(token); continue; }
+    for (const part of token.split(/(\|\||&&|;|\|)/).filter(Boolean)) {
+      if (part === '&&' || part === '||' || part === ';' || part === '|') flush();
+      else current.push(part);
+    }
+  }
+  flush();
+  return segments;
+}
+
+function skipFlags(tokens, i, valueFlags) {
+  let j = i;
+  while (j < tokens.length) {
+    const a = unquote(tokens[j]);
+    if (a === '--') return j + 1;
+    if (!a.startsWith('-')) return j;
+    if (!isShellQuoted(tokens[j]) && valueFlags.has(a)) j += 2;
+    else j += 1;
+  }
+  return j;
+}
+
+// 在 shell 包装里找 -c / -Command / /c 后面的命令串
+function findShellCommand(tokens, head, index) {
+  const isCmd = head === 'cmd' || head === 'cmd.exe';
+  const isPwsh = head.startsWith('powershell') || head.startsWith('pwsh');
+  for (let j = index + 1; j < tokens.length; j++) {
+    const a = unquote(tokens[j]);
+    if (a === '--') break;
+    if (isCmd) {
+      if (/^\/[ck]$/i.test(a)) return { inner: tokens.slice(j + 1).map(unquote).join(' '), label: `${head} ${a}` };
+      continue;
+    }
+    if (isPwsh) {
+      if (/^(?:-command|-c|\/c|--command)$/i.test(a)) return { inner: tokens.slice(j + 1).map(unquote).join(' '), label: `${head} ${a}` };
+      continue;
+    }
+    if (/^-[^-]*c/.test(a)) return { inner: unquote(tokens[j + 1] || ''), label: `${head} ${a}` };
+  }
+  return null;
+}
+
+function npmSubcommandIndex(tokens) {
+  for (let i = 1; i < tokens.length; i++) {
+    const a = unquote(tokens[i]);
+    if (a === '--') return -1;
+    if (!a.startsWith('-')) return i;
+    if (VALUE_FLAGS.has(a)) i += 1;
+  }
+  return -1;
+}
+
+function collectUnsupported(tokens, from) {
+  const out = [];
+  for (let i = from; i < tokens.length; i++) {
+    const a = unquote(tokens[i]);
+    if (a === '--') break;
+    if (a.startsWith('-')) { if (VALUE_FLAGS.has(a)) i += 1; continue; }
+    if (UNSUPPORTED_SOURCE_RE.test(a)) out.push(a);
+  }
+  return out;
+}
+
+function classifyPackageManager(tokens) {
+  const head = commandName(tokens[0]);
+  if (NPX_CMDS.has(head)) {
+    if (tokens.some((t) => CUSTOM_INSTALL_FLAG_RE.test(unquote(t)))) {
+      return { specs: [], projectScan: false, gaps: ['命令含自定义安装配置（--registry/--prefix/--workspace/--userconfig），未验证'] };
+    }
+    const unsupported = collectUnsupported(tokens, 1);
+    if (unsupported.length) return { specs: [], projectScan: false, gaps: [`安装来源未支持：${unsupported.join('、')}`] };
+    const specs = parseInstallCommand(tokens.join(' '));
+    if (specs.length >= 20) return { specs: [], projectScan: false, gaps: ['一次安装目标达到上限，请分批检查'] };
+    if (!specs.length) return { specs: [], projectScan: false, gaps: ['npx 未解析到目标包，未验证'] };
+    return { specs, projectScan: false, gaps: [] };
+  }
+  if (NPM_CMDS.has(head)) {
+    const idx = npmSubcommandIndex(tokens);
+    if (idx === -1) return null;
+    const verb = commandName(tokens[idx]);
+    if (!INSTALL_SUBS.has(verb) && verb !== 'exec' && verb !== 'x') return null;
+    if (tokens.some((t) => CUSTOM_INSTALL_FLAG_RE.test(unquote(t)))) {
+      return { specs: [], projectScan: false, gaps: ['命令含自定义安装配置（--registry/--prefix/--workspace/--userconfig），未验证'] };
+    }
+    const unsupported = collectUnsupported(tokens, idx + 1);
+    if (unsupported.length) return { specs: [], projectScan: false, gaps: [`安装来源未支持：${unsupported.join('、')}`] };
+    const specs = parseInstallCommand(tokens.join(' '));
+    if (specs.length >= 20) return { specs: [], projectScan: false, gaps: ['一次安装目标达到上限，请分批检查'] };
+    if (!specs.length) {
+      if (verb === 'exec' || verb === 'x') return { specs: [], projectScan: false, gaps: ['npm exec 未解析到目标包，未验证'] };
+      return { specs: [], projectScan: true, gaps: [] };
+    }
+    return { specs, projectScan: false, gaps: [] };
+  }
+  if (head === 'pnpm' || head === 'yarn') {
+    const idx = npmSubcommandIndex(tokens);
+    const verb = idx === -1 ? '' : commandName(tokens[idx]);
+    if (!['add', 'install', 'i', 'dlx', 'exec'].includes(verb)) return null;
+    return { specs: [], projectScan: false, gaps: [`${head} 安装命令未验证（仅支持 npm/npx）`] };
+  }
+  return null;
+}
+
+function analyzeSegment(tokens, depth = 0) {
+  let i = 0;
+  const prefixes = [];
+  while (i < tokens.length) {
+    const head = commandName(tokens[i]);
+    if (isAssignmentToken(tokens[i])) { prefixes.push(tokens[i].split('=')[0] + '=…'); i += 1; continue; }
+    if (SIMPLE_WRAPPERS.has(head)) {
+      prefixes.push(head);
+      i += 1;
+      if (head === 'env') {
+        while (i < tokens.length && isAssignmentToken(tokens[i])) { prefixes.push(tokens[i].split('=')[0] + '=…'); i += 1; }
+        if (unquote(tokens[i] || '') === '-S' || unquote(tokens[i] || '') === '--split-string') {
+          const child = analyzeCommandString(unquote(tokens[i + 1] || ''), depth + 1);
+          for (const task of child) task.gaps.push('命令经 env -S 包装执行，包装上下文未经核实');
+          return child;
+        }
+        i = skipFlags(tokens, i, ENV_VALUE_FLAGS);
+      } else if (head === 'sudo') {
+        i = skipFlags(tokens, i, SUDO_VALUE_FLAGS);
+      } else if (head === 'nice') {
+        i = skipFlags(tokens, i, NICE_VALUE_FLAGS);
+      } else if (head === 'timeout') {
+        i = skipFlags(tokens, i, TIMEOUT_VALUE_FLAGS);
+        if (i < tokens.length) i += 1; // timeout 的第一个位置参数是 DURATION，之后才是被包装命令
+      } else if (head === 'xargs') {
+        i = skipFlags(tokens, i, XARGS_VALUE_FLAGS);
+      } else if (head === 'stdbuf') {
+        i = skipFlags(tokens, i, STDBUF_VALUE_FLAGS);
+      } else if (head === 'exec') {
+        i = skipFlags(tokens, i, EXEC_VALUE_FLAGS);
+      } else {
+        i = skipFlags(tokens, i, new Set());
+      }
+      continue;
+    }
+    if (SHELL_WRAPPERS.has(head)) {
+      const found = findShellCommand(tokens, head, i);
+      if (!found || !found.inner) return [];
+      const child = analyzeCommandString(found.inner, depth + 1);
+      if (child.length) {
+        const labels = [...prefixes, found.label].filter(Boolean).join('、');
+        for (const task of child) task.gaps.push(`命令经 ${labels} 包装执行，包装上下文（环境/工作目录）未经核实`);
+      }
+      return child;
+    }
+    break;
+  }
+  if (i >= tokens.length) return [];
+  const task = classifyPackageManager(tokens.slice(i));
+  if (!task) return [];
+  if (prefixes.length) task.gaps.push(`命令带前缀（${prefixes.join('、')}），提权/包装上下文未经核实`);
+  return [task];
+}
+
+function analyzeCommandString(input, depth = 0) {
+  if (depth > 4) return [];
+  const tasks = [];
+  for (const segment of shellSegments(input)) tasks.push(...analyzeSegment(segment, depth));
+  return tasks;
+}
+
+// Hook 的有限命令契约：包装前缀/复杂 shell/自定义来源明确标为未验证，不默默放行。
+export async function inspectInstallCommand(command, { cwd = process.cwd(), scanPackage = scanSinglePackage, scanProject = scanDownload } = {}) {
+  const cmd = String(command);
+  const tasks = [];
+  let dirChange = false;
+  for (const segment of shellSegments(cmd)) {
+    const first = segment.map(unquote).find((t) => !isAssignmentToken(t) && !t.startsWith('-'));
+    if (first && /^(?:cd|pushd)$/i.test(first)) dirChange = true;
+    tasks.push(...analyzeSegment(segment, 0));
+  }
+  if (!tasks.length) return { applicable: false, findings: [], warnings: [], coverageGap: null };
+
+  const gaps = [];
+  if (dirChange) gaps.push('命令包含 cd/pushd 目录切换，安装实际工作目录未验证');
+  if (/[$`]/.test(cmd)) gaps.push('命令含 shell 变量/命令替换，安装目标可能不是静态可解析的，未验证');
+
+  const findings = [];
+  const warnings = [];
+  for (const task of tasks) {
+    gaps.push(...task.gaps);
+    if (task.projectScan) {
+      if (dirChange) continue; // cd 之后的项目目录无法可信解析
+      const r = await scanProject(cwd);
+      findings.push(...r.findings);
+      warnings.push(...r.warnings);
+      if (r.coverageGap) gaps.push(r.coverageGap);
+      continue;
+    }
+    if (!task.specs.length) continue;
+    const results = await Promise.all(task.specs.map((spec) => scanPackage(spec)));
+    for (const r of results) {
+      findings.push(...r.findings);
+      warnings.push(...r.warnings);
+      if (r.coverageGap) gaps.push(r.coverageGap);
+    }
+  }
+  return { applicable: true, findings, warnings, coverageGap: gaps.length ? [...new Set(gaps)].join('；') : null };
 }

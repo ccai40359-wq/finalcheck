@@ -46,7 +46,7 @@ test('agent-tools: read_playbook 走注册表（中文类目也认）', async ()
   assert.match(r.content, /越权|IDOR/);
 });
 
-test('agent-tools: probe_target 对靶子复现无守卫接口与 CORS 反射', async (t) => {
+test('agent-tools: probe_target 返回匿名可访问线索与 CORS 反射', async (t) => {
   await new Promise((res) => server.listen(0, '127.0.0.1', res));
   t.after(() => server.close());
   const base = 'http://127.0.0.1:' + server.address().port;
@@ -55,7 +55,8 @@ test('agent-tools: probe_target 对靶子复现无守卫接口与 CORS 反射', 
   const out = await tools.probe_target({ url: base });
   assert.equal(out.target, base);
   const users = out.results.find((x) => x.path === '/api/users');
-  assert.equal(users.reproduced, true);
+  assert.equal(users.reproduced, false);
+  assert.equal(users.accessible, true);
   const cors = out.results.find((x) => x.kind === 'cors');
   assert.equal(cors.reflected, true);
   assert.deepEqual(perms.noted, [base]); // 口头确认语义：只记账

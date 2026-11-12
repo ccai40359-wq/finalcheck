@@ -121,7 +121,7 @@ test('S1 用 isGuardName 重判 middlewares：author/sessionStore/loginLimiter/a
   assert.ok(r.findings.every((f) => f.rule === 'S1.no-guard' && f.severity === 'high' && f.force === 'card'));
 });
 
-test('S1 对真实 express 路由也重判：extract-routes 的 hasGuard 假阳性会被推翻', async (t) => {
+test('Express 提取器与 S1 都拒绝只调用 next 的伪守卫', async (t) => {
   const dir = await tmpDir(t);
   await writeFiles(dir, {
     'app.js': [
@@ -140,8 +140,8 @@ test('S1 对真实 express 路由也重判：extract-routes 的 hasGuard 假阳�
   });
   const raw = await extractRoutes(dir);
   assert.ok(raw.routes.length >= 4);
-  // 旧提取器仍会把 auth/session/login 子串当守卫；S1 不能再信这个布尔值。
-  assert.ok(raw.routes.every((r) => r.hasGuard === true), 'fixture 应复现旧假阳性');
+  // 已知本地空守卫连提取结果也不标成有保护；S1 仍独立重判。
+  assert.ok(raw.routes.every((r) => r.hasGuard === false), '空守卫不能显示成已有保护');
   const r = await checkAuthCoverage(raw);
   assert.deepEqual(r.findings.map((f) => f.snippet).sort(), [
     'GET /authors', 'GET /login-attempt', 'GET /route-table', 'GET /session-store',

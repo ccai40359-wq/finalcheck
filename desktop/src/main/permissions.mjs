@@ -20,6 +20,11 @@ const onceGrants = new Map();    // tool → Set(pattern)：hook ask 获批后�
 
 // pending 审批：callId → { resolve, tool, summary, timer }
 const pending = new Map();
+const scopeKey = (tool, scope = {}) => JSON.stringify([
+  scope?.sessionId || null,
+  scope?.projectPath ? path.resolve(scope.projectPath) : null,
+  String(tool || '')
+]);
 
 let emitApproval = null;          // (payload) => void；null = 无 UI 通道
 let approvalTimeoutMs = 120000;   // 120s 无应答 = denied
@@ -50,12 +55,13 @@ export function setApprovalTimeout(ms) {
 export function setMode(m) { permissionMode = m === 'full' ? 'full' : 'ask'; return permissionMode; }
 export function getMode() { return permissionMode; }
 
-export async function requestApproval({ callId, tool, summary, sessionId = null } = {}) {
+export async function requestApproval({ callId, tool, summary, target = null, sessionId = null, projectPath = null } = {}) {
   const id = (typeof callId === 'string' && callId) ? callId : `ap-${randomUUID()}`;
   const toolName = String(tool || 'unknown').slice(0, 60);
-  const s = String(summary ?? '').slice(0, 500);
+  const s = String(summary ?? '').slice(0, toolName === 'quality_gate' ? 20000 : 500);
   // 一次性免审：hook ask 已人工批准后由工具层下发；命中即放行且不再弹条
-  if (consumeGrant(toolName, s)) return 'allowed-once';
+  const scope = { sessionId, projectPath };
+  if (consumeGrant(toolName, target ?? s, scope)) return 'allowed-once';
   // PermissionRequest hook：策略层先表态；无 hook / 无明确 allow|deny 时回原审批流程
   if (permissionHook) {
     try {
@@ -69,7 +75,7 @@ export async function requestApproval({ callId, tool, summary, sessionId = null 
   return new Promise((resolve) => {
     if (!emitApproval) { resolve('rejected'); return; } // 没有 UI 可问 → 拒绝
     const entry = {
-      tool: toolName, summary: s,
+      tool: toolName, summary: s, scope, target,
       resolve: (d) => resolve(VALID_DECISIONS.has(d) ? d : 'rejected'),
       timer: null
     };
@@ -99,9 +105,10 @@ export function decide(callId, decision) {
   const d = VALID_DECISIONS.has(decision) ? decision : 'rejected'; // 非法值 = denied
   if (d === 'always-session') {
     // 本会话总是允许：记录参数模式（run_command 记命令前缀，其余工具记原样摘要）
-    const pattern = entry.tool === 'run_command' ? commandPrefix(entry.summary) : entry.summary;
-    let set = sessionAllows.get(entry.tool);
-    if (!set) { set = new Set(); sessionAllows.set(entry.tool, set); }
+    const pattern = entry.target ?? (entry.tool === 'run_command' ? commandPrefix(entry.summary) : entry.summary);
+    const key = scopeKey(entry.tool, entry.scope);
+    let set = sessionAllows.get(key);
+    if (!set) { set = new Set(); sessionAllows.set(key, set); }
     set.add(pattern);
   }
   entry.resolve(d);
@@ -112,31 +119,34 @@ export function decide(callId, decision) {
  * 一次性免审券：hook 的 PreToolUse 返回 ask 且用户批准后，由工具包装层下发；
  * 工具内部的 requestApproval 检查前 consumeGrant 命中即视为已批准，避免同一调用弹第二次审批条。
  */
-export function grantOnce(tool, target) {
+export function grantOnce(tool, target, scope = {}) {
   const toolName = String(tool || '');
   if (!toolName) return false;
-  let set = onceGrants.get(toolName);
-  if (!set) { set = new Set(); onceGrants.set(toolName, set); }
+  const key = scopeKey(toolName, scope);
+  let set = onceGrants.get(key);
+  if (!set) { set = new Set(); onceGrants.set(key, set); }
   set.add(String(target ?? ''));
   return true;
 }
 
 /** 消费一次性免审券；只有第一次命中返回 true */
-export function consumeGrant(tool, target) {
+export function consumeGrant(tool, target, scope = {}) {
   const toolName = String(tool || '');
   const key = String(target ?? '');
-  const set = onceGrants.get(toolName);
+  const ledgerKey = scopeKey(toolName, scope);
+  const set = onceGrants.get(ledgerKey);
   if (!set || !set.has(key)) return false;
   set.delete(key);
-  if (!set.size) onceGrants.delete(toolName);
+  if (!set.size) onceGrants.delete(ledgerKey);
   return true;
 }
 
 /** 该工具该参数模式是否已被 always-session 放行（一次性免审券先查，消费交给 consumeGrant） */
-export function sessionAllowed(tool, pattern) {
-  const set = sessionAllows.get(String(tool || ''));
+export function sessionAllowed(tool, pattern, scope = {}) {
+  const key = scopeKey(tool, scope);
+  const set = sessionAllows.get(key);
   if (!!set && set.has(String(pattern ?? ''))) return true;
-  const grants = onceGrants.get(String(tool || ''));
+  const grants = onceGrants.get(key);
   return !!grants && grants.has(String(pattern ?? ''));
 }
 

@@ -373,7 +373,7 @@ export function normalizeRuntime(runtime = null) {
   const agg = (v) => {
     if (!v) return zero();
     if (Array.isArray(v)) {
-      const rows = v.filter((r) => r && typeof r === 'object');
+      const rows = v.filter((r) => r && typeof r === 'object' && r.ok !== false && Number(r.samples) > 0);
       return {
         count: rows.length,
         ms: rows.reduce((s, r) => s + (Number(r.ms) || 0), 0),
@@ -382,6 +382,7 @@ export function normalizeRuntime(runtime = null) {
       };
     }
     if (typeof v === 'object') {
+      if (v.ok === false || !(Number(v.samples) > 0)) return zero();
       return { count: Number(v.count) || 0, ms: Number(v.ms) || 0, samples: Number(v.samples) || 0, at: Number(v.at) || 0 };
     }
     return zero();
@@ -422,10 +423,13 @@ function evidenceOf(name, dim, sources, runtime = null) {
   });
   const dynamicFullOrStatic = (fullReason) => {
     if (!dynamicAuth) return { level: 'static-only', reason: '仅静态（未授权压测）', dynamic: dynamicBlock() };
-    if (!rt.measured) {
+    const hasRequiredEvidence = name === '性能' || name === '运行稳定性' || name === '鲁棒性'
+      ? rt.stress.count > 0 && rt.stress.samples > 0
+      : rt.probe.count > 0 && rt.probe.samples > 0;
+    if (!hasRequiredEvidence) {
       return {
         level: 'static-only',
-        reason: '仅静态（已声明授权，但本轮没有 probe/stress 实测记录）',
+        reason: '仅静态（已声明授权，但本轮没有该维度所需的有效 probe/stress 实测记录）',
         dynamic: dynamicBlock(),
       };
     }

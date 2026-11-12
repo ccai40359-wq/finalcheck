@@ -5,6 +5,7 @@ import { stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
+import { createHash } from 'node:crypto';
 import { loadCatalog, readPlaybook, catalogSummary } from '../../../src/playbooks.mjs';
 import { readFileTool, editFileTool, writeFileTool } from '../../../src/fs-tools.mjs';
 import { assertPathAllowed, assertCwd, checkCommand, scrubEnv } from './policy.mjs';
@@ -243,7 +244,12 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
     }
     return String(args?.path ?? '');
   };
-  const preApproved = (tool, target) => !!permissions?.consumeGrant?.(tool, target);
+  const approvalScope = { sessionId, projectPath };
+  const evidenceSince = Date.now();
+  const preApproved = (tool, target) => !!permissions?.consumeGrant?.(tool, target, approvalScope);
+  const checkedDir = (raw, tool) => policy
+    ? assertPathAllowed(policy, path.resolve(String(raw || projectPath || '')), { tool })
+    : { ok: true, path: path.resolve(String(raw || projectPath || '')) };
 
   // 11 维计划解析（App 侧统一入口）：
   //   1) 项目根有 finalcheck.profile.json → 用它（每维档位 + sources）
@@ -271,13 +277,15 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
     const explicit = rawSources ? { ...rawSources, ...(rawSources.code === true ? { code: '.' } : {}) } : null;
     const profile = explicit ? { ...base, sources: { ...(base.sources || {}), ...explicit } } : base;
     const url = profile?.sources?.url || null;
-    const runtime = dynamicRuntime({ sinceMs: Date.now() - 2 * 60 * 60 * 1000, url });
+    const runtime = dynamicRuntime({ sinceMs: evidenceSince, url, ...approvalScope });
     return { profile, runtime, profileSource: base.source, explicitTier, hasProfile };
   };
 
   const tools = {
     audit_project: async (args) => {
-      const dir = path.resolve(String(args?.dir || projectPath || ''));
+      const gate = checkedDir(args?.dir, 'audit_project');
+      if (!gate.ok) return policyDenyResult(gate);
+      const dir = gate.path;
       const { profile, runtime, profileSource, explicitTier, hasProfile } = await resolveAuditPlan(dir, args);
       // fail-closed：主 agent 没拿到显式档位、项目里也没有 profile → 不猜，退回让模型先问用户。
       // 返回结构化错误（而非抛异常），模型能直接看到 needAsk/dimensions/levels 去组织提问。
@@ -292,7 +300,7 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
       }
       const { audit } = await import(engineUrl('src/audit.mjs'));
       const r = await audit(dir, { tier: explicitTier, interactive: true, runTests: false, profile, runtime });
-      recordAudit(dir, r).catch(() => {}); // 体检成功落项目档案；失败不影响工具结果
+      if (policy?.mode !== 'readonly') recordAudit(dir, r).catch(() => {});
       return {
         verdict: r.conclusion.verdict,
         reason: r.conclusion.reason,
@@ -303,26 +311,38 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
         planSource: profileSource, // finalcheck.profile.json / tier
         measured: { probe: runtime.probe.length, stress: runtime.stress.length },
         findings: r.findings.slice(0, 30),
+        warnings: r.warnings,
+        findingsTotal: r.findings.length,
+        findingsTruncated: r.findings.length > 30,
       };
     },
 
     // 质量命令闸：按项目根 finalcheck.quality.json 跑 lint / typecheck / test / bench，
     // 执行前一次性授权（和 run_command 同一套审批），避免「体检时偷偷执行项目代码」
     quality_gate: async (args) => {
+      const gate = checkedDir(args?.dir, 'quality_gate');
+      if (!gate.ok) return policyDenyResult(gate);
+      if (policy?.mode === 'readonly') return policyDenyResult({ reason: '只读模式禁止执行质量命令' });
       const { checkQuality, hasQualityConfig, loadQualityConfig, normalizeQualityConfig, QUALITY_FILE } = await import(engineUrl('src/checks/quality.mjs'));
-      const dir = path.resolve(String(args?.dir || projectPath || ''));
+      const dir = gate.path;
       if (!(await hasQualityConfig(dir))) {
         return { error: `项目根没有 ${QUALITY_FILE}：先声明要跑的命令与阈值（checks: [{id,command,maxMs,expect,minPercent}]）` };
       }
       const cfg = await loadQualityConfig(dir);
       const checks = normalizeQualityConfig(cfg);
       if (!checks.length) return { error: `${QUALITY_FILE} 里没有可执行的 checks` };
+      if (policy) for (const check of checks) {
+        const commandGate = checkCommand(policy, check.command);
+        if (!commandGate.ok) return policyDenyResult(commandGate);
+      }
       const summary = checks.map((c) => `· ${c.id}: ${c.command}${c.maxMs ? `（≤${c.maxMs}ms）` : ''}`).join('\n');
-      if (!preApproved('quality_gate', dir) && !permissions?.sessionAllowed?.('quality_gate', dir)) {
-        const decision = await permissions?.requestApproval?.({ tool: 'run_command', summary: `质量命令闸（${dir}）：\n${summary}`, sessionId });
+      if (summary.length + dir.length > 19000) return { error: '质量命令过长，无法完整展示审批内容，请减少单次检查项' };
+      const target = `${dir}#${createHash('sha256').update(JSON.stringify(checks)).digest('hex')}`;
+      if (!preApproved('quality_gate', target) && !permissions?.sessionAllowed?.('quality_gate', target, approvalScope)) {
+        const decision = await permissions?.requestApproval?.({ tool: 'quality_gate', target, summary: `质量命令闸（${dir}）：\n${summary}`, ...approvalScope });
         if (decision !== 'allowed-once' && decision !== 'always-session') return { error: '用户拒绝了质量闸执行' };
       }
-      const r = await checkQuality(dir, { tier: args?.tier || 'L2', run: true, repeat: args?.repeat });
+      const r = await checkQuality(dir, { tier: args?.tier || 'L2', run: true, repeat: args?.repeat, config: cfg });
       return { dir, runs: r.runs, findings: r.findings.slice(0, 30), warnings: r.warnings, coverageGap: r.coverageGap };
     },
 
@@ -341,8 +361,10 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
     },
 
     download_gate: async (args) => {
+      const gate = checkedDir(args?.dir, 'download_gate');
+      if (!gate.ok) return policyDenyResult(gate);
       const { scanDownload } = await import(engineUrl('src/download-gate.mjs'));
-      return scanDownload(args.dir, { excludes: [] });
+      return scanDownload(gate.path, { excludes: [] });
     },
 
     probe_target: async (args) => {
@@ -350,7 +372,7 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
       const { probeTarget } = await import(engineUrl('src/dynamic/probe.mjs'));
       const t0 = Date.now();
       const out = await probeTarget(args.url, { requests: args?.requests });
-      try { recordProbe(args.url, { ms: Date.now() - t0, ok: !out?.error, samples: 1 }); } catch { /* 记账失败不影响探测 */ }
+      try { recordProbe(args.url, { ...approvalScope, ms: Date.now() - t0, ok: Number(out?.samples) > 0, samples: Number(out?.samples) || 0 }); } catch { /* 记账失败不影响探测 */ }
       return out;
     },
 
@@ -360,17 +382,19 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
       const { stressTarget } = await import(engineUrl('src/dynamic/stress.mjs'));
       const t0 = Date.now();
       const out = await stressTarget(args.url, { duration: args.duration ?? 10, connections: args.connections ?? 10 });
-      try { recordStress(args.url, { ms: Date.now() - t0, ok: !out?.error, samples: Number(out?.requests) || Number(out?.samples) || 0 }); } catch { /* 记账失败不影响压测 */ }
+      try { recordStress(args.url, { ...approvalScope, ms: Date.now() - t0, ok: Number(out?.samples) > 0 && !out?.errors, samples: Number(out?.samples) || 0 }); } catch { /* 记账失败不影响压测 */ }
       return out;
     },
 
     get_report: async (args) => {
+      const gate = checkedDir(args?.dir, 'get_report');
+      if (!gate.ok) return policyDenyResult(gate);
       const { renderReport } = await import(engineUrl('src/report.mjs'));
       const { audit } = await import(engineUrl('src/audit.mjs'));
-      const dir = path.resolve(String(args?.dir || projectPath || ''));
+      const dir = gate.path;
       const { profile, runtime } = await resolveAuditPlan(dir, args);
       const r = await audit(dir, { tier: args.tier ?? null, interactive: true, runTests: false, profile, runtime });
-      recordAudit(dir, r).catch(() => {}); // 同 audit_project 落档案
+      if (policy?.mode !== 'readonly') recordAudit(dir, r).catch(() => {});
       return renderReport(r);
     },
 
@@ -405,8 +429,8 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
         a = { ...a, path: check.path };
       }
       const abs = path.resolve(String(a?.path || ''));
-      if (!preApproved('edit_file', abs) && !permissions?.sessionAllowed?.('edit_file', abs)) {
-        const decision = await permissions?.requestApproval?.({ tool: 'edit_file', summary: abs, sessionId });
+      if (!preApproved('edit_file', abs) && !permissions?.sessionAllowed?.('edit_file', abs, approvalScope)) {
+        const decision = await permissions?.requestApproval?.({ tool: 'edit_file', summary: abs, ...approvalScope });
         if (decision !== 'allowed-once' && decision !== 'always-session') return { error: '用户拒绝了本次文件修改' };
       }
       return editFileTool(a);
@@ -420,8 +444,8 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
         a = { ...a, path: check.path };
       }
       const abs = path.resolve(String(a?.path || ''));
-      if (!preApproved('write_file', abs) && !permissions?.sessionAllowed?.('write_file', abs)) {
-        const decision = await permissions?.requestApproval?.({ tool: 'write_file', summary: abs, sessionId });
+      if (!preApproved('write_file', abs) && !permissions?.sessionAllowed?.('write_file', abs, approvalScope)) {
+        const decision = await permissions?.requestApproval?.({ tool: 'write_file', summary: abs, ...approvalScope });
         if (decision !== 'allowed-once' && decision !== 'always-session') return { error: '用户拒绝了本次文件写入' };
       }
       return writeFileTool(a);
@@ -442,6 +466,10 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
     },
 
     remember_project: async (args) => {
+      if (policy) {
+        const check = assertPathAllowed(policy, path.join(projectPath || '', 'AGENTS.md'), { write: true, tool: 'remember_project' });
+        if (!check.ok) return policyDenyResult(check);
+      }
       const { rememberProject } = await import('./project-memory.mjs');
       try {
         return await rememberProject(projectPath, args?.fact);
@@ -507,9 +535,9 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
         if (!cmdCheck.ok) return policyDenyResult(cmdCheck);
       }
       const pattern = typeof permissions?.commandPrefix === 'function' ? permissions.commandPrefix(cmd) : cmd;
-      if (!preApproved('run_command', pattern) && !permissions?.sessionAllowed?.('run_command', pattern)) {
+      if (!preApproved('run_command', pattern) && !permissions?.sessionAllowed?.('run_command', pattern, approvalScope)) {
         if (toolSignal?.aborted) return CANCELLED_RESULT();
-        const decision = await permissions?.requestApproval?.({ tool: 'run_command', summary: cmd.slice(0, 300), sessionId });
+        const decision = await permissions?.requestApproval?.({ tool: 'run_command', summary: cmd.slice(0, 300), ...approvalScope });
         if (toolSignal?.aborted) return CANCELLED_RESULT(); // 审批期间被停止：命令不执行
         if (decision !== 'allowed-once' && decision !== 'always-session') {
           return { error: '用户拒绝了本次命令执行' };
@@ -572,12 +600,12 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
         if (!APPROVAL_TOOLS.has(name) || typeof permissions?.requestApproval !== 'function') {
           return { error: 'hook 要求人工确认，但当前工具无审批通道', deniedBy: 'hook', reason };
         }
-        const decision = await permissions.requestApproval({ tool: name, summary: `Hook 要求确认（${name}）：${reason}`, sessionId });
+        const decision = await permissions.requestApproval({ tool: name, summary: `Hook 要求确认（${name}）：${reason}`, ...approvalScope });
         if (decision !== 'allowed-once' && decision !== 'always-session') {
           return { error: '用户拒绝了 hook 要求的人工确认', deniedBy: 'hook', reason };
         }
         // 人工已批准：给工具内部审批检查发一张一次性免审券，避免同一个调用弹第二次条
-        permissions?.grantOnce?.(name, approvalTarget(name, callArgs));
+        permissions?.grantOnce?.(name, approvalTarget(name, callArgs), approvalScope);
       }
 
       let result;
@@ -588,7 +616,7 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
       }
       // 兜底回收：工具内部没消费掉的一次性免审券不能跨调用遗留
       if (APPROVAL_TOOLS.has(name)) {
-        try { permissions?.consumeGrant?.(name, approvalTarget(name, callArgs)); } catch { /* 忽略 */ }
+        try { permissions?.consumeGrant?.(name, approvalTarget(name, callArgs), approvalScope); } catch { /* 忽略 */ }
       }
       try {
         const failed = !!result?.error;

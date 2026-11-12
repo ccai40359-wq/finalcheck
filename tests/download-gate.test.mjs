@@ -117,22 +117,22 @@ test('X2: whitelist matches exact domain or subdomain, never substrings (P1#7)',
 
 /* ---------- hook 命令解析（纯函数） ---------- */
 
-test('parseInstallCommand: npm install extracts package names, strips specs/flags', () => {
-  assert.deepEqual(parseInstallCommand('npm install foo bar@1.2.3 @scope/baz@latest -D --no-audit --save-exact'), ['foo', 'bar', '@scope/baz']);
+test('parseInstallCommand: npm install preserves requested version specs and strips flags', () => {
+  assert.deepEqual(parseInstallCommand('npm install foo bar@1.2.3 @scope/baz@latest -D --no-audit --save-exact'), ['foo', 'bar@1.2.3', '@scope/baz@latest']);
   assert.deepEqual(parseInstallCommand('npm i -g typescript'), ['typescript']);
   assert.deepEqual(parseInstallCommand('npm install --registry http://reg.internal.example foo'), ['foo']);
 });
 
 test('parseInstallCommand: npx takes the first positional arg only', () => {
   assert.deepEqual(parseInstallCommand('npx -y malicious-thing --port 3000'), ['malicious-thing']);
-  assert.deepEqual(parseInstallCommand('npx --package=left-pad hello-bin'), ['left-pad', 'hello-bin']);
+  assert.deepEqual(parseInstallCommand('npx --package=left-pad hello-bin'), ['left-pad']);
 });
 
 test('parseInstallCommand: npx -p/--package values are must-scan targets (P0-2)', () => {
-  assert.deepEqual(parseInstallCommand('npx -p malicious-pkg bin-here'), ['malicious-pkg', 'bin-here']);
-  assert.deepEqual(parseInstallCommand('npx --package left-pad hello-bin'), ['left-pad', 'hello-bin']);
+  assert.deepEqual(parseInstallCommand('npx -p malicious-pkg bin-here'), ['malicious-pkg']);
+  assert.deepEqual(parseInstallCommand('npx --package left-pad hello-bin'), ['left-pad']);
   assert.deepEqual(parseInstallCommand('npx --package=only-pkg'), ['only-pkg']);
-  assert.deepEqual(parseInstallCommand('npx -p @scope/evil@1.0.0 run'), ['@scope/evil', 'run']);
+  assert.deepEqual(parseInstallCommand('npx -p @scope/evil@1.0.0 run'), ['@scope/evil@1.0.0']);
 });
 
 test('parseInstallCommand: npm flags before the subcommand no longer hide packages (P1#5)', () => {
@@ -144,7 +144,7 @@ test('parseInstallCommand: npm flags before the subcommand no longer hide packag
 test('parseInstallCommand: npm exec / npm x behave like npx (P1#6)', () => {
   assert.deepEqual(parseInstallCommand('npm exec some-tool -- --port 3000'), ['some-tool']);
   assert.deepEqual(parseInstallCommand('npm x evil-bin'), ['evil-bin']);
-  assert.deepEqual(parseInstallCommand('npm exec --package=left-pad hello-bin'), ['left-pad', 'hello-bin']);
+  assert.deepEqual(parseInstallCommand('npm exec --package=left-pad hello-bin'), ['left-pad']);
 });
 
 test('parseInstallCommand: no package names -> empty (npm ci, git clone, plain git)', () => {

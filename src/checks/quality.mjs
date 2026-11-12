@@ -108,10 +108,10 @@ export function normalizeQualityConfig(cfg) {
  * @param {{tier?:string, run?:boolean, runner?:Function, repeat?:number}} opts run=false 时只报 coverageGap（不执行）；
  *        repeat 1–5 覆盖配置里的 repeat，默认 1（此时输出与旧版逐字段一致）
  */
-export async function checkQuality(projectDir, { tier, run = true, runner = runShell, repeat } = {}) {
+export async function checkQuality(projectDir, { tier, run = true, runner = runShell, repeat, config } = {}) {
   const findings = [];
   const warnings = [];
-  const raw = await loadQualityConfig(projectDir);
+  const raw = config === undefined ? await loadQualityConfig(projectDir) : config;
   if (!raw) return { checkId: 'Q2', findings, coverageGap: `未找到 ${QUALITY_FILE}（质量命令闸未启用）`, warnings };
   const checks = normalizeQualityConfig(raw);
   if (!checks.length) return { checkId: 'Q2', findings, coverageGap: `${QUALITY_FILE} 里没有可执行的 checks`, warnings };
@@ -165,21 +165,32 @@ export async function checkQuality(projectDir, { tier, run = true, runner = runS
     }
     if (c.maxMs && r.ms > c.maxMs) {
       runRecord.slow = true;
-      push(`Q2.${c.id}-slow`, 'medium', `${r.ms}ms > ${c.maxMs}ms`, `${c.id} 超过耗时阈值：实测 ${r.ms}ms，阈值 ${c.maxMs}ms`);
+      if (c.optional) warnings.push(`${c.id} 超过耗时阈值（可选）：${r.ms}ms > ${c.maxMs}ms`);
+      else push(`Q2.${c.id}-slow`, 'medium', `${r.ms}ms > ${c.maxMs}ms`, `${c.id} 超过耗时阈值：实测 ${r.ms}ms，阈值 ${c.maxMs}ms`);
     }
     if (c.expect) {
       let re = null;
-      try { re = new RegExp(c.expect); } catch { warnings.push(`${c.id} 的 expect 不是合法正则：${c.expect}`); }
+      try { re = new RegExp(c.expect); } catch {
+        if (c.optional) warnings.push(`${c.id} 的 expect 不是合法正则：${c.expect}`);
+        else push(`Q2.${c.id}-expect-invalid`, 'high', c.expect, '必需质量检查的 expect 正则无效');
+      }
       if (re && !re.test(`${r.out}\n${r.err}`)) {
         runRecord.expectOk = false;
-        push(`Q2.${c.id}-expect`, 'medium', c.expect.slice(0, 60), `${c.id} 输出里没有匹配 /${c.expect}/（命令成功但没看到期望的指标）`);
+        if (c.optional) warnings.push(`${c.id} 输出未匹配期望（可选）：/${c.expect}/`);
+        else push(`Q2.${c.id}-expect`, 'medium', c.expect.slice(0, 60), `${c.id} 输出里没有匹配 /${c.expect}/（命令成功但没看到期望的指标）`);
       } else if (re) runRecord.expectOk = true;
     }
     if (c.minPercent) {
       const pct = parseCoverage(`${r.out}\n${r.err}`);
       runRecord.coverage = pct;
-      if (pct == null) warnings.push(`${c.id} 没能从输出解析出覆盖率（期望 minPercent=${c.minPercent}）`);
-      else if (pct < c.minPercent) push(`Q2.${c.id}-coverage`, 'high', `${pct}% < ${c.minPercent}%`, `${c.id} 覆盖率不达标：${pct}%，要求 ≥ ${c.minPercent}%`);
+      if (pct == null || !Number.isFinite(pct) || pct < 0 || pct > 100) {
+        const message = `${c.id} 没能从输出解析出覆盖率（期望 minPercent=${c.minPercent}，要求 0–100 的有效指标）`;
+        warnings.push(message);
+        if (!c.optional) push(`Q2.${c.id}-coverage-missing`, 'high', 'metric unavailable', message);
+      } else if (pct < c.minPercent) {
+        if (c.optional) warnings.push(`${c.id} 覆盖率未达标（可选）：${pct}%`);
+        else push(`Q2.${c.id}-coverage`, 'high', `${pct}% < ${c.minPercent}%`, `${c.id} 覆盖率不达标：${pct}%，要求 ≥ ${c.minPercent}%`);
+      }
     }
   }
   return { checkId: 'Q2', findings, runs, coverageGap: null, warnings };

@@ -2,6 +2,8 @@
 // key = 代码里的中文原文（与 t('...') 的实参逐字一致，含全角标点）；缺译会回退中文原文。
 // 只收主进程模块用到的字符串；渲染层的词典在 common / app / chat / settings。
 export const EN_MAIN = {
+  '路径无法安全解析': 'The path cannot be resolved safely',
+  '只读模式禁止执行命令': 'Commands cannot run in read-only mode',
   // ---- subagent-salvage.mjs（固定标题也走 t()，两语言都能被 isSalvageText 识别）----
   '【未完成·已中断】': '[Incomplete · Interrupted]',
   '【未完成·无最终结论】': '[Incomplete · No final conclusion]',

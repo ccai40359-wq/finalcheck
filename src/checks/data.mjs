@@ -2,6 +2,7 @@ import { readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { parse } from '@babel/parser';
 import { listTextFiles, readRel, prunedWarning } from '../walk.mjs';
+import { sourceModel, walkSource, memberName as sourceMemberName } from '../source-analysis.mjs';
 
 // D1 事务 / D2 备份恢复 / D3 隐私（ACCEPTANCE §4-B）。
 // 全是静态只读判定：不执行被审代码，不引入新依赖（@babel/parser 是既有依赖）。
@@ -349,7 +350,7 @@ function backupEvidenceOf(file, text) {
   }
 
   if (command) {
-    return { level: 'hard', kind: 'command', file, line: command.line, detail: `备份命令 ${command.id}` };
+    return { level: 'hard', kind: 'command', file, line: command.line, scheduled: Boolean(schedule && backupContext), detail: `备份命令 ${command.id}` };
   }
   // 调度真配置 + 备份引用（如 crontab 指向 backup.sh、systemd timer 的 OnCalendar）
   if (schedule && (backupContext || retentionLine)) {
@@ -373,25 +374,43 @@ function backupEvidenceOf(file, text) {
 
 async function findBackupEvidence(projectDir, excludes, includeFixtures) {
   const { files, skipped, pruned } = await listBackupCandidates(projectDir, excludes, includeFixtures);
-  let firstClue = null;
+  const evidenceList = [];
+  let restoreConfirmed = false;
   for (const f of files) {
     const { file, text } = await readRel(projectDir, f);
     const ev = backupEvidenceOf(file, text);
-    if (!ev) continue;
-    if (ev.level === 'hard') return { evidence: ev, skipped, pruned };
-    if (!firstClue) firstClue = ev;
+    if (ev) evidenceList.push(ev);
+    if (file === 'finalcheck.evidence.json') {
+      try {
+        const confirmation = JSON.parse(text).backupRestore;
+        const age = Date.now() - Date.parse(confirmation?.checkedAt);
+        const report = String(confirmation?.evidence || '').replace(/\\/g, '/');
+        restoreConfirmed = confirmation?.status === 'confirmed' && typeof confirmation.reviewer === 'string' && Boolean(confirmation.reviewer.trim())
+          && age >= -300000 && age <= 90 * 86400000 && Boolean(report)
+          && files.some((candidate) => path.relative(projectDir, candidate).replace(/\\/g, '/') === report);
+      } catch { /* 缺少有效人工确认仍为未验证。 */ }
+    }
   }
-  return { evidence: firstClue, skipped, pruned };
+  return { evidence: evidenceList.find((ev) => ev.level === 'hard') || evidenceList[0], evidenceList, restoreConfirmed, skipped, pruned };
 }
 
 async function checkBackupImpl(projectDir, { tier, excludes = [], includeFixtures = false } = {}) {
   const findings = [];
   const warnings = [];
   const t = String(tier || 'L2').toUpperCase();
-  const { evidence, skipped, pruned } = await findBackupEvidence(projectDir, excludes, includeFixtures);
+  const { evidence, evidenceList, restoreConfirmed, skipped, pruned } = await findBackupEvidence(projectDir, excludes, includeFixtures);
   prunedToWarnings(warnings, skipped, pruned, 'D2');
   if (evidence?.level === 'hard') {
-    warnings.push(`D2：已发现可执行备份证据（card 级实锤）：${evidence.file}${evidence.line ? ':' + evidence.line : ''}（${evidence.detail}）`);
+    warnings.push(`D2：已发现静态备份配置线索：${evidence.file}${evidence.line ? ':' + evidence.line : ''}（${evidence.detail}）；未执行备份或恢复`);
+    if (t === 'L3') {
+      const missing = [];
+      if (!evidenceList.some((ev) => ev.kind === 'command')) missing.push(['command-missing', '未发现可执行备份命令']);
+      if (!evidenceList.some((ev) => ev.kind === 'schedule' || ev.scheduled)) missing.push(['schedule-missing', '未发现与备份关联的真实调度配置']);
+      if (!restoreConfirmed) missing.push(['restore-unverified', '恢复演练未获有效人工确认（finalcheck.evidence.json 需记录近 90 天的确认人与仓内演练记录）']);
+      for (const [rule, message] of missing) findings.push({ checkId: 'D2', severity: 'medium', force: 'card', file: evidence.file, line: evidence.line || 0,
+        rule: `D2.${rule}`, snippet: evidence.detail, message: `${message}（L3 要求），需补齐证据`, source: 'program' });
+      if (restoreConfirmed) warnings.push('D2：恢复演练采用人工确认记录；程序未自动验证演练内容或执行恢复');
+    }
     return { checkId: 'D2', findings, coverageGap: null, warnings };
   }
   if (evidence?.level === 'clue') {
@@ -468,6 +487,8 @@ async function scanPrivacy(projectDir, excludes, includeFixtures) {
   prunedToWarnings(warnings, skipped, pruned, 'D3');
   let persisted = null; // { file, line, snippet }
   let retentionSeen = false;
+  const observed = new Map();
+  const declarations = [];
 
   for (const f of files) {
     const { file, text } = await readRel(projectDir, f);
@@ -475,8 +496,32 @@ async function scanPrivacy(projectDir, excludes, includeFixtures) {
     const isLock = LOCK_RE.test(file);
     if (retentionSeen === false && !isLock && D3_RETENTION_RE.test(text)) retentionSeen = true;
 
+    if (isDoc && /privacy|隐私/i.test(file)) declarations.push({ file, text });
     if (isDoc || isLock) continue; // 日志与落盘判定只看代码/配置文本
     const lines = text.split('\n');
+    if (CODE_RE.test(file) && !TEST_FILE_RE.test(file)) {
+      const model = sourceModel(text);
+      if (model) walkSource(model.ast, (node) => {
+        if (node.type !== 'CallExpression' || !/^(?:save|create|insert|insertOne|insertMany|upsert|update|updateOne|setItem|writeFile|writeFileSync|store|persist)$/.test(sourceMemberName(node.callee) || node.callee?.name || '')) return;
+        if ((lines[(node.loc?.start.line || 1) - 1] || '').includes('finalcheck:allow')) return;
+        const collect = (raw, seen = new Set()) => {
+          const value = model.resolve(raw);
+          if (!value || seen.has(value)) return;
+          seen.add(value);
+          if (value.type === 'ArrayExpression') { for (const item of value.elements) collect(item, seen); return; }
+          if (value.type !== 'ObjectExpression') return;
+          for (const prop of value.properties) {
+            const field = prop.type === 'ObjectProperty' && !prop.computed ? String(prop.key.name ?? prop.key.value).toLowerCase() : '';
+            if (/^(?:email|phone|mobile|password|idcard|id_card|address|full_name|fullname)$/.test(field)) {
+              observed.set(field, { file, line: prop.loc?.start.line || 0 });
+              persisted ||= { file, line: prop.loc?.start.line || 0, snippet: field };
+            }
+            if (prop.value) collect(prop.value, seen);
+          }
+        };
+        for (const arg of node.arguments) collect(arg);
+      });
+    }
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
       if (line.length > 1000) continue; // 压缩代码
@@ -509,13 +554,35 @@ async function scanPrivacy(projectDir, excludes, includeFixtures) {
       }
     }
   }
-  return { logFindings, warnings, persisted, retentionSeen };
+  return { logFindings, warnings, persisted, retentionSeen, observed, declarations };
 }
 
 export async function checkPrivacy(projectDir, { tier, excludes = [], includeFixtures = false } = {}) {
   const t = String(tier || 'L2').toUpperCase();
-  const { logFindings, warnings, persisted, retentionSeen } = await scanPrivacy(projectDir, excludes, includeFixtures);
+  const { logFindings, warnings, persisted, retentionSeen, observed, declarations } = await scanPrivacy(projectDir, excludes, includeFixtures);
   const findings = logFindings.map((f) => ({ ...f, force: t === 'L1' ? 'tip' : 'check' }));
+  let coverageGap = null;
+  if (persisted || observed.size) {
+    let declared = null;
+    try {
+      if (excludes.some((x) => String(x).replace(/\\/g, '/') === 'finalcheck.privacy.json')) throw new Error('excluded');
+      const config = JSON.parse((await readRel(projectDir, path.join(projectDir, 'finalcheck.privacy.json'))).text);
+      if (!Array.isArray(config.collectedFields) || !config.collectedFields.every((field) => typeof field === 'string' && /^[a-z][a-z0-9_]*$/i.test(field))) throw new Error('invalid fields');
+      declared = new Set(config.collectedFields.map((field) => field.toLowerCase()));
+    } catch { coverageGap = '检测到用户数据持久化，但没有有效 finalcheck.privacy.json 的 collectedFields 声明，字段对账未验证（自然语言声明不自动算通过）'; }
+    const add = (rule, field, location, message) => findings.push({ checkId: 'D3', severity: 'medium', force: t === 'L1' ? 'tip' : 'check', file: location.file, line: location.line || 0,
+      rule: `D3.${rule}`, snippet: field, message, source: 'program' });
+    if (declared) {
+      for (const [field, location] of observed) if (!declared.has(field)) add('undeclared-field', field, location, `持久化字段 ${field} 未列入 collectedFields 隐私声明，需人工确认并对齐声明与实现`);
+      for (const field of declared) if (!observed.has(field)) add('declared-field-unverified', field, { file: 'finalcheck.privacy.json' }, `声明字段 ${field} 未在已覆盖的持久化对象中找到，可能使用了不支持的写法，需人工核实`);
+      if (!observed.size) coverageGap = '用户数据持久化已发现，但未能提取受支持的静态字段，字段对账未完全覆盖';
+    }
+    for (const [field, location] of observed) for (const declaration of declarations) {
+      if (new RegExp(`(?:do not collect|never collect|collect no|不收集)[^\\n.]{0,120}\\b${field}\\b`, 'i').test(declaration.text)) {
+        add('declaration-conflict', field, location, `持久化字段 ${field} 与 ${declaration.file} 的不收集声明冲突，需人工核实`);
+      }
+    }
+  }
   if (persisted && !retentionSeen) {
     findings.push({
       checkId: 'D3',
@@ -529,5 +596,5 @@ export async function checkPrivacy(projectDir, { tier, excludes = [], includeFix
       source: 'program',
     });
   }
-  return { checkId: 'D3', findings, coverageGap: null, warnings };
+  return { checkId: 'D3', findings, coverageGap, warnings };
 }

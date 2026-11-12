@@ -109,12 +109,12 @@ test('checkQuality：覆盖率低于 minPercent → 高危', async () => {
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
-test('checkQuality：覆盖率解析不出来 → 只记 warning，不编数字', async () => {
+test('checkQuality：必填覆盖率解析不出来 → finding，不编数字或判过', async () => {
   const dir = await tmpProject({ checks: [{ id: 'cover', command: 'npm test', minPercent: 40 }] });
   try {
     const r = await checkQuality(dir, { tier: 'L2', runner: fake(() => ({ code: 0, ms: 800, out: 'all good', err: '' })) });
-    assert.deepEqual(r.findings, []);
-    assert.match(r.warnings[0], /没能.*解析出覆盖率/);
+    assert.equal(r.findings[0].rule, 'Q2.cover-coverage-missing');
+    assert.match(r.findings[0].message, /没能.*解析出覆盖率/);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { listTextFiles } from '../walk.mjs';
@@ -57,14 +57,26 @@ export function parseCoverageSummaryText(text) {
     const v = total[metric];
     if (!v || typeof v !== 'object') continue;
     const pct = Number(v.pct);
-    if (!Number.isFinite(pct)) continue;
-    return { metric, pct, covered: Number(v.covered) || 0, total: Number(v.total) || 0 };
+    const covered = Number(v.covered), count = Number(v.total);
+    if (!Number.isFinite(pct) || pct < 0 || pct > 100) return { error: '覆盖率必须在 0–100 之间' };
+    if (!Number.isInteger(count) || count <= 0 || !Number.isInteger(covered) || covered < 0 || covered > count) return { error: '覆盖率缺少有效样本总数/覆盖数' };
+    if (Math.abs(covered / count * 100 - pct) > 0.11) return { error: '覆盖率与覆盖数/总数不一致' };
+    return { metric, pct, covered, total: count };
   }
   return { error: '缺少 lines/statements/branches/functions 覆盖率字段' };
 }
 
-async function coverageEvidenceOf(projectDir) {
-  const summaries = await findCoverageSummaries(projectDir);
+function coverageStamp(file) {
+  try {
+    const s = statSync(file, { bigint: true });
+    return `${s.mtimeNs}:${s.ctimeNs}:${s.size}`;
+  } catch { return null; }
+}
+
+async function coverageEvidenceOf(projectDir, previous) {
+  const all = await findCoverageSummaries(projectDir);
+  const summaries = all.filter((rel) => !previous.has(rel) || previous.get(rel) !== coverageStamp(path.join(projectDir, rel)));
+  if (all.length && !summaries.length) return { status: 'stale' };
   if (!summaries.length) return { status: 'missing' };
   let firstError = null;
   let firstFile = summaries[0];
@@ -98,6 +110,8 @@ export async function checkQ1(projectDir, { tier, excludes = [], routeResult = n
   // gapKind=unauthorized：只是等授权，别把整份结论压成「无法验收」/「拦」
   if (!run) return { checkId: 'Q1', findings, coverageGap: 'Q1：未授权执行测试（runTests=false），测试关未跑', gapKind: 'unauthorized', warnings };
 
+  const previousCoverage = new Map();
+  if (tier === 'L3') for (const rel of await findCoverageSummaries(projectDir)) previousCoverage.set(rel, coverageStamp(path.join(projectDir, rel)));
   const runRes = await testRunner(projectDir);
   if (runRes.error) {
     warnings.push(`npm test 运行失败：${runRes.error.code || 'error'}（计覆盖不足）`);
@@ -124,7 +138,10 @@ export async function checkQ1(projectDir, { tier, excludes = [], routeResult = n
   }
   if (tier === 'L3') {
     // 覆盖率门槛只认 c8/nyc 真实产物：有产物才可能给 L3 过；没有产物 → 覆盖缺口，不给过。
-    const cov = await coverageEvidenceOf(projectDir);
+    const cov = await coverageEvidenceOf(projectDir, previousCoverage);
+    if (cov.status === 'stale') {
+      return { checkId: 'Q1', findings, coverageGap: '本轮未生成或更新覆盖率产物（已有产物陈旧）', gapKind: 'unavailable', warnings };
+    }
     if (cov.status === 'missing') {
       warnings.push(`Q1：L3 覆盖率门槛未实测（缺 c8/nyc 产物 ${COVERAGE_SUMMARY_NAME}），按覆盖缺口计，不给 L3 通过`);
       return { checkId: 'Q1', findings, coverageGap: '覆盖率未实测（缺 c8/nyc 产物 coverage/coverage-summary.json）', gapKind: 'unavailable', warnings };

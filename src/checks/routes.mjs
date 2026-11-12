@@ -102,9 +102,9 @@ function publicHit(routePath, publicRoutes) {
 
 // hasGuard 由 extract-routes 用旧裸子串算出来，可能是假阳性。
 // 有 middlewares 数组时以 isGuardName 重新判定；老调用方只给 hasGuard 布尔值时保留原语义。
-function routeHasGuard(route, publicRoutes) {
+function routeHasGuard(route, publicRoutes, ineffectiveGuards = []) {
   if (Array.isArray(route.middlewares)) {
-    return route.middlewares.some((m) => isGuardName(m));
+    return route.middlewares.some((m) => isGuardName(m) && !ineffectiveGuards.some((guard) => guard.file === route.file && guard.name === m));
   }
   return Boolean(route.hasGuard) || publicHit(route.path, publicRoutes);
 }
@@ -112,10 +112,13 @@ function routeHasGuard(route, publicRoutes) {
 export async function checkAuthCoverage(routeResult) {
   const findings = [];
   const routes = Array.isArray(routeResult && routeResult.routes) ? routeResult.routes : [];
+  const unsupportedGap = routeResult?.unsupportedFrameworks?.length
+    ? `HTTP 框架尚未支持：${routeResult.unsupportedFrameworks.join('；')}（目前仅支持 Express 路由）` : null;
   // 空路由表 = 没有可分析的 HTTP 接口。但「没有 HTTP」不等于「没查」：
   // 桌面应用没有 HTTP 路由，S1（只覆盖 HTTP 鉴权）属结构性不适用，不封顶结论；
   // 本地 IPC 权限面由 S7 检查。gapKind=not-applicable 由结论引擎过滤，不再算「无法验收」。
   if (!routes.length) {
+    if (unsupportedGap) return { checkId: 'S1', findings, coverageGap: unsupportedGap, gapKind: 'unavailable' };
     return {
       checkId: 'S1',
       findings,
@@ -127,10 +130,10 @@ export async function checkAuthCoverage(routeResult) {
   for (const r of routes) {
     if (r.method === 'use') continue; // 装配路径不是独立接口
     if (publicHit(r.path, publicRoutes)) continue;
-    if (!routeHasGuard(r, publicRoutes)) {
+    if (!routeHasGuard(r, publicRoutes, routeResult.ineffectiveGuards || [])) {
       const hint = PUBLIC_HINT.test(r.path) ? '（常见公开接口：确认后登记进 finalcheck.config.json 的 publicRoutes 即可消除）' : '';
       findings.push({ checkId: 'S1', severity: 'high', force: 'card', file: r.file, line: r.line, rule: 'S1.no-guard', snippet: `${r.method.toUpperCase()} ${r.path}`, message: `接口无登录守卫${hint}`, source: 'program' });
     }
   }
-  return { checkId: 'S1', findings, coverageGap: routeResult.warnings?.length ? `路由提取警告 ${routeResult.warnings.length} 条` : null };
+  return { checkId: 'S1', findings, coverageGap: unsupportedGap || (routeResult.warnings?.length ? `路由提取警告 ${routeResult.warnings.length} 条` : null) };
 }

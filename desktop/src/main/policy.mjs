@@ -9,6 +9,7 @@
 
 import os from 'node:os';
 import path from 'node:path';
+import { lstatSync, realpathSync } from 'node:fs';
 import { t } from '../renderer/i18n/core.mjs';
 
 export const POLICY_MODES = Object.freeze(['workspace', 'readonly', 'off']);
@@ -272,6 +273,28 @@ function detectSensitive(policy, normalized) {
  * 返回 { ok:true, path } 或 { ok:false, reason, record:{tool,target,reason,at} }。
  * 判定顺序：策略有效性 → 路径规范化 → 敏感路径 → readonly 写 → 项目边界。
  */
+function canonicalPath(value, platform) {
+  // Tests can model another platform; only the native filesystem can resolve its links.
+  if (isWinPlatform(platform) !== (process.platform === 'win32')) return value;
+  const api = pathApiFor(platform);
+  const tail = [];
+  let current = value;
+  for (;;) {
+    try {
+      lstatSync(current); // A broken link must not be mistaken for a new file.
+      return api.join(realpathSync.native(current), ...tail.reverse());
+    } catch (e) {
+      if (e?.code !== 'ENOENT' && e?.code !== 'ENOTDIR') throw e;
+      try { if (lstatSync(current).isSymbolicLink()) throw new Error('unresolvable link'); }
+      catch (linkError) { if (linkError?.message === 'unresolvable link') throw linkError; }
+      const parent = api.dirname(current);
+      if (parent === current) throw e;
+      tail.push(api.basename(current));
+      current = parent;
+    }
+  }
+}
+
 export function assertPathAllowed(policy, absPath, { write = false, tool = DEFAULT_TOOL } = {}) {
   if (!policy || typeof policy !== 'object' || !POLICY_MODES.includes(policy.mode)) {
     return deny(tool, absPath, t('策略对象无效'));
@@ -305,8 +328,20 @@ export function assertPathAllowed(policy, absPath, { write = false, tool = DEFAU
     );
     if (!inside) return deny(tool, normalized, t('路径不在项目边界内'));
   }
-
-  return { ok: true, path: normalized };
+  let canonical;
+  try { canonical = canonicalPath(normalized, policy.platform); }
+  catch { return deny(tool, normalized, t('路径无法安全解析')); }
+  const realSensitive = detectSensitive(policy, canonical);
+  if (realSensitive) return deny(tool, canonical, t('敏感路径禁止访问（{item}）', { item: realSensitive }));
+  if (policy.mode !== 'off') {
+    const api = pathApiFor(policy.platform);
+    try {
+      if (!policy.roots.some((root) => isInside(api, canonicalPath(root, policy.platform), canonical, isWinPlatform(policy.platform)))) {
+        return deny(tool, canonical, t('路径不在项目边界内'));
+      }
+    } catch { return deny(tool, normalized, t('路径无法安全解析')); }
+  }
+  return { ok: true, path: canonical };
 }
 
 /**
@@ -397,7 +432,7 @@ const COMMAND_RULES = Object.freeze([
  * 不把命令文本放进 reason/record，避免命令行里的 token 落到日志。
  */
 export function checkCommand(policy, command) {
-  void policy; // 命令规则与模式无关；保留参数位以便后续按模式扩展
+  if (policy?.mode === 'readonly') return { ok: false, reason: t('只读模式禁止执行命令'), matchedRule: 'readonly' };
   if (typeof command !== 'string') {
     return { ok: false, reason: t('命令必须是字符串'), matchedRule: 'invalid-command' };
   }

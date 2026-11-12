@@ -209,9 +209,9 @@ export function ProbeCard({ args, result }) {
                   <td className="px-3 py-1.5 font-mono">
                     {row.status === null
                       ? <span className="text-mute">{t('不可达')}</span>
-                      : <span className={row.status >= 200 && row.status < 400 ? 'text-red-400 font-semibold' : 'text-mute'}>{row.status}</span>}
+                      : <span className={row.accessible ? 'text-amber-400 font-semibold' : 'text-mute'}>{row.status}</span>}
                   </td>
-                  <td className="px-3 py-1.5">{row.reproduced ? '✅' : '❌'}</td>
+                  <td className="px-3 py-1.5">{row.reproduced ? '✅' : row.accessible ? t('待确认') : '❌'}</td>
                 </tr>
               )) : (
                 <tr><td colSpan={3} className="px-3 py-3 text-center text-mute">{t('未探测到无认证可访问的路径')}</td></tr>

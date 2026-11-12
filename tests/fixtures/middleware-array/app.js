@@ -1,7 +1,7 @@
 const express = require('express');
 
 const mw1 = (req, res, next) => next();
-const authBearer = (req, res, next) => next();
+const authBearer = (req, res, next) => req.user ? next() : res.sendStatus(401);
 
 const app = express();
 

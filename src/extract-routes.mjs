@@ -8,6 +8,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { parse } from '@babel/parser';
 import { isPublicPath, isRelativeSource, joinPath, prefixMatches, staticPathValue } from './route-path.mjs';
+import { sourceModel, walkSource, isFunction } from './source-analysis.mjs';
 
 const ROUTE_METHODS = new Set(['get', 'post', 'put', 'delete', 'patch']);
 // Loose match over the spec'd guard names (auth/requireAuth/.../jwt/passport/session).
@@ -649,6 +650,8 @@ export async function extractRoutes(projectDir, options = {}) {
   const warnings = [];
   const routes = [];
   const publicRoutes = [];
+  const unsupportedFrameworks = [];
+  const ineffectiveGuards = [];
   try {
     const rootDir = path.resolve(String(projectDir ?? '.'));
     if (!existsSync(rootDir) || !statSync(rootDir).isDirectory()) {
@@ -670,8 +673,33 @@ export async function extractRoutes(projectDir, options = {}) {
     const ctx = { rootDir, warnings, routes, cache: new Map(), reached: new Set() };
     const analyses = [];
     for (const abs of collectFiles(rootDir)) {
+      const text = readFileSync(abs, 'utf8');
+      if (/fastify|@koa\/router|@hapi\/hapi|next\/server|\bkoa\b|\bhono\b/.test(text)) {
+        const model = sourceModel(text);
+        if (model) walkSource(model.ast, (node) => {
+          const pkg = node.type === 'ImportDeclaration' ? node.source?.value
+            : node.type === 'CallExpression' && node.callee?.name === 'require' ? node.arguments[0]?.value : null;
+          if (typeof pkg === 'string' && /^(?:fastify|koa|@koa\/router|@hapi\/hapi|next\/server|hono)(?:\/|$)/.test(pkg)) {
+            unsupportedFrameworks.push(`${path.relative(rootDir, abs).replace(/\\/g, '/')}: ${pkg}`);
+          }
+        });
+      }
       const a = analyzeCached(abs, ctx);
-      if (a) analyses.push(a);
+      if (a) {
+        analyses.push(a);
+        const model = sourceModel(text);
+        if (model) walkSource(model.ast, (node) => {
+          const name = node.type === 'FunctionDeclaration' ? node.id?.name : node.type === 'VariableDeclarator' ? node.id?.name : null;
+          const fn = node.type === 'VariableDeclarator' ? model.resolve(node.init) : node;
+          if (!name || !GUARD_RE.test(name) || !isFunction(fn)) return;
+          const next = fn.params[2]?.name;
+          const statement = fn.body?.type === 'BlockStatement' && fn.body.body.length === 1 ? fn.body.body[0] : null;
+          const body = statement?.type === 'ReturnStatement' ? statement.argument : statement?.type === 'ExpressionStatement' ? statement.expression : fn.body;
+          if (next && body?.type === 'CallExpression' && body.callee?.name === next && body.arguments.length === 0) {
+            ineffectiveGuards.push({ file: a.rel, name });
+          }
+        });
+      }
     }
 
     // Roots: express() apps not mounted locally in their own file (sub-apps are reached via mounts).
@@ -725,13 +753,13 @@ export async function extractRoutes(projectDir, options = {}) {
     // Guard verdict: auth-ish middleware anywhere in the chain, or an explicit
     // publicRoutes whitelist hit (S1 exemption, spec'd to count as guarded).
     for (const r of routes) {
-      r.hasGuard = r.middlewares.some((m) => GUARD_RE.test(m)) || isPublicPath(r.path, publicRoutes);
+      r.hasGuard = r.middlewares.some((m) => GUARD_RE.test(m) && !ineffectiveGuards.some((guard) => guard.file === r.file && guard.name === m)) || isPublicPath(r.path, publicRoutes);
     }
     routes.sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : a.line - b.line || (a.path < b.path ? -1 : a.path > b.path ? 1 : a.method < b.method ? -1 : 1)));
   } catch (e) {
     warnings.push(`extractRoutes failed unexpectedly: ${e && e.message ? e.message : e}`);
   }
-  return { routes, publicRoutes, warnings };
+  return { routes, publicRoutes, warnings, ...(unsupportedFrameworks.length ? { unsupportedFrameworks } : {}), ...(ineffectiveGuards.length ? { ineffectiveGuards } : {}) };
 }
 
 function collectFiles(rootDir) {

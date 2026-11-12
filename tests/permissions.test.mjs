@@ -3,6 +3,7 @@
 // 无应答/超时/非法值/无 UI 通道 = rejected
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
+import path from 'node:path';
 import {
   requestApproval, decide, confirmHost, assertHost, confirmDir, assertDir,
   noteTarget, commandPrefix, sessionAllowed, setApprovalEmitter,
@@ -20,6 +21,22 @@ const waitFor = async (fn, timeout = 2000) => {
 };
 
 beforeEach(() => { resetLedger(); });
+
+test('permissions: session and project scopes isolate persistent and one-use approvals', async () => {
+  const a = { sessionId: 'a', projectPath: process.cwd() };
+  const b = { sessionId: 'b', projectPath: process.cwd() };
+  const c = { sessionId: 'a', projectPath: path.join(process.cwd(), 'another-project') };
+  setApprovalEmitter((p) => decide(p.callId, 'always-session'));
+  await requestApproval({ tool: 'run_command', summary: 'echo review', ...a });
+  assert.equal(sessionAllowed('run_command', 'echo review', a), true);
+  assert.equal(sessionAllowed('run_command', 'echo review', b), false);
+  assert.equal(sessionAllowed('run_command', 'echo review', c), false);
+  assert.equal(sessionAllowed('run_command', 'echo review'), false);
+  grantOnce('write_file', 'marker.txt', a);
+  assert.equal(consumeGrant('write_file', 'marker.txt', b), false);
+  assert.equal(consumeGrant('write_file', 'marker.txt', a), true);
+  assert.equal(consumeGrant('write_file', 'marker.txt', a), false);
+});
 
 /* ---------- 命令前缀（always-session 的参数模式） ---------- */
 test('permissions: commandPrefix 取前两个 token 并小写归一', () => {

@@ -1,7 +1,7 @@
 <img src="docs/assets/cover.png" alt="FinalCheck 终检" width="100%">
 
 [![CI](https://github.com/ccai40359-wq/finalcheck/actions/workflows/ci.yml/badge.svg)](https://github.com/ccai40359-wq/finalcheck/actions/workflows/ci.yml)
-![tests](https://img.shields.io/badge/tests-1088%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-1146%20passing-brightgreen)
 ![license](https://img.shields.io/badge/license-Apache--2.0-blue)
 
 [English](README.md) · **简体中文**
@@ -66,6 +66,18 @@ cd desktop && npm run dev      # 启动桌面端
 
 打包 Windows 安装包：`cd desktop && npm run dist`。
 
+### 命令行审计
+
+```bash
+node bin/finalcheck.js audit . --tier L2
+```
+
+`--tier` 取 `L1` / `L2` / `L3`；`--json` 输出机器可读结果；`--include-fixtures` 仅在检查故意带洞的样本时把 `**/fixtures/**` 纳入产品结论。
+
+审计**默认只做静态检查**：不执行被审项目的测试或质量命令，Q1/Q2 记为覆盖缺口，不会冒充通过。只有显式加 `--run-tests` 才执行；`--no-tests` 优先于 `--run-tests`，两者同时出现时一律禁止执行。`scan-download` 存在 `coverageGap` 时退出码非零，避免「未验证」被当成「通过」。
+
+已实现范围、边界与人工证据契约见 [docs/RELIABILITY.md](docs/RELIABILITY.md)。
+
 想在本地跑构建产物冒烟：在仓库根执行 `npm run smoke:e2e`（需先有 `desktop/out`）。它会开真实窗口并只用临时隔离配置，不碰你本机的真实 FinalCheck 数据。
 
 ## 排障
@@ -85,7 +97,9 @@ cd desktop && npm run dev      # 启动桌面端
 ## 安全模型
 
 - API Key **只**存在本地 `config.json`（安装版在 `%APPDATA%\FinalCheck`），不写进会话、日志或报告。
-- 路径与命令由策略约束：`workspace`（仅项目目录内可写）、`readonly`（全只读）、`off`（放开项目边界）。敏感位置（`.ssh` / `.aws` / `.gnupg` / Git 凭据 / 私钥）在所有模式下都拒绝，另有命令黑名单。
+- 路径与命令由策略约束：`workspace`（仅项目目录内可写）、`readonly`（全只读）、`off`（放开项目边界）。`workspace` 是应用层路径策略，不是操作系统沙箱。敏感位置（`.ssh` / `.aws` / `.gnupg` / Git 凭据 / 私钥）在所有模式下都拒绝，另有命令黑名单。
+- `readonly` 禁止命令、质量命令与项目记忆写入；junction / 符号链接会先解析到真实目标，再判断是否越出工作区。
+- 审批按会话、项目与工具隔离，「本会话总是允许」不会跨会话或跨项目生效。质量闸的审批绑定 `finalcheck.quality.json` 归一化后的命令配置指纹，并执行审批时的配置快照；授权后改配置需要重新审批。
 - 动态目标（探测 / 压测）必须逐目标显式确认，且上限 60s / 50 连接。
 - 从项目列表移除工作区不会删除磁盘上的任何文件。
 
@@ -97,13 +111,13 @@ src/          体检引擎（各检查项、探测/压测、MCP 接口）
 desktop/      Electron 桌面端（main / preload / renderer）
 playbooks/    体检 playbook
 integrations/ 编码 agent 的 skill + hook 接线
-docs/         ACCEPTANCE.md（分级验收的唯一事实源）
-tests/        node:test 测试（当前 1088 项全绿）
+docs/         ACCEPTANCE.md（分级验收的唯一事实源）、RELIABILITY.md（已实现范围与边界）
+tests/        node:test 测试（当前 1146 项全绿）
 ```
 
 ## 状态
 
-已能真用但仍在早期：引擎、桌面端、分级闸门、Agent 工作流（DAG + 脚本 DSL）、对抗复核与内置更新都已落地，每次改动跑 1088 项测试。本项目自身按 L3 标准开发——本仓库违反 L2 矩阵任何一条，都算 bug。
+已能真用但仍在早期：引擎、桌面端、分级闸门、Agent 工作流（DAG + 脚本 DSL）、对抗复核与内置更新都已落地，每次改动跑 1146 项测试。本项目自身按 L3 标准开发——本仓库违反 L2 矩阵任何一条，都算 bug。
 
 ## 作者
 

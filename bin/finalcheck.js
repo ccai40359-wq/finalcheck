@@ -78,14 +78,15 @@ if (cmd === 'scan-download') {
   const cfg = await loadConfig(root);
   const out = await scanDownload(root, { excludes: cfg.exclude || [] });
   console.log('\n[下载闸体检]', root);
-  if (!out.findings.length) console.log('OK: 未发现安装脚本/投毒信号/注入痕迹');
+  if (!out.findings.length && !out.coverageGap) console.log('OK: 已覆盖范围内未发现安装脚本/投毒信号/注入痕迹');
+  if (out.coverageGap) console.log('未验证: ' + out.coverageGap);
   const SEV = { high: '[HIGH]', medium: '[MED]', low: '[LOW]' };
   for (const f of out.findings) {
     console.log(SEV[f.severity] + ' ' + f.checkId + ' ' + f.message);
     console.log('   证据: ' + f.file + (f.line ? ':' + f.line : '') + '  ' + String(f.snippet || '').slice(0, 100));
   }
   for (const w of out.warnings) console.log('INFO ' + w);
-  process.exitCode = out.findings.some((f) => f.severity === 'high') ? 1 : 0;
+  process.exitCode = out.coverageGap || out.findings.some((f) => f.severity === 'high') ? 1 : 0;
 } else if (cmd === 'audit') {
   const root = resolveRoot(args[1]);
   const tierIdx = args.indexOf('--tier');
@@ -96,7 +97,7 @@ if (cmd === 'scan-download') {
   }
   const asJson = args.includes('--json');
   const interactive = args.includes('--interactive') || Boolean(process.stdin.isTTY);
-  const runTests = !args.includes('--no-tests'); // 审计外部项目必须 --no-tests（§7 禁跑被审代码）
+  const runTests = args.includes('--run-tests') && !args.includes('--no-tests'); // 显式授权才执行被审项目代码；--no-tests 优先
 
   // 基线：默认 root/.finalcheck/baseline.json（存在才加载）；--write-baseline 审计后写入/更新。
   const baselineIdx = args.indexOf('--baseline');
@@ -255,6 +256,8 @@ if (cmd === 'scan-download') {
   }
 } else {
   console.log('用法: finalcheck audit <目录> [--tier L1|L2|L3] [--json] [--interactive] [--include-fixtures] [--no-caps] [--show-low]');
+  console.log('      --run-tests         # 显式执行项目测试和质量命令（默认仅静态审计）');
+  console.log('      --no-tests          # 禁止项目测试和质量命令，优先于 --run-tests');
   console.log('      --include-fixtures  # 显式把 **/fixtures/** 纳入产品结论（默认豁免）');
   console.log('      --no-caps           # 忽略 finalcheck.config.json 的 reportCaps，报告全量条目（默认就不截断）');
   console.log('      --show-low          # 逐条展开「风格与可读性建议」低优先条目（默认按规则折叠，条数仍写清）');

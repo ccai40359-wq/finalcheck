@@ -20,6 +20,9 @@ IPC 桥（contextBridge 白名单，禁 nodeIntegration）
 2. 压测默认温和（duration≤60s，connections≤50），可调但要二次确认
 3. Agent 调用动态工具前必须目标已确认；Agent 无权改安全边界配置
 4. contextBridge 只暴露白名单 API；LLM key 存本地配置文件（不进 git）
+5. 权限边界：`readonly` 禁止命令、质量命令与项目记忆写入；`workspace` 是应用层路径策略，不是操作系统沙箱；junction / 符号链接先解析真实目标再判定是否越界。
+6. 审批按会话 + 项目 + 工具隔离；「本会话总是允许」不跨会话/项目生效。质量闸绑定命令配置指纹与审批时的配置快照，改配置后须重新审批。
+7. CLI 审计默认只做静态检查、不执行被审项目测试/质量命令；桌面端 `audit_project` 固定 `runTests=false`，要执行必须单独走 `quality_gate` 审批。实现范围与边界见 [RELIABILITY.md](RELIABILITY.md)。
 
 ## 3. 功能验收（逐条可测）
 
@@ -313,7 +316,7 @@ Agent 用本工具自查本仓，报出 4 个真 bug + 2 处环境噪音；已�
 - **新增引擎检查 `src/checks/quality.mjs`**：项目根放 `finalcheck.quality.json` 声明 `checks: [{id, command, timeoutMs, maxMs, expect, minPercent, severity, optional}]`；引擎按顺序执行，记录 exit code / 墙钟 / 超时 / `expect` 正则匹配 / 覆盖率解析（istanbul 表格、`Statements : x%`、`Lines : x%`）。
 - **判定**：失败 → `Q2.<id>-failed`（默认高危）；超时 → `Q2.<id>-timeout`（可选项目降为 tip）；超过 `maxMs` → `-slow`（中危）；`expect` 不匹配 → `-expect`（中危）；覆盖率低于 `minPercent` → `-coverage`（高危）；解析不出覆盖率只记 warning，不编数字。命令输出里的 `KEY=… / token: …` 一律打码后进报告。
 - **接线**：`GATES` 不变，`audit()` 只有在项目根存在 `finalcheck.quality.json` 时才把 `Q2` 加进计划（L2/L3）；`runTests=false` 时只记 `coverageGap`（不执行）。报告 `CHECK_TITLE` 增加 `Q1 测试关` / `Q2 质量命令闸`。结果额外返回 `runs`（逐条 exit/耗时/超阈值/覆盖率），供 agent 复述成表格。
-- **桌面端**：新工具 `quality_gate(dir, tier)`，执行前调用 `requestApproval`（完全权限模式自动放行）；`audit_project` 仍是 `runTests=false`，不会偷偷执行项目代码。MCP 通道同步暴露 `quality_gate`，但默认拒绝执行命令（无确认通道），只有显式 `--root` + `FINALCHECK_MCP_ALLOW_COMMANDS=1` 才放行。
+- **桌面端**：新工具 `quality_gate(dir, tier)`，执行前调用 `requestApproval`（完全权限模式自动放行）；审批目标绑定归一化后的命令配置指纹，执行审批时的配置快照；`readonly` 直接拒绝；`audit_project` 仍是 `runTests=false`，不会偷偷执行项目代码。MCP 通道同步暴露 `quality_gate`，但默认拒绝执行命令（无确认通道），只有显式 `--root` + `FINALCHECK_MCP_ALLOW_COMMANDS=1` 才放行。
 - **文档**：`docs/QUALITY-GATE.md`（字段表 + 四个维度的最小声明示例 + 判定原则）。
 - **验收**：`tests/quality.test.mjs` 10 条（解析/归一化/未配置 gap/未授权 gap/失败/超时/慢/expect/覆盖率/audit 集成），`agent-tools` 增加 quality_gate 授权测试；全仓 `npm test` 210 全绿。CLI 实跑 `npx finalcheck audit . --tier L2 --interactive`（`.tmp/qdemo`）输出 `Q2 bench-slow 实测 1377ms > 500ms`；app 内实跑（`.tmp/q2-in-app.png`）助手给出「unit 0 / 169ms、bench 0 / 1370ms 超阈值」表格并明确说明 lint/typecheck/test 未声明 = 未覆盖。
 

@@ -48,7 +48,7 @@ export async function loadConfig(projectDir) {
   } catch { return {}; }
 }
 
-export async function audit(projectDir, { tier = null, interactive = false, runTests = true, profile = null, runtime = null, sources = null, includeFixtures = false, noCaps = false } = {}) {
+export async function audit(projectDir, { tier = null, interactive = false, runTests = false, profile = null, runtime = null, sources = null, includeFixtures = false, noCaps = false } = {}) {
   const cfg = await loadConfig(projectDir);
   // 报告条数上限集中解析一次，三个检查从参数拿，不各自读配置；默认不截断。
   const { caps: reportCaps, warnings: reportCapWarnings } = resolveReportCaps(cfg, { noCaps });
@@ -81,6 +81,8 @@ export async function audit(projectDir, { tier = null, interactive = false, runT
   const excl = (rel) => excludes.some((x) => { const n = String(x).replace(/\\/g, '/'); const r = (rel || '').replace(/\\/g, '/'); return r === n || r.startsWith(n + '/'); });
   const fixtureBlocked = (rel) => !includeFixtures && isFixturePath(rel);
   const routeResult = {
+    unsupportedFrameworks: (raw.unsupportedFrameworks || []).filter((s) => !excl(s.split(': ')[0]) && !fixtureBlocked(s.split(': ')[0])),
+    ineffectiveGuards: (raw.ineffectiveGuards || []).filter((guard) => !excl(guard.file) && !fixtureBlocked(guard.file)),
     routes: (raw.routes || []).filter((r) => !excl(r.file) && !fixtureBlocked(r.file)),
     publicRoutes: raw.publicRoutes || [],
     warnings: (raw.warnings || []).filter((w) => !excl(w)),
@@ -285,8 +287,12 @@ function baseVerdict(tier, findings) {
   if (tier === 'L2') {
     if (high.length) return { verdict: '拦', reason: `${high.length} 条高危实锤` };
     if (card.length) return { verdict: '修完再过', reason: `${card.length} 项卡条目未过` };
+    const manual = findings.filter((f) => f.force === 'check' && ['high', 'medium'].includes(f.severity));
+    if (manual.length) return { verdict: '修完再过', reason: `${manual.length} 项中高风险仍待人工确认` };
     return { verdict: '过', reason: 'L2 全部卡条目通过' };
   }
   if (card.length) return { verdict: '拦', reason: `L3 存在未过卡项 ${card.length} 处（人工确认项机制下轮接入）` };
-  return { verdict: '过', reason: 'L3 全过（盖章报告待人工确认项接入）' };
+  const manual = findings.filter((f) => f.force === 'check' && ['high', 'medium'].includes(f.severity));
+  if (manual.length) return { verdict: '修完再过', reason: `${manual.length} 项中高风险仍待人工确认，尚未完成 L3 验收` };
+  return { verdict: '过', reason: '本轮已覆盖的 L3 检查通过；适用范围以报告覆盖清单为准' };
 }

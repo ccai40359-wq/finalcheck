@@ -1,6 +1,7 @@
 // 对话区（TraceCards / ProcessTimeline / SubagentPanel / SwarmResult / humanize 等）的英文词典
 // 约定见 core.mjs：key 是界面上的中文原文，value 是英文译文；{name} 为占位符。
 export const EN_CHAT = {
+  '待确认': 'Needs confirmation',
   // 基础状态（与 common 重复的几条保持原样，历史原因）
   '运行中': 'Running',
   '已完成': 'Done',

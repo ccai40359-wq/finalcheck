@@ -117,7 +117,7 @@ export function registerSystemIpc({ ipcMain, getWin, engineUrl, store, getHooksC
     const t0 = Date.now();
     const out = await probeTarget(baseUrl);
     // 记账：证据等级要能区分「声明了授权」和「本轮真的跑过」
-    try { recordProbe(baseUrl, { ms: Date.now() - t0, ok: !out?.error, samples: 1 }); } catch { /* 记账失败不影响探测 */ }
+    try { recordProbe(baseUrl, { ms: Date.now() - t0, ok: Number(out?.samples) > 0, samples: Number(out?.samples) || 0 }); } catch { /* 记账失败不影响探测 */ }
     return out;
   });
   ipcMain.handle('finalcheck:stress', async (_e, baseUrl, { duration = 10, connections = 10 } = {}) => {
@@ -126,7 +126,7 @@ export function registerSystemIpc({ ipcMain, getWin, engineUrl, store, getHooksC
     const { stressTarget } = await import(engineUrl('src/dynamic/stress.mjs'));
     const t0 = Date.now();
     const out = await stressTarget(baseUrl, { duration, connections });
-    try { recordStress(baseUrl, { ms: Date.now() - t0, ok: !out?.error, samples: Number(out?.requests) || Number(out?.samples) || 0 }); } catch { /* 记账失败不影响压测 */ }
+    try { recordStress(baseUrl, { ms: Date.now() - t0, ok: Number(out?.samples) > 0 && !out?.errors, samples: Number(out?.samples) || 0 }); } catch { /* 记账失败不影响压测 */ }
     return out;
   });
 }

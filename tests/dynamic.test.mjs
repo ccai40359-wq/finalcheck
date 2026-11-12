@@ -23,7 +23,8 @@ test('probe: 无守卫接口复现 + CORS 反射 + 安全头缺失', async (t) =
   const base = 'http://127.0.0.1:' + server.address().port;
   const out = await probeStable(base);
   const users = out.results.find((r) => r.path === '/api/users');
-  assert.equal(users.reproduced, true);
+  assert.equal(users.reproduced, false);
+  assert.equal(users.accessible, true, 'anonymous accessibility is a signal, not proof of an authorization defect');
   assert.equal(users.status, 200);
   const cors = out.results.find((r) => r.kind === 'cors');
   assert.equal(cors.reflected, true);
@@ -68,8 +69,9 @@ test('probe: SPA 兜底页（任何路径 200 + index.html）不再假阳', asyn
   assert.match(get('/api/users').note, /SPA|外壳/);
   assert.equal(get('/api/config').reproduced, false);
 
-  // 真调试页（与首页不同的 HTML）仍要算复现，别把 HTML 一刀切
-  assert.equal(get('/debug').reproduced, true);
+  // 真调试页保留可访问线索，公开意图与敏感性仍需确认。
+  assert.equal(get('/debug').reproduced, false);
+  assert.equal(get('/debug').accessible, true);
 
   // 401 / 302 都不算复现，且 302 要留下目标
   assert.equal(get('/api/admin').reproduced, false);
