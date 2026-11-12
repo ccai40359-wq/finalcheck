@@ -6,6 +6,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.15.2] - 2026-11-12
+
+### Added
+
+- Settings → About & updates now has an Export diagnostics button: one click produces a redacted JSON (version, OS, recent log lines, rule hits, masked config) without hunting for log files.
+- Update details are available in English: the English UI shows the English release notes (`CHANGELOG.en.md`) instead of Chinese.
+- Slash-command skill descriptions, quick-start prompt cards, and ask-card dimension descriptions are fully translated in the English UI.
+
+### Fixed
+
+- Parallel tool calls are no longer merged into one: each call keeps its own arguments, so errors like `ARGS_INVALID_JSON` or a function name glued together (`download_gate`) no longer appear.
+- Malformed tool-argument JSON (Windows backslashes, trailing commas) is repaired automatically before execution instead of failing outright; truncated arguments still fail honestly.
+- Continuing after an error no longer duplicates the previous answer or ask card: each message renders once, and history wins over the live copy.
+- Restoring a session no longer stacks the on-disk "pending" assistant message on top of the live one.
+
+### Improved
+
+- The acceptance checklist is now an overlay in the top-right of the message area: it no longer shrinks the conversation width, collapses to a single chip, and remembers its state per session.
+- The Chinese and English READMEs now agree on 1086 tests, the repository root and desktop versions are kept in parity, and both are checked before release so version drift cannot slip through.
+
 ## [0.15.1] - 2026-11-12
 
 ### Added
