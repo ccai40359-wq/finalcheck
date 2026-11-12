@@ -43,7 +43,7 @@ IPC 桥（contextBridge 白名单，禁 nodeIntegration）
 
 - OpenAI 兼容 /chat/completions，stream:true，tools 十二件套（JSON Schema 定义，SSOT 在 agent-service.mjs）
 - 循环：assistant.tool_calls → 主进程执行 → tool 结果回填 → 直到无 tool_calls 或轮次上限
-- 文件工具（对齐 dsh read/edit/write）：`read_file` 只读；`edit_file` 精确替换（old_string 必须唯一）+ 行级 diff；`write_file` 新建/覆盖；单文件 ≤2MB、拒绝二进制、原子写；桌面端 edit/write 走审批（Full access 例外），MCP 与 run_command 同信任级。
+- 文件工具（对齐 dsh read/edit/write）：`read_file` 只读；`edit_file` 精确替换（old_string 必须唯一）+ 行级 diff；`write_file` 新建/覆盖；单文件 ≤2MB、拒绝二进制、原子写；桌面端 edit/write 走审批（Full access 例外）；MCP 通道无审批，改为路径监狱：所有项目相关工具只能操作 `--root` 指定的目录（默认进程 cwd），绝对路径/`..`/符号链接逃逸一律拒绝。
 - 轮次上限默认 40（`FINALCHECK_MAX_TURNS` 可调 5–100）；达到上限不直接报错丢弃工作，自动追加一次**不带 tools** 的收尾请求，让模型基于已有证据下结论（fail-soft，对齐 dsh）
 - 网关配置：settings 页填写 baseUrl/apiKey/model，存 desktop/config.json（.gitignore）
 - 测试：mock fetch 网关（返回预设 tool_calls 序列）单测循环逻辑；真实网关冒烟一次（`npm run smoke:agent`）；UI 端到端（CDP 驱动：新会话→输入→发送→等落盘→截图）
@@ -313,7 +313,7 @@ Agent 用本工具自查本仓，报出 4 个真 bug + 2 处环境噪音；已�
 - **新增引擎检查 `src/checks/quality.mjs`**：项目根放 `finalcheck.quality.json` 声明 `checks: [{id, command, timeoutMs, maxMs, expect, minPercent, severity, optional}]`；引擎按顺序执行，记录 exit code / 墙钟 / 超时 / `expect` 正则匹配 / 覆盖率解析（istanbul 表格、`Statements : x%`、`Lines : x%`）。
 - **判定**：失败 → `Q2.<id>-failed`（默认高危）；超时 → `Q2.<id>-timeout`（可选项目降为 tip）；超过 `maxMs` → `-slow`（中危）；`expect` 不匹配 → `-expect`（中危）；覆盖率低于 `minPercent` → `-coverage`（高危）；解析不出覆盖率只记 warning，不编数字。命令输出里的 `KEY=… / token: …` 一律打码后进报告。
 - **接线**：`GATES` 不变，`audit()` 只有在项目根存在 `finalcheck.quality.json` 时才把 `Q2` 加进计划（L2/L3）；`runTests=false` 时只记 `coverageGap`（不执行）。报告 `CHECK_TITLE` 增加 `Q1 测试关` / `Q2 质量命令闸`。结果额外返回 `runs`（逐条 exit/耗时/超阈值/覆盖率），供 agent 复述成表格。
-- **桌面端**：新工具 `quality_gate(dir, tier)`，执行前调用 `requestApproval`（完全权限模式自动放行）；`audit_project` 仍是 `runTests=false`，不会偷偷执行项目代码。MCP 通道同步暴露 `quality_gate`。
+- **桌面端**：新工具 `quality_gate(dir, tier)`，执行前调用 `requestApproval`（完全权限模式自动放行）；`audit_project` 仍是 `runTests=false`，不会偷偷执行项目代码。MCP 通道同步暴露 `quality_gate`，但默认拒绝执行命令（无确认通道），只有显式 `--root` + `FINALCHECK_MCP_ALLOW_COMMANDS=1` 才放行。
 - **文档**：`docs/QUALITY-GATE.md`（字段表 + 四个维度的最小声明示例 + 判定原则）。
 - **验收**：`tests/quality.test.mjs` 10 条（解析/归一化/未配置 gap/未授权 gap/失败/超时/慢/expect/覆盖率/audit 集成），`agent-tools` 增加 quality_gate 授权测试；全仓 `npm test` 210 全绿。CLI 实跑 `npx finalcheck audit . --tier L2 --interactive`（`.tmp/qdemo`）输出 `Q2 bench-slow 实测 1377ms > 500ms`；app 内实跑（`.tmp/q2-in-app.png`）助手给出「unit 0 / 169ms、bench 0 / 1370ms 超阈值」表格并明确说明 lint/typecheck/test 未声明 = 未覆盖。
 

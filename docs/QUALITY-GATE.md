@@ -55,7 +55,7 @@ FinalCheck 原本只有安全类闸门（S1–S8）和「测试能不能跑」�
 
 - CLI：`npx finalcheck audit . --tier L2 --interactive`（默认 `runTests=true`；外部项目必须加 `--no-tests`，此时 Q2 只记缺口不执行）
 - 桌面端：跟助手说「跑一下质量闸 / 这里的 lint/测试/bench 过没过」，助手调用 `quality_gate`，**执行前会在输入框上方弹出授权条**，允许后逐条跑；`audit_project` 本身仍是 `runTests=false`，不会偷偷执行
-- MCP：`quality_gate` 工具可用（MCP 通道与 `run_command` 同权限级）
+- MCP：`quality_gate` **默认拒绝执行项目命令**（MCP 无用户确认通道）；确需执行时必须用 `--root <dir>` 显式指定项目根，并设置 `FINALCHECK_MCP_ALLOW_COMMANDS=1`，且 `dir` 必须在该根内
 
 ## 判定原则（照旧不越界）
 

@@ -1,21 +1,29 @@
 // MCP stdio server 集成测试：每个用例 spawn 真实进程，走按行 JSON-RPC 2.0
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import path from 'node:path';
 import os from 'node:os';
-import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, writeFile, readFile, rm, symlink, access } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..');
 const BIN = path.join(REPO_ROOT, 'bin', 'finalcheck-mcp.js');
 const FIVE_TOOLS = ['audit_project', 'download_gate', 'probe_target', 'stress_target', 'get_report'];
+const ALLOW_ENV = 'FINALCHECK_MCP_ALLOW_COMMANDS';
 
 // 最小 MCP 客户端：按行收发，响应按到达顺序出队
-function startServer() {
-  const child = spawn(process.execPath, [BIN], { stdio: ['pipe', 'pipe', 'pipe'] });
+// root：传给 server 的 --root（路径边界）；不传则用 server 默认 cwd（可用 cwd 覆盖工作目录）
+function startServer({ root = null, cwd = null, env = null } = {}) {
+  const args = [BIN];
+  if (root) args.push('--root', root);
+  const child = spawn(process.execPath, args, {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    ...(cwd ? { cwd } : {}),
+    ...(env ? { env: { ...process.env, ...env } } : {})
+  });
   const queue = [];
   const rl = createInterface({ input: child.stdout });
   rl.on('line', (line) => {
@@ -106,12 +114,12 @@ test('tools/call 方法论库：list_playbooks 40 类 + read_playbook 读入口'
   } finally { await s.close(); }
 });
 
-test('tools/call 文件工具：read_file / edit_file / write_file 全链路', { timeout: 20000 }, async (t) => {
+test('tools/call 文件工具：read_file / edit_file / write_file 全链路（root 内）', { timeout: 20000 }, async (t) => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'fc-mcp-fs-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const file = path.join(dir, 'code.js');
   await writeFile(file, 'const a = 1;\nconst b = 2;\n');
-  const s = startServer();
+  const s = startServer({ root: dir });
   try {
     const r1 = await s.request(1, 'tools/call', { name: 'read_file', arguments: { path: file } }, 18000);
     const read = JSON.parse(r1.result.content[0].text);
@@ -134,7 +142,7 @@ test('tools/call 文件工具：read_file / edit_file / write_file 全链路', {
 });
 
 test('tools/call audit_project: 仓库根自审返回 verdict', { timeout: 40000 }, async () => {
-  const s = startServer();
+  const s = startServer({ root: REPO_ROOT });
   try {
     // S4 现在按全部 workspace lockfile 各跑一次 npm audit（根 + desktop），离线回退官方源时
     // 单次审计可达数秒；并行跑整个测试套件时 18s 不够，放宽到 35s（只影响测试等待，不放宽判定）。
@@ -187,4 +195,163 @@ test('未知方法: JSON-RPC error -32601', { timeout: 20000 }, async () => {
     assert.equal(res.error.code, -32601);
     assert.ok(res.error.message.includes('no/such/method'));
   } finally { await s.close(); }
+});
+
+// ---- MCP 路径边界与命令授权（--root 路径监狱 + quality_gate 默认拒绝）----
+
+async function toolResult(s, id, name, args, timeoutMs = 18000) {
+  const res = await s.request(id, 'tools/call', { name, arguments: args }, timeoutMs);
+  const text = res.result.content[0].text;
+  return { isError: res.result.isError === true, text, data: () => JSON.parse(text) };
+}
+
+const exists = (p) => access(p).then(() => true, () => false);
+
+test('MCP 路径边界：root 内读写成功；../、绝对路径 C:\\Windows\\...、root 外文件全部拒绝', { timeout: 30000 }, async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'fc-mcp-jail-'));
+  const outside = await mkdtemp(path.join(os.tmpdir(), 'fc-mcp-out-'));
+  t.after(() => Promise.all([rm(root, { recursive: true, force: true }), rm(outside, { recursive: true, force: true })]));
+  await writeFile(path.join(root, 'in.txt'), 'inside-ok\n');
+  await writeFile(path.join(outside, 'secret.txt'), 'outside-secret\n');
+  const outsideFile = path.join(outside, 'secret.txt');
+  const relEscape = `..${path.sep}${path.basename(outside)}${path.sep}secret.txt`;
+  // Windows 用真实系统路径验证绝对路径逃逸；POSIX 用 /etc/passwd（即使存在也不许读）
+  const absEscape = process.platform === 'win32' ? 'C:\\Windows\\win.ini' : '/etc/passwd';
+  const s = startServer({ root });
+  try {
+    const insideRead = await toolResult(s, 1, 'read_file', { path: path.join(root, 'in.txt') });
+    assert.ok(!insideRead.isError, insideRead.text);
+    assert.match(insideRead.data().content, /inside-ok/);
+    const insideReadRel = await toolResult(s, 2, 'read_file', { path: 'in.txt' });
+    assert.ok(!insideReadRel.isError, insideReadRel.text);
+    const insideWrite = await toolResult(s, 3, 'write_file', { path: 'sub.txt', content: 'relative-ok\n' });
+    assert.ok(!insideWrite.isError, insideWrite.text);
+    assert.equal(insideWrite.data().created, true);
+    assert.match(await readFile(path.join(root, 'sub.txt'), 'utf8'), /relative-ok/);
+
+    const readDotDot = await toolResult(s, 4, 'read_file', { path: relEscape });
+    assert.equal(readDotDot.isError, true, '必须拒绝 ../ 逃逸');
+    assert.match(readDotDot.text, /越界/);
+
+    const readAbsOutside = await toolResult(s, 5, 'read_file', { path: outsideFile });
+    assert.equal(readAbsOutside.isError, true, '必须拒绝 root 外绝对路径');
+    assert.match(readAbsOutside.text, /越界/);
+
+    const readSystemAbs = await toolResult(s, 6, 'read_file', { path: absEscape });
+    assert.equal(readSystemAbs.isError, true, '必须拒绝系统绝对路径');
+    assert.match(readSystemAbs.text, /越界/);
+
+    const writeOutside = await toolResult(s, 7, 'write_file', { path: outsideFile, content: 'pwned\n' });
+    assert.equal(writeOutside.isError, true, '必须拒绝 root 外写入');
+    assert.match(writeOutside.text, /越界/);
+    assert.match(await readFile(outsideFile, 'utf8'), /outside-secret/, 'root 外文件不得被改写');
+
+    const editDotDot = await toolResult(s, 8, 'edit_file', { path: relEscape, old_string: 'outside-secret', new_string: 'pwned' });
+    assert.equal(editDotDot.isError, true, '必须拒绝 ../ 编辑');
+    assert.match(editDotDot.text, /越界/);
+
+    const presentOutside = await toolResult(s, 9, 'present_artifact', { path: outsideFile });
+    assert.equal(presentOutside.isError, true, 'present_artifact 必须拒绝 root 外文件');
+    assert.match(presentOutside.text, /越界/);
+
+    const auditOutside = await toolResult(s, 10, 'audit_project', { dir: outside });
+    assert.equal(auditOutside.isError, true, 'audit_project 必须拒绝 root 外目录');
+    assert.match(auditOutside.text, /越界/);
+
+    const downloadOutside = await toolResult(s, 11, 'download_gate', { dir: outside });
+    assert.equal(downloadOutside.isError, true, 'download_gate 必须拒绝 root 外目录');
+    assert.match(downloadOutside.text, /越界/);
+
+    const reportOutside = await toolResult(s, 12, 'get_report', { dir: outside });
+    assert.equal(reportOutside.isError, true, 'get_report 必须拒绝 root 外目录');
+    assert.match(reportOutside.text, /越界/);
+  } finally { await s.close(); }
+});
+
+test('MCP 未传 --root 时默认以进程 cwd 为根', { timeout: 20000 }, async () => {
+  const s = startServer({ cwd: REPO_ROOT });
+  try {
+    const inside = await toolResult(s, 1, 'read_file', { path: path.join(REPO_ROOT, 'package.json') });
+    assert.ok(!inside.isError, inside.text);
+    const outside = await toolResult(s, 2, 'read_file', { path: path.join(os.tmpdir(), 'fc-mcp-definitely-outside.txt') });
+    assert.equal(outside.isError, true, '默认 cwd 之外仍须拒绝');
+    assert.match(outside.text, /越界/);
+  } finally { await s.close(); }
+});
+
+test('MCP 路径边界：符号链接逃逸被拒绝', { timeout: 20000 }, async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'fc-mcp-link-'));
+  const outside = await mkdtemp(path.join(os.tmpdir(), 'fc-mcp-link-out-'));
+  t.after(() => Promise.all([rm(root, { recursive: true, force: true }), rm(outside, { recursive: true, force: true })]));
+  await writeFile(path.join(outside, 'secret.txt'), 'outside-secret\n');
+  const link = path.join(root, 'link');
+  try {
+    await symlink(outside, link, process.platform === 'win32' ? 'junction' : 'dir');
+  } catch {
+    t.skip('当前平台/权限无法创建符号链接，跳过该用例');
+    return;
+  }
+  const s = startServer({ root });
+  try {
+    const res = await toolResult(s, 1, 'read_file', { path: path.join('link', 'secret.txt') });
+    assert.equal(res.isError, true, '符号链接逃逸必须拒绝');
+    assert.match(res.text, /越界/);
+  } finally { await s.close(); }
+});
+
+test('MCP quality_gate：默认拒绝执行项目命令；env=1 且显式 --root 才允许', { timeout: 40000 }, async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'fc-mcp-qgate-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const marker = path.join(root, 'ran.txt');
+  await writeFile(path.join(root, 'finalcheck.quality.json'), JSON.stringify({
+    checks: [{ id: 'mcp', command: 'node -e "require(\'fs\').writeFileSync(\'ran.txt\',\'ran\')"', timeoutMs: 30000 }]
+  }), 'utf8');
+
+  // 1) 默认（无 env）：即使项目声明了命令也拒绝，且不执行
+  const denied = startServer({ root });
+  try {
+    const r = await toolResult(denied, 1, 'quality_gate', { dir: root }, 20000);
+    assert.equal(r.isError, true, '默认必须拒绝执行项目命令');
+    assert.match(r.text, /FINALCHECK_MCP_ALLOW_COMMANDS=1/);
+    assert.match(r.text, /--root/);
+    assert.equal(await exists(marker), false, '默认拒绝时不得执行项目命令');
+  } finally { await denied.close(); }
+
+  // 2) env=1 + 显式 --root：放行并真的执行
+  const allowed = startServer({ root, env: { [ALLOW_ENV]: '1' } });
+  try {
+    const r = await toolResult(allowed, 1, 'quality_gate', { dir: root }, 20000);
+    assert.ok(!r.isError, r.text);
+    const data = r.data();
+    assert.equal(data.runs.length, 1);
+    assert.equal(data.runs[0].code, 0);
+    assert.equal(await exists(marker), true, '授权后应按声明执行命令');
+  } finally { await allowed.close(); }
+
+  // 3) env=1 但 dir 在 root 外：仍然拒绝
+  const otherRoot = await mkdtemp(path.join(os.tmpdir(), 'fc-mcp-qgate-root-'));
+  t.after(() => rm(otherRoot, { recursive: true, force: true }));
+  const outsideCall = startServer({ root: otherRoot, env: { [ALLOW_ENV]: '1' } });
+  try {
+    const r = await toolResult(outsideCall, 1, 'quality_gate', { dir: root }, 20000);
+    assert.equal(r.isError, true, 'root 外目录必须拒绝');
+    assert.match(r.text, /越界/);
+  } finally { await outsideCall.close(); }
+
+  // 4) env=1 但没显式 --root：仍不放行（避免默认 cwd 被当成授权范围）
+  await rm(marker, { force: true });
+  const implicitRoot = startServer({ env: { [ALLOW_ENV]: '1' } });
+  try {
+    const r = await toolResult(implicitRoot, 1, 'quality_gate', { dir: root }, 20000);
+    assert.equal(r.isError, true, '未显式 --root 时不得执行项目命令');
+    assert.match(r.text, /显式传 --root/);
+    assert.equal(await exists(marker), false, '默认 cwd 模式不得执行项目命令');
+  } finally { await implicitRoot.close(); }
+});
+
+test('--root 必须是已存在的目录：不存在时启动失败并给出原因', { timeout: 20000 }, async () => {
+  const missing = path.join(os.tmpdir(), `fc-mcp-missing-${Date.now()}`);
+  const r = spawnSync(process.execPath, [BIN, '--root', missing], { input: '', encoding: 'utf8', timeout: 10000 });
+  assert.equal(r.status, 1, '不存在的 --root 必须启动失败');
+  assert.match(String(r.stderr), /--root 指定的目录不存在/);
 });
