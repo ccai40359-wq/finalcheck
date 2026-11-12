@@ -1,8 +1,6 @@
-import { readFile, rm } from 'node:fs/promises';
-import path from 'node:path';
 import { listTextFiles, readRel, prunedWarning } from '../walk.mjs';
-import { findBinary } from '../which.mjs';
 import { runProcess } from '../run-async.mjs';
+import { resolveGitleaks, runGitleaks } from './gitleaks.mjs';
 
 // S3 密钥与弱默认（ACCEPTANCE §4-A）。判定程序 = Gitleaks（可选增强）+ 自研规则
 // 自食教训：文档(.md/.txt)里的教学示例不算实锤 → 降为提醒级线索
@@ -86,7 +84,7 @@ async function applyUntrackedConfigHints(projectDir, findings, warnings) {
   return findings;
 }
 
-export async function checkSecrets(projectDir, { excludes = [], includeFixtures = false } = {}) {
+export async function checkSecrets(projectDir, { excludes = [], includeFixtures = false, gitleaks = {} } = {}) {
   const findings = [];
   const warnings = [];
   const effectiveExcludes = sanitizeS3Excludes(excludes);
@@ -137,33 +135,31 @@ export async function checkSecrets(projectDir, { excludes = [], includeFixtures 
   } else if (git.status === null) {
     warnings.push('git 不可用，.env 追踪检查未跑');
   }
-  // Gitleaks 增强（§7 必装；缺失或运行失败 → 覆盖不足按 §5 封顶）
-  const glPath = findBinary('gitleaks');
+  // Gitleaks 增强（§7）：适配层负责定位/临时报告/解析；缺失仅 warning（自研规则仍覆盖），
+  // 配置或探测到但跑不起来（失败/超时/坏报告）才记 coverageGap。
+  const glConfig = gitleaks && typeof gitleaks === 'object' && !Array.isArray(gitleaks) ? gitleaks : {};
+  const glBinary = resolveGitleaks({ config: glConfig, env: process.env });
+  const gl = await runGitleaks(projectDir, {
+    binaryPath: glBinary,
+    timeoutMs: glConfig.timeoutMs,
+    scanHistory: glConfig.scanHistory === true,
+    excludes: effectiveExcludes,
+  });
+  warnings.push(...gl.warnings);
   let coverageGap = null;
-  if (glPath) {
-    const rep = path.join(projectDir, '.finalcheck-gitleaks.tmp.json');
-    const run = await runProcess(glPath, ['detect', '--source', projectDir, '--report-format', 'json', '--report-path', rep, '--no-git', '--exit-code', '0', '--no-banner', '--redact'], { timeoutMs: 120000 });
-    if (run.error) {
-      coverageGap = 'gitleaks 运行失败';
-    } else {
-      let leaks = null;
-      try { leaks = JSON.parse(await readFile(rep, 'utf8')); } catch { /* 报告缺失 */ }
-      await rm(rep, { force: true }).catch(() => {});
-      if (run.status !== 0 || !Array.isArray(leaks)) {
-        // P1#4：跑挂了绝不能计为"已执行"
-        coverageGap = 'gitleaks 报告缺失或异常';
-      } else {
-        for (const l of leaks) {
-          const relFile = String(l.File || '').replace(/\\/g, '/');
-          // P1#5：夹具/构建产物排除对 gitleaks 同样生效；真实配置文件不在白名单内，不能被 exclude 藏掉
-          if (effectiveExcludes.some((x) => { const n = String(x).replace(/\\/g, '/'); return relFile === n || relFile.startsWith(n + '/'); })) continue;
-          const isDoc = /\.(md|txt)$/i.test(relFile);
-          findings.push({ checkId: 'S3', severity: isDoc ? 'medium' : 'high', force: isDoc ? 'tip' : 'card', file: relFile, line: l.StartLine || 0, rule: 'S3.gitleaks', snippet: `gitleaks 规则 ${l.RuleID} 命中`, message: 'gitleaks 检出疑似密钥', source: 'program' });
-        }
-      }
+  if (gl.gapKind === 'unavailable') coverageGap = gl.gapReason || 'gitleaks 不可用';
+  // 与自研 findings 同 file+line 去重：保留自研判定，gitleaks 规则名只进 warnings。
+  const selfByLocation = new Map();
+  for (const f of findings) {
+    if (Number(f.line) > 0) selfByLocation.set(`${f.file}:${f.line}`, f);
+  }
+  for (const gf of gl.findings) {
+    const self = Number(gf.line) > 0 ? selfByLocation.get(`${gf.file}:${gf.line}`) : null;
+    if (self) {
+      warnings.push(`gitleaks 规则 ${gf.rule.slice('S3.gitleaks:'.length)} 与自研规则 ${self.rule} 同位置（${gf.file}:${gf.line}），保留自研判定`);
+      continue;
     }
-  } else {
-    warnings.push('gitleaks 未安装：自研 4 规则覆盖（广度有限，装 gitleaks 可增强至 600+ 规则）');
+    findings.push(gf);
   }
   const finalized = await applyUntrackedConfigHints(projectDir, findings, warnings);
   return { checkId: 'S3', findings: finalized, coverageGap, warnings };

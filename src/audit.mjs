@@ -97,7 +97,7 @@ export async function audit(projectDir, { tier = null, interactive = false, runT
       // S3 = 工作树密钥 + git 历史密钥：历史查不了只降级为 warning（不能因没 .git 就把整份结论压成无法验收）
       // S3 的 exclude 只保留夹具/构建产物白名单：真实配置文件（如 desktop/config.json）不能被藏掉。
       const s3Excludes = sanitizeS3Excludes(excludes);
-      const base = await checkSecrets(projectDir, { excludes, includeFixtures });
+      const base = await checkSecrets(projectDir, { excludes, includeFixtures, gitleaks: cfg.gitleaks });
       const hist = await checkSecretsHistory(projectDir, { tier: effective, excludes: s3Excludes })
         .catch((e) => ({ checkId: 'S3', findings: [], warnings: [`S3 历史扫描异常：${e.message}`], coverageGap: null }));
       results.push({
