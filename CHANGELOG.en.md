@@ -6,6 +6,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.16.0] - 2026-11-12
+
+### Added
+
+- Added `docs/RELIABILITY.md`: it states the implemented scope, evidence contracts and known boundaries; a "pass" now applies only to the plan actually executed in this run, not to full compliance.
+- The download gate checks the requested version/range and npm lockfiles instead of only `latest`; the install hook recognizes common wrappers such as `sudo`, `env`, `bash -c`, `cmd /c`, `powershell`, `time`, `nice`, `command`, `timeout`, `xargs`, `stdbuf`, `nohup`, `exec` and `setsid`.
+- Dynamic testing now records anonymous accessibility and successful sample counts: security needs probe samples, while performance, stability and robustness need stress samples; failed or zero-sample runs cannot upgrade evidence.
+- Backup and privacy now use machine-readable evidence: `finalcheck.evidence.json` records a restore drill confirmed within the last 90 days, and `finalcheck.privacy.json` declares the fields actually collected.
+
+### Fixed
+
+- Audits are static by default and do not run the target project's tests or quality commands; only an explicit `--run-tests` executes them, and `--no-tests` takes precedence. The desktop app still never runs them.
+- `readonly` now blocks commands, quality commands and project-memory writes; junctions and symlinks are checked against their real paths; approvals are isolated per session, project and tool; the quality gate binds a command-config fingerprint and executes the config snapshot taken at approval time.
+- L2/L3 no longer report an overall pass while unresolved medium/high manual findings remain; L3 coverage must be produced in the current run, and missing or invalid required metrics are failures.
+- Auth, signature, ownership and cookie checks now use evidence from the current route handler: an empty `next()` guard is not protection, comments or unrelated routes cannot suppress findings, and cookie attributes are read from actual values; unsupported frameworks are recorded as unavailable coverage.
+- Injection checks now catch split-line/aliased SQL and SSRF; same-origin relative `fetch` calls and fixed hosts are no longer high-severity SSRF; parameterized queries, including concatenation inside a `LIKE ?` parameter array, are no longer false positives.
+- Dynamic probing no longer treats HTTP 200 business errors, JSON not-found bodies or zero-sample runs as reproduced vulnerabilities; anonymous accessibility is listed only as a signal needing confirmation.
+- The download gate no longer blocks installs when the download-count API fails; registry metadata failures or missing packages still block, and failures are not cached as safe.
+- L3 backups require three pieces of evidence: an executable command, a related schedule, and a restore drill confirmed within the last 90 days; privacy declarations are reconciled against explicit fields and conflicts with "we do not collect" statements are flagged.
+- Approval targets now use the same canonical real path as the tools on Windows 8.3 short paths, preventing duplicate approval prompts or timeouts for the same operation.
+
+### Improved
+
+- Regression tests grew from 1088 to 1146, adding the 18 reproduced cases plus regressions for install-hook prefix bypasses, same-origin SSRF false positives and parameterized-SQL false positives.
+- README, ACCEPTANCE, QUALITY-GATE and DESKTOP-ACCEPTANCE were updated to the new semantics, with both READMEs showing 1146 tests.
+
 ## [0.15.2] - 2026-11-12
 
 ### Added
