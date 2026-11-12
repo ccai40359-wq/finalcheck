@@ -192,19 +192,27 @@ const TOOL_KEEP_RECENT = 4; // 旧 pruneConvo 口径：最近 4 条工具结果�
 const STREAM_USAGE = process.env.FINALCHECK_STREAM_USAGE !== '0'; // 请求流式 usage；个别网关不认该字段时按 4xx 降级
 const spillDir = () => process.env.FINALCHECK_SPILL_DIR || path.resolve(__dirname, '..', '..', 'spill');
 
+/* ---------- Windows 路径的 JSON 转义（第二道防线，不是并行调用粘连的根因） ----------
+ * 模型也常把 `{"dir":"D:\rcw-geo\yanshou"}` 写成单反斜杠：`\r` 会被 JSON 当成回车，
+ * `\g`/`\y` 不是合法转义 → 整个参数 ARGS_INVALID_JSON，audit_project/download_gate 不执行。
+ * 根因（并行 tool_calls 被拼成一个 name/arguments）已在 mergeStreamingToolCall 修复；
+ * 这里保留三段防线：① schema/系统提示预防；② 参数闸自动修复能确定语义的反斜杠路径与尾逗号；
+ * ③ 修不了才回模型重发，仍失败才按原因码收尾。文案集中在这里，避免多处漂移。 */
+export const PATH_JSON_HINT = 'Windows 路径请用正斜杠（D:/rcw-geo/...），或把反斜杠写成双反斜杠（D:\\\\rcw-geo\\\\...）；JSON 字符串里不要写单反斜杠。';
+
 export const TOOLS_SCHEMA = [
-  { type: 'function', function: { name: 'audit_project', description: '对项目目录跑全方位验收：返回 11 维结论（每维结论/证据等级/覆盖了哪些检查项）+ 发现。计划来自项目根 finalcheck.profile.json（有就用），没有就按 tier 合成 11 维同档。sources 说明输入面：只给代码=code；用户给了可访问地址就加 url；用户明确授权对该地址做动态探测/压测才加 dynamicAuth（仍以本轮真的跑过 probe/stress 才算 full）。缺工具/配置会记 coverageGap', parameters: { type: 'object', properties: { dir: { type: 'string', description: '项目绝对路径' }, tier: { type: 'string', enum: ['L1', 'L2', 'L3'] }, sources: { type: 'object', description: '可选：输入面。不给默认 {code:true}；给了 url 才会尝试动态维度；dynamicAuth 只是授权声明，实测记录由 probe_target/stress_target 产生', properties: { code: { type: 'boolean', description: '有源码可读（默认 true）' }, url: { type: 'string', description: '可访问的目标地址（http/https 或 localhost）' }, dynamicAuth: { type: 'boolean', description: '用户已授权对该 url 做动态探测/压测' }, loadLimit: { type: 'object', description: '可选：压测上限 {seconds, connections}，默认 10s/10', properties: { seconds: { type: 'number' }, connections: { type: 'number' } } } } } }, required: ['dir'] } } },
-  { type: 'function', function: { name: 'quality_gate', description: '按项目根 finalcheck.quality.json 跑质量命令闸（lint / typecheck / test / bench 与阈值），返回每条命令的 exit/耗时/是否超阈值/覆盖率；repeat 可重复跑 1–5 次查抖动；执行前需用户授权', parameters: { type: 'object', properties: { dir: { type: 'string', description: '项目绝对路径' }, tier: { type: 'string', enum: ['L2', 'L3'] }, repeat: { type: 'number', description: '可选：每条命令重复执行次数 1–5（默认 1；>1 时返回 flaky/attempts）', minimum: 1, maximum: 5 } }, required: ['dir'] } } },
-  { type: 'function', function: { name: 'download_gate', description: '对项目目录跑下载闸体检（安装脚本/投毒/外呼/README 注入）', parameters: { type: 'object', properties: { dir: { type: 'string' } }, required: ['dir'] } } },
+  { type: 'function', function: { name: 'audit_project', description: '对项目目录跑全方位验收：返回 11 维结论（每维结论/证据等级/覆盖了哪些检查项）+ 发现。计划来自项目根 finalcheck.profile.json（有就用），没有就按 tier 合成 11 维同档。sources 说明输入面：只给代码=code；用户给了可访问地址就加 url；用户明确授权对该地址做动态探测/压测才加 dynamicAuth（仍以本轮真的跑过 probe/stress 才算 full）。缺工具/配置会记 coverageGap', parameters: { type: 'object', properties: { dir: { type: 'string', description: '项目绝对路径。' + PATH_JSON_HINT }, tier: { type: 'string', enum: ['L1', 'L2', 'L3'] }, sources: { type: 'object', description: '可选：输入面。不给默认 {code:true}；给了 url 才会尝试动态维度；dynamicAuth 只是授权声明，实测记录由 probe_target/stress_target 产生', properties: { code: { type: 'boolean', description: '有源码可读（默认 true）' }, url: { type: 'string', description: '可访问的目标地址（http/https 或 localhost）' }, dynamicAuth: { type: 'boolean', description: '用户已授权对该 url 做动态探测/压测' }, loadLimit: { type: 'object', description: '可选：压测上限 {seconds, connections}，默认 10s/10', properties: { seconds: { type: 'number' }, connections: { type: 'number' } } } } } }, required: ['dir'] } } },
+  { type: 'function', function: { name: 'quality_gate', description: '按项目根 finalcheck.quality.json 跑质量命令闸（lint / typecheck / test / bench 与阈值），返回每条命令的 exit/耗时/是否超阈值/覆盖率；repeat 可重复跑 1–5 次查抖动；执行前需用户授权', parameters: { type: 'object', properties: { dir: { type: 'string', description: '项目绝对路径。' + PATH_JSON_HINT }, tier: { type: 'string', enum: ['L2', 'L3'] }, repeat: { type: 'number', description: '可选：每条命令重复执行次数 1–5（默认 1；>1 时返回 flaky/attempts）', minimum: 1, maximum: 5 } }, required: ['dir'] } } },
+  { type: 'function', function: { name: 'download_gate', description: '对项目目录跑下载闸体检（安装脚本/投毒/外呼/README 注入）', parameters: { type: 'object', properties: { dir: { type: 'string', description: '项目绝对路径。' + PATH_JSON_HINT } }, required: ['dir'] } } },
   { type: 'function', function: { name: 'probe_target', description: '对目标应用做渗透探测（无认证访问复现/CORS 反射/安全头），并采样返回延迟百分位 p50/p95/min/max/firstByteMs。仅限用户确认的本机应用', parameters: { type: 'object', properties: { url: { type: 'string' }, requests: { type: 'number', description: '可选：延迟采样次数 3–20，默认 10', minimum: 3, maximum: 20 } }, required: ['url'] } } },
   { type: 'function', function: { name: 'stress_target', description: '对目标应用做压力测试（温和上限 60s/50 连接）。仅限用户确认的本机应用', parameters: { type: 'object', properties: { url: { type: 'string' }, duration: { type: 'number', default: 10 }, connections: { type: 'number', default: 10 } }, required: ['url'] } } },
-  { type: 'function', function: { name: 'get_report', description: '跑体检并返回人话报告全文（有 profile 或传 sources 时是 11 维表：结论/证据等级/覆盖检查项）', parameters: { type: 'object', properties: { dir: { type: 'string' }, tier: { type: 'string', enum: ['L1', 'L2', 'L3'] }, sources: { type: 'object', description: '可选：输入面 {code,url,dynamicAuth,loadLimit}，同 audit_project' } }, required: ['dir'] } } },
+  { type: 'function', function: { name: 'get_report', description: '跑体检并返回人话报告全文（有 profile 或传 sources 时是 11 维表：结论/证据等级/覆盖检查项）', parameters: { type: 'object', properties: { dir: { type: 'string', description: '项目绝对路径。' + PATH_JSON_HINT }, tier: { type: 'string', enum: ['L1', 'L2', 'L3'] }, sources: { type: 'object', description: '可选：输入面 {code,url,dynamicAuth,loadLimit}，同 audit_project' } }, required: ['dir'] } } },
   { type: 'function', function: { name: 'list_playbooks', description: '列出渗透方法论库的 40 个类目（编号/中文名/英文名/触发词/文件数）。开始渗透测试或不确定该用哪类手法时先调用它', parameters: { type: 'object', properties: {} } } },
   { type: 'function', function: { name: 'read_playbook', description: '读方法论库（playbooks/web-vuln，40 类漏洞技能包）。topic 传类目编号或英文名（如 11 / ssrf / sql-injection）；默认返回 SKILL.md 入口（含文件路由）；附属手册用 file 指定、大文件用 offset/limit 续读', parameters: { type: 'object', properties: { topic: { type: 'string', description: '类目编号或英文名，如 11 / ssrf / idor / jwt / wafbypass / vuln-report-generate' }, file: { type: 'string', description: '可选：该类目目录下的具体文件名（可先用 topic 读入口看 files 列表）' }, offset: { type: 'number', description: '可选：从第几个字符开始读，默认 0' }, limit: { type: 'number', description: '可选：本次最多读多少字符，默认 14000，上限 30000' } }, required: ['topic'] } } },
-  { type: 'function', function: { name: 'read_file', description: '读取本机文本文件（带行数/分页）。修改代码前先用它看清原文；大文件用 offset/limit 续读', parameters: { type: 'object', properties: { path: { type: 'string', description: '文件绝对路径' }, offset: { type: 'number', description: '可选：从第几个字符开始，默认 0' }, limit: { type: 'number', description: '可选：本次最多读多少字符，默认 20000，上限 40000' } }, required: ['path'] } } },
-  { type: 'function', function: { name: 'edit_file', description: '精确修改文件：把 old_string 替换成 new_string（old_string 必须在文件中唯一，否则拒绝）。改前先 read_file；改后返回 +N/-M 与 diff。需要用户审批', parameters: { type: 'object', properties: { path: { type: 'string', description: '文件绝对路径' }, old_string: { type: 'string', description: '要替换的原文本（含缩进，必须唯一）' }, new_string: { type: 'string', description: '替换后的文本（可为空字符串=删除）' } }, required: ['path', 'old_string', 'new_string'] } } },
-  { type: 'function', function: { name: 'write_file', description: '新建或整体覆盖文本文件（≤2MB），返回 +N/-M 与 diff。父目录必须已存在；需要用户审批', parameters: { type: 'object', properties: { path: { type: 'string', description: '文件绝对路径' }, content: { type: 'string', description: '完整文件内容' } }, required: ['path', 'content'] } } },
-  { type: 'function', function: { name: 'present_artifact', description: '把生成/修改好的 png / html / pdf / 文本文件登记为右侧可预览产物（用户点一下就在右侧打开）。生成了网页/图片后调用它', parameters: { type: 'object', properties: { path: { type: 'string', description: '文件绝对路径' }, title: { type: 'string', description: '可选：展示标题' } }, required: ['path'] } } },
+  { type: 'function', function: { name: 'read_file', description: '读取本机文本文件（带行数/分页）。修改代码前先用它看清原文；大文件用 offset/limit 续读', parameters: { type: 'object', properties: { path: { type: 'string', description: '文件绝对路径。' + PATH_JSON_HINT }, offset: { type: 'number', description: '可选：从第几个字符开始，默认 0' }, limit: { type: 'number', description: '可选：本次最多读多少字符，默认 20000，上限 40000' } }, required: ['path'] } } },
+  { type: 'function', function: { name: 'edit_file', description: '精确修改文件：把 old_string 替换成 new_string（old_string 必须在文件中唯一，否则拒绝）。改前先 read_file；改后返回 +N/-M 与 diff。需要用户审批', parameters: { type: 'object', properties: { path: { type: 'string', description: '文件绝对路径。' + PATH_JSON_HINT }, old_string: { type: 'string', description: '要替换的原文本（含缩进，必须唯一）' }, new_string: { type: 'string', description: '替换后的文本（可为空字符串=删除）' } }, required: ['path', 'old_string', 'new_string'] } } },
+  { type: 'function', function: { name: 'write_file', description: '新建或整体覆盖文本文件（≤2MB），返回 +N/-M 与 diff。父目录必须已存在；需要用户审批', parameters: { type: 'object', properties: { path: { type: 'string', description: '文件绝对路径。' + PATH_JSON_HINT }, content: { type: 'string', description: '完整文件内容' } }, required: ['path', 'content'] } } },
+  { type: 'function', function: { name: 'present_artifact', description: '把生成/修改好的 png / html / pdf / 文本文件登记为右侧可预览产物（用户点一下就在右侧打开）。生成了网页/图片后调用它', parameters: { type: 'object', properties: { path: { type: 'string', description: '文件绝对路径。' + PATH_JSON_HINT }, title: { type: 'string', description: '可选：展示标题' } }, required: ['path'] } } },
   {
     type: 'function',
     function: {
@@ -272,14 +280,14 @@ export const TOOLS_SCHEMA = [
     }
   },
   { type: 'function', function: { name: 'remember_project', description: '把用户明确要求长期记住的项目事实写进项目根的 AGENTS.md（追加到「## 记忆」小节，自动去重）。只记稳定事实：项目用途、技术栈、目录约定、禁忌、验收口径；不要记一次性会话内容', parameters: { type: 'object', properties: { fact: { type: 'string', description: '一条事实，一句话，尽量带路径/命令等可核对信息' } }, required: ['fact'] } } },
-  { type: 'function', function: { name: 'run_command', description: '在本机执行 shell 命令（Windows cmd 语法：dir/type/findstr/curl 等）。用于探查目录、读文件、验证问题——用户明确授权自由使用。灾难性命令会被拦截。起常驻服务（node server.mjs / 端口监听）必须用 background:true 立刻拿 PID，不要用 Start-Process / start /b 再等它返回；连续 120s 无输出的命令会自动转后台并返回 PID（进程不杀）', parameters: { type: 'object', properties: { command: { type: 'string', description: '要执行的命令' }, cwd: { type: 'string', description: '工作目录（可选）' }, timeout_ms: { type: 'number', description: '超时毫秒（可选）；不传则不限时跑到命令结束（连续 120s 无输出会转后台返回 PID），传了按该毫秒数到点终止' }, background: { type: 'boolean', description: 'true=立刻在后台启动并返回 PID（起常驻服务用），不等待输出' }, idle_ms: { type: 'number', description: '可选：多久无输出算卡住并转后台，默认 120000；0=关闭该兜底' } }, required: ['command'] } } }
+  { type: 'function', function: { name: 'run_command', description: '在本机执行 shell 命令（Windows cmd 语法：dir/type/findstr/curl 等）。用于探查目录、读文件、验证问题——用户明确授权自由使用。灾难性命令会被拦截。起常驻服务（node server.mjs / 端口监听）必须用 background:true 立刻拿 PID，不要用 Start-Process / start /b 再等它返回；连续 120s 无输出的命令会自动转后台并返回 PID（进程不杀）', parameters: { type: 'object', properties: { command: { type: 'string', description: '要执行的命令' }, cwd: { type: 'string', description: '工作目录（可选）。' + PATH_JSON_HINT }, timeout_ms: { type: 'number', description: '超时毫秒（可选）；不传则不限时跑到命令结束（连续 120s 无输出会转后台返回 PID），传了按该毫秒数到点终止' }, background: { type: 'boolean', description: 'true=立刻在后台启动并返回 PID（起常驻服务用），不等待输出' }, idle_ms: { type: 'number', description: '可选：多久无输出算卡住并转后台，默认 120000；0=关闭该兜底' } }, required: ['command'] } } }
 ];
 
 // review_diff：只读 git 改动审查。单列一份而不是塞进 TOOLS_SCHEMA：
 // TOOLS_SCHEMA 同时是 MCP 通道的 SSOT（src/mcp/server.mjs 照抄并精确断言工具表），
 // MCP 通道没有 review_diff 的实现，放进去会让 tools/list 暴露一个调不通的工具。
 export const AGENT_ONLY_TOOLS_SCHEMA = [
-  { type: 'function', function: { name: 'review_diff', description: '只读审查 git 改动（默认对比 HEAD，也可 HEAD~1 / 分支名）：返回改动文件与 +/- 行数，并标出新增 SQL 拼接 / 命令执行 / 密钥字面量、删除的鉴权中间件、被改的 .env/.gitignore。不执行被审项目代码，不做 add/commit/checkout', parameters: { type: 'object', properties: { dir: { type: 'string', description: '项目绝对路径' }, base: { type: 'string', description: '可选：对比基线，默认 HEAD（也可 HEAD~1 或分支名）' } }, required: ['dir'] } } },
+  { type: 'function', function: { name: 'review_diff', description: '只读审查 git 改动（默认对比 HEAD，也可 HEAD~1 / 分支名）：返回改动文件与 +/- 行数，并标出新增 SQL 拼接 / 命令执行 / 密钥字面量、删除的鉴权中间件、被改的 .env/.gitignore。不执行被审项目代码，不做 add/commit/checkout', parameters: { type: 'object', properties: { dir: { type: 'string', description: '项目绝对路径。' + PATH_JSON_HINT }, base: { type: 'string', description: '可选：对比基线，默认 HEAD（也可 HEAD~1 或分支名）' } }, required: ['dir'] } } },
   // 回合中途向用户提问：只在主 agent 的工具表；子代理不注册（避免并行子代理同时弹多个问题）。
   // 卡片 UI 用 callId 关联；回答经 finalcheck:ask-user-answer 回填，工具返回 { answer }。
   { type: 'function', function: { name: 'ask_user', description: '回合中途向用户提问并等待回答（同一回合最多 3 次）。只在真有分叉且影响结论时使用（例如「按 L2 还是 L3」「动态探测要不要授权」「两个方向只能选一个」），信息足够时不要打扰用户。最多给 6 个选项；纯开放式提问可以不给 options，由用户自己输入。调用后本回合暂停，直到用户回答或点击停止', parameters: { type: 'object', properties: { question: { type: 'string', description: '要问用户的问题，一句话说清分叉点与影响' }, options: { type: 'array', maxItems: 6, description: '可选：2-6 个候选答案；不给则纯开放式提问', items: { type: 'object', properties: { label: { type: 'string', description: '选项短标签' }, description: { type: 'string', description: '可选的补充说明（影响/代价）' } }, required: ['label'] } }, multiSelect: { type: 'boolean', description: '可选：是否允许多选，默认 false' } }, required: ['question'] } } },
@@ -299,7 +307,8 @@ const SYSTEM_BASE = [
   '职责：帮用户跑体检/下载闸/渗透探测/压测，并用大白话解释结果；发现必须带证据（文件:行或 HTTP 复现）说话，不编造。',
   // 验收前置硬规则：放在所有工具说明之前（优先于下面的执行节奏与「信息足够就别打扰」）
   '验收前置（硬规则，优先于下面所有工具说明）：用户提出「验收 / 体检 / 审计 / 帮我看看这个项目」时，必须先问清两件事再动手——(a) 档位 L1/L2/L3；(b) 要覆盖哪些维度。用户没有同时说清这两项 → 必须先调 ask_user，先问清楚，不许猜；不许先跑 audit_project，也不许用 dir / 文件列表猜目标代替提问。',
-  '问法（一次只问一件事，最多两次 ask_user）：① 档位单选——L1 底线（个人发布：查基础安全与依赖有没有硬伤）、L2 真实用户（再加交接 H1、可维护 Q3、动态探测）、L3 公司交付（再加许可证 C1、运维 O1、对抗性复核），每个选项带一句「查什么」；② 维度多选——列出 11 维（安全性 / 数据与隐私 / 供应链与许可证 / 可维护性 / 代码可读性 / 可测试性 / 鲁棒性 / 运行稳定性 / 性能 / 可观测性与可运维 / 可移交性），并标注「全选 = 完整验收」。',
+  '问法（一次只问一件事，最多两次 ask_user）：① 档位单选——L1 底线（个人发布：查基础安全与依赖有没有硬伤）、L2 真实用户（再加交接 H1、可维护 Q3、动态探测）、L3 公司交付（再加许可证 C1、运维 O1、对抗性复核），每个选项带一句「查什么」；② 维度多选——列出 11 维（安全性 (Security) / 数据与隐私 (Data & privacy) / 供应链与许可证 (Supply chain & license) / 可维护性 (Maintainability) / 代码可读性 (Readability) / 可测试性 (Testability) / 鲁棒性 (Robustness) / 运行稳定性 (Runtime stability) / 性能 (Performance) / 可观测性与可运维 (Observability & ops) / 可移交性 (Handover)），并标注「全选 = 完整验收」。',
+  'ask_user 语言规则：If the UI/user language is English, write ask_user option labels and descriptions in English.',
   '不要重复问：用户已经说清的部分不再问（例如说了「跑 L3」就不问档位，说了「只看安全性和可维护性」就不问维度，只补问缺的那一项）；档位与维度都说清 → 直接带 tier 和维度跑。项目根已有 finalcheck.profile.json → 视为档位与维度已声明，按它跑，不再问。',
   '多候选不许猜：目标目录本身有歧义（工作区里有多个候选项目，用户说的是「我的 AI 助手」这类泛称）→ 必须先问是哪一个，不许用 dir / 猜路径代替提问；猜错目标等于答错题。',
   '你还有 run_command：像 coding agent 一样自由执行命令（Windows cmd 语法：dir /b、type、findstr、curl、node 等）——用户让你"看看某目录/某个盘"就用它探查后再回答，不要拒绝；灾难性命令会被系统拦截，不必自己判断。',
@@ -310,6 +319,7 @@ const SYSTEM_BASE = [
   '边界：动态目标以用户在对话中的口头确认为准——用户给出目标 URL 或表示同意，即为授权，直接执行（压测默认温和参数）；结论引用工具返回的 verdict；覆盖不足要明说"没查到"。',
   '工具结果超长时会被截断为「头+尾」并完整落盘，按提示的 spill 路径用 run_command 检索，不要猜中间内容。',
   '修代码：先 read_file 看清原文，再用 edit_file 做最小替换（old_string 必须唯一）；新建文件用 write_file。改完明确告诉用户「改了哪个文件、+几行/-几行、为什么」。',
+  '路径参数转义（硬规则）：JSON 参数里的 Windows 路径一律优先写正斜杠（D:/rcw-geo/yanshou）；必须用反斜杠时一律双写（D:\\\\rcw-geo\\\\yanshou）；写成单反斜杠会让参数不是合法 JSON，工具不会执行。',
   '产出可预览文件（html / png / pdf / md 等）后，调用 present_artifact(path) 登记；用户在聊天里点一下就出现在右侧预览面板。',
   '多 agent 工作流（第一步先判断任务形状，再二选一；不要问用户用哪种，你自己判断，最后用一句话说明用了哪种、为什么）：步骤数量固定、方向并列/串行 → 用 steps（每步一个独立子代理：角色 + 自包含任务 + depends_on，引擎按依赖并行；拿到各步结果后汇总成一份结论）；步骤数量由上游结果决定（按列表扇出、循环到满足条件、按类型递归、条件分支、纯计算汇总）→ 用 script（受限 JSON 指令 step/fanout/if/gate/verify/report/loop/recurse/aggregate，只解释执行、不运行代码）；判断不了 → 默认 steps。不要用「我要开始第 1 步」的文字模拟并行。每步 name 必须是职位名（4-10 字，如「SQL 注入审查员」「依赖供应链专员」），不许写「步骤 1」「分析」这种。',
   '拆步铁律（写 depends_on 前先自问）：每写完一步先问「这一步真的需要上一步的结果吗」——不需要就写 depends_on: []（空数组 = 可立即并行，多路同时跑）；只有确实要消费上游产出（读到它的结论、复用它的清单）才写依赖。为了「看起来有顺序」把步骤串成链，会让子代理排队、总耗时按步数翻倍。最小示例（3 步、2 步并行）：[{id:"s1",prompt:"查 A 的证据",depends_on:[]},{id:"s2",prompt:"查 B 的证据",depends_on:[]},{id:"s3",prompt:"汇总 s1 与 s2 的结论",depends_on:["s1","s2"]}] — s1 与 s2 同时跑，s3 等两者都完成；不要写成 s2 依赖 s1。',
@@ -391,10 +401,55 @@ export function buildEmptyNudgeDigest(messages, {
 // onChunk：每收到一个数据块就回调一次，参数 chunkHasProgress 表示这一块是否带「真实进度」
 // （content / reasoning / tool_calls / usage）。静默看门狗只认真实进度：
 // 网关的 SSE 注释 / 空 data / 只有 role 的块是心跳，不能让 180s 静默阈值永久失效。
+/**
+ * 合并一条流式 tool_call delta（原地修改 toolCalls，meta 只用于本次流内的归属判断）。
+ * 旧实现把 index 当唯一键：有网关把多个并行调用的 index 都写成 0，`name +=` / `arguments +=`
+ * 会把两个调用粘成 `audit_projectdownload_gate` + 两段 JSON 首尾相接，参数必然非法。
+ * 归属规则：id 相同 → 同一条；否则看同一 index 的最近一条；出现新 id、或已有 name 又出现新 name
+ * → 新建 entry（宁可按顺序拆成两条，也不把不同调用拼在一起）。
+ * @param {Array<any>} toolCalls 对外输出的调用数组（顺序 = 首次出现顺序）
+ * @param {Array<{index:number|null,id:string,call:any}>} meta 本次流内的归属表
+ * @param {any} tc 流式 delta
+ */
+function mergeStreamingToolCall(toolCalls, meta, tc) {
+  const id = tc?.id == null ? '' : String(tc.id);
+  const rawIndex = Number(tc?.index);
+  const index = Number.isFinite(rawIndex) ? Math.max(0, Math.trunc(rawIndex)) : null;
+  const name = typeof tc?.function?.name === 'string' ? tc.function.name : '';
+  const args = typeof tc?.function?.arguments === 'string' ? tc.function.arguments : '';
+  const append = (call) => {
+    if (name) call.function.name += name;
+    if (args) call.function.arguments += args;
+  };
+  // 1) id 是权威键：同 id 的后续分片（含 name/arguments 分片）都追加到同一条
+  if (id) {
+    const same = meta.find((m) => m.id === id);
+    if (same) { append(same.call); return same.call; }
+  }
+  // 2) 没有匹配 id：找同一 index 上最近的一条，冲突（新 id / 已有 name 又出现 name）就新建
+  // 连 index 都没有的网关：退回「最近一条」，避免参数续片被当成新调用
+  const lastAtIdx = index == null
+    ? (meta.length ? meta[meta.length - 1] : null)
+    : [...meta].reverse().find((m) => m.index === index);
+  const idConflict = !!(id && lastAtIdx?.id && lastAtIdx.id !== id);
+  const nameConflict = !!(name && lastAtIdx?.call?.function?.name);
+  if (lastAtIdx && !idConflict && !nameConflict) {
+    if (id && !lastAtIdx.id) lastAtIdx.id = id; // 网关先给参数后给 id 时，认领同一条
+    append(lastAtIdx.call);
+    return lastAtIdx.call;
+  }
+  const call = { id, type: 'function', function: { name: '', arguments: '' } };
+  meta.push({ index, id, call });
+  toolCalls.push(call);
+  append(call);
+  return call;
+}
+
 export async function consumeStream(res, onToken, onEvent, ctl, onChunk = null) {
   let content = '';
   let reasoning = '';
   const toolCalls = [];
+  const toolCallMeta = []; // 流式分片的归属表：{index,id,call}，不写进最终 toolCalls
   let raw = '';
   let usage = null;
   let finishReason = null;
@@ -473,11 +528,7 @@ export async function consumeStream(res, onToken, onEvent, ctl, onChunk = null) 
     }
     let sawToolDelta = false;
     for (const tc of d.tool_calls || []) {
-      const idx = tc.index ?? 0;
-      toolCalls[idx] ??= { id: '', type: 'function', function: { name: '', arguments: '' } };
-      if (tc.id) toolCalls[idx].id = tc.id;
-      if (tc.function?.name) toolCalls[idx].function.name += tc.function.name;
-      if (tc.function?.arguments) toolCalls[idx].function.arguments += tc.function.arguments;
+      mergeStreamingToolCall(toolCalls, toolCallMeta, tc);
       sawToolDelta = true;
     }
     if (sawToolDelta) { chunkProgress = true; noteToolDelta(); } // 首次出现 → Writing <tool>…；之后按 512 字符/500ms 节流更新
@@ -687,6 +738,120 @@ export function jsonErrorPosition(message) {
   return m ? Number(m[1]) : null;
 }
 
+/* ---------- 参数自动修复（只做两类能确定语义的保守修复） ----------
+ * 1) Windows 路径字符串：`"D:\rcw-geo\yanshou"` / `"src\app.js"` 里的单反斜杠是分隔符，
+ *    不是 JSON 转义 → 把该字符串里的反斜杠全部换成正斜杠；
+ * 2) 对象/数组尾逗号：`{"dir":"D:/x",}` / `["a",]` → 删掉。
+ * 不 eval、不猜缺失括号/引号；修完必须能 JSON.parse，否则原样失败（fail-closed）。 */
+const JSON_VALID_ESCAPES = new Set(['"', '\\', '/', 'b', 'f', 'n', 'r', 't', 'u']);
+
+function hasInvalidJsonEscape(raw) {
+  for (let i = 0; i < raw.length; i += 1) {
+    if (raw[i] !== '\\') continue;
+    const next = raw[i + 1];
+    if (next == null || !JSON_VALID_ESCAPES.has(next)) return true;
+    if (next === 'u' && !/^[0-9A-Fa-f]{4}$/.test(raw.slice(i + 2, i + 6))) return true;
+    i += 1;
+  }
+  return false;
+}
+
+/** 只认「像路径」且确实含非法转义的字符串：盘符路径、.\ ..\ 相对路径、无空白的多段相对路径 */
+function looksLikePathLiteral(raw) {
+  if (!raw.includes('\\') || !hasInvalidJsonEscape(raw)) return false;
+  if (/^[A-Za-z]:\\/.test(raw)) return true; // D:\...
+  if (/^\.\.?[\\/]/.test(raw)) return true; // .\  ..\  ./
+  return !/[\s:]/.test(raw) && /^[^\\]+(?:\\[^\\]+)+$/.test(raw); // src\app.js（不是 URL/散文）
+}
+
+/** 扫描 JSON 文本里的字符串字面量，仅把「像路径且含非法转义」的值改成正斜杠 */
+function fixPathStringLiterals(text) {
+  let out = '';
+  let i = 0;
+  let changed = false;
+  while (i < text.length) {
+    if (text[i] !== '"') { out += text[i]; i += 1; continue; }
+    let j = i + 1;
+    while (j < text.length) {
+      if (text[j] === '\\') { j += 2; continue; }
+      if (text[j] === '"') break;
+      j += 1;
+    }
+    if (j >= text.length) { out += text.slice(i); break; }
+    const raw = text.slice(i + 1, j);
+    if (looksLikePathLiteral(raw)) {
+      out += JSON.stringify(raw.replace(/\\+/g, '/'));
+      changed = true;
+    } else {
+      out += text.slice(i, j + 1);
+    }
+    i = j + 1;
+  }
+  return { text: out, changed };
+}
+
+/** 去掉对象/数组之后的尾逗号（字符串内部不动） */
+function removeTrailingCommas(text) {
+  let out = '';
+  let inString = false;
+  let escaped = false;
+  let changed = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (inString) {
+      out += ch;
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') { inString = true; out += ch; continue; }
+    if (ch === ',') {
+      let j = i + 1;
+      while (j < text.length && /\s/.test(text[j])) j += 1;
+      if (j < text.length && (text[j] === '}' || text[j] === ']')) { changed = true; continue; }
+    }
+    out += ch;
+  }
+  return { text: out, changed };
+}
+
+/**
+ * 尝试把工具参数字符串修成合法 JSON。
+ * @param {string} raw 模型给出的 arguments 原文
+ * @returns {{ok:true,value:any,repairs:string[]}|{ok:false,value:null,repairs:string[]}}
+ */
+export function repairToolArgsJson(raw) {
+  const text = String(raw ?? '');
+  try {
+    return { ok: true, value: JSON.parse(text || '{}'), repairs: [] };
+  } catch { /* 落到下面的保守修复 */ }
+  const repairs = [];
+  let current = text;
+  const fixedPaths = fixPathStringLiterals(current);
+  if (fixedPaths.changed) {
+    repairs.push('Windows 路径反斜杠→正斜杠');
+    current = fixedPaths.text;
+  }
+  const fixedCommas = removeTrailingCommas(current);
+  if (fixedCommas.changed) {
+    repairs.push('移除尾逗号');
+    current = fixedCommas.text;
+  }
+  if (!repairs.length) return { ok: false, value: null, repairs: [] };
+  try {
+    return { ok: true, value: JSON.parse(current), repairs };
+  } catch {
+    return { ok: false, value: null, repairs: [] };
+  }
+}
+
+/** 错误是否像「Windows 路径写成单反斜杠」：非法转义错误，或参数/片段里出现盘符路径 */
+export function looksLikeWindowsPathJson(message, text = '') {
+  return /bad escaped character/i.test(String(message || ''))
+    || /[A-Za-z]:\\/.test(String(text || ''));
+}
+
 /**
  * 错误位置前后各 radius 字符（脱敏、压成一行）——回给模型足够定位，又不把整段参数/密钥塞回上下文。
  * @param {string} argsText
@@ -706,19 +871,32 @@ export function argsErrorExcerpt(argsText, position = null, radius = ARGS_EXCERP
 }
 
 /**
- * 逐个检查 tool_call 的参数是不是合法 JSON。
+ * 逐个检查 tool_call 的参数是不是合法 JSON；非法的先尝试保守自动修复（修复成功则改写
+ * tc.function.arguments 并从 invalid 移出，调用照常执行）。
  * @param {any[]} toolCalls
- * @returns {{total:number, invalid:Array<{index:number,id:string|null,name:string,message:string,position:number|null,excerpt:string,chars:number}>}}
+ * @returns {{total:number, invalid:Array<{index:number,id:string|null,name:string,message:string,position:number|null,excerpt:string,chars:number,windowsPath:boolean}>, repaired:Array<{index:number,id:string|null,name:string,repairs:string[]}>}}
  */
 export function inspectToolCallArgs(toolCalls) {
   const list = Array.isArray(toolCalls) ? toolCalls : [];
   const invalid = [];
+  const repaired = [];
   list.forEach((tc, index) => {
     const argsText = String(tc?.function?.arguments ?? '');
     try {
       JSON.parse(argsText || '{}');
     } catch (e) {
       const message = e?.message || String(e);
+      const fix = repairToolArgsJson(argsText);
+      if (fix.ok && tc?.function && typeof tc.function === 'object') {
+        tc.function.arguments = JSON.stringify(fix.value);
+        repaired.push({
+          index,
+          id: tc?.id == null ? null : String(tc.id),
+          name: String(tc?.function?.name || 'unknown'),
+          repairs: fix.repairs
+        });
+        return;
+      }
       const position = jsonErrorPosition(message);
       invalid.push({
         index,
@@ -727,11 +905,12 @@ export function inspectToolCallArgs(toolCalls) {
         message,
         position,
         excerpt: argsErrorExcerpt(argsText, position),
-        chars: argsText.length
+        chars: argsText.length,
+        windowsPath: looksLikeWindowsPathJson(message, argsText)
       });
     }
   });
-  return { total: list.length, invalid };
+  return { total: list.length, invalid, repaired };
 }
 
 /** 未执行调用的可读文案（卡片 + 返回值共用；不含 "in JSON at position" 字样，避免被 humanize 二次改写） */
@@ -741,13 +920,15 @@ export function toolArgsFailurePayload(bad, { truncated = false } = {}) {
   const error = truncated
     ? t('工具参数被输出长度上限截断{posHint}，本次调用未执行', { posHint })
     : t('工具参数不是合法 JSON{posHint}，本次调用未执行', { posHint });
+  const pathHint = !truncated && (bad?.windowsPath === true || looksLikeWindowsPathJson(bad?.message, bad?.excerpt));
   return {
     error,
     code,
     ...(bad?.position == null ? {} : { position: bad.position }),
     ...(Number.isFinite(Number(bad?.chars)) ? { chars: Number(bad.chars) } : {}),
     ...(bad?.excerpt ? { excerpt: bad.excerpt } : {}),
-    ...(bad?.message ? { detail: redactArgSecrets(bad.message) } : {})
+    ...(bad?.message ? { detail: redactArgSecrets(bad.message) } : {}),
+    ...(pathHint ? { hint: PATH_JSON_HINT } : {})
   };
 }
 
@@ -786,9 +967,11 @@ async function skipToolCall(tc, code, notice, { onEvent, onToolLifecycle, detail
   const argsText = String(tc?.function?.arguments || '');
   const callId = tc?.id == null ? null : String(tc.id);
   const t0 = Date.now();
-  // 卡片看 error（短句）：detail.error 优先；模型看 hint（纠错指令，含脱敏片段）
+  // 卡片看 error（短句）：detail.error 优先；模型看 hint（纠错指令 + 路径转义提示，含脱敏片段）
   const shortError = (detail && typeof detail === 'object' && detail.error) ? String(detail.error) : String(notice || '');
-  const payload = { ...(detail && typeof detail === 'object' ? detail : {}), error: shortError, code, hint: String(notice || '') };
+  const detailHint = (detail && typeof detail === 'object' && detail.hint) ? String(detail.hint) : '';
+  const hint = [String(notice || ''), detailHint].filter(Boolean).join('\n');
+  const payload = { ...(detail && typeof detail === 'object' ? detail : {}), error: shortError, code, hint };
   onEvent?.({ kind: 'tool-start', id: tc?.id, name, args: argsText.slice(0, name === 'todo_write' ? 8000 : 2000), at: t0 });
   onEvent?.({ kind: 'tool-end', id: tc?.id, name, ms: 0, ok: false, result: uiResultSummary(payload) });
   if (typeof onToolLifecycle === 'function') {
@@ -1422,10 +1605,16 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
     }
     forceAnswerNoTools = false; // 模型无视 'none' 继续调工具时复位，避免污染后续轮次
     convo.push({ role: 'assistant', content: content || null, tool_calls: toolCalls });
-    // ---- 参数闸②：非法 JSON 的那一个调用不执行，合法的照常跑 ----
+    // ---- 参数闸②：非法 JSON 先自动修复；修不了的才不执行 ----
     // 非法的也占位一条 tool 结果（每个 tool_call_id 都必须有响应，否则下一轮请求被网关拒绝）：
     // 内容 = 错误码 + 位置 + 前后各 80 字符（脱敏）+「只重发这一个调用」的指令。
     const inspected = inspectToolCallArgs(toolCalls);
+    for (const rep of inspected.repaired) {
+      const msg = t('已自动修复工具参数（{reasons}）：{tool}', { reasons: rep.repairs.join('、'), tool: rep.name });
+      warnings.push(msg);
+      onEvent?.({ kind: 'warning', message: msg });
+    }
+    const repairedByIndex = new Map(inspected.repaired.map((x) => [x.index, x]));
     const toolStartedAt = Date.now();
     const toolResults = inspected.invalid.length
       ? await runToolCallsGuarded(toolCalls, inspected.invalid, {
@@ -1434,10 +1623,12 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
       })
       : await runToolCalls(toolCalls, { tools, onEvent, toolConcurrency: config.toolConcurrency, signal, onToolLifecycle });
     toolWaitMs += Date.now() - toolStartedAt;
-    for (const r of toolResults) {
+    toolResults.forEach((r, index) => {
+      const rep = repairedByIndex.get(index);
+      if (rep) r.trace.repaired = rep.repairs;
       trace.push(r.trace);
       convo.push({ role: 'tool', tool_call_id: r.id, content: r.modelContent });
-    }
+    });
     if (inspected.invalid.length) {
       const badNames = [...new Set(inspected.invalid.map((x) => x.name))].join('、');
       if (!argsRepaired) {
@@ -1452,7 +1643,7 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
       // 纠错后仍不合法：不再无限重试，按原因码向用户报错（卡片上是可读文案 + 原因码）
       onEvent?.({ kind: 'turn-end', ms: Date.now() - turnStart, error: true });
       return {
-        error: t('工具参数连续两次不是合法 JSON（{code}），本轮已停止，{tools} 没有执行。可重试本步，或让模型把参数拆小后重新发起。', { code: ARGS_INVALID_JSON_CODE, tools: badNames }),
+        error: t('工具参数连续两次不是合法 JSON（{code}），本轮已停止，{tools} 没有执行。可重试本步，或让模型把参数拆小后重新发起。常见原因：Windows 路径写成单反斜杠；请改用 D:/... 或 D:\\\\...（JSON 里反斜杠必须双写）。', { code: ARGS_INVALID_JSON_CODE, tools: badNames }),
         errorCode: ARGS_INVALID_JSON_CODE,
         trace,
         reasoning: reasoningAll || undefined,

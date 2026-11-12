@@ -14,6 +14,13 @@ import {
   argsErrorExcerpt,
   redactArgSecrets,
   buildArgsRepairNotice,
+  toolArgsFailurePayload,
+  repairToolArgsJson,
+  looksLikeWindowsPathJson,
+  getSystemPromptParts,
+  TOOLS_SCHEMA,
+  AGENT_TOOLS_SCHEMA,
+  PATH_JSON_HINT,
   ARGS_INVALID_JSON_CODE,
   ARGS_TRUNCATED_CODE
 } from '../desktop/src/main/agent-service.mjs';
@@ -25,6 +32,15 @@ const TOOL_SCHEMA = {
     name: 'run_workflow',
     description: '跑多 agent 工作流',
     parameters: { type: 'object', properties: { goal: { type: 'string' } }, required: ['goal'] }
+  }
+};
+
+const AUDIT_SCHEMA = {
+  type: 'function',
+  function: {
+    name: 'audit_project',
+    description: '对项目跑验收',
+    parameters: { type: 'object', properties: { dir: { type: 'string' } }, required: ['dir'] }
   }
 };
 
@@ -219,4 +235,183 @@ test('tool-args: 检查器与片段工具（位置/脱敏/纠错文案）', () =
   assert.match(notice, /ARGS_INVALID_JSON/);
   assert.match(notice, /3964/);
   assert.match(notice, /只重新发起这一个工具调用/);
+});
+
+/* ---------- Windows 路径单反斜杠：先自动修复，修不了才重发 ---------- */
+const WINDOWS_BAD_ARGS = String.raw`{"dir":"D:\rcw-geo\yanshou"}`;
+const WINDOWS_BROKEN_ARGS = String.raw`{"dir":"D:\rcw-geo\yanshou"`; // 缺右括号，修复不完整
+const RELATIVE_BAD_ARGS = String.raw`{"dir":"src\app.js"}`;
+
+test('tool-args: Windows 路径单反斜杠自动修复为正斜杠（合法路径 + 相对路径 + 尾逗号）', () => {
+  const win = repairToolArgsJson(WINDOWS_BAD_ARGS);
+  assert.equal(win.ok, true);
+  assert.deepEqual(win.value, { dir: 'D:/rcw-geo/yanshou' });
+  assert.deepEqual(win.repairs, ['Windows 路径反斜杠→正斜杠']);
+
+  const rel = repairToolArgsJson(RELATIVE_BAD_ARGS);
+  assert.equal(rel.ok, true);
+  assert.deepEqual(rel.value, { dir: 'src/app.js' });
+  assert.deepEqual(rel.repairs, ['Windows 路径反斜杠→正斜杠']);
+
+  const comma = repairToolArgsJson('{"dir":"D:/rcw-geo/yanshou",}');
+  assert.equal(comma.ok, true);
+  assert.deepEqual(comma.value, { dir: 'D:/rcw-geo/yanshou' });
+  assert.deepEqual(comma.repairs, ['移除尾逗号']);
+
+  const both = repairToolArgsJson(String.raw`{"dir":"D:\rcw-geo\yanshou",}`);
+  assert.equal(both.ok, true);
+  assert.deepEqual(both.value, { dir: 'D:/rcw-geo/yanshou' });
+  assert.deepEqual(both.repairs, ['Windows 路径反斜杠→正斜杠', '移除尾逗号']);
+});
+
+test('tool-args: 正常 JSON 不修（双反斜杠合法路径、\\n 等合法转义原样保留）', () => {
+  const valid = repairToolArgsJson('{"dir":"D:/rcw-geo/yanshou"}');
+  assert.equal(valid.ok, true);
+  assert.deepEqual(valid.value, { dir: 'D:/rcw-geo/yanshou' });
+  assert.deepEqual(valid.repairs, []);
+
+  const doubleSlash = repairToolArgsJson(String.raw`{"dir":"D:\\rcw-geo\\yanshou"}`);
+  assert.equal(doubleSlash.ok, true);
+  assert.deepEqual(doubleSlash.value, { dir: String.raw`D:\rcw-geo\yanshou` }, '合法双反斜杠保持原语义');
+  assert.deepEqual(doubleSlash.repairs, [], '合法 JSON 不产生修复记录');
+
+  const newline = repairToolArgsJson(String.raw`{"text":"line1\nline2"}`);
+  assert.equal(newline.ok, true);
+  assert.equal(newline.value.text, 'line1\nline2', '合法 \\n 不能被改写成正斜杠');
+  assert.deepEqual(newline.repairs, []);
+
+  const mixed = repairToolArgsJson(String.raw`{"dir":"D:\rcw-geo\yanshou","note":"a\nb"}`);
+  assert.equal(mixed.ok, true);
+  assert.deepEqual(mixed.value, { dir: 'D:/rcw-geo/yanshou', note: 'a\nb' }, '只修路径字符串，不碰合法转义');
+});
+
+test('tool-args: 修不了（缺右括号/截断）保持 fail-closed，不以半截参数执行', () => {
+  assert.equal(repairToolArgsJson(WINDOWS_BROKEN_ARGS).ok, false);
+  assert.equal(repairToolArgsJson('{"dir":"D:/rcw-geo/yanshou"').ok, false);
+  const { invalid } = inspectToolCallArgs([{ id: 'broken', function: { name: 'audit_project', arguments: WINDOWS_BROKEN_ARGS } }]);
+  assert.equal(invalid.length, 1);
+  assert.equal(invalid[0].windowsPath, true);
+});
+
+test('tool-args: inspect 自动修复后改写 arguments 并移出 invalid（执行用修复值）', () => {
+  const calls = [{ id: 'win', function: { name: 'audit_project', arguments: WINDOWS_BAD_ARGS } }];
+  const inspected = inspectToolCallArgs(calls);
+  assert.equal(inspected.invalid.length, 0);
+  assert.equal(inspected.repaired.length, 1);
+  assert.deepEqual(inspected.repaired[0].repairs, ['Windows 路径反斜杠→正斜杠']);
+  assert.deepEqual(JSON.parse(calls[0].function.arguments), { dir: 'D:/rcw-geo/yanshou' });
+});
+
+test('tool-args: Windows 路径错误 payload 带 PATH_JSON_HINT（无法修复时）', () => {
+  const { invalid } = inspectToolCallArgs([{ id: 'win', function: { name: 'audit_project', arguments: WINDOWS_BROKEN_ARGS } }]);
+  const payload = toolArgsFailurePayload(invalid[0]);
+  assert.equal(payload.hint, PATH_JSON_HINT);
+  assert.match(payload.hint, /正斜杠/);
+  assert.match(payload.hint, /双反斜杠/);
+  assert.equal(payload.code, ARGS_INVALID_JSON_CODE);
+
+  const byMessage = toolArgsFailurePayload({ message: 'Bad escaped character in JSON at position 19', position: 19, chars: 30, excerpt: '' });
+  assert.equal(byMessage.hint, PATH_JSON_HINT, 'Bad escaped character 也要给路径提示');
+  assert.equal(looksLikeWindowsPathJson('Unexpected token } in JSON at position 5', '{"a":1}'), false, '非路径错误不加噪声');
+  const noHint = toolArgsFailurePayload({ message: 'Unexpected token } in JSON at position 5', position: 5, chars: 8, excerpt: '' });
+  assert.equal(noHint.hint, undefined);
+});
+
+test('tool-args: schema 里所有路径参数都带 PATH_JSON_HINT', () => {
+  const byName = new Map(AGENT_TOOLS_SCHEMA.map((tool) => [tool.function.name, tool.function.parameters?.properties || {}]));
+  const cases = [
+    ['audit_project', 'dir'], ['quality_gate', 'dir'], ['download_gate', 'dir'], ['get_report', 'dir'],
+    ['review_diff', 'dir'], ['read_file', 'path'], ['edit_file', 'path'], ['write_file', 'path'],
+    ['present_artifact', 'path'], ['run_command', 'cwd']
+  ];
+  for (const [tool, prop] of cases) {
+    const desc = String(byName.get(tool)?.[prop]?.description || '');
+    assert.ok(desc.includes(PATH_JSON_HINT), `${tool}.${prop} 缺 JSON 路径转义提示：${desc}`);
+  }
+  // MCP 通道共用 TOOLS_SCHEMA（review_diff 除外），核心三件套必须都在
+  for (const name of ['audit_project', 'download_gate', 'get_report']) {
+    const tool = TOOLS_SCHEMA.find((x) => x.function.name === name);
+    assert.ok(String(tool?.function?.parameters?.properties?.dir?.description || '').includes(PATH_JSON_HINT));
+  }
+});
+
+test('tool-args: SYSTEM_BASE 硬规则要求 Windows 路径正斜杠优先/反斜杠双写', async () => {
+  const { base } = await getSystemPromptParts();
+  assert.match(base, /JSON 参数里的 Windows 路径/);
+  assert.match(base, /双写/);
+  assert.ok(base.includes('工具不会执行'));
+});
+
+test('tool-args: 单反斜杠路径自动修复后直接执行（不重发，fake tool 收到正斜杠）', async () => {
+  const bodies = [];
+  const executed = [];
+  const fetchImpl = async (_url, opts) => {
+    bodies.push(JSON.parse(opts.body));
+    if (bodies.length === 1) return sse([callChunk('call_win', 'audit_project', WINDOWS_BAD_ARGS)]);
+    return sse([textChunk('体检完成。')]);
+  };
+  const out = await runAgentTurn(baseArgs(fetchImpl, {
+    toolsSchema: [AUDIT_SCHEMA],
+    tools: { audit_project: async (args) => { executed.push(args); return { ok: true }; } }
+  }));
+
+  assert.equal(executed.length, 1, '修复成功就应执行一次');
+  assert.deepEqual(executed[0], { dir: 'D:/rcw-geo/yanshou' });
+  assert.equal(bodies.length, 2, '不应让模型重发');
+  const assistant = bodies[1].messages.find((m) => m.role === 'assistant' && Array.isArray(m.tool_calls));
+  assert.deepEqual(JSON.parse(assistant.tool_calls[0].function.arguments), { dir: 'D:/rcw-geo/yanshou' },
+    '回填给网关的 assistant 参数也必须是修复后的');
+  assert.equal(out.trace[0].args, '{"dir":"D:/rcw-geo/yanshou"}');
+  assert.deepEqual(out.trace[0].repaired, ['Windows 路径反斜杠→正斜杠']);
+  assert.ok(out.warnings.some((w) => /已自动修复工具参数/.test(String(w))));
+  assert.equal(out.error, undefined, String(out.error));
+});
+
+test('tool-args: 修复不了（缺右括号）不执行，走原来的重发路径', async () => {
+  const bodies = [];
+  let executed = 0;
+  const fetchImpl = async (_url, opts) => {
+    bodies.push(JSON.parse(opts.body));
+    if (bodies.length === 1) return sse([callChunk('call_broken', 'audit_project', WINDOWS_BROKEN_ARGS)]);
+    return sse([textChunk('参数还不完整，我先补全。')]);
+  };
+  const out = await runAgentTurn(baseArgs(fetchImpl, {
+    toolsSchema: [AUDIT_SCHEMA],
+    tools: { audit_project: async () => { executed += 1; return { ok: true }; } }
+  }));
+
+  assert.equal(executed, 0, '半截参数绝不能执行');
+  assert.equal(bodies.length, 2);
+  const toolMsg = bodies[1].messages.find((m) => m.role === 'tool' && m.tool_call_id === 'call_broken');
+  assert.ok(toolMsg);
+  const payload = JSON.parse(toolMsg.content);
+  assert.equal(payload.code, ARGS_INVALID_JSON_CODE);
+  assert.match(String(payload.hint), /只重新发起这一个工具调用/);
+  assert.match(String(payload.hint), /正斜杠/);
+  assert.equal(out.error, undefined, String(out.error));
+});
+
+test('tool-args: 连续两次非法 Windows 路径 → 终局文案含常见原因，错误码不变', async () => {
+  const bodies = [];
+  let executed = 0;
+  const fetchImpl = async (_url, opts) => {
+    bodies.push(JSON.parse(opts.body));
+    return sse([callChunk(`call_win_bad_${bodies.length}`, 'audit_project', WINDOWS_BROKEN_ARGS)]);
+  };
+  const probe = makeLifecycleProbe();
+  const out = await runAgentTurn(baseArgs(fetchImpl, {
+    toolsSchema: [AUDIT_SCHEMA],
+    tools: { audit_project: async () => { executed += 1; return { ok: true }; } },
+    onToolLifecycle: probe.onToolLifecycle
+  }));
+
+  assert.equal(executed, 0);
+  assert.equal(bodies.length, 2, '只纠错一次，不无限重试');
+  assert.equal(out.errorCode, ARGS_INVALID_JSON_CODE);
+  assert.match(String(out.error), /常见原因：Windows 路径写成单反斜杠/);
+  assert.match(String(out.error), /D:\/\.\.\./);
+  const lastTool = bodies[1].messages.filter((m) => m.role === 'tool').at(-1);
+  const payload = JSON.parse(lastTool.content);
+  assert.match(String(payload.hint), /Windows 路径请用正斜杠/);
+  for (const p of probe.parts.values()) assert.notEqual(p.status, 'running', '不能留悬空 running part');
 });
