@@ -3,16 +3,18 @@
 // 实时卡由 App 的 askCards 驱动；历史卡由 assistant.trace 里的 ask_user part 还原（readOnly）。
 import React, { useEffect, useState } from 'react';
 import { t } from '../i18n/core.mjs';
+import { useLanguage } from '../i18n/index.jsx';
+import { translateAskText } from '../lib/ask-user-i18n.mjs';
 
 const STATUS_DONE = new Set(['answered', 'cancelled', 'expired', 'rejected']);
 
-function ResultLine({ payload }) {
+function ResultLine({ payload, lang }) {
   const status = payload.status;
   if (status === 'answered') {
     return (
       <div data-testid="ask-user-result" className="flex items-start gap-2 text-xs leading-relaxed text-ink/85">
         <span className="badge shrink-0 bg-emerald-500/15 text-emerald-300">{t('已回答')}</span>
-        <span className="min-w-0 break-words">{t('已提交：{answer}', { answer: payload.answer || t('(空)') })}</span>
+        <span className="min-w-0 break-words">{t('已提交：{answer}', { answer: translateAskText(payload.answer, lang) || t('(空)') })}</span>
       </div>
     );
   }
@@ -28,7 +30,7 @@ function ResultLine({ payload }) {
     return (
       <div data-testid="ask-user-result" className="flex items-start gap-2 text-xs text-red-300/85">
         <span className="badge shrink-0 bg-red-500/10 text-red-300">{t('提问未发出')}</span>
-        <span className="min-w-0 break-words">{payload.error || t('未知原因')}</span>
+        <span className="min-w-0 break-words">{translateAskText(payload.error, lang) || t('未知原因')}</span>
       </div>
     );
   }
@@ -42,6 +44,7 @@ function ResultLine({ payload }) {
 
 export default function AskUserCard({ payload, onSubmit = null }) {
   const data = payload || {};
+  const lang = useLanguage(); // 切换语言后本卡跟着重渲染；提交仍用原始 label
   const status = STATUS_DONE.has(data.status) ? data.status : (data.status === 'pending' ? 'pending' : 'expired');
   const [selected, setSelected] = useState(() => (Array.isArray(data.selected) ? data.selected : []));
   const [text, setText] = useState(() => String(data.text ?? ''));
@@ -89,7 +92,7 @@ export default function AskUserCard({ payload, onSubmit = null }) {
         {status === 'pending' ? <span className="ml-auto text-[10px] text-mute/45">{t('回答后本回合继续')}</span> : null}
       </div>
 
-      <div className="mt-2 text-sm leading-relaxed text-ink/95 break-words whitespace-pre-wrap">{data.question}</div>
+      <div className="mt-2 text-sm leading-relaxed text-ink/95 break-words whitespace-pre-wrap">{translateAskText(data.question, lang)}</div>
 
       {status === 'pending' ? (
         <>
@@ -107,9 +110,9 @@ export default function AskUserCard({ payload, onSubmit = null }) {
                       {multi ? (
                         <span className={`inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-[3px] text-[9px] ${active ? 'bg-gold text-black' : 'bg-white/[0.07] text-transparent'}`}>✓</span>
                       ) : null}
-                      <span className={`font-medium ${active ? 'text-goldSoft' : 'text-ink/90'}`}>{label}</span>
+                      <span className={`font-medium ${active ? 'text-goldSoft' : 'text-ink/90'}`}>{translateAskText(label, lang)}</span>
                     </div>
-                    {opt?.description ? <div className="mt-0.5 pl-0.5 text-[11px] leading-relaxed text-mute/65">{opt.description}</div> : null}
+                    {opt?.description ? <div className="mt-0.5 pl-0.5 text-[11px] leading-relaxed text-mute/65">{translateAskText(opt.description, lang)}</div> : null}
                   </button>
                 );
               })}
@@ -133,7 +136,7 @@ export default function AskUserCard({ payload, onSubmit = null }) {
         </>
       ) : (
         <div className="mt-2.5">
-          <ResultLine payload={data} />
+          <ResultLine payload={data} lang={lang} />
         </div>
       )}
     </div>
