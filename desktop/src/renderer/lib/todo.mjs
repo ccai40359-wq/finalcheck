@@ -252,13 +252,7 @@ export function isTodoTrace(entry) {
   return String(entry?.tool ?? entry?.name ?? '') === TODO_TOOL;
 }
 
-/* ---------- 会话级：常驻面板取数 / 窄屏自动折叠 ---------- */
-
-/**
- * 面板自动折叠阈值（px）：会话列低于这个宽度时（右侧子代理/产物面板打开），
- * 展开面板（320px + 消息区）会把消息挤没，所以只留一行。
- */
-export const TODO_PANEL_MIN_WIDTH = 840;
+/* ---------- 会话级：常驻浮层取数 ---------- */
 
 /**
  * 单条助手消息里的最新一份验收单。
@@ -280,7 +274,7 @@ export function todoFromMessage(msg) {
 }
 
 /**
- * 整段消息里「当前会话最新一份」验收单：面板只显示这一份，消息流里同一份不再内联渲染。
+ * 整段消息里「当前会话最新一份」验收单：浮层只显示这一份，消息流里同一份不再内联渲染。
  * 从后往前扫：新回合还没写验收单时继续显示上一份（清单在当前会话内保持常驻）。
  * @returns {{index:number, items:Array, error:string|null, live:boolean}|null}
  */
@@ -291,14 +285,4 @@ export function latestTodoFromMessages(messages) {
     if (found) return { index: i, ...found };
   }
   return null;
-}
-
-/**
- * 会话列宽度 → 面板是否自动折叠成一行。
- * 0/未知（首帧还没测量、SSR）一律按展开处理，避免先折叠再展开闪一下。
- */
-export function todoPanelAutoCollapsed(hostWidth) {
-  const w = Number(hostWidth);
-  if (!Number.isFinite(w) || w <= 0) return false;
-  return w < TODO_PANEL_MIN_WIDTH;
 }

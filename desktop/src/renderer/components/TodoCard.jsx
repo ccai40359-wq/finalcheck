@@ -1,17 +1,17 @@
-// 验收单卡片（todo_write）：钉在会话内容区右上角的常驻面板（ZCode 样式），实时显示每条任务的勾选状态与验收标准。
+// 验收单卡片（todo_write）：会话内容区右上角的 absolute 覆盖层（ZCode 样式），不占布局宽度。
 // 数据源：
 // - 实时：msg.events 里的 todo_write 工具条目（tool-start 带 args；同一回合多次调用只渲染最新一张）
 // - 历史：msg.trace 里的 todo_write tool part（args 落库，结果从 result 还原）——不改会话 schema
 // 状态机：pending ☐ / running ◐ / done ✓ / failed ✕ / skipped —
 // 外观（对齐 ZCode）：单卡单边框；头部一行「验收单 + 首条任务 + done/total + 右上角折叠箭头」；
 //   展开后是未完成项、Progress 行（细进度条）、「n 已完成」折叠条（默认收起）。
-// 整卡折叠：默认展开；折叠后只剩头部一行，状态按 sessionId + 任务 id 签名存 localStorage（切会话/刷新不丢）。
-// 布局：面板是消息滚动容器的**兄弟节点**（见 MessageList），所以本身不随滚动走；
-//   消息列用 flex-1 让出右侧固定宽度，不用绝对定位压住消息。
-import React, { useEffect, useRef, useState } from 'react';
+// 整卡折叠：默认展开；展开=右上方浮层卡片，折叠=右上角小 chip；状态按 sessionId + 任务 id 签名存 localStorage。
+// 布局：TodoPanel 自己就是 absolute overlay（见 MessageList），覆盖在消息列上而不挤占宽度；
+//   外层 pointer-events-none 让透明区域可穿透滚动，卡片/chip 再打开 pointer-events-auto。
+import React, { useEffect, useId, useRef, useState } from 'react';
 import { t } from '../i18n/core.mjs';
 import {
-  todoCardSummary, todoCollapseKey, todoFromMessage, todoPanelAutoCollapsed,
+  todoCardSummary, todoCollapseKey, todoFromMessage,
   readTodoCollapsed, writeTodoCollapsed, displayStatus
 } from '../lib/todo.mjs';
 
@@ -77,8 +77,8 @@ function TodoRow({ item, done = false, live = true }) {
   );
 }
 
-// 折叠状态：按 sessionId + 任务 id 签名存 localStorage；面板与卡片共用一个 hook，
-// 这样面板外层能按折叠态收缩宽度（折叠态宽度按内容自适应），而不用卡片反推。
+// 折叠状态：按 sessionId + 任务 id 签名存 localStorage；浮层与卡片共用一个 hook，
+// 展开=右上角卡片，折叠=右上角小 chip（不再按宽度自动折叠）。
 function useTodoCollapse(sessionId, items) {
   const storageKey = todoCollapseKey(sessionId, items);
   const [collapsed, setCollapsed] = useState(() => readTodoCollapsed(storageKey));
@@ -104,15 +104,18 @@ function useTodoCollapse(sessionId, items) {
 
 // live：这条消息所属回合是否仍在流式（true/false）。false 时 running 展示为「已中断」，
 // 避免停止/崩溃后卡片永远转圈（数据不动，只改展示）。
-// pinned：常驻面板形态（无外边距、45vh 高度上限、带浮起阴影）；
-// collapsed / onToggle：由 TodoPanel 受控（面板还要按折叠态控制外层宽度）。
+// pinned：overlay 浮层形态（不占布局宽度、max-h-full、pointer-events-auto、带浮起阴影）；
+// collapsed / onToggle：由 TodoPanel 受控（浮层展开=卡片，折叠=chip）；
+// toggleRef：展开后把焦点还给卡片内的折叠按钮。
 export default function TodoCard({
   items = [], error = null, sessionId = null, live = true,
-  pinned = false, collapsed: collapsedProp, onToggle = null, collapseLocked = false
+  pinned = false, collapsed: collapsedProp, onToggle = null, toggleRef = null, bodyId = null
 }) {
   const list = Array.isArray(items) ? items : [];
   const summary = todoCardSummary(list);
   const [innerCollapsed, toggleInner] = useTodoCollapse(sessionId, list);
+  const autoBodyId = useId();
+  const contentId = bodyId || autoBodyId;
   const controlled = typeof collapsedProp === 'boolean';
   const collapsed = controlled ? collapsedProp : innerCollapsed;
   const [showDone, setShowDone] = useState(false);
@@ -120,7 +123,6 @@ export default function TodoCard({
   if (!list.length && !error) return null;
 
   const toggleCollapsed = () => {
-    if (collapseLocked) return;
     if (controlled) onToggle?.();
     else toggleInner();
   };
@@ -130,9 +132,7 @@ export default function TodoCard({
   const completed = list.filter((it) => it.status === 'done');
   const countText = `${summary.done}/${summary.total}`;
   const rootCls = pinned
-    ? `flex w-full overflow-hidden rounded-xl border border-gold/35 bg-[#0b0b0c] shadow-[0_12px_36px_rgba(0,0,0,0.55)] ${
-      collapsed ? '' : 'max-h-[45vh] flex-col'
-    }`
+    ? `pointer-events-auto flex w-full max-w-[320px] min-h-0 max-h-full flex-col overflow-hidden rounded-xl border border-gold/35 bg-[#0b0b0c] shadow-[0_12px_36px_rgba(0,0,0,0.55)]`
     : `my-3 flex overflow-hidden rounded-xl border border-gold/35 bg-[#0b0b0c] animate-[fadeIn_.2s_ease] motion-reduce:animate-none ${
       collapsed ? '' : 'max-h-[420px] flex-col'
     }`;
@@ -162,19 +162,17 @@ export default function TodoCard({
           className="shrink-0 text-[10.5px] font-medium tabular-nums text-goldSoft/85">
           {countText}
         </span>
-        <button type="button" data-testid="todo-collapse" onClick={toggleCollapsed}
-          aria-expanded={collapseLocked ? undefined : !collapsed} aria-disabled={collapseLocked || undefined}
-          aria-label={collapseLocked ? t('窗口较窄，验收单自动折叠为一行') : (collapsed ? t('展开验收单') : t('收起验收单'))}
-          title={collapseLocked ? t('窗口较窄，验收单自动折叠为一行') : (collapsed ? t('展开验收单') : t('收起验收单'))}
-          className={`-mr-1 inline-flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-[5px] text-mute/55 transition-colors motion-reduce:transition-none ${
-            collapseLocked ? 'cursor-default opacity-60' : 'hover:bg-white/[0.06] hover:text-goldSoft'
-          }`}>
+        <button type="button" data-testid="todo-collapse" ref={toggleRef} onClick={toggleCollapsed}
+          aria-expanded={!collapsed} aria-controls={contentId}
+          aria-label={collapsed ? t('展开验收单') : t('收起验收单')}
+          title={collapsed ? t('展开验收单') : t('收起验收单')}
+          className="-mr-1 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[5px] text-mute/55 transition-colors motion-reduce:transition-none hover:bg-white/[0.06] hover:text-goldSoft focus-visible:bg-white/[0.10] focus-visible:text-goldSoft focus-visible:shadow-[inset_0_0_0_1px_rgba(227,197,107,0.55)] focus-visible:outline-none">
           <ChevronIcon collapsed={collapsed} />
         </button>
       </div>
 
       {!collapsed ? (
-        <>
+        <div id={contentId} className="flex min-h-0 flex-1 flex-col">
           {error ? (
             <div data-testid="todo-error"
               className="shrink-0 bg-red-500/[0.07] px-3.5 py-2 text-[11px] leading-relaxed text-red-300/90 break-words">
@@ -182,7 +180,7 @@ export default function TodoCard({
             </div>
           ) : null}
 
-          <ul className="min-h-0 flex-1 overflow-y-auto">
+          <ul className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
             {active.length ? active.map((it, i) => <TodoRow key={`${it.id}-${i}`} item={it} live={live} />) : (
               <li className="px-3.5 py-2 text-[11px] leading-relaxed text-mute/40">{t('全部完成')}</li>
             )}
@@ -207,7 +205,7 @@ export default function TodoCard({
               <div className="shrink-0">
                 <button type="button" onClick={() => setShowDone((v) => !v)} aria-expanded={showDone}
                   aria-label={showDone ? t('收起已完成条目') : t('展开已完成条目')}
-                  className="flex w-full items-center gap-1.5 px-3.5 py-[6px] text-left text-[10.5px] tabular-nums text-mute/60 transition-colors hover:bg-white/[0.03] hover:text-mute/85">
+                  className="flex min-h-6 w-full items-center gap-1.5 px-3.5 py-[6px] text-left text-[10.5px] tabular-nums text-mute/60 transition-colors hover:bg-white/[0.03] hover:text-mute/85 focus-visible:bg-white/[0.06] focus-visible:text-mute/85 focus-visible:outline-none">
                   <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                     strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"
                     className={`shrink-0 transition-transform duration-150 ${showDone ? '-rotate-90' : ''}`}>
@@ -216,38 +214,84 @@ export default function TodoCard({
                   <span>{t('{n} 已完成', { n: completed.length })}</span>
                 </button>
                 {showDone ? (
-                  <ul data-testid="todo-done-list" className="max-h-[210px] overflow-y-auto">
+                  <ul data-testid="todo-done-list" className="max-h-[210px] overflow-y-auto overscroll-contain">
                     {completed.map((it, i) => <TodoRow key={`${it.id}-done-${i}`} item={it} done />)}
                   </ul>
                 ) : null}
               </div>
             </>
           ) : null}
-        </>
+        </div>
       ) : null}
     </div>
   );
 }
 
 /**
- * 常驻面板：钉在会话内容区右上角（由 MessageList 放成滚动容器的兄弟节点）。
- * - 展开：固定 320px，高度上限 45vh，超出在卡片内滚动；
- * - 折叠：宽度按内容收缩（只剩「验收单 n/m」一行）；
- * - 会话列窄于 TODO_PANEL_MIN_WIDTH（右侧子代理/产物面板打开）时强制折叠，箭头变只读提示。
+ * 常驻浮层：absolute 覆盖在会话内容区右上角（由 MessageList 挂进消息列的 relative 容器）。
+ * - 展开：卡片宽度 min(320px, 会话列可用宽度)，max-h-full，超出在卡片内滚动；
+ * - 折叠：右上角小 chip（仍 absolute，不占布局宽度）；
+ * - 外层 pointer-events-none：透明区域可继续滚动/选中消息，只有卡片/chip 接收事件；
+ * - Esc 只在焦点位于浮层内时收起（不处理 Composer 里的 Esc，避免和清空输入冲突），
+ *   收起后焦点还给 chip；展开时焦点落到卡片折叠按钮。
+ * - 不再按会话列宽度自动折叠：浮层不占宽，窄屏/右面板打开时用户仍能自己开合。
  */
-export function TodoPanel({ items = [], error = null, sessionId = null, live = true, hostWidth = 0 }) {
+export function TodoPanel({ items = [], error = null, sessionId = null, live = true }) {
   const list = Array.isArray(items) ? items : [];
-  const [userCollapsed, toggleCollapse] = useTodoCollapse(sessionId, list);
-  const autoCollapsed = todoPanelAutoCollapsed(hostWidth);
-  const collapsed = autoCollapsed || userCollapsed;
+  const summary = todoCardSummary(list);
+  const bodyId = useId();
+  const [collapsed, toggleCollapse] = useTodoCollapse(sessionId, list);
+  const chipRef = useRef(null);
+  const cardToggleRef = useRef(null);
+  const focusTargetRef = useRef(null);
+
+  // 折叠/展开会卸载当前焦点节点，state 生效后把焦点交给另一形态的折叠按钮。
+  useEffect(() => {
+    if (focusTargetRef.current === 'chip' && collapsed) {
+      focusTargetRef.current = null;
+      chipRef.current?.focus();
+    } else if (focusTargetRef.current === 'card' && !collapsed) {
+      focusTargetRef.current = null;
+      cardToggleRef.current?.focus();
+    }
+  }, [collapsed]);
+
   if (!list.length && !error) return null;
+
+  const handleToggle = () => {
+    focusTargetRef.current = collapsed ? 'card' : 'chip';
+    toggleCollapse();
+  };
+
+  const handleKeyDown = (e) => {
+    if (e.key !== 'Escape') return;
+    // 焦点在浮层内：Esc 归浮层处理，不再传给全局（Composer 的 Esc 清空输入不受影响）
+    e.preventDefault();
+    e.stopPropagation();
+    if (collapsed || e.repeat) return;
+    focusTargetRef.current = 'chip';
+    toggleCollapse();
+  };
+
   return (
-    <div data-testid="todo-panel" data-collapsed={collapsed ? 'true' : 'false'}
-      data-auto-collapsed={autoCollapsed ? 'true' : 'false'}
-      className={`flex flex-col items-end ${collapsed ? 'w-auto' : 'w-[320px]'}`}>
-      <TodoCard items={list} error={error} sessionId={sessionId} live={live} pinned
-        collapsed={collapsed} onToggle={toggleCollapse} collapseLocked={autoCollapsed} />
-    </div>
+    <aside data-testid="todo-panel-overlay" data-collapsed={collapsed ? 'true' : 'false'}
+      aria-label={t('验收单面板')} onKeyDown={handleKeyDown}
+      className="pointer-events-none absolute inset-y-0 right-0 z-30 flex w-full max-w-full flex-col items-end p-4">
+      {collapsed ? (
+        <button type="button" data-testid="todo-chip" ref={chipRef} onClick={handleToggle}
+          data-done={summary.done} data-total={summary.total}
+          aria-controls={bodyId} aria-expanded="false" aria-label={t('展开验收单')} title={t('展开验收单')}
+          className="pointer-events-auto inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full border border-gold/35 bg-[#0b0b0c]/95 px-2.5 text-[11px] leading-none text-goldSoft shadow-[0_6px_20px_rgba(0,0,0,0.45)] backdrop-blur-sm transition-colors motion-reduce:transition-none hover:border-gold/70 hover:bg-[#141210]/95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold/60 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0a0a0c]">
+          <span aria-hidden="true" className="inline-block h-2 w-2 shrink-0 rounded-[2px] bg-gold/50" />
+          <span className="font-medium tracking-[0.12em]">{t('验收单')}</span>
+          <span className="tabular-nums text-goldSoft/85">{summary.done}/{summary.total}</span>
+          <ChevronIcon collapsed={false} />
+        </button>
+      ) : (
+        <TodoCard items={list} error={error} sessionId={sessionId} live={live} pinned
+          collapsed={false} onToggle={handleToggle} toggleRef={cardToggleRef} bodyId={bodyId} />
+      )}
+    </aside>
   );
 }
 

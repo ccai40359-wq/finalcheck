@@ -89,24 +89,6 @@ export default function MessageList({
   y, onSendRecover, onOpenArtifact, onEditMessage, onOpenStep,
   askCards = [], onAskUserAnswer = null
 }) {
-  // 常驻面板要按「会话列宽度」自动折叠：右侧子代理/产物面板打开时会话列变窄。
-  // 用 ResizeObserver 量会话列本身（不是 window），面板让位/收缩都由真实可用宽度决定。
-  const hostRef = useRef(null);
-  const [hostWidth, setHostWidth] = useState(0);
-  useEffect(() => {
-    const el = hostRef.current;
-    if (!el) return undefined;
-    const measure = () => setHostWidth(el.clientWidth || 0);
-    measure();
-    if (typeof ResizeObserver !== 'function') {
-      window.addEventListener('resize', measure);
-      return () => window.removeEventListener('resize', measure);
-    }
-    const ro = new ResizeObserver(measure);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-
   // 当前会话最新一份验收单：面板只显示这一份；消息流里同一份不再内联渲染（避免一屏两份）。
   const latestTodo = latestTodoFromMessages(messages);
 
@@ -128,8 +110,8 @@ export default function MessageList({
     setTimeout(() => { jumpingRef.current = false; }, 500);
   };
   return (
-    <div ref={hostRef} className="flex-1 min-h-0 flex" data-testid="message-host">
-      {/* 消息滚动列：面板出现时用 flex-1 让出右侧固定宽度，不用绝对定位压住消息 */}
+    <div className="flex-1 min-h-0 flex" data-testid="message-host">
+      {/* 消息滚动列：验收单浮层 absolute 覆盖在本列内，不占布局宽度 */}
       <div className="relative min-w-0 flex-1">
       <div ref={scrollRef} data-testid="message-scroll" className="h-full overflow-y-auto px-5 py-4"
         onScroll={handleScroll}>
@@ -277,15 +259,13 @@ export default function MessageList({
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12l7 7 7-7" /></svg>
         </button>
       )}
-      </div>
-      {/* 常驻验收单面板：滚动容器的兄弟节点 → 滚动时不动；只在有验收单时占位 */}
+      {/* 验收单浮层：absolute 覆盖在消息列右上角，不占宽、不随消息滚动；
+          透明区域 pointer-events-none（可穿透滚动），只有卡片/chip 可交互。 */}
       {latestTodo ? (
-        <aside data-testid="todo-panel-dock" aria-label={t('验收单面板')}
-          className="flex shrink-0 flex-col items-end pt-4 pr-4 pb-4">
-          <TodoPanel items={latestTodo.items} error={latestTodo.error} sessionId={activeId}
-            live={latestTodo.live} hostWidth={hostWidth} />
-        </aside>
+        <TodoPanel items={latestTodo.items} error={latestTodo.error} sessionId={activeId}
+          live={latestTodo.live} />
       ) : null}
+      </div>
     </div>
   );
 }

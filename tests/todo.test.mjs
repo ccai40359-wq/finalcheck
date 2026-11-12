@@ -17,7 +17,7 @@ const { createTodoRegistry } = await import('../desktop/src/main/todo-list.mjs')
 const {
   validateTodoItems, todoCardFromTrace, latestTodoEntry, todoProgress,
   todoCardSummary, todoCollapseKey, readTodoCollapsed, writeTodoCollapsed, TODO_COLLAPSE_PREFIX,
-  displayStatus, todoFromMessage, latestTodoFromMessages, todoPanelAutoCollapsed, TODO_PANEL_MIN_WIDTH
+  displayStatus, todoFromMessage, latestTodoFromMessages
 } = await import('../desktop/src/renderer/lib/todo.mjs');
 const { lintTodoReport } = await import('../desktop/src/main/swarm.mjs');
 const { hasTranslation } = await import('../desktop/src/renderer/i18n/core.mjs');
@@ -366,38 +366,68 @@ test('todo: 会话级只取最新一份验收单（流式读 events / 收尾读 
   assert.equal(latestTodoFromMessages([{ role: 'assistant', trace: [{ tool: 'run_command', args: '{}' }] }]), null);
 });
 
-/* ---------- ⑦c 面板窄屏自动折叠：右侧子代理/产物面板打开时只留一行 ---------- */
-test('todo: 面板自动折叠阈值——会话列变窄就折叠，首帧未测量按展开', () => {
-  assert.equal(TODO_PANEL_MIN_WIDTH, 840);
-  assert.equal(todoPanelAutoCollapsed(0), false, '首帧 clientWidth=0 不能先折叠再展开（闪一下）');
-  assert.equal(todoPanelAutoCollapsed(NaN), false);
-  assert.equal(todoPanelAutoCollapsed(-1), false);
-  assert.equal(todoPanelAutoCollapsed(undefined), false);
+/* ---------- ⑦c 浮层形态：absolute 覆盖、透明层穿透、不占布局宽度（源码断言） ---------- */
+test('todo: 验收单浮层绝对定位、透明区穿透、卡片可交互，且不再按宽度自动折叠', () => {
+  const dir = path.join(repoRoot, 'desktop', 'src', 'renderer', 'components');
+  const messageList = readFileSync(path.join(dir, 'MessageList.jsx'), 'utf8');
+  const todoCard = readFileSync(path.join(dir, 'TodoCard.jsx'), 'utf8');
+  const todoLib = readFileSync(path.join(repoRoot, 'desktop', 'src', 'renderer', 'lib', 'todo.mjs'), 'utf8');
 
-  assert.equal(todoPanelAutoCollapsed(TODO_PANEL_MIN_WIDTH - 1), true);
-  assert.equal(todoPanelAutoCollapsed(TODO_PANEL_MIN_WIDTH), false);
-  assert.equal(todoPanelAutoCollapsed('1200'), false);
+  // 外层 = absolute overlay：铺满消息列右侧、z-30；透明区域 pointer-events-none（滚轮可穿透）
+  assert.match(todoCard, /data-testid="todo-panel-overlay"/);
+  assert.match(todoCard, /pointer-events-none absolute inset-y-0 right-0 z-30/);
+  assert.match(todoCard, /w-full max-w-full/);
+  // 卡片必须重新打开事件：单边框、宽度 min(320px, 可用宽度)、高度封顶、内部滚动
+  assert.match(todoCard, /pointer-events-auto flex w-full max-w-\[320px\] min-h-0 max-h-full flex-col/);
+  assert.match(todoCard, /border border-gold\/35/);
+  assert.match(todoCard, /overflow-y-auto overscroll-contain/);
+  // 折叠态：右上角 chip（仍 absolute，不占宽；命中区 28px >= 24px）
+  assert.match(todoCard, /data-testid="todo-chip"/);
+  assert.match(todoCard, /pointer-events-auto inline-flex h-7/);
+  assert.match(todoCard, /aria-controls=\{bodyId\}/);
+  assert.match(todoCard, /aria-expanded="false"/);
+  // 折叠箭头命中区 24px（旧 22px 不达标）
+  assert.match(todoCard, /data-testid="todo-collapse"[\s\S]*?h-6 w-6/);
+  assert.equal(/h-\[22px\]|aria-disabled/.test(todoCard), false);
+  // Esc 只在浮层内处理；收起后焦点还给 chip
+  assert.match(todoCard, /e\.key !== 'Escape'/);
+  assert.match(todoCard, /stopPropagation/);
+  assert.match(todoCard, /chipRef\.current\?\.focus\(\)/);
+  assert.match(todoCard, /cardToggleRef\.current\?\.focus\(\)/);
+  assert.match(todoCard, /focus-visible:ring-2/);
+  assert.match(todoCard, /focus-visible:shadow-\[inset_0_0_0_1px_rgba\(227,197,107,0\.55\)\]/);
 
-  // 实际窗口：1440 宽 - 侧栏 260 = 1180（展开）；右侧子代理 620 打开 → 560（折叠）
-  assert.equal(todoPanelAutoCollapsed(1180), false);
-  assert.equal(todoPanelAutoCollapsed(560), true);
+  // 自动折叠/锁定逻辑彻底删除：浮层不占宽，窄屏也必须能手动开关
+  assert.equal(/collapseLocked|autoCollapsed|todoPanelAutoCollapsed|TODO_PANEL_MIN_WIDTH/.test(todoCard), false);
+  assert.equal(/todoPanelAutoCollapsed|TODO_PANEL_MIN_WIDTH/.test(todoLib), false);
+  assert.equal(/hostWidth/.test(messageList), false);
+
+  // MessageList 不再有会占宽的验收单 flex 兄弟
+  assert.equal(/todo-panel-dock/.test(messageList), false);
+  assert.equal(/shrink-0 flex-col items-end pt-4/.test(messageList), false);
+
+  // 折叠 key 仍按 sessionId + 任务签名（源码核对，行为断言见⑦）
+  assert.match(todoCard, /useTodoCollapse\(sessionId, list\)/);
+  assert.match(todoLib, /const sid = sessionId == null/);
 });
 
-/* ---------- ⑦d 渲染形态：消息流不再内联最新卡，面板在滚动容器外 ---------- */
-test('todo: 消息流不再内联渲染最新卡，面板钉在滚动容器外，历史只留一行摘要', () => {
+/* ---------- ⑦d 渲染形态：消息流不再内联最新卡，浮层挂在消息列内（不是占宽兄弟） ---------- */
+test('todo: 消息流不再内联最新卡，浮层挂在消息列内，历史只留一行摘要', () => {
   const dir = path.join(repoRoot, 'desktop', 'src', 'renderer', 'components');
   const messageList = readFileSync(path.join(dir, 'MessageList.jsx'), 'utf8');
   const todoCard = readFileSync(path.join(dir, 'TodoCard.jsx'), 'utf8');
 
   assert.equal(/<TodoBlock\b/.test(messageList), false, '旧的内联整卡不能再出现在消息流里');
-  assert.match(messageList, /latestTodo\?\.index === i \? null : <TodoHistoryRow/, '最新一份由面板渲染，消息流里跳过');
-  assert.match(messageList, /data-testid="todo-panel-dock"/);
+  assert.match(messageList, /latestTodo\?\.index === i \? null : <TodoHistoryRow/, '最新一份由浮层渲染，消息流里跳过');
   assert.match(messageList, /data-testid="message-scroll"/);
 
-  // 面板必须是滚动容器的兄弟：scroll 容器闭合后才轮到 aside（不随滚动走）
+  // 消息列是 relative 容器；TodoPanel 挂在它里面、排在滚动容器之后，作为 absolute overlay 覆盖
+  assert.match(messageList, /<div className="relative min-w-0 flex-1">/);
   const scrollAt = messageList.indexOf('data-testid="message-scroll"');
-  const dockAt = messageList.indexOf('data-testid="todo-panel-dock"');
-  assert.ok(dockAt > scrollAt, '面板要排在滚动容器之后（兄弟节点）');
+  const panelAt = messageList.indexOf('<TodoPanel items={latestTodo.items}');
+  assert.ok(panelAt > scrollAt, '浮层要排在滚动容器之后（覆盖在消息列内，不随滚动走）');
+  assert.equal(messageList.indexOf('data-testid="todo-panel-dock"'), -1, '旧的 flex 兄弟面板必须移除');
+  assert.match(messageList, /sessionId=\{activeId\}/);
 
   assert.match(todoCard, /export function TodoPanel/);
   assert.match(todoCard, /export function TodoHistoryRow/);
