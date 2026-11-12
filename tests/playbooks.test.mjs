@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { loadCatalog, readPlaybook, resolveTopic, renderCatalog } from '../src/playbooks.mjs';
+import { readdir } from 'node:fs/promises';
+import path from 'node:path';
+import { loadCatalog, readPlaybook, resolveTopic, renderCatalog, catalogSummary, PLAYBOOK_ROOT } from '../src/playbooks.mjs';
 
 test('playbooks: 40 类目录完整，每类都有 name/description/SKILL.md', async () => {
   const c = await loadCatalog();
@@ -108,4 +110,24 @@ test('playbooks: limit 上限 30000，offset 超界返回空内容不越界', as
   const tail = await readPlaybook({ topic: '11', file: 'SCENARIOS', offset: 99999999 });
   assert.equal(tail.content, '');
   assert.equal(tail.nextOffset, null);
+});
+
+test('playbooks: catalogSummary 每项都有非空英文 descriptionEn（无中文，条目数与 SKILL.md 一致）', async () => {
+  const catalog = await loadCatalog();
+  const summary = catalogSummary(catalog);
+  const dirs = (await readdir(PLAYBOOK_ROOT, { withFileTypes: true }))
+    .filter((d) => d.isDirectory() && /^\d{1,2}[-_]/.test(d.name));
+  let skillCount = 0;
+  for (const d of dirs) {
+    const files = await readdir(path.join(PLAYBOOK_ROOT, d.name));
+    if (files.some((f) => f.toLowerCase() === 'skill.md')) skillCount += 1;
+  }
+  assert.equal(summary.length, skillCount, '目录条目数应与 SKILL.md 数量一致');
+  assert.equal(summary.length, 40);
+  for (const item of summary) {
+    assert.ok(item.descriptionEn?.trim(), `${item.id} ${item.name} 缺 descriptionEn`);
+    assert.ok(!/[\u3400-\u9fff]/.test(item.descriptionEn), `${item.id} descriptionEn 不应含中文：${item.descriptionEn}`);
+    assert.ok(item.descriptionEn.length <= 121, `${item.id} descriptionEn 截断后超长：${item.descriptionEn.length}`);
+    assert.ok(item.triggers, `${item.id} 旧字段 triggers 不应丢失`);
+  }
 });

@@ -1,6 +1,7 @@
 ---
 name: deserialization
 description: 测试反序列化漏洞时使用。Use when 用户提到 Java/PHP/Python/.NET 反序列化、gadget 链、YAML/Pickle/BinaryFormatter/ViewState、中间件反序列化 RCE 时加载。
+description_en: Test Java, PHP, Python, and .NET deserialization with gadget chains, YAML, Pickle, BinaryFormatter, ViewState, and middleware RCE paths.
 ---
 
 # 反序列化 (deserialization)

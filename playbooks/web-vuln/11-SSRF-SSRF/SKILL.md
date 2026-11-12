@@ -1,6 +1,7 @@
 ---
 name: ssrf
 description: 测试 SSRF 时使用。Use when 目标存在 URL 拉取功能（预览、导入、webhook、头像抓取），或用户提到 SSRF、内网探测、云元数据、gopher 协议、URL 解析差异时加载。
+description_en: Test URL-fetching features such as previews, imports, webhooks, and avatar fetchers for SSRF, internal probing, cloud metadata access, and gopher pivoting.
 ---
 
 # SSRF (ssrf)

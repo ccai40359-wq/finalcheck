@@ -1,6 +1,7 @@
 ---
 name: crlf-injection
 description: 测试 CRLF 注入时使用。Use when 用户提到 CRLF、%0d%0a、HTTP 响应拆分、头注入、Set-Cookie 注入时加载。
+description_en: Test CRLF injection with %0d%0a sequences for HTTP response splitting, header injection, and Set-Cookie manipulation.
 ---
 
 # CRLF注入 (crlf-injection)

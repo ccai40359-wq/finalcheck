@@ -1,6 +1,7 @@
 ---
 name: idor
 description: 测试越权访问时使用。Use when 目标接口带对象 ID（URL/JSON/header 中的 id、userId、orderId），或用户提到 IDOR、水平/垂直越权、BOLA、未授权访问时加载。
+description_en: Test object-level authorization by manipulating IDs in URLs, JSON, and headers; covers horizontal and vertical IDOR, BOLA, and unauthenticated access.
 ---
 
 # 越权访问 (idor)

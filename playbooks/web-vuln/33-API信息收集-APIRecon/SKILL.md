@@ -1,6 +1,7 @@
 ---
 name: api-recon
 description: 做 API 信息收集时使用。Use when 目标暴露 REST/GraphQL/移动端后端接口，或用户提到 API 发现、OpenAPI/Swagger、隐藏端点、接口版本漂移时加载。
+description_en: Enumerate REST, GraphQL, and mobile backends, hidden endpoints, Swagger or OpenAPI docs, and API version drift.
 ---
 
 # API信息收集 (api-recon)

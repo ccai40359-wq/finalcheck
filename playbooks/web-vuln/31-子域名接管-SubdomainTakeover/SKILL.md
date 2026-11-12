@@ -1,6 +1,7 @@
 ---
 name: subdomain-takeover
 description: 测试子域名接管时使用。Use when 发现悬挂 CNAME/NS 记录，或用户提到子域名接管、dangling DNS、GitHub Pages/AWS 等云服务指纹时加载。
+description_en: Find dangling CNAME or NS records and claim abandoned cloud services such as GitHub Pages or AWS buckets to take over subdomains.
 ---
 
 # 子域名接管 (subdomain-takeover)

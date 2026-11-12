@@ -1,6 +1,7 @@
 ---
 name: el-injection
 description: 测试表达式注入时使用。Use when 用户提到 SpEL、OGNL、MVEL、Java EL、Struts OGNL RCE、Spring 表达式时加载。
+description_en: Test expression language injection in SpEL, OGNL, MVEL, Java EL, and Struts or Spring contexts that can lead to remote code execution.
 ---
 
 # 表达式注入 (el-injection)

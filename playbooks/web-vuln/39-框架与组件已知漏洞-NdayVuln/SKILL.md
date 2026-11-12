@@ -1,6 +1,7 @@
 ---
 name: nday-vuln
 description: 排查框架与组件已知漏洞（N-day）时使用。Use when 目标是 ThinkPHP/Spring/Struts2/Fastjson/WebLogic/Shiro/WordPress/Django/Flask 等框架，或用户提到 N-day、已知漏洞、CVE 复现、组件版本漏洞、中间件漏洞、找 PoC、指纹版本比对时加载。
+description_en: Check frameworks and components such as ThinkPHP, Spring, Struts2, Fastjson, WebLogic, Shiro, WordPress, Django, and Flask for known CVEs.
 ---
 
 # 框架与组件已知漏洞 (nday-vuln)

@@ -1,6 +1,7 @@
 ---
 name: race-condition
 description: 测试竞态条件时使用。Use when 用户提到竞态、并发、TOCTOU、HTTP/2 单包攻击、Turbo Intruder、重复领券/提现时加载。
+description_en: Test race conditions and TOCTOU flaws with concurrent requests, HTTP/2 single-packet attacks, and Turbo Intruder; use for double-spend or duplicate-claim bugs.
 ---
 
 # 竞态条件 (race-condition)

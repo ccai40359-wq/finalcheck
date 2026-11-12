@@ -1,6 +1,7 @@
 ---
 name: jwt-token-attacks
 description: 测试 JWT 与令牌攻击时使用。Use when 流量中出现 JWT/Bearer token，或用户提到 JWT 算法混淆、none 算法、密钥混淆、JWKS 滥用、声明篡改时加载。
+description_en: Test JWT and Bearer tokens for algorithm confusion, none algorithm, key confusion, JWKS abuse, and claim tampering.
 ---
 
 # JWT与令牌攻击 (jwt-token-attacks)

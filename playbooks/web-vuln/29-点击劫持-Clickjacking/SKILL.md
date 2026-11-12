@@ -1,6 +1,7 @@
 ---
 name: clickjacking
 description: 测试点击劫持时使用。Use when 用户提到 clickjacking、X-Frame-Options、frame 嵌套、界面伪装攻击时加载。
+description_en: Test clickjacking exposure through missing X-Frame-Options or CSP frame-ancestors, frame nesting, and UI redress attacks.
 ---
 
 # 点击劫持 (clickjacking)

@@ -1,6 +1,7 @@
 ---
 name: auth-bypass
 description: 测试认证绕过时使用。Use when 目标有登录/找回密码/验证码功能，或用户提到认证绕过、密码重置逻辑缺陷、验证码绕过、不安全随机数时加载。
+description_en: Test login, password reset, and verification-code flows for auth bypass, logic flaws, code reuse, and weak randomness.
 ---
 
 # 认证绕过 (auth-bypass)

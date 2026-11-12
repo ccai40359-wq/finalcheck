@@ -75,7 +75,7 @@ export function registerSystemIpc({ ipcMain, getWin, engineUrl, store, getHooksC
   ipcMain.handle('finalcheck:skills:list', async () => {
     const { loadCatalog, catalogSummary } = await import(engineUrl('src/playbooks.mjs'));
     const catalog = await loadCatalog();
-    return catalogSummary(catalog).map((x) => ({ id: x.id, name: x.name, cn: x.cn, description: x.triggers }));
+    return catalogSummary(catalog).map((x) => ({ id: x.id, name: x.name, cn: x.cn, description: x.triggers, descriptionEn: x.descriptionEn || '' }));
   });
 
   // ---- 权限台账（fail-closed 闭集审批） ----

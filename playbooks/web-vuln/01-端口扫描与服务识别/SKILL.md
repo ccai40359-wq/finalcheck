@@ -1,6 +1,7 @@
 ---
 name: port-service-scan
 description: 对授权目标进行端口扫描与服务识别时使用。Use when 用户提到 Nmap、Masscan、RustScan、端口扫描、服务版本识别、开放端口、OS 探测，或刚拿到目标网站/IP 开始渗透测试第一步时加载。
+description_en: Map open ports, service versions, and OS fingerprints on authorized targets with Nmap, Masscan, or RustScan; start here when a new host or IP is in scope.
 ---
 
 # 端口扫描与服务识别 (port-service-scan)

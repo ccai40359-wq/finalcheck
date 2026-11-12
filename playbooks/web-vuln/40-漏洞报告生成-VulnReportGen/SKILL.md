@@ -1,6 +1,7 @@
 ---
 name: vuln-report-generate
 description: 把已复现的漏洞整理成可直接提交 SRC 平台的报告时使用。Use when 用户提到 生成漏洞报告、写漏洞报告、补天报告、漏洞盒子报告、SRC 提交、报告初稿、漏洞报告模板、危害等级判定、复现步骤整理、报告被打回返工 时加载。
+description_en: Turn reproduced findings into submission-ready SRC vulnerability reports with severity rating, reproduction steps, and remediation guidance.
 ---
 
 # 漏洞报告生成 (vuln-report-generate)

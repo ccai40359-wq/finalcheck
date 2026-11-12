@@ -1,6 +1,7 @@
 ---
 name: nosql-injection
 description: 测试 NoSQL 注入时使用。Use when 目标使用 MongoDB 等 NoSQL 数据库，或用户提到 $where、$ne、聚合管道注入、NoSQL 盲注提取时加载。
+description_en: Test NoSQL injection against MongoDB-backed apps, including $where and $ne operator abuse, aggregation pipeline injection, and blind data extraction.
 ---
 
 # NoSQL注入 (nosql-injection)

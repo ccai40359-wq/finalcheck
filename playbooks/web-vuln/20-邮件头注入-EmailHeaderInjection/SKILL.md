@@ -1,6 +1,7 @@
 ---
 name: email-header-injection
 description: 测试邮件头注入时使用。Use when 目标有邮件发送功能（联系表单、邀请、找回密码），或用户提到 SMTP 头注入、CC/BCC 注入、邮件中继滥用时加载。
+description_en: Test mail-sending features such as contact forms, invites, and password resets for SMTP header injection, CC/BCC abuse, and mail relay misuse.
 ---
 
 # 邮件头注入 (email-header-injection)

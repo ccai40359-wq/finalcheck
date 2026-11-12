@@ -1,6 +1,7 @@
 ---
 name: js-api-recon
 description: 从前端代码挖接口时使用。Use when 用户提到 JS 分析、JSFinder、LinkFinder、sourcemap、硬编码密钥、Swagger/OpenAPI 文档、隐藏端点、注释泄露，或目标是 Vue/React SPA 站点时加载。
+description_en: Mine front-end JavaScript for API endpoints, sourcemaps, hardcoded secrets, and Swagger or OpenAPI docs; use it on SPAs or sites whose APIs run in the browser.
 ---
 
 # 前端JS与API信息收集 (js-api-recon)

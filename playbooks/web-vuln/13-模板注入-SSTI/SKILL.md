@@ -1,6 +1,7 @@
 ---
 name: ssti
 description: 测试模板注入时使用。Use when 用户提到 SSTI、Jinja2/Twig/Smarty/Freemarker/Razor、{{7*7}} 探测、Flask PIN 计算、盲注 SSTI 时加载。
+description_en: Test template injection in Jinja2, Twig, Smarty, Freemarker, and Razor with {{7*7}} probes, Flask PIN calculation, and blind SSTI.
 ---
 
 # 模板注入 (ssti)

@@ -1,6 +1,7 @@
 ---
 name: csrf
 description: 测试 CSRF 时使用。Use when 目标关键操作缺少 token 防护，或用户提到 CSRF、JSON CSRF、Multipart CSRF、CSPT2CSRF 时加载。
+description_en: Test state-changing actions for missing or weak CSRF tokens, including JSON CSRF, multipart CSRF, and SameSite bypass.
 ---
 
 # 跨站请求伪造 (csrf)

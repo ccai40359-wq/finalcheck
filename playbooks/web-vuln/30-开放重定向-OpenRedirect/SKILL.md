@@ -1,6 +1,7 @@
 ---
 name: open-redirect
 description: 测试开放重定向时使用。Use when 目标存在跳转参数（redirect/url/next），或用户提到开放重定向、URL 跳转滥用、tabnabbing 时加载。
+description_en: Test redirect parameters such as redirect, url, and next for open redirects, URL hop abuse, and tabnabbing chains.
 ---
 
 # 开放重定向 (open-redirect)

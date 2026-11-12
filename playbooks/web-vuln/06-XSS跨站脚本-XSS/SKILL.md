@@ -1,6 +1,7 @@
 ---
 name: xss
 description: 测试 XSS 时使用。Use when 用户提到 XSS、反射/存储/DOM 型、payload 构造、CSP 绕过、DOM Clobbering、厂商 WAF 绕过（Cloudflare/Akamai）、CSS 注入数据外带时加载。
+description_en: Test reflected, stored, and DOM XSS, craft payloads, bypass CSP and WAF, and exfiltrate data; use whenever user input is rendered in the browser.
 ---
 
 # XSS跨站脚本 (xss)

@@ -1,6 +1,7 @@
 ---
 name: api-bola
 description: 测试 API 授权时使用。Use when API 请求带对象 ID 或支持批量操作，或用户提到 BOLA、BFLA、批量赋值、mass assignment、对象级授权缺失时加载。
+description_en: Test API object-level and function-level authorization, including BOLA, BFLA, mass assignment, and batch-operation abuse.
 ---
 
 # API授权与BOLA (api-bola)

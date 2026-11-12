@@ -1,6 +1,7 @@
 ---
 name: xxe
 description: 测试 XXE 时使用。Use when 目标解析 XML（SOAP、docx 上传、RSS），或用户提到 XXE、外部实体、OOB 外带、本地 DTD 注入、blind XXE 时加载。
+description_en: Test XML parsers such as SOAP, docx upload, and RSS for external entity injection, OOB exfiltration, local DTD abuse, and blind XXE.
 ---
 
 # XXE注入 (xxe)

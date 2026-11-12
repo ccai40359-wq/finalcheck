@@ -1,6 +1,7 @@
 ---
 name: file-upload
 description: 测试文件上传漏洞时使用。Use when 目标存在上传点（头像、附件、导入），或用户提到上传绕过、MIME/扩展名绕过、图片马、IIS/Apache/Nginx 解析漏洞、编辑器路径时加载。
+description_en: Test file upload endpoints for MIME and extension bypass, polyglot images, parser flaws in IIS, Apache, and Nginx, and editor path issues.
 ---
 
 # 文件上传 (file-upload)

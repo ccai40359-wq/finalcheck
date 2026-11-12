@@ -1,6 +1,7 @@
 ---
 name: business-logic
 description: 测试业务逻辑漏洞时使用。Use when 测试支付/优惠券/库存/流程/状态机，或用户提到支付篡改、负数金额、流程跳步、逻辑绕过、越权领取、越权购买（低价/0元购、改价下单）时加载。
+description_en: Test payment, coupon, inventory, and workflow logic for price tampering, negative amounts, step skipping, and unauthorized purchases.
 ---
 
 # 业务逻辑漏洞 (business-logic)

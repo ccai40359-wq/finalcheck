@@ -1,6 +1,7 @@
 ---
 name: xslt-injection
 description: 测试 XSLT 注入时使用。Use when 目标处理 XSLT 转换，或用户提到 XSLT RCE、EXSLT、document() 函数时加载。
+description_en: Test XSLT transformation endpoints for code execution, EXSLT functions, and document() based file or network access.
 ---
 
 # XSLT注入 (xslt-injection)

@@ -12,13 +12,15 @@ export const PLAYBOOK_ROOT = path.join(REPO_ROOT, 'playbooks', 'web-vuln');
 const catalogCache = new Map();
 
 function parseFrontmatter(text) {
-  if (!text.startsWith('---')) return { name: '', description: '' };
+  if (!text.startsWith('---')) return { name: '', description: '', descriptionEn: '' };
   const end = text.indexOf('\n---', 3);
-  if (end === -1) return { name: '', description: '' };
+  if (end === -1) return { name: '', description: '', descriptionEn: '' };
   const block = text.slice(3, end);
   const name = (block.match(/^name:\s*(.+)$/m) || [])[1]?.trim() || '';
   const description = (block.match(/^description:\s*(.+)$/m) || [])[1]?.trim() || '';
-  return { name, description };
+  // 英文一句话（菜单展示用）；旧手册没有该字段时留空，渲染层回退中文
+  const descriptionEn = (block.match(/^description_en:\s*(.+)$/m) || [])[1]?.trim() || '';
+  return { name, description, descriptionEn };
 }
 
 // 目录名 → 中文短名：去掉编号与末尾英文段（36-401-403绕过-AccessBypass → 401-403绕过）
@@ -60,7 +62,7 @@ async function buildCatalog(root) {
     }
     files.sort((a, b) => (a.name === 'SKILL.md' ? -1 : b.name === 'SKILL.md' ? 1 : a.name.localeCompare(b.name)));
     const id = (dir.match(/^(\d{1,2})/) || [])[1]?.padStart(2, '0') || dir;
-    let front = { name: '', description: '' };
+    let front = { name: '', description: '', descriptionEn: '' };
     const skill = files.find((f) => f.name.toLowerCase() === 'skill.md');
     if (skill) {
       try { front = parseFrontmatter(await readFile(path.join(full, skill.name), 'utf8')); } catch { /* frontmatter 坏了保留空 */ }
@@ -73,6 +75,7 @@ async function buildCatalog(root) {
       cn: cnOf(dir),
       title: dir.replace(/^\d+[-_]/, ''),
       description: front.description,
+      descriptionEn: front.descriptionEn,
       triggers: triggersOf(front.description),
       files
     });
@@ -219,6 +222,7 @@ export function catalogSummary(catalog) {
     cn: e.cn,
     name: e.name,
     triggers: clip(e.triggers, 120),
+    descriptionEn: clip(e.descriptionEn, 120),
     fileCount: e.files.length,
     entry: e.files.find((f) => f.name.toLowerCase() === 'skill.md')?.name || e.files[0]?.name || null
   }));

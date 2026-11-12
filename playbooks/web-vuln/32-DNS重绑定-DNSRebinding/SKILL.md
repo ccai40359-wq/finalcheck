@@ -1,6 +1,7 @@
 ---
 name: dns-rebinding
 description: 测试 DNS 重绑定时使用。Use when 用户提到 DNS rebinding、TTL 操控、同源策略绕过、内网服务跨域访问时加载。
+description_en: Test DNS rebinding through TTL manipulation to bypass the same-origin policy and reach internal services from a victim browser.
 ---
 
 # DNS重绑定 (dns-rebinding)

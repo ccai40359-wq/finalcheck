@@ -1,6 +1,7 @@
 ---
 name: sql-injection
 description: 测试 SQL 注入时使用。Use when 目标存在数据库交互（登录框、搜索、列表、分页、排序），或用户提到 SQLi、sqlmap、union 注入、盲注、报错注入、WAF 绕过矩阵、多数据库利用时加载。
+description_en: Test SQL injection in login, search, list, sort, and pagination inputs; covers sqlmap, UNION, blind, error-based, and database-specific exploitation.
 ---
 
 # SQL注入 (sql-injection)

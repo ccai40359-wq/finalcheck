@@ -1,6 +1,7 @@
 ---
 name: tech-fingerprint
 description: 识别目标 Web 技术栈时使用。Use when 用户提到 WhatWeb、Wappalyzer、EHole、wafw00f、CMS 识别、中间件版本（Tomcat/WebLogic/ThinkPHP）、框架指纹、WAF 识别，或需要为 payload/字典选择确认技术栈时加载。
+description_en: Identify CMS, middleware, frameworks, and WAF products with WhatWeb, Wappalyzer, EHole, or wafw00f; use it to pick payloads and wordlists that fit the stack.
 ---
 
 # 技术栈指纹识别 (tech-fingerprint)

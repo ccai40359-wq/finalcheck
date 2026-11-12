@@ -1,6 +1,7 @@
 ---
 name: dir-brute
 description: 对目标做目录与敏感文件探测时使用。Use when 用户提到 dirsearch、gobuster、ffuf、目录扫描、后台路径、备份文件、.git/.svn 泄露、Adminer/phpMyAdmin 等运维入口时加载。
+description_en: Find hidden directories, admin panels, backups, and .git or .svn leaks with dirsearch, gobuster, or ffuf; use it for web path enumeration.
 ---
 
 # 目录与敏感文件爆破 (dir-brute)

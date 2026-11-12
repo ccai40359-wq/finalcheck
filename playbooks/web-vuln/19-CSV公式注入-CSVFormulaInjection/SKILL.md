@@ -1,6 +1,7 @@
 ---
 name: csv-formula-injection
 description: 测试 CSV 公式注入时使用。Use when 目标提供 CSV/Excel 导出功能，或用户提到 CSV 注入、DDE、公式注入时加载。
+description_en: Test CSV and Excel export features for formula injection, DDE payloads, and spreadsheet-based command execution.
 ---
 
 # CSV公式注入 (csv-formula-injection)

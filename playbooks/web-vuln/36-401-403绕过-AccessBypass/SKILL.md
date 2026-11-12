@@ -1,6 +1,7 @@
 ---
 name: access-bypass
 description: 遇到 401/403 拦截时使用。Use when 目标路径返回 403/401 需要绕过，或用户提到 403 绕过、路径规范化技巧、X-Original-URL、HTTP 方法篡改、IP 限制绕过时加载。
+description_en: Bypass 401 and 403 responses with path normalization tricks, X-Original-URL headers, HTTP method tampering, and IP allowlist evasion.
 ---
 
 # 401-403绕过 (access-bypass)

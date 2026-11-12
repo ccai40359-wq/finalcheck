@@ -2,10 +2,10 @@
 // 所有状态仍在 App（这里只读 props、调回调）；组件内部仅有输入框高度等 DOM 行为，与拆分前一致。
 import React, { useEffect, useRef, useState } from 'react';
 import { api } from '../lib/ui.jsx';
-import { t } from '../i18n/core.mjs';
+import { t, getLanguage } from '../i18n/core.mjs';
 import {
   IMG_EXT_RE, previewFromPath, isLongPaste, countLines, fmtTokens, modelIdsOf, modelEntriesOf, EFFORTS, COMMANDS,
-  nextPasteId, baseName, readBase64, fileToDataUrl, shrinkImageDataUrl
+  nextPasteId, baseName, readBase64, fileToDataUrl, shrinkImageDataUrl, skillDescription
 } from '../lib/app-helpers.mjs';
 import { IconPlus, IconPaste, IconTrash, IconEdit, IconShield, IconSend, ContextRing } from './Icons.jsx';
 
@@ -76,11 +76,23 @@ export default function Composer({
   const effortIndex = Math.max(0, EFFORTS.findIndex((x) => x.v === effort));
   const sliderPos = effortPos ?? effortIndex;
   const effortLabel = EFFORTS[Math.round(sliderPos)]?.label || 'Max';
-  const skillItems = skills.map((s) => ({ type: 'skill', id: s.id, name: s.name, cn: s.cn, description: s.description || '' }));
+  // 语言每次渲染都现读（Composer 随 App 重渲染）；不做模块级缓存，切换语言后菜单立即跟着变
+  const lang = getLanguage();
+  const skillItems = skills.map((s) => ({
+    type: 'skill', id: s.id, name: s.name, cn: s.cn,
+    description: skillDescription(s, lang),
+    descriptionEn: s.descriptionEn || '',
+    descriptionZh: s.description || ''
+  }));
   const slashMatch = input.match(/(^|\s)\/([a-z0-9-]*)$/i);
   const slashQ = (slashMatch?.[2] || '').toLowerCase();
   const slashItems = [...COMMANDS, ...skillItems]
-    .filter((i) => !slashQ || String(i.name).toLowerCase().includes(slashQ) || String(i.cn).toLowerCase().includes(slashQ) || String(i.description).toLowerCase().includes(slashQ))
+    .filter((i) => !slashQ
+      || String(i.name).toLowerCase().includes(slashQ)
+      || String(i.cn).toLowerCase().includes(slashQ)
+      || String(i.description).toLowerCase().includes(slashQ)
+      || String(i.descriptionEn || '').toLowerCase().includes(slashQ)
+      || String(i.descriptionZh || '').toLowerCase().includes(slashQ))
     .slice(0, 50);
   const slashOpen = !!slashMatch;
 
@@ -538,7 +550,9 @@ export default function Composer({
                     onMouseEnter={() => setSlashIndex(idx)}
                     className={`w-full flex items-center gap-2 px-2.5 py-[7px] rounded-lg transition-colors ${idx === Math.min(slashIndex, slashItems.length - 1) ? 'bg-gold/12' : 'hover:bg-white/5'}`}>
                     <span className={`shrink-0 font-mono text-[12px] ${item.type === 'command' ? 'text-goldSoft' : 'text-jade'}`}>/{item.name}</span>
-                    <span className="min-w-0 flex-1 truncate text-[11px] text-ink/70">{t(item.cn)}</span>
+                    <span className="min-w-0 flex-1 truncate text-[11px] text-ink/70">
+                      {item.type === 'skill' && lang === 'en' ? (item.description || t(item.cn)) : t(item.cn)}
+                    </span>
                     <span className={`shrink-0 text-[9px] px-1.5 py-0.5 rounded-full ${item.type === 'command' ? 'text-goldDeep/80 bg-gold/10' : 'text-mute/50 bg-white/[0.05]'}`}>
                       {item.type === 'command' ? t('命令') : t('技能')}
                     </span>

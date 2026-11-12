@@ -1,6 +1,7 @@
 ---
 name: command-injection
 description: 测试命令注入时使用。Use when 目标存在系统命令拼接特征（ping、文件名处理、后台执行功能），或用户提到 CMDi、命令执行 RCE、通配符绕过、PHP disable_functions 绕过时加载。
+description_en: Test OS command injection in ping, file handling, and background job features; includes wildcard tricks, blind OOB checks, and PHP disable_functions bypass.
 ---
 
 # 命令注入 (command-injection)

@@ -1,6 +1,7 @@
 ---
 name: jndi-injection
 description: 测试 JNDI 注入时使用。Use when 用户提到 JNDI、LDAP、RMI、Log4Shell、log4j RCE 时加载。
+description_en: Test JNDI injection through LDAP and RMI lookups, including Log4Shell and log4j-based remote class loading.
 ---
 
 # JNDI注入 (jndi-injection)

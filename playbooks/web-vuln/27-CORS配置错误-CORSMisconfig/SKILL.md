@@ -1,6 +1,7 @@
 ---
 name: cors-misconfig
 description: 测试 CORS 配置时使用。Use when 用户提到 CORS、Origin 反射、Access-Control-Allow-Origin、null origin、跨域读取用户数据时加载。
+description_en: Test CORS policies for origin reflection, null origin trust, and cross-origin reads of user data through Access-Control-Allow-Origin flaws.
 ---
 
 # CORS配置错误 (cors-misconfig)

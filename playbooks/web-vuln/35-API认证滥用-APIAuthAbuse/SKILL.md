@@ -1,6 +1,7 @@
 ---
 name: api-auth-abuse
 description: 测试 API 认证与令牌滥用时使用。Use when 用户提到 API key 滥用、bearer token、头部信任、限流绕过、签名重放时加载。
+description_en: Test API key and bearer token handling for header trust, rate-limit bypass, signature replay, and token misuse.
 ---
 
 # API认证滥用 (api-auth-abuse)

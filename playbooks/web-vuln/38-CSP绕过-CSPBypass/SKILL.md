@@ -1,6 +1,7 @@
 ---
 name: csp-bypass
 description: 被 CSP 拦截时使用。Use when XSS 受 CSP 限制，或用户提到 CSP 绕过、nonce/strict-dynamic、script gadget、base-uri 滥用、CSP 下数据外带时加载。
+description_en: Bypass Content-Security-Policy using nonce and strict-dynamic gaps, script gadgets, base-uri abuse, and CSP-safe data exfiltration.
 ---
 
 # CSP绕过 (csp-bypass)

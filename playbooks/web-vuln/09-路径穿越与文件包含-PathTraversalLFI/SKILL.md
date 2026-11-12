@@ -1,6 +1,7 @@
 ---
 name: path-traversal-lfi
 description: 测试路径穿越与文件包含时使用。Use when 用户提到 LFI、目录穿越、../../、PHP Wrapper（filter/phar）、任意文件读取、LFI→RCE、日志包含时加载。
+description_en: Test path traversal and local file inclusion with ../ sequences and PHP wrappers (filter, phar), including LFI-to-RCE through log poisoning.
 ---
 
 # 路径穿越与文件包含 (path-traversal-lfi)

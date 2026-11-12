@@ -106,6 +106,14 @@ export const prettyTitle = (text) => {
 export const SKILL_SEGMENT_RE = /[ \t]*\[技能\]\s*([\s\S]*?)（playbook\s+([^）]*?)）——\s*请先调用\s*read_playbook\(topic="([^"]*)"\)\s*加载方法论，再严格按手册执行。/g;
 export const buildSkillSegment = (s) => `[技能] ${s.cn}（playbook ${s.id}）—— 请先调用 read_playbook(topic="${s.id}") 加载方法论，再严格按手册执行。`;
 
+// slash 菜单里的技能描述：英文界面优先用 SKILL.md frontmatter 的 descriptionEn，
+// 缺英文（旧手册 / frontmatter 坏）时回退中文 description；zh 界面始终用中文。
+export const skillDescription = (skill, lang) => {
+  const en = String(skill?.descriptionEn || '').trim();
+  if (lang === 'en' && en) return en;
+  return String(skill?.description || '');
+};
+
 export const tidySkillRemoval = (s) => String(s || '')
   .replace(/[ \t]{2,}/g, ' ')
   .replace(/[ \t]+\n/g, '\n')

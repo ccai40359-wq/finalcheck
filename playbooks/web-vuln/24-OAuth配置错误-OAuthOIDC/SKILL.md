@@ -1,6 +1,7 @@
 ---
 name: oauth-oidc
 description: 测试 OAuth/OIDC 配置时使用。Use when 目标接入第三方登录，或用户提到 OAuth、OIDC、redirect_uri 劫持、state 缺失、授权码拦截时加载。
+description_en: Test OAuth and OIDC integrations for redirect_uri hijacking, missing state, authorization-code interception, and misconfigured flows.
 ---
 
 # OAuth配置错误 (oauth-oidc)
