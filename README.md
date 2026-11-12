@@ -1,7 +1,7 @@
 <img src="docs/assets/cover.png" alt="FinalCheck — pre-flight check for code" width="100%">
 
 [![CI](https://github.com/ccai40359-wq/finalcheck/actions/workflows/ci.yml/badge.svg)](https://github.com/ccai40359-wq/finalcheck/actions/workflows/ci.yml)
-![tests](https://img.shields.io/badge/tests-1081%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-1085%20passing-brightgreen)
 ![license](https://img.shields.io/badge/license-Apache--2.0-blue)
 
 **English** · [简体中文](README.zh-CN.md)
