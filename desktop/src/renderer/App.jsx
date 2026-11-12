@@ -9,7 +9,7 @@ import { filterAskCardsByTrace, hideAskTracesForCards } from './lib/ask-cards.mj
 import { applyAgentEvent, mergeTraceIntoEvents } from './chat/ProcessTimeline.jsx';
 import { ArtifactPanel } from './chat/ArtifactPanel.jsx';
 import { SubagentPanel } from './chat/SubagentPanel.jsx';
-import { shouldShowStepPanel } from './lib/panel-visibility.mjs';
+import { shouldShowArtifactPanel, shouldShowStepPanel } from './lib/panel-visibility.mjs';
 // 双语：t() 在英文模式查词典、中文模式原样返回；useLanguage() 只负责切换语言时触发重渲染
 import { t, setLanguage, resolveLanguage } from './i18n/core.mjs';
 import { useLanguage } from './i18n/index.jsx';
@@ -1456,6 +1456,8 @@ export default function App() {
   const chatMessages = hideAskTracesForCards(messages, visibleAskCards);
   // 面板可见性：设置页/切换会话时不渲染（返回聊天也不会自动弹回来，因为状态已被上面的 effect 清空）
   const showStepPanel = shouldShowStepPanel({ view: page, stepView, activeSessionId: activeId });
+  // 产物面板只属于聊天视图；状态不清空，返回聊天后继续显示之前打开的产物
+  const showArtifactPanel = shouldShowArtifactPanel({ view: page, artifact, artifactLoading, artifactError });
   // 用量页自动刷新开关：任一会话正在跑（含后台/工作流）就 5 秒轮询，全部停下即停
   const anyRunning = Object.values(runningIds).some(Boolean);
   const providers = (cfg?.providers || []).filter((p) => p.enabled !== false);
@@ -1545,7 +1547,7 @@ export default function App() {
       </main>
       {showStepPanel ? (
         <SubagentPanel target={stepView} onClose={() => setStepView(null)} />
-      ) : (artifact || artifactLoading || artifactError) && (
+      ) : showArtifactPanel && (
         <ArtifactPanel
           artifact={artifact}
           loading={artifactLoading}
