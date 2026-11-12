@@ -286,12 +286,14 @@ test('permissions: resetLedger 清空三本台账、未决审批按拒绝收尾�
   resetLedger();
   assert.deepEqual(getLedger(), { confirmedHosts: [], confirmedDirs: [], sessionAllows: {} });
   assert.equal(await pr, 'rejected', '重置应把未决审批按拒绝收尾');
-  // 恢复默认 120s：60ms 后应仍在等待而非被短超时拒绝
+  // 恢复默认 120s：等一小段后应仍在等待而非被短超时拒绝。
+  // 用 settled 标志而不是比较 Date.now()，避免 CI 计时器/时钟粒度导致的假失败。
   setApprovalEmitter(() => {});
-  const t0 = Date.now();
   const p2 = requestApproval({ tool: 'run_command', summary: 'echo y' });
-  await new Promise((r) => setTimeout(r, 60));
-  assert.ok(Date.now() - t0 >= 60, '60ms 后应仍在等待（默认 120s 未到）');
+  let settled = false;
+  p2.then(() => { settled = true; });
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(settled, false, '100ms 后应仍在等待（默认 120s 未到）');
   resetLedger(); // 清理：结束该未决请求
   assert.equal(await p2, 'rejected');
 });
