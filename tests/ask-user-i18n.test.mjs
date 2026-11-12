@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { setLanguage } from '../desktop/src/renderer/i18n/core.mjs';
-import { translateAskText } from '../desktop/src/renderer/lib/ask-user-i18n.mjs';
+import { EN_QUESTION_FALLBACK, displayAskText, translateAskText } from '../desktop/src/renderer/lib/ask-user-i18n.mjs';
 
 const repoRoot = path.resolve(import.meta.dirname, '..');
 const CJK = /[\u3400-\u9fff]/;
@@ -54,12 +54,16 @@ test('ask-user i18n: zh 原样返回；en 只替换已知片段，未知中文�
   setLanguage('zh');
 });
 
-test('ask-user i18n: 混合分隔符保留结构（ / 、· ；），不改变排版', () => {
+test('ask-user i18n: 英文界面把中文标点一并收敛（、；：（）），不留中文标点', () => {
   assert.equal(
     translateAskText('安全性 / 数据与隐私 · 供应链与许可证、可维护性；代码可读性', 'en'),
-    'Security / Data & privacy · Supply chain & license、Maintainability；Readability'
+    'Security / Data & privacy · Supply chain & license, Maintainability; Readability'
   );
-  assert.equal(translateAskText('（安全性）', 'en'), '（Security）');
+  assert.equal(translateAskText('（安全性）', 'en'), '(Security)');
+  assert.equal(
+    translateAskText('查什么：基础安全与依赖有没有硬伤', 'en'),
+    'what it checks: basic security and dependency issues'
+  );
 });
 
 test('ask-user i18n: 最长优先——「代码可读性」不会被「可读性」截成「代码Readability」', () => {
@@ -77,18 +81,43 @@ test('ask-user i18n: 档位选项说明的固定短语有英文', () => {
     translateAskText('基础安全与依赖有没有硬伤', 'en'),
     'basic security and dependency issues'
   );
+  assert.equal(
+    translateAskText('L1 底线（个人发布：查基础安全与依赖有没有硬伤）', 'en'),
+    'L1 baseline (personal release: checks basic security and dependency issues)'
+  );
+});
+
+test('ask-user i18n: 审计前置问法（问题 + 选项说明）整句英文化，不靠模型自觉', () => {
+  assert.equal(
+    translateAskText('这次体检要覆盖哪些维度？', 'en'),
+    'Which dimensions should this audit cover?'
+  );
+  assert.equal(
+    translateAskText('本次体检要覆盖哪些维度？', 'en'),
+    'Which dimensions should this audit cover?'
+  );
+  assert.equal(translateAskText('请选择本次体检的档位', 'en'), 'Select the tier for this audit');
+  assert.equal(translateAskText('选择全部 11 维', 'en'), 'Select all 11 dimensions');
+});
+
+test('ask-user i18n: 翻译后仍含中文时问题走英文兜底、描述隐藏，不把中文直接露给英文用户', () => {
+  assert.equal(displayAskText('这次体检要覆盖哪些维度？', 'en'), 'Which dimensions should this audit cover?');
+  assert.equal(displayAskText('完全不认识的自由发挥问题', 'en', EN_QUESTION_FALLBACK), EN_QUESTION_FALLBACK);
+  assert.equal(displayAskText('完全不认识的自由发挥描述', 'en'), '');
+  assert.equal(displayAskText('完全不认识的自由发挥问题', 'zh', EN_QUESTION_FALLBACK), '完全不认识的自由发挥问题');
+  assert.equal(displayAskText('Security', 'en'), 'Security');
 });
 
 test('ask-user i18n: AskUserCard 显示走 translateAskText，提交仍用原始 label', () => {
   const src = readFileSync(path.join(repoRoot, 'desktop/src/renderer/components/AskUserCard.jsx'), 'utf8');
-  assert.match(src, /import \{ translateAskText \} from '\.\.\/lib\/ask-user-i18n\.mjs';/);
+  assert.match(src, /import \{ EN_QUESTION_FALLBACK, displayAskText, translateAskText \} from '\.\.\/lib\/ask-user-i18n\.mjs';/);
   assert.match(src, /import \{ useLanguage \} from '\.\.\/i18n\/index\.jsx';/);
   assert.match(src, /const lang = useLanguage\(\)/);
 
-  // 显示文本：问题 / 标签 / 描述 / 结果行
-  assert.match(src, /\{translateAskText\(data\.question, lang\)\}/);
+  // 显示文本：问题走英文兜底，标签/描述/结果行走翻译
+  assert.match(src, /\{displayAskText\(data\.question, lang, EN_QUESTION_FALLBACK\)\}/);
   assert.match(src, /\{translateAskText\(label, lang\)\}/);
-  assert.match(src, /\{translateAskText\(opt\.description, lang\)\}/);
+  assert.match(src, /\{displayAskText\(opt\.description, lang\)\}/);
   assert.match(src, /translateAskText\(payload\.answer, lang\)/);
 
   // 交互与提交必须仍用原始 label（主进程按原文匹配）
@@ -108,7 +137,7 @@ test('ask-user i18n: agent-service 审计前置问法含英文维度名与英文
     assert.ok(src.includes(`${zh} (${en})`), `系统提示缺少英文维度名：${zh} (${en})`);
   }
   assert.ok(
-    src.includes('If the UI/user language is English, write ask_user option labels and descriptions in English.'),
+    src.includes('If the UI/user language is English, write the ask_user question, option labels, and descriptions in English.'),
     '系统提示缺少英文选项指令'
   );
 });

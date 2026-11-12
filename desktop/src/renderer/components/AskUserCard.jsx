@@ -4,7 +4,7 @@
 import React, { useEffect, useState } from 'react';
 import { t } from '../i18n/core.mjs';
 import { useLanguage } from '../i18n/index.jsx';
-import { translateAskText } from '../lib/ask-user-i18n.mjs';
+import { EN_QUESTION_FALLBACK, displayAskText, translateAskText } from '../lib/ask-user-i18n.mjs';
 
 const STATUS_DONE = new Set(['answered', 'cancelled', 'expired', 'rejected']);
 
@@ -92,7 +92,7 @@ export default function AskUserCard({ payload, onSubmit = null }) {
         {status === 'pending' ? <span className="ml-auto text-[10px] text-mute/45">{t('回答后本回合继续')}</span> : null}
       </div>
 
-      <div className="mt-2 text-sm leading-relaxed text-ink/95 break-words whitespace-pre-wrap">{translateAskText(data.question, lang)}</div>
+      <div className="mt-2 text-sm leading-relaxed text-ink/95 break-words whitespace-pre-wrap">{displayAskText(data.question, lang, EN_QUESTION_FALLBACK)}</div>
 
       {status === 'pending' ? (
         <>
@@ -112,7 +112,7 @@ export default function AskUserCard({ payload, onSubmit = null }) {
                       ) : null}
                       <span className={`font-medium ${active ? 'text-goldSoft' : 'text-ink/90'}`}>{translateAskText(label, lang)}</span>
                     </div>
-                    {opt?.description ? <div className="mt-0.5 pl-0.5 text-[11px] leading-relaxed text-mute/65">{translateAskText(opt.description, lang)}</div> : null}
+                    {opt?.description ? <div className="mt-0.5 pl-0.5 text-[11px] leading-relaxed text-mute/65">{displayAskText(opt.description, lang)}</div> : null}
                   </button>
                 );
               })}
