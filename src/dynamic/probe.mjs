@@ -133,8 +133,30 @@ function clampRequests(value) {
   return Math.min(20, Math.max(3, Math.trunc(n)));
 }
 
+// 探测路径都是 origin 级的 /api/...：带前缀路径的输入（如 https://host/app）若直接拼接会全部打到
+// /app/api/... 导致 7/7 404。这里把基址归一到 origin，并显式返回被丢弃的路径，不静默改变语义。
+function resolveProbeBase(rawUrl) {
+  const raw = String(rawUrl ?? '');
+  const stripped = raw.replace(/\/+$/, '');
+  try {
+    const u = new URL(raw);
+    // 非 http/https 保持原逻辑（交给 fetch 自然失败），不在此抛错；也不做 origin 归一
+    if (!/^https?:$/.test(u.protocol)) return { base: stripped, basePathDropped: false, warning: '' };
+    const pathname = u.pathname || '/';
+    const dropped = pathname !== '/';
+    return {
+      base: u.origin,
+      basePathDropped: dropped,
+      warning: dropped ? `输入 URL 的路径 ${pathname} 已丢弃，探测按 origin 执行` : ''
+    };
+  } catch {
+    // 无协议 / 非法 URL：沿用旧的去尾斜杠基址，后续请求照旧逐个失败
+    return { base: stripped, basePathDropped: false, warning: '' };
+  }
+}
+
 export async function probeTarget(baseUrl, { requests = 10 } = {}) {
-  const base = baseUrl.replace(/\/+$/, '');
+  const { base, basePathDropped, warning } = resolveProbeBase(baseUrl);
   const sampleCount = clampRequests(requests);
   // 先取首页正文当 SPA 兜底的比对基线（失败不影响后续探测）
   let homeBody = '';
@@ -188,5 +210,5 @@ export async function probeTarget(baseUrl, { requests = 10 } = {}) {
   } else {
     results.push({ kind: 'security-headers', missing: [], error: headerError?.message || 'unreachable' });
   }
-  return { target: base, results, samples: samples.length, latency: latencyStats(samples) };
+  return { target: base, basePathDropped, warning, results, samples: samples.length, latency: latencyStats(samples) };
 }

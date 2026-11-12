@@ -53,6 +53,33 @@ export function sanitizeS3Excludes(excludes = []) {
 // 只对命中了密钥规则的这类文件做「未入库但落盘」提示；普通测试源码不在此列。
 const CONFIG_CANDIDATE_RE = /(?:^|[./])(?:config|settings|secrets?|credentials?|keys?|providers?)\.(?:json|json5|ya?ml|toml|ini|conf|cfg|js|mjs|cjs|ts|tsx)$/i;
 
+// S3.env-tracked 的排除口径：示例/模板文件即使被提交，也只是供人复制的样板，不是密钥。
+// 只按文件名后缀认（.env.example / .env.sample / .env.template / .env.dist /
+// .env.example.local / .env.production.example …）；真正的 .env / .env.local /
+// .env.production 不在此列，避免把真实配置一起放过。
+const ENV_TEMPLATE_NAME_RE = /\.(?:example|sample|template|tmpl|dist)(?:\.[^/\\]+)*$/i;
+
+function isEnvTemplatePath(file) {
+  const name = String(file || '').replace(/\\/g, '/').split('/').pop() || '';
+  return ENV_TEMPLATE_NAME_RE.test(name);
+}
+
+// 被 git 跟踪的 .env 类文件是否算「已提交密钥」：
+//   1) 示例/模板名 → 不算；
+//   2) 用 `git check-ignore -v --no-index` 复核忽略规则（tracked 路径默认不参与 check-ignore，
+//      必须 --no-index 才按 .gitignore 判定）：命中普通规则 = 本应被忽略（多为 -f 误加）→ 跳过；
+//      命中以 `!` 开头的否定规则 = 明确不忽略 → 仍按事故处理。
+// git 异常 / 未命中任何规则 → 保守按已提交处理。
+async function isCommittedEnvSecret(projectDir, file) {
+  if (isEnvTemplatePath(file)) return false;
+  const ci = await runProcess('git', ['-C', projectDir, 'check-ignore', '-v', '--no-index', '--', file], { timeoutMs: 10000 });
+  if (ci.status !== 0) return true;
+  const first = String(ci.stdout || '').split('\t')[0];
+  const m = first.match(/^(.*?):(\d+):(.*)$/s);
+  if (m && m[3].startsWith('!')) return true; // 否定规则：不忽略
+  return false; // 普通忽略规则命中：本机文件，不算已提交密钥
+}
+
 async function applyUntrackedConfigHints(projectDir, findings, warnings) {
   const configFiles = [...new Set(findings.map((f) => f.file).filter((f) => CONFIG_CANDIDATE_RE.test(String(f || ''))))];
   if (!configFiles.length) return findings;
@@ -127,10 +154,16 @@ export async function checkSecrets(projectDir, { excludes = [], includeFixtures 
     }
   }
   // .env 类文件被 git 追踪 = 事故（P2#12：覆盖 *.env*，git 缺失要上报）
-  const git = await runProcess('git', ['-C', projectDir, 'ls-files', '*.env*'], { timeoutMs: 10000 });
-  if (git.status === 0 && git.stdout && git.stdout.trim()) {
-    for (const f of git.stdout.trim().split('\n').slice(0, 5)) {
-      findings.push({ checkId: 'S3', severity: 'high', force: 'card', file: f.trim(), line: 0, rule: 'S3.env-tracked', snippet: `${f.trim()} 在 git 追踪列表中`, message: '.env 类文件已提交进仓库', source: 'program' });
+  // 示例/模板（.env.example 等）和被忽略的文件不算已提交密钥，只影响 S3.env-tracked。
+  const git = await runProcess('git', ['-C', projectDir, 'ls-files', '-z', '*.env*'], { timeoutMs: 10000 });
+  if (git.status === 0) {
+    const trackedEnv = String(git.stdout || '').split('\0').map((x) => x.trim()).filter(Boolean);
+    const committed = [];
+    for (const f of trackedEnv) {
+      if (await isCommittedEnvSecret(projectDir, f)) committed.push(f);
+    }
+    for (const f of committed.slice(0, 5)) {
+      findings.push({ checkId: 'S3', severity: 'high', force: 'card', file: f, line: 0, rule: 'S3.env-tracked', snippet: `${f} 在 git 追踪列表中`, message: '.env 类文件已提交进仓库', source: 'program' });
     }
   } else if (git.status === null) {
     warnings.push('git 不可用，.env 追踪检查未跑');

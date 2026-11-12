@@ -51,7 +51,7 @@
     {
       "rule": "S3.history-secret-literal",
       "file": "tests/agent-tools.test.mjs",
-      "line": 193,
+      "line": 195,
       "hash": "94bc3ec8a771c6dc350fff5f176c415778c5e478c276788d4badc41f782fcafc",
       "reason": "测试用合成密钥/夹具，不是真实凭据（历史提交中的同一行仍为合成值）",
       "expires": "2027-01-01"
@@ -107,7 +107,7 @@
     {
       "rule": "S3.secret-literal",
       "file": "tests/profile.test.mjs",
-      "line": 232,
+      "line": 242,
       "hash": "c816f20f3082151b9132a1169e59ea6cad4f477f5a804da12c7a010492c2623a",
       "reason": "测试用合成密钥/夹具，不是真实凭据",
       "expires": "2027-01-01"
@@ -131,7 +131,7 @@
     {
       "rule": "S3.secret-literal",
       "file": "tests/scan-prune.test.mjs",
-      "line": 83,
+      "line": 82,
       "hash": "52b6282ad356dbf27fb8a70fe5a02ac8c669239b759228b449344c1c70e123cf",
       "reason": "测试用合成密钥/夹具，不是真实凭据",
       "expires": "2027-01-01"
@@ -139,33 +139,9 @@
     {
       "rule": "S3.secret-literal",
       "file": "tests/verdict.test.mjs",
-      "line": 147,
+      "line": 157,
       "hash": "f82e50a54b7ed9f4017addf321cb8f7cf79c35d686085896e07ed3ba9aadff38",
       "reason": "测试用合成密钥/夹具，不是真实凭据",
-      "expires": "2027-01-01"
-    },
-    {
-      "rule": "S3.secret-value",
-      "file": "tmp-redteam/probe2.mjs",
-      "line": 24,
-      "hash": "ba3d5256b28d1fee9b1ff7c7ddffd876c034c8d49fc5e6953ab46ae3faa14aeb",
-      "reason": "红队临时脚本中的合成 payload，不是真实凭据",
-      "expires": "2027-01-01"
-    },
-    {
-      "rule": "S3.secret-literal",
-      "file": "tmp-redteam/sqlresidue.mjs",
-      "line": 15,
-      "hash": "354e9a65c56c042f70df99aaa9cb55dcd8b67e7967cae5cbf8afab928671e599",
-      "reason": "红队临时脚本中的合成 payload，不是真实凭据",
-      "expires": "2027-01-01"
-    },
-    {
-      "rule": "S3.secret-literal",
-      "file": "tmp-redteam/sqlresidue2.mjs",
-      "line": 13,
-      "hash": "354e9a65c56c042f70df99aaa9cb55dcd8b67e7967cae5cbf8afab928671e599",
-      "reason": "红队临时脚本中的合成 payload，不是真实凭据",
       "expires": "2027-01-01"
     }
   ]

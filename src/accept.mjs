@@ -4,10 +4,12 @@ import path from 'node:path';
 
 // 可审计的误报豁免（.finalcheck/accept.json）。
 // 设计约束：
-//   1) 只认 rule + file + line + 行内容指纹（sha256）四项全部一致才生效；
-//   2) 文件里那一行改过（哪怕只改一个字符）指纹就变，豁免立即失效并重新报警；
-//   3) 条目必须写 reason 与 expires，过期自动失效；
-//   4) 生效/失效都进 warnings（报告里可见），绝不静默吞掉。
+//   1) 以 rule + file + 行内容指纹（sha256）为锚点，声明 line 只是提示位；
+//   2) 声明 line 与指纹不符时扫描整个文件：唯一命中则按实际行豁免并警告“行已移动”，
+//      多行同指纹视为歧义，fail closed（不豁免，继续报警）；全文件找不到指纹也不豁免；
+//   3) 文件里那一行改过（哪怕只改一个字符）指纹就变，且文件里已找不到原指纹，豁免立即失效并重新报警；
+//   4) 条目必须写 reason 与 expires，过期自动失效；文件不存在/读不到一律 fail closed；
+//   5) 生效/失效都进 warnings（报告里可见），绝不静默吞掉。
 export const ACCEPT_FILE = '.finalcheck/accept.json';
 
 const RULE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{1,80}$/;
@@ -23,7 +25,7 @@ export function lineFingerprint(line) {
   return createHash('sha256').update(String(line ?? '').replace(/\r$/, '')).digest('hex');
 }
 
-async function lineAt(projectDir, rel, line) {
+async function readProjectLines(projectDir, rel) {
   const file = path.resolve(projectDir, normalizeRel(rel));
   const root = path.resolve(projectDir);
   // 只允许读项目内文件；绝对路径/.. 逃逸直接不匹配（fail closed）。
@@ -31,10 +33,29 @@ async function lineAt(projectDir, rel, line) {
   if (within.startsWith('..') || path.isAbsolute(within)) return null;
   let text;
   try { text = await readFile(file, 'utf8'); } catch { return null; }
-  const lines = text.split('\n');
-  const n = Number(line);
-  if (!Number.isInteger(n) || n < 1 || n > lines.length) return null;
-  return lines[n - 1];
+  return text.split('\n');
+}
+
+// 指纹优先定位：声明行指纹一致即命中；否则全文件扫描该指纹。
+// 返回 { ok: true, line, moved } 或 { ok: false, kind }。
+async function resolveEntryLine(projectDir, entry, lineCache) {
+  if (!lineCache.has(entry.file)) lineCache.set(entry.file, readProjectLines(projectDir, entry.file));
+  const lines = await lineCache.get(entry.file);
+  if (!lines) return { ok: false, kind: 'file-missing' };
+  const declared = Number(entry.line);
+  if (
+    Number.isInteger(declared) && declared >= 1 && declared <= lines.length &&
+    lineFingerprint(lines[declared - 1]) === entry.hash
+  ) {
+    return { ok: true, line: declared, moved: false };
+  }
+  const matches = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (lineFingerprint(lines[i]) === entry.hash) matches.push(i + 1);
+  }
+  if (matches.length === 1) return { ok: true, line: matches[0], moved: true };
+  if (matches.length > 1) return { ok: false, kind: 'ambiguous', matches };
+  return { ok: false, kind: 'hash-changed' };
 }
 
 function parseExpiry(value) {
@@ -87,46 +108,71 @@ async function loadAcceptConfig(projectDir) {
 }
 
 // findings 进来，被豁免的移出 findings，并返回可审计清单。
+// 匹配顺序：rule+file 候选 → 按指纹定位实际行 → 与实际行号比对；
+// 声明行漂移但指纹唯一时仍豁免，accepted 用实际行号并保留 declaredLine。
 // 不修改原对象；有效期按 UTC 当日 23:59:59 截止。
 export async function applyAcceptances(projectDir, findings, { now = new Date() } = {}) {
   const { entries, warnings } = await loadAcceptConfig(projectDir);
   if (!entries.length) return { findings: findings.slice(), accepted: [], warnings };
   const nowMs = now instanceof Date ? now.getTime() : Date.parse(String(now));
+  const lineCache = new Map();
+  const resolved = new Map();
+  const warned = new Set();
   const accepted = [];
   const out = [];
+
+  const warnOnce = (key, message) => {
+    if (warned.has(key)) return;
+    warned.add(key);
+    warnings.push(message);
+  };
+  const resolve = (entry) => {
+    if (!resolved.has(entry)) resolved.set(entry, resolveEntryLine(projectDir, entry, lineCache));
+    return resolved.get(entry);
+  };
+
   for (const f of findings) {
     const file = normalizeRel(f.file);
     const line = Number(f.line);
-    const entry = entries.find((e) => e.rule === f.rule && e.file === file && e.line === line);
-    if (!entry) { out.push(f); continue; }
-    if (nowMs > entry.expiresMs) {
-      warnings.push(`豁免已过期（${entry.expires}）：${file}:${line} ${entry.rule} 重新计入发现`);
-      out.push(f);
-      continue;
+    const candidates = entries.filter((e) => e.rule === f.rule && e.file === file);
+    let exempted = false;
+    for (const entry of candidates) {
+      const key = `${entry.rule}|${entry.file}|${entry.line}|${entry.hash}`;
+      if (nowMs > entry.expiresMs) {
+        warnOnce(`${key}|expired`, `豁免已过期（${entry.expires}）：${file}:${entry.line} ${entry.rule} 重新计入发现`);
+        continue;
+      }
+      const location = await resolve(entry);
+      if (!location.ok) {
+        if (location.kind === 'file-missing') {
+          warnOnce(`${key}|missing`, `豁免未生效（读不到 ${entry.file}:${entry.line}）：${entry.rule} 重新计入发现`);
+        } else if (location.kind === 'ambiguous') {
+          warnOnce(`${key}|ambiguous`, `豁免未生效（${entry.file} 中有 ${location.matches.length} 行同指纹（第 ${location.matches.join('、')} 行），无法唯一定位）：${entry.rule} 重新计入发现（fail closed）`);
+        } else {
+          warnOnce(`${key}|changed`, `豁免未生效（${entry.file}:${entry.line} 行内容已变）：${entry.rule} 重新计入发现`);
+        }
+        continue;
+      }
+      if (location.line !== line) continue;
+      exempted = true;
+      if (location.moved) {
+        warnOnce(`${key}|moved`, `豁免行已移动：${entry.file}:${entry.line} → ${location.line}（${entry.rule}）`);
+      }
+      accepted.push({
+        checkId: f.checkId,
+        rule: entry.rule,
+        file: entry.file,
+        line: location.line,
+        declaredLine: entry.line,
+        reason: entry.reason,
+        expires: entry.expires,
+        hash: entry.hash,
+        severity: f.severity,
+      });
+      warnings.push(`已豁免：${file}:${location.line} ${entry.rule}（理由：${entry.reason}；到期 ${entry.expires}${location.moved ? `；声明行 ${entry.line}` : ''}）`);
+      break;
     }
-    const actualLine = await lineAt(projectDir, file, line);
-    if (actualLine == null) {
-      warnings.push(`豁免未生效（读不到 ${file}:${line}）：${entry.rule} 重新计入发现`);
-      out.push(f);
-      continue;
-    }
-    const actualHash = lineFingerprint(actualLine);
-    if (actualHash !== entry.hash) {
-      warnings.push(`豁免未生效（${file}:${line} 行内容已变）：${entry.rule} 重新计入发现`);
-      out.push(f);
-      continue;
-    }
-    accepted.push({
-      checkId: f.checkId,
-      rule: entry.rule,
-      file: entry.file,
-      line: entry.line,
-      reason: entry.reason,
-      expires: entry.expires,
-      hash: entry.hash,
-      severity: f.severity,
-    });
-    warnings.push(`已豁免：${file}:${line} ${entry.rule}（理由：${entry.reason}；到期 ${entry.expires}）`);
+    if (!exempted) out.push(f);
   }
   return { findings: out, accepted, warnings };
 }

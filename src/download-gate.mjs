@@ -10,6 +10,7 @@ import { listTextFiles, readRel, prunedWarning } from './walk.mjs';
 const REQUEST_CAP = 200;          // 单次扫描的总 registry 请求上限
 const FETCH_TIMEOUT_MS = 15000;   // 全部 fetch 15s 超时
 const MAX_DEPTH = 2;              // 直接依赖=层1，其依赖=层2（"直接依赖+2 层内"，registry 递归限深 2）
+const MAX_NESTED_PACKAGE_JSON = 50; // monorepo 嵌套 package.json 枚举上限（根单独处理，不受此限）
 const INSTALL_SCRIPTS = ['preinstall', 'install', 'postinstall'];
 // 白名单=注册域名级：精确等于或以其为后缀（.子域）才豁免；
 // 子串匹配会被 evilnpmjs.example / not-github.com 这类仿冒主机绕过（P1#7）
@@ -402,6 +403,60 @@ async function effectiveExcludes(projectDir, excludes) {
   return [...new Set([...fromCfg, ...(Array.isArray(excludes) ? excludes.map(String) : [])])];
 }
 
+// monorepo 覆盖：枚举根以外的所有 package.json。
+// 复用 listTextFiles 的排除口径：node_modules/.git/隐藏目录(.tmp)、build/release/out/dist 等产物、
+// fixtures 默认豁免，以及 effectiveExcludes（含 finalcheck.config.json 的 exclude）。
+async function listNestedPackageJsons(projectDir, excludes) {
+  const { files } = await listTextFiles(projectDir, excludes);
+  return files
+    .map((f) => path.relative(projectDir, f).replace(/\\/g, '/'))
+    .filter((rel) => path.posix.basename(rel).toLowerCase() === 'package.json' && rel.toLowerCase() !== 'package.json');
+}
+
+// 嵌套包只做本地安装脚本检查（X1）：不复制根的网络图，避免 REQUEST_CAP 被 workspace 数量放大；
+// X3 的网络覆盖范围在 warnings 里明示。解析失败不静默跳过。
+async function scanNestedPackageLifecycle(projectDir, excludes, warnings) {
+  const all = await listNestedPackageJsons(projectDir, excludes);
+  const checked = all.slice(0, MAX_NESTED_PACKAGE_JSON);
+  const findings = [];
+  const failed = [];
+  for (const rel of checked) {
+    let pkg;
+    try { pkg = JSON.parse(await readFile(path.join(projectDir, rel), 'utf8')); } catch { failed.push(rel); continue; }
+    if (!pkg || typeof pkg !== 'object' || Array.isArray(pkg)) { failed.push(rel); continue; }
+    const dirName = path.posix.dirname(rel);
+    const name = typeof pkg.name === 'string' && pkg.name.trim() ? pkg.name.trim() : (dirName === '.' ? rel : dirName);
+    findings.push(...lifecycleFindings(pkg.scripts, {
+      name,
+      version: typeof pkg.version === 'string' ? pkg.version : '',
+      file: rel,
+    }));
+  }
+  if (checked.length) {
+    warnings.push(`枚举到 ${checked.length} 个嵌套 package.json，安装脚本（X1）已检查 ${checked.length - failed.length} 个；嵌套包的 dependencies/devDependencies 未做 registry 网络图验证（X3 仅覆盖根 package.json 依赖树）`);
+  }
+  if (all.length > checked.length) {
+    warnings.push(`嵌套 package.json 超过上限 ${MAX_NESTED_PACKAGE_JSON}，另有 ${all.length - checked.length} 个未检查（X1 覆盖不全）`);
+  }
+  if (failed.length) {
+    warnings.push(`嵌套 package.json 解析失败 ${failed.length} 个，X1 未检查：${failed.slice(0, 3).join('、')}${failed.length > 3 ? '…' : ''}`);
+  }
+  return findings;
+}
+
+// 同一 file+rule+package 只报一次；根包图与嵌套枚举可能重复命中，X2/X4 自带去重口径，不改动。
+function dedupeGateFindings(findings) {
+  const seen = new Set();
+  return findings.filter((f) => {
+    if (f.checkId !== 'X1' && f.checkId !== 'X3') return true;
+    const m = /^(@[\w.-]+\/[\w.-]+|[\w.-]+)@([^\s：]+)/.exec(f.snippet || '');
+    const key = `${f.file}|${f.rule}|${m ? `${m[1]}@${m[2]}` : ''}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 // 全项目扫描：X1+X3（本地根 + registry 依赖树）+ X2 + X4
 // 返回 { findings, warnings, coverageGap }，finding 形状同其他 checks
 export async function scanDownload(projectDir, { excludes = [] } = {}) {
@@ -435,6 +490,9 @@ export async function scanDownload(projectDir, { excludes = [] } = {}) {
     findings.push(...collectGraphFindings(nodes, name));
   }
 
+  // monorepo：根以外的 workspace/desktop 包至少做本地安装脚本检查（X1），网络图仍只对根跑
+  findings.push(...await scanNestedPackageLifecycle(projectDir, ex, warnings));
+
   finalizeNet(net, findings, warnings);
   const x2 = await scanExternalHosts(projectDir, ex);
   findings.push(...x2.findings);
@@ -442,7 +500,11 @@ export async function scanDownload(projectDir, { excludes = [] } = {}) {
   if (pw) warnings.push(pw);
   if (x2.skipped?.length) warnings.push(`X2 跳过大文件 ${x2.skipped.length} 个（>512KB 未扫描，外呼清单可能不全）`);
   findings.push(...await scanReadmeInjection(projectDir, ex));
-  return { findings, warnings, coverageGap: netGap(net) || (!rootPkg ? '没有有效 package.json，项目依赖未验证' : null) };
+  return {
+    findings: dedupeGateFindings(findings),
+    warnings,
+    coverageGap: netGap(net) || (!rootPkg ? '没有有效 package.json，项目依赖未验证' : null),
+  };
 }
 
 // 单包扫描（hook 用）：目标包本身 + 其依赖 2 层的 X1+X3，按请求版本/范围解析

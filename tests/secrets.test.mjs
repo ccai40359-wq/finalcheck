@@ -1,9 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import os from 'node:os';
 import path from 'node:path';
 import { checkSecrets } from '../src/checks/secrets.mjs';
+
+const execFileAsync = promisify(execFile);
 
 // 运行时拼接：测试源码本身不该长得像一枚真密钥（避免被仓库自己的扫描器/钩子误报）
 const LITERAL = 'sk_' + 'live_' + '9f2Kq8LmN3pR7sT1';
@@ -16,6 +20,15 @@ async function fixture(files) {
     await mkdir(path.dirname(p), { recursive: true });
     await writeFile(p, content);
   }
+  return dir;
+}
+
+// 建一个真实 git 仓库夹具：S3.env-tracked 依赖 git ls-files / check-ignore，纯目录不够。
+async function gitFixture(files, { add = [], forceAdd = [] } = {}) {
+  const dir = await fixture(files);
+  await execFileAsync('git', ['init', '-q', dir]);
+  if (add.length) await execFileAsync('git', ['-C', dir, 'add', '--', ...add]);
+  if (forceAdd.length) await execFileAsync('git', ['-C', dir, 'add', '-f', '--', ...forceAdd]);
   return dir;
 }
 const secretRules = (out) => out.findings.filter((f) => /^S3\.(secret|weak)/.test(f.rule));
@@ -92,4 +105,49 @@ test('S3: finalcheck:allow 行内豁免仍然有效', async (t) => {
   t.after(() => rm(dir, { recursive: true, force: true }));
   const out = await checkSecrets(dir);
   assert.deepEqual(secretRules(out).map((f) => f.rule), []);
+});
+
+test('S3: tracked 的示例/模板/被忽略的 .env 不算已提交密钥，真正的 .env 仍报', async (t) => {
+  const dir = await gitFixture({
+    '.gitignore': [
+      '.env.example*',
+      '.env.sample*',
+      '.env.template*',
+      '.env.local',
+      '!.env.example',
+      '!.env.sample',
+      '',
+    ].join('\n'),
+    '.env': 'API_KEY=changeme\n',
+    '.env.production': 'API_KEY=changeme\n',
+    '.env.example': 'API_KEY=your-key-here\n',
+    '.env.sample': 'API_KEY=your-key-here\n',
+    '.env.dist': 'API_KEY=your-key-here\n',
+    '.env.template': 'API_KEY=your-key-here\n',
+    '.env.local': 'API_KEY=changeme\n',
+  }, {
+    add: ['.env', '.env.production', '.env.example', '.env.sample', '.env.dist'],
+    forceAdd: ['.env.template', '.env.local'], // 被 .gitignore 命中但仍被 -f 入库
+  });
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const out = await checkSecrets(dir);
+  const tracked = out.findings.filter((f) => f.rule === 'S3.env-tracked');
+  assert.deepEqual(tracked.map((f) => f.file).sort(), ['.env', '.env.production'], '只有真正的 .env / .env.production 算事故');
+  assert.ok(tracked.every((f) => f.severity === 'high' && f.force === 'card'), '已提交密钥仍是硬卡');
+  for (const file of ['.env.example', '.env.sample', '.env.dist', '.env.template', '.env.local']) {
+    assert.ok(!tracked.some((f) => f.file === file), `${file} 不应报 S3.env-tracked`);
+  }
+});
+
+test('S3: 未被 git 跟踪的 .env 不因 tracked 规则报', async (t) => {
+  const dir = await gitFixture({
+    '.gitignore': '.env*\n',
+    '.env': 'API_KEY=changeme\n',
+    '.env.local': 'API_KEY=changeme\n',
+    'app.js': 'const answer = 42;\n',
+  }, { add: ['.gitignore', 'app.js'] });
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const out = await checkSecrets(dir);
+  assert.deepEqual(out.findings.filter((f) => f.rule === 'S3.env-tracked').map((f) => f.file), [], 'untracked .env 不应命中 tracked 规则');
+  assert.deepEqual(out.findings.filter((f) => f.file === '.env'), [], 'untracked .env 也不该被内容规则扫描');
 });

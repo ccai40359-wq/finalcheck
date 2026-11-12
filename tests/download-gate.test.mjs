@@ -69,6 +69,88 @@ test('X1: clean package without lifecycle scripts has zero X1 hits', async () =>
   assert.deepEqual(byRule(r.findings, 'X1.lifecycle-script'), []);
 });
 
+test('X1: nested desktop/package.json postinstall is reported while the root stays clean (monorepo coverage)', async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'fc-x1-monorepo-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  await mkdir(path.join(dir, 'desktop'), { recursive: true });
+  await writeFile(path.join(dir, 'package.json'), JSON.stringify({
+    name: 'monorepo-root', version: '1.0.0', private: true, scripts: { test: 'node --test' },
+  }));
+  await writeFile(path.join(dir, 'desktop', 'package.json'), JSON.stringify({
+    name: 'monorepo-desktop', version: '0.1.0', scripts: { postinstall: 'node scripts/ensure-binding.mjs' },
+  }));
+
+  const out = await scanDownload(dir);
+  const hits = byRule(out.findings, 'X1.lifecycle-script');
+  assert.equal(hits.length, 1, 'root 无 postinstall，desktop 的 postinstall 必须被报出');
+  assert.equal(hits[0].file, 'desktop/package.json');
+  assert.ok(hits[0].snippet.includes('monorepo-desktop@0.1.0 postinstall'));
+  assert.ok(out.warnings.some((w) => w.includes('嵌套 package.json') && w.includes('X3')),
+    '嵌套包只做本地 X1、X3 网络图仅覆盖根，范围必须在 warnings 明示');
+});
+
+test('X1: package.json inside node_modules is not enumerated', async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'fc-x1-node-modules-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  await writeFile(path.join(dir, 'package.json'), JSON.stringify({ name: 'nm-root', version: '1.0.0' }));
+  await mkdir(path.join(dir, 'node_modules', 'evil-pkg'), { recursive: true });
+  await writeFile(path.join(dir, 'node_modules', 'evil-pkg', 'package.json'), JSON.stringify({
+    name: 'evil-pkg', version: '1.0.0', scripts: { postinstall: 'node payload.js' },
+  }));
+
+  const out = await scanDownload(dir);
+  assert.deepEqual(byRule(out.findings, 'X1.lifecycle-script'), [], 'node_modules 内的第三方包脚本不属于本项目源码');
+});
+
+test('X1: finalcheck.config.json exclude keeps nested package.json out of the scan', async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'fc-x1-exclude-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  await writeFile(path.join(dir, 'package.json'), JSON.stringify({ name: 'ex-root', version: '1.0.0' }));
+  await mkdir(path.join(dir, 'desktop'), { recursive: true });
+  await writeFile(path.join(dir, 'desktop', 'package.json'), JSON.stringify({
+    name: 'ex-desktop', version: '0.1.0', scripts: { postinstall: 'node setup.js' },
+  }));
+  await writeFile(path.join(dir, 'finalcheck.config.json'), JSON.stringify({ exclude: ['desktop'] }));
+
+  const out = await scanDownload(dir);
+  assert.deepEqual(byRule(out.findings, 'X1.lifecycle-script'), []);
+  assert.ok(!out.findings.some((f) => f.file.startsWith('desktop/')), 'exclude 的目录不该产生任何 finding');
+});
+
+test('X1: flat root package behavior is unchanged (no nested-package warning)', async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'fc-x1-flat-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  await writeFile(path.join(dir, 'package.json'), JSON.stringify({
+    name: 'flat-root', version: '1.0.0', scripts: { postinstall: 'node install.js' },
+  }));
+
+  const out = await scanDownload(dir);
+  const hits = byRule(out.findings, 'X1.lifecycle-script');
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].file, 'package.json');
+  assert.ok(!out.warnings.some((w) => w.includes('嵌套 package.json')),
+    '没有嵌套包时不应新增范围 warning，根单独行为保持不变');
+});
+
+test('X1: nested package.json enumeration is capped at 50 with an explicit warning', async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'fc-x1-cap-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  await writeFile(path.join(dir, 'package.json'), JSON.stringify({ name: 'cap-root', version: '1.0.0' }));
+  for (let i = 0; i <= 50; i++) {
+    const sub = `pkg-${String(i).padStart(3, '0')}`;
+    await mkdir(path.join(dir, sub), { recursive: true });
+    await writeFile(path.join(dir, sub, 'package.json'), JSON.stringify({
+      name: `cap-${sub}`, version: '1.0.0',
+      scripts: i === 50 ? { postinstall: 'node late.js' } : {},
+    }));
+  }
+
+  const out = await scanDownload(dir);
+  assert.deepEqual(byRule(out.findings, 'X1.lifecycle-script'), [], '第 51 个嵌套包超出上限，不检查');
+  assert.ok(out.warnings.some((w) => w.includes('超过上限 50') && w.includes('1 个未检查')),
+    '上限截断必须显式警告，不能静默漏检');
+});
+
 /* ---------- X4 README 注入 ---------- */
 
 test('X4: prompt-injection phrases in README are flagged medium with line numbers', async () => {

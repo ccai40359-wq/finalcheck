@@ -79,6 +79,60 @@ test('probe: SPA 兜底页（任何路径 200 + index.html）不再假阳', asyn
   assert.match(get('/api/orders').note, /302/);
 });
 
+test('probe: 带路径 URL 归一到 origin，丢弃路径显式标记', async (t) => {
+  const http = await import('node:http');
+  const seen = [];
+  const srv = http.createServer((req, res) => {
+    const url = req.url || '';
+    seen.push(url);
+    if (url === '/') {
+      res.writeHead(200, { 'content-type': 'text/html' });
+      res.end('<!doctype html><html><body>home</body></html>');
+      return;
+    }
+    if (url === '/api/users') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"users":[{"id":1}]}');
+      return;
+    }
+    res.writeHead(404, { 'content-type': 'text/plain' });
+    res.end('nf');
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  t.after(() => new Promise((r) => srv.close(r)));
+  const origin = 'http://127.0.0.1:' + srv.address().port;
+
+  const out = await probeTarget(origin + '/app', { requests: 3 });
+  assert.equal(out.target, origin, '探测基址应归一到 origin');
+  assert.equal(out.basePathDropped, true);
+  assert.match(out.warning, /\/app/);
+  assert.match(out.warning, /已丢弃/);
+  const users = out.results.find((r) => r.path === '/api/users');
+  assert.equal(users.status, 200, '应请求 origin + /api/users，而不是 /app/api/users');
+  assert.equal(users.accessible, true);
+  assert.ok(seen.includes('/api/users'));
+  assert.ok(!seen.some((u) => u.startsWith('/app/api')), '不应打到 /app/api/...');
+
+  // origin 输入行为不变：不标记、无 warning、结果一致
+  const plain = await probeTarget(origin, { requests: 3 });
+  assert.equal(plain.target, origin);
+  assert.equal(plain.basePathDropped, false);
+  assert.equal(plain.warning, '');
+  assert.equal(plain.results.find((r) => r.path === '/api/users').status, 200);
+});
+
+test('probe: 无协议 / 非 http(s) 输入沿用原逻辑（不抛错、不归一）', async () => {
+  const out = await probeTarget('127.0.0.1:1', { requests: 3 });
+  assert.equal(out.latency, null);
+  assert.equal(out.basePathDropped, false);
+  assert.ok(out.results.some((r) => r.kind === 'security-headers' && r.error));
+
+  const out2 = await probeTarget('ftp://127.0.0.1:1/app', { requests: 3 });
+  assert.equal(out2.latency, null);
+  assert.equal(out2.basePathDropped, false);
+  assert.equal(out2.target, 'ftp://127.0.0.1:1/app');
+});
+
 test('probe: 200 + 未授权错误 JSON 不算复现', async (t) => {
   const http = await import('node:http');
   const srv = http.createServer((req, res) => {
