@@ -816,6 +816,32 @@ function removeTrailingCommas(text) {
   return { text: out, changed };
 }
 
+/** 去掉对象/数组之后多余的尾括号（模型偶尔多吐一个 `}`）；只在前缀本身是合法 JSON 时移除 */
+function removeExtraClosingDelimiters(text) {
+  let current = text;
+  let changed = false;
+  for (let i = 0; i < 8; i += 1) {
+    try {
+      JSON.parse(current);
+      return { text: current, changed };
+    } catch (e) {
+      const pos = jsonErrorPosition(e?.message || String(e));
+      if (pos == null) return { text, changed: false };
+      const head = current.slice(0, pos).replace(/\s+$/, '');
+      const tail = current.slice(pos).trim();
+      if (!/^[\]\}]+$/.test(tail)) return { text, changed: false };
+      try {
+        JSON.parse(head);
+        current = head;
+        changed = true;
+      } catch {
+        return { text, changed: false };
+      }
+    }
+  }
+  return { text: current, changed };
+}
+
 /**
  * 尝试把工具参数字符串修成合法 JSON。
  * @param {string} raw 模型给出的 arguments 原文
@@ -837,6 +863,11 @@ export function repairToolArgsJson(raw) {
   if (fixedCommas.changed) {
     repairs.push('移除尾逗号');
     current = fixedCommas.text;
+  }
+  const fixedClosers = removeExtraClosingDelimiters(current);
+  if (fixedClosers.changed) {
+    repairs.push('移除多余尾括号');
+    current = fixedClosers.text;
   }
   if (!repairs.length) return { ok: false, value: null, repairs: [] };
   try {

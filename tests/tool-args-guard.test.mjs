@@ -264,6 +264,16 @@ test('tool-args: Windows 路径单反斜杠自动修复为正斜杠（合法路�
   assert.deepEqual(both.repairs, ['Windows 路径反斜杠→正斜杠', '移除尾逗号']);
 });
 
+test('tool-args: 模型多吐一个尾括号时自动移除，不触发重发', () => {
+  const extra = repairToolArgsJson('{"question":"x","multiSelect":true}}');
+  assert.equal(extra.ok, true);
+  assert.deepEqual(extra.value, { question: 'x', multiSelect: true });
+  assert.deepEqual(extra.repairs, ['移除多余尾括号']);
+
+  // 前缀不是合法 JSON（缺右括号）不能靠删尾括号蒙混过关
+  assert.equal(repairToolArgsJson('{"question":"x"').ok, false);
+});
+
 test('tool-args: 正常 JSON 不修（双反斜杠合法路径、\\n 等合法转义原样保留）', () => {
   const valid = repairToolArgsJson('{"dir":"D:/rcw-geo/yanshou"}');
   assert.equal(valid.ok, true);

@@ -371,4 +371,22 @@ export const EN_MAIN = {
 
   // ---- ipc-agent.mjs 报告闸不合格提示 ----
   '报告不合格（验收单闸）': 'Report rejected (checklist gate)',
+
+  // ---- agent-service.mjs 工具参数 JSON 错误（英文界面不再回退中文）----
+  '（第 {pos} 字符附近）': ' (near character {pos})',
+  '工具参数被输出长度上限截断{posHint}，本次调用未执行': 'Tool arguments were truncated by the output limit{posHint}; this call was not executed',
+  '工具参数不是合法 JSON{posHint}，本次调用未执行': 'Tool arguments are not valid JSON{posHint}; this call was not executed',
+  '你上一次的工具调用「{name}」参数被输出长度上限截断了（{code}），这些调用没有执行。': 'Your previous tool call "{name}" had arguments truncated by the output limit ({code}); those calls were not executed.',
+  '你上一次的工具调用「{name}」参数不是合法 JSON（{code}），这个调用没有执行。': 'Your previous tool call "{name}" had arguments that were not valid JSON ({code}); this call was not executed.',
+  '解析失败位置：{pos}；参数总长：{chars} 字符。': 'Parse error position: {pos}; total argument length: {chars} characters.',
+  '第 {n} 个字符': 'character {n}',
+  '错误位置附近片段：{snippet}': 'Snippet near the error: {snippet}',
+  '请把参数拆小/缩短后重新发起这一个工具调用（例如减少 steps、精简 prompt、改成分步调用）。': 'Resend this single tool call with smaller/shorter arguments (for example fewer steps, a shorter prompt, or split the call).',
+  '请只重新发起这一个工具调用，参数必须是合法 JSON：键值之间必须有冒号，字段之间必须有逗号，字符串里的引号要转义；参数太长时请拆小。': 'Resend only this single tool call with valid JSON arguments: keys need colons, fields need commas, quotes inside strings must be escaped; split long arguments.',
+  '本轮工具参数被输出上限截断（{code}），已自动重发一次（未执行）。': 'Tool arguments in this turn were truncated by the output limit ({code}); retried once automatically (not executed).',
+  '工具参数不是合法 JSON（{code}）：{tools} 未执行，已把解析错误回给模型重发一次。': 'Tool arguments are not valid JSON ({code}): {tools} was not executed; the parse error was returned to the model for one retry.',
+  '工具参数连续两次不是合法 JSON（{code}），本轮已停止，{tools} 没有执行。可重试本步，或让模型把参数拆小后重新发起。常见原因：Windows 路径写成单反斜杠；请改用 D:/... 或 D:\\\\...（JSON 里反斜杠必须双写）。': 'Tool arguments were not valid JSON twice in a row ({code}); this turn stopped and {tools} was not executed. Retry this step, or ask the model to split the arguments. Common cause: a Windows path written with single backslashes; use D:/... or D:\\\\... (backslashes must be doubled in JSON).',
+  '工具参数连续两次被输出上限截断（{code}），本轮已停止，这些调用没有执行。建议把参数拆小（减少 steps / 精简 prompt）后重试本步。': 'Tool arguments were truncated by the output limit twice in a row ({code}); this turn stopped and those calls were not executed. Split the arguments (fewer steps or a shorter prompt) and retry this step.',
+  '工具参数被截断，正在重发…': 'Tool arguments were truncated; retrying…',
+  '工具参数有误，正在让模型重发…': 'Invalid tool arguments; asking the model to resend…',
 };
