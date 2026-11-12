@@ -163,3 +163,16 @@ export function changelogView(entries, version) {
   const history = currentEntry ? list.filter((e) => e !== currentEntry) : list;
   return { current: currentEntry, history, empty: list.length === 0 };
 }
+
+/**
+ * 按界面语言挑选更新条目：en 且英文条目非空时用英文，否则回退中文。
+ * 英文文件缺失时 entriesEn 是空数组，这里必须回退中文，不能让界面出现空白。
+ * @param {string} lang 当前界面语言（'zh' / 'en'）
+ * @param {{ entries?: object[], entriesEn?: object[] }} data IPC 返回值（或同类结构）
+ * @returns {object[]}
+ */
+export function pickChangelogEntries(lang, data) {
+  const zh = Array.isArray(data?.entries) ? data.entries : [];
+  const en = Array.isArray(data?.entriesEn) ? data.entriesEn : [];
+  return lang === 'en' && en.length > 0 ? en : zh;
+}

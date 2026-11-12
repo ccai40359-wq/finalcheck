@@ -44,6 +44,10 @@
         "to": "CHANGELOG.md"
       },
       {
+        "from": "../CHANGELOG.en.md",
+        "to": "CHANGELOG.en.md"
+      },
+      {
         "from": "../src",
         "to": "src",
         "filter": [

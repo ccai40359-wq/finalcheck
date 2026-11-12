@@ -4,7 +4,7 @@
 import React, { useEffect, useId, useRef, useState } from 'react';
 import { api, Card, ErrorNote } from '../lib/ui.jsx';
 import { initialUpdateState, reduceUpdateEvent, describeUpdate } from '../lib/updater-state.mjs';
-import { changelogView } from '../lib/changelog.mjs';
+import { changelogView, pickChangelogEntries } from '../lib/changelog.mjs';
 import UsagePage from './UsagePage.jsx';
 // 双语：界面语言开关（auto 跟随系统 / zh / en）；applyLanguage 立即生效，保存后写入 config
 import { t, setLanguage as applyLanguage, resolveLanguage } from '../i18n/core.mjs';
@@ -167,7 +167,7 @@ export function toModelObjects(models) {
 
 export default function SettingsPage({ onBack, initialSection = 'models', running = false }) {
   const y = api();
-  useLanguage(); // 切换语言后本页跟着重渲染（t() 读的是模块级语言状态）
+  const lang = useLanguage(); // 切换语言后本页跟着重渲染（t() 读的是模块级语言状态）
   const [providers, setProviders] = useState([]);   // 草稿（保存前仅在本地）
   const [activeId, setActiveId] = useState(null);   // 对话使用的供应商（activeProviderId）
   const [selectedId, setSelectedId] = useState(null); // 右侧正在编辑的供应商
@@ -186,7 +186,7 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
   const [section, setSection] = useState(() => (SECTIONS.includes(initialSection) ? initialSection : 'models')); // 设置页内分节：models / runtime / usage / about（仿 ZCode 左侧分组导航）
   const [update, setUpdate] = useState(initialUpdateState); // 更新状态机（纯函数见 lib/updater-state.mjs）
   const [appVersion, setAppVersion] = useState('');
-  // 更新详情：null = 还没加载过；{ version, entries } 由 IPC finalcheck:update:changelog 读取随包 CHANGELOG.md
+  // 更新详情：null = 还没加载过；{ version, entries, entriesEn } 由 IPC finalcheck:update:changelog 读取随包 CHANGELOG.md / CHANGELOG.en.md
   const [changelog, setChangelog] = useState(null);
   const [changelogOpen, setChangelogOpen] = useState(false);
   const [changelogLoading, setChangelogLoading] = useState(false);
@@ -278,7 +278,7 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
     setChangelogOpen(next);
     if (!next || changelog || changelogLoading) return;
     if (!y?.changelogGet) {
-      setChangelog({ version: appVersion, entries: [] });
+      setChangelog({ version: appVersion, entries: [], entriesEn: [] });
       return;
     }
     setChangelogLoading(true);
@@ -286,10 +286,11 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
       const r = await y.changelogGet();
       setChangelog({
         version: String(r?.version || appVersion || ''),
-        entries: Array.isArray(r?.entries) ? r.entries : []
+        entries: Array.isArray(r?.entries) ? r.entries : [],
+        entriesEn: Array.isArray(r?.entriesEn) ? r.entriesEn : []
       });
     } catch {
-      setChangelog({ version: appVersion, entries: [] });
+      setChangelog({ version: appVersion, entries: [], entriesEn: [] });
     } finally {
       setChangelogLoading(false);
     }
@@ -514,8 +515,8 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
     }
   })();
   const updateToneClass = { mute: 'text-mute', gold: 'text-goldSoft', jade: 'text-jade', red: 'text-red-300' };
-  // 更新详情视图：当前版本置顶，历史版本按 CHANGELOG 顺序向下排列（整卡仍只有一个边框）
-  const changelogData = changelogView(changelog?.entries, changelog?.version || appVersion);
+  // 更新详情视图：按当前界面语言选条目（英文缺失/为空回退中文）；当前版本置顶，历史版本按 CHANGELOG 顺序向下排列（整卡仍只有一个边框）
+  const changelogData = changelogView(pickChangelogEntries(lang, changelog), changelog?.version || appVersion);
   const renderChangelogEntry = (entry, isCurrent) => (
     <div key={`${isCurrent ? 'current' : 'history'}-${entry.version}`} className={isCurrent ? '' : 'pt-3 border-t border-edge/40'}>
       <div className="flex items-baseline justify-between gap-2">
