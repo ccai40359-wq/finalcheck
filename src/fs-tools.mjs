@@ -1,5 +1,5 @@
 // 文件工具（对齐 dsh 的 read / edit / write）：给 Agent 修代码用。
-// 安全边界：不在这里做目录白名单（桌面端由 permissions 审批；MCP 与 run_command 同等信任级别）。
+// 安全边界：本模块本身不做目录白名单（桌面端由 permissions 审批；MCP 由 server.mjs 的 --root 路径监狱在调用前校验）。
 // 护栏：只改文本、单文件 ≤2MB、edit 的 old_string 必须唯一、原子写、diff 只回传摘要。
 import { readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
