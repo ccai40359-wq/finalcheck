@@ -60,7 +60,7 @@ test('ipc: handler 抛错返回 { error, code } 而不是 reject（用户看到�
   const ipcMain = fakeIpcMain();
   installSafeIpc(ipcMain, { warn: quietConsole() });
   ipcMain.handle('demo:boom', async () => {
-    throw new Error('Cannot access \'model\' before initialization\n    at runAgentChat (D:\\rcw-geo\\yanshou\\desktop\\src\\main\\ipc\\ipc-agent.mjs:220:5)');
+    throw new Error('Cannot access \'model\' before initialization\n    at runAgentChat (D:\\workspace\\finalcheck\\desktop\\src\\main\\ipc\\ipc-agent.mjs:220:5)');
   });
   const r = await ipcMain.invoke('demo:boom'); // 不 reject = 渲染层不会 unhandled rejection
   assert.equal(r.code, IPC_ERROR_CODE);
@@ -70,7 +70,7 @@ test('ipc: handler 抛错返回 { error, code } 而不是 reject（用户看到�
   assert.match(r.error, /Cannot access/);
   // 栈帧与本机绝对路径不外泄
   assert.doesNotMatch(r.error, /at runAgentChat/);
-  assert.doesNotMatch(r.error, /D:\\rcw-geo/);
+  assert.doesNotMatch(r.error, /D:\\workspace/);
   assert.equal(r.error.includes('\n'), false);
 });
 

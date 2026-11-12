@@ -73,8 +73,8 @@ test('project-memory: 追加进已有小节，不会跑到下一个标题下面'
 test('project-memory: 重复事实不重复写', async () => {
   const { dir, done } = await sandbox();
   try {
-    await rememberProject(dir, '项目根是 D:\\rcw-geo');
-    const r2 = await rememberProject(dir, '项目根是 D:\\rcw-geo');
+    await rememberProject(dir, '项目根是 D:\\workspace');
+    const r2 = await rememberProject(dir, '项目根是 D:\\workspace');
     assert.equal(r2.added, false);
     const text = await readFile(path.join(dir, MEMORY_FILE), 'utf8');
     assert.equal((text.match(/项目根是/g) || []).length, 1);

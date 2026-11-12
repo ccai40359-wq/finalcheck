@@ -320,7 +320,7 @@ Agent 用本工具自查本仓，报出 4 个真 bug + 2 处环境噪音；已�
 ## 7. 终审遗留记账（2026-11-07 reviewer 终审 11 条：2 P1 + 4 P2 已修，余项 v2）
 
 已修：audit IPC runTests 硬编码 false（防执行不可信项目测试）；probe 重定向不跟随（防 302 越界+误判复现）；SSE 裸 JSON 兜底；流式 180s 看门狗；trace 结果截断 20KB；会话原子写+按 id 串行化。
-**v2 待办**：getConfig 脱敏 apiKey（现回传明文，仅本机渲染层）；confirmedHosts 主进程台账化（现信任 renderer 转述）；Agent 流式取消通道；probe 大 body 分块读取；目录改名 yanshou→finalcheck（进程占用待重启）。
+**v2 待办**：getConfig 脱敏 apiKey（现回传明文，仅本机渲染层）；confirmedHosts 主进程台账化（现信任 renderer 转述）；Agent 流式取消通道；probe 大 body 分块读取。
 
 ## 8. 本轮不做
 
