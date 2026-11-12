@@ -14,6 +14,20 @@ const DEFAULT_TIMEOUT_MS = 120000;
 const RULE_ID_MAX = 80;
 const CONTROL_RE = /[\u0000-\u001f\u007f]/g;
 
+// gitleaks 会把 .tmp / node_modules / 构建产物也扫进来（--no-git 不读 .gitignore）。
+// 这些不是被审项目的交付源码，命中只会制造噪声；与 walk.mjs 的目录剪枝保持同一口径。
+// 注意：只跳过「目录段」，不跳过以 . 开头的普通文件（如 .npmrc 仍要扫）。
+const IGNORED_DIR_NAMES = new Set(['.git', '.tmp', 'node_modules', 'coverage', '.finalcheck', 'workflow-runs', 'out', 'dist', 'build', 'release']);
+const IGNORED_DIR_RE = /^(?:release-[A-Za-z0-9._-]+|[A-Za-z0-9._-]+-unpacked)$/i;
+const ENV_FILE_RE = /(?:^|\.)env(?:$|\.)/i;
+
+function isIgnoredLocalPath(rel) {
+  const segs = String(rel || '').split('/').filter(Boolean);
+  const dirs = segs.slice(0, -1);
+  if (dirs.some((s) => s.startsWith('.') || IGNORED_DIR_NAMES.has(s.toLowerCase()) || IGNORED_DIR_RE.test(s))) return true;
+  return ENV_FILE_RE.test(segs[segs.length - 1] || '');
+}
+
 // config 既接受整份 finalcheck.config.json，也接受其中的 gitleaks 段，方便调用方按需传。
 function gitleaksSection(config) {
   if (!config || typeof config !== 'object' || Array.isArray(config)) return {};
@@ -89,15 +103,18 @@ export function parseGitleaksReport(json, projectDir) {
   const warnings = [];
   const hits = [];
   let skipped = 0;
+  let ignored = 0;
   for (const leak of leaks) {
     if (!leak || typeof leak !== 'object') { skipped += 1; continue; }
     const file = normalizeRelFile(leak.File, projectDir);
     if (!file) { skipped += 1; continue; }
+    if (isIgnoredLocalPath(file)) { ignored += 1; continue; }
     const ruleId = sanitizeRuleId(leak.RuleID);
     const lineNum = Number(leak.StartLine);
     hits.push({ file, line: Number.isFinite(lineNum) && lineNum > 0 ? Math.trunc(lineNum) : 0, ruleId });
   }
   if (skipped) warnings.push(`gitleaks 报告有 ${skipped} 条记录缺少文件/规则或越界，已跳过`);
+  if (ignored) warnings.push(`gitleaks 报告有 ${ignored} 条位于临时/构建/依赖目录，已忽略`);
   const findings = [];
   const byLocation = new Map();
   const withoutLine = [];

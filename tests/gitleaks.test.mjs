@@ -84,6 +84,21 @@ test('gitleaks: 文档命中降为 medium/tip，源码命中仍是 high/card', (
   assert.equal(src.force, 'card');
 });
 
+test('gitleaks: .tmp / node_modules / 构建产物命中忽略，隐藏配置文件仍扫', () => {
+  const projectDir = path.join(os.tmpdir(), 'fc-gl-ignore');
+  const parsed = parseGitleaksReport(JSON.stringify([
+    leak('generic-api-key', '.tmp/edge-recover/Default/Preferences', 1),
+    leak('generic-api-key', 'node_modules/pkg/index.js', 2),
+    leak('generic-api-key', 'release-1/win-unpacked/src/a.js', 3),
+    leak('generic-api-key', 'dist/bundle.js', 4),
+    leak('generic-api-key', '.env.local', 5),
+    leak('generic-api-key', '.npmrc', 6),
+    leak('generic-api-key', 'src/app.js', 7),
+  ]), projectDir);
+  assert.deepEqual(parsed.findings.map((f) => f.file), ['.npmrc', 'src/app.js']);
+  assert.ok(parsed.warnings.some((w) => w.includes('5 条位于临时/构建/依赖目录')));
+});
+
 test('gitleaks: 同 file+line 多条命中只留字典序第一条，其余进 warnings', () => {
   const parsed = parseGitleaksReport(JSON.stringify([
     leak('zeta-rule', 'a.js', 5),
