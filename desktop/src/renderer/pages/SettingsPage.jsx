@@ -190,6 +190,8 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
   const [changelog, setChangelog] = useState(null);
   const [changelogOpen, setChangelogOpen] = useState(false);
   const [changelogLoading, setChangelogLoading] = useState(false);
+  const [diagExporting, setDiagExporting] = useState(false);
+  const [diagMsg, setDiagMsg] = useState(null);
   const modelTriggerRef = useRef(null); // 打开模型弹窗的按钮，关闭弹窗后焦点回到这里
 
   // App 通过 initialSection 指定落点（如 page='usage'）；同一组件内切换分节不卸载草稿
@@ -297,6 +299,22 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
   };
 
   const selected = providers.find((p) => p.id === selectedId) || null;
+
+  // 诊断包导出：主进程负责脱敏；失败只提示，不影响设置页
+  const exportDiagnostics = async () => {
+    if (diagExporting) return;
+    if (!y?.exportDiagnostics) { setDiagMsg({ key: '当前版本不支持导出诊断' }); return; }
+    setDiagExporting(true);
+    setDiagMsg(null);
+    try {
+      const r = await y.exportDiagnostics();
+      if (r?.canceled) setDiagMsg({ key: '已取消' });
+      else if (r?.ok && r?.path) setDiagMsg({ key: '已导出：{path}', vars: { path: r.path } });
+      else setDiagMsg({ key: r?.error || '导出失败' });
+    } catch (e) {
+      setDiagMsg({ key: '导出失败：{msg}', vars: { msg: e?.message || String(e) } });
+    } finally { setDiagExporting(false); }
+  };
 
   const touch = () => { setDirty(true); setSaved(false); };
 
@@ -595,8 +613,17 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
           onClick={toggleChangelog} aria-expanded={changelogOpen} aria-controls="about-changelog">
           {t('查看更新详情')}
         </button>
+        <button type="button" className="btn-ghost min-w-[100px]"
+          onClick={exportDiagnostics} disabled={!y || diagExporting}>
+          {diagExporting ? t('导出中…') : t('导出诊断')}
+        </button>
         {!y && <span className="text-xs text-mute">{t('请在 Electron 中运行后检查更新。')}</span>}
       </div>
+      {diagMsg && (
+        <div className="text-xs text-mute leading-relaxed break-words pt-2 border-t border-edge/60">
+          {t(diagMsg.key, diagMsg.vars)}
+        </div>
+      )}
 
       {changelogOpen && (
         <div id="about-changelog" className="pt-3 border-t border-edge/60">
