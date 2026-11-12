@@ -37,7 +37,7 @@
 
 Windows 安装包：[Releases](https://github.com/ccai40359-wq/finalcheck/releases/latest)
 
-1. 下载最新版里的 `FinalCheck-install.exe`
+1. 下载最新版里的 `fc-setup-<version>.exe`
 2. 双击安装，可以自己选安装目录（会建桌面快捷方式）
 3. 首次打开：**设置 → 模型设置**，填一个 OpenAI 兼容网关（Base URL / API Key / 模型名）
 4. 以后有新版本会在 App 里自己提示更新（读的就是同一个 Releases 页）
@@ -48,7 +48,7 @@ Windows 安装包：[Releases](https://github.com/ccai40359-wq/finalcheck/releas
 
 **安装版**
 
-1. 从 [Releases](https://github.com/ccai40359-wq/finalcheck/releases) 下载 `FinalCheck-install.exe`。
+1. 从 [Releases](https://github.com/ccai40359-wq/finalcheck/releases) 下载最新的 `fc-setup-<version>.exe`。
 2. 打开后进 **设置 → 模型设置**，填一个 OpenAI 兼容网关（以 `/v1` 结尾的 Base URL、API Key、模型名）。
 3. 选一个工作区（文件夹），选定档位，开一个会话。
 
@@ -56,7 +56,7 @@ Windows 安装包：[Releases](https://github.com/ccai40359-wq/finalcheck/releas
 
 ```bash
 git clone https://github.com/ccai40359-wq/finalcheck
-cd yanshou
+cd finalcheck
 npm ci
 cd desktop && npm ci && npm run setup:sqlite
 cd desktop && npm run dev      # 启动桌面端

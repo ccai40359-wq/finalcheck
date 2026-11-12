@@ -44,7 +44,7 @@ FinalCheck is a tiered production-readiness desk for people who write with AI bu
 
 ### Installed build
 
-1. Download `FinalCheck-install.exe` from [Releases](https://github.com/ccai40359-wq/finalcheck/releases/latest).
+1. Download the latest `fc-setup-<version>.exe` from [Releases](https://github.com/ccai40359-wq/finalcheck/releases/latest).
 2. Run it and pick the install folder (a desktop shortcut is included).
 3. On first launch open **Settings → Model settings** and add an OpenAI-compatible gateway (Base URL / API key / model).
 4. Later versions update themselves from the same Releases page.
@@ -55,7 +55,7 @@ The build is not code-signed yet, so Windows SmartScreen may show "unrecognized 
 
 ```bash
 git clone https://github.com/ccai40359-wq/finalcheck
-cd yanshou
+cd finalcheck
 npm ci
 cd desktop && npm ci && npm run setup:sqlite
 ```
@@ -138,7 +138,7 @@ Restore: close the app, unzip the archive, copy `config.json`, `sessions/` and `
 
 ## Rollback
 
-- **Desktop app:** reinstall the previous installer (for example `fc-setup-0.14.0.exe`) from the Releases page. User data stays in `%APPDATA%\FinalCheck`; take a backup first.
+- **Desktop app:** reinstall the previous installer (for example `fc-setup-0.15.0.exe`) from the Releases page. User data stays in `%APPDATA%\FinalCheck`; take a backup first.
 - **Source tree:** use `git revert <commit>` for a single bad change, or `git checkout <previous-tag>` to return to the previous release. Re-run `cd desktop && npm run setup:sqlite` after switching Electron versions.
 - **Data:** restore the zip produced by `scripts/backup.mjs` using the steps above. Backups are the rollback path for sessions and memory because the app does not migrate data backwards.
 
