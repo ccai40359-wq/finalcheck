@@ -33,13 +33,25 @@ test('ensureHostAuthorized: 外部 host 未确认 → 审批拒绝 → 不写台
   assert.ok(!getLedger().confirmedHosts.includes('example.com'), '拒绝后不能写入确认台账');
 });
 
-test('ensureHostAuthorized: 外部 host 经审批允许 → 写入台账，后续 assertHost 放行', async () => {
-  const r = await ensureHostAuthorized('https://example.com/app', {
-    approvalFn: async () => 'allowed-once'
+test('ensureHostAuthorized: 「仅这一次」放行但不写台账，下一次还要问', async () => {
+  let asked = 0;
+  const approvalFn = async () => { asked += 1; return 'allowed-once'; };
+  const r = await ensureHostAuthorized('https://example.com/app', { approvalFn });
+  assert.equal(r.ok, true);
+  assert.ok(!getLedger().confirmedHosts.includes('example.com'), '仅这一次不能写入确认台账');
+  assert.throws(() => assertHost('example.com'), /不在已确认名单/);
+  const r2 = await ensureHostAuthorized('https://example.com/app2', { approvalFn });
+  assert.equal(r2.ok, true);
+  assert.equal(asked, 2, '第二次仍必须重新审批');
+});
+
+test('ensureHostAuthorized: 「本会话总是允许」才写台账，后续免审', async () => {
+  const r = await ensureHostAuthorized('https://always.example/app', {
+    approvalFn: async () => 'always-session'
   });
   assert.equal(r.ok, true);
-  assert.ok(getLedger().confirmedHosts.includes('example.com'));
-  assert.equal(assertHost('example.com'), 'example.com');
+  assert.ok(getLedger().confirmedHosts.includes('always.example'));
+  assert.equal(assertHost('always.example'), 'always.example');
 });
 
 test('ensureHostAuthorized: 非法 URL / 非 http(s) 拒绝', async () => {

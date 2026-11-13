@@ -131,6 +131,28 @@ test('agent-tools: run_command 被拒时给人话错误，允许时真的执行'
   assert.equal(r2.blocked, false);
 });
 
+test('agent-tools: run_command 复合命令不会被单段前缀授权免审', async () => {
+  const approvals = [];
+  const perms = {
+    ...fakePermissions(),
+    // 「本会话允许 git status」只覆盖这一条单段命令
+    sessionAllowed: (tool, pattern) => pattern === 'git status',
+    approvalPatternFor: (cmd) => {
+      const text = String(cmd || '').trim().replace(/\s+/g, ' ');
+      return text.split(/\|\||&&|\||;|&|\r?\n/).map((s) => s.trim()).filter(Boolean).length > 1
+        ? text
+        : text.split(/\s+/).filter(Boolean).slice(0, 2).join(' ').toLowerCase();
+    },
+    requestApproval: async (p) => { approvals.push(p); return 'allowed-once'; }
+  };
+  const tools = createAgentTools({ repoRoot, permissions: perms });
+  const r = await tools.run_command({ command: 'echo first && echo second' });
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /second/);
+  assert.equal(approvals.length, 1, '复合命令必须重新过审批，不能命中旧前缀授权');
+  assert.match(String(approvals[0].target), /echo first.*echo second/, '审批参数模式保留整条命令');
+});
+
 test('agent-tools: run_command 灾难命令仍被 shell 护栏拦截（权限已放行也拦）', async () => {
   const tools = createAgentTools({ repoRoot, permissions: fakePermissions() });
   const r = await tools.run_command({ command: 'shutdown /s /t 0' });

@@ -313,22 +313,28 @@ export function packageJsonStrings(text) {
 
 async function scanExternalHosts(projectDir, excludes) {
   const { files, skipped, pruned } = await listTextFiles(projectDir, excludes);
-  const seen = new Map(); // host → finding（去重）
+  const seen = new Map(); // host → { rank, finding }：同一 host 只留级别最高的一条（doc < script < lock）
   const emit = (host, file, line, snippet, { lock = false, doc = false } = {}) => {
-    if (seen.has(host)) return;
+    const rank = lock ? 2 : (doc ? 0 : 1);
+    const existing = seen.get(host);
+    // 文档里的示例（low/tip）先命中时，不能把后面 package.json / lockfile 的 medium/card 吞掉
+    if (existing && existing.rank >= rank) return;
     seen.set(host, {
-      checkId: 'X2',
-      severity: doc ? 'low' : 'medium',
-      force: doc ? 'tip' : 'card',
-      file, line,
-      rule: lock ? 'X2.lockfile-resolved' : 'X2.external-host',
-      snippet: String(snippet).slice(0, 140),
-      message: lock
-        ? `lockfile 里安装源指向非 registry 主机 ${host}，装前确认（恶意 lockfile 会把下载地址改到第三方）`
-        : doc
-          ? `文档里出现外呼域名 ${host}（可能是示例），人工确认`
-          : `外呼域名 ${host} 不在常见域名白名单内，列入外呼清单，装/跑前确认可信`,
-      source: 'program',
+      rank,
+      finding: {
+        checkId: 'X2',
+        severity: doc ? 'low' : 'medium',
+        force: doc ? 'tip' : 'card',
+        file, line,
+        rule: lock ? 'X2.lockfile-resolved' : 'X2.external-host',
+        snippet: String(snippet).slice(0, 140),
+        message: lock
+          ? `lockfile 里安装源指向非 registry 主机 ${host}，装前确认（恶意 lockfile 会把下载地址改到第三方）`
+          : doc
+            ? `文档里出现外呼域名 ${host}（可能是示例），人工确认`
+            : `外呼域名 ${host} 不在常见域名白名单内，列入外呼清单，装/跑前确认可信`,
+        source: 'program'
+      }
     });
   };
   for (const f of files) {
@@ -362,7 +368,7 @@ async function scanExternalHosts(projectDir, excludes) {
       emit(host, file, line, m[0], { doc: isDoc });
     }
   }
-  return { findings: [...seen.values()], skipped, pruned };
+  return { findings: [...seen.values()].map((v) => v.finding), skipped, pruned };
 }
 
 // X4 README 注入：对 AI/agent 的指令性语句
