@@ -695,10 +695,10 @@ export default function App() {
   // Context 指示器：消息变化后 500ms 估算一次（主进程算系统提示/工具 schema/技能目录/摘要）
   useEffect(() => {
     if (!y?.contextStats) return undefined;
-    const t = setTimeout(() => {
+    const timer = setTimeout(() => {
       y.contextStats({ messages: messages.filter((m) => !m.steer), sessionId: activeId }).then(setCtxStats).catch(() => {});
     }, 500);
-    return () => clearTimeout(t);
+    return () => clearTimeout(timer);
   }, [messages, activeId, cfg]);
 
   // 全局提示气泡：主进程进程级异常（sessionId=null 的 notice）与回合 warning 都要看得见。
@@ -1301,7 +1301,7 @@ export default function App() {
     setQueueBySession((prev) => ({ ...prev, [sid]: removeById(prev[sid], id) }));
     if (item.text) setInput((prev) => (prev.trim() ? prev.replace(/\s+$/, '') + '\n' + item.text : item.text));
     if (item.pasted?.length) {
-      setPastedBlocks((prev) => [...prev, ...item.pasted.map((t) => ({ id: nextPasteId(), text: t, lines: countLines(t), expanded: false }))]);
+      setPastedBlocks((prev) => [...prev, ...item.pasted.map((text) => ({ id: nextPasteId(), text, lines: countLines(text), expanded: false }))]);
     }
     if (item.previews?.length) {
       setAttachments((prev) => {

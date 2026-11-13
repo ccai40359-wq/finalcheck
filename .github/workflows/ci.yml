@@ -83,3 +83,35 @@ jobs:
           name: e2e-smoke
           path: e2e-artifacts/
           if-no-files-found: warn
+
+  self-audit:
+    name: self-audit (windows-latest, node 22)
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install root dependencies
+        run: npm ci
+
+      # L1 是唯一硬卡 S3 密钥的档位；clean clone 不应有未豁免的 high/card。
+      # 先落报告再判定：audit 退出码可能是 1（拦）/3（无法验收），不等于报告不可读。
+      - name: Run FinalCheck self-audit
+        run: node bin/finalcheck.js audit . --tier L1 --json > self-audit.json || true
+
+      - name: Check acceptance entries still match
+        run: node scripts/check-accept-entries.mjs
+
+      # 自审 high 是 advisory：仓库仍有已登记依赖告警/大文件等历史项，
+      # 等基线清干净后再改成硬闸（见 docs/ACCEPTED-RISKS.md）。
+      - name: Check self-audit high findings (advisory)
+        continue-on-error: true
+        run: node scripts/check-self-audit.mjs self-audit.json

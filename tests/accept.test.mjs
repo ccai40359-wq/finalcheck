@@ -57,6 +57,19 @@ function makeEntry(overrides = {}) {
   };
 }
 
+test('accept: 历史 finding 行号来自旧提交，但指纹命中当前行 → 仍豁免', async (t) => {
+  const dir = await tmp(t);
+  const text = await fixture(dir);
+  await accept(dir, makeEntry({
+    rule: 'S3.history-secret-literal',
+    line: 2,
+    hash: lineFingerprint(text)
+  }));
+  const res = await applyAcceptances(dir, [finding({ rule: 'S3.history-secret-literal', line: 1 })]);
+  assert.equal(res.findings.length, 0, '历史行号不应阻止当前行指纹豁免');
+  assert.equal(res.accepted.length, 1);
+});
+
 test('accept: 旧数据（rule+file+line+行指纹）仍兼容，且豁免清单可审计', async (t) => {
   const dir = await tmp(t);
   const text = await fixture(dir);

@@ -1,6 +1,8 @@
 // ESLint 9 flat config — 只做少而准的静态检查。
-// 覆盖范围刻意收窄到 ESM 脚本（.mjs），暂不 lint 渲染层 JSX。
+// .mjs 走完整三条规则；.jsx 只开 no-shadow + react-hooks（不开 no-unused-vars/no-undef：
+// 核心规则不认 JSX 组件引用，会在 27 个渲染文件里产生 100+ 假阳性）。
 import globals from 'globals'
+import reactHooks from 'eslint-plugin-react-hooks'
 
 // 本月真实踩过的 bug 类型：局部 `const t` 遮蔽 i18n 的 `t()`。
 const correctnessRules = {
@@ -50,5 +52,20 @@ export default [
       },
     },
     rules: correctnessRules,
+  },
+  {
+    // 渲染层 JSX：只查真实踩过的 bug 类型（t() 被局部变量遮蔽 + hooks 规则）。
+    files: ['desktop/src/renderer/**/*.jsx'],
+    languageOptions: {
+      ecmaVersion: 'latest',
+      sourceType: 'module',
+      parserOptions: { ecmaFeatures: { jsx: true } },
+      globals: { ...globals.browser },
+    },
+    plugins: { 'react-hooks': reactHooks },
+    rules: {
+      'no-shadow': 'error',
+      'react-hooks/rules-of-hooks': 'error',
+    },
   },
 ]

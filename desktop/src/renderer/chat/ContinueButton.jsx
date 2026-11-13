@@ -15,6 +15,6 @@ export function ContinueButton({ onClick, disabled = false }) {
 // 什么样的错误值得给「继续」：证据还在时间线里、或者只是预算/网关抖动。
 // 402（余额不足）这类不给——点了也白点。
 export function errorIsRecoverable(error) {
-  const t = String(error || '');
-  return t.includes('时间线') || t.includes('预算') || t.includes('收尾');
+  const text = String(error || '');
+  return text.includes('时间线') || text.includes('预算') || text.includes('收尾');
 }

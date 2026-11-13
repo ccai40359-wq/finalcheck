@@ -18,9 +18,9 @@ export const extOf = (p) => {
 export function collectArtifacts(trace) {
   const out = [];
   const seen = new Set();
-  for (const t of trace || []) {
-    if (!['edit_file', 'write_file', 'present_artifact'].includes(t?.tool)) continue;
-    const r = t.result;
+  for (const entry of trace || []) {
+    if (!['edit_file', 'write_file', 'present_artifact'].includes(entry?.tool)) continue;
+    const r = entry.result;
     if (!r || typeof r !== 'object' || r.error || !r.path) continue;
     if (!PREVIEW_EXTS.has(extOf(r.path)) || seen.has(r.path)) continue;
     seen.add(r.path);

@@ -143,10 +143,10 @@ export function mergeTraceIntoEvents(events, trace, workedMs = null) {
     let j = ti;
     while (j < trace.length && (trace[j].tool || 'tool') !== e.name) j++;
     if (j >= trace.length) continue;
-    const t = trace[j];
+    const hit = trace[j];
     ti = j + 1;
-    if (t.args != null) e.args = toStr(t.args);
-    if (t.result !== undefined) e.result = t.result;
+    if (hit.args != null) e.args = toStr(hit.args);
+    if (hit.result !== undefined) e.result = hit.result;
     if (e.status === 'running') e.status = 'ok';
   }
   // 完成时兜底：turn-end 事件可能晚于结果到达，残留的 live 思考用「到现在」的耗时收尾，
@@ -454,11 +454,11 @@ export function ProcessTimeline({ msg }) {
   // 历史恢复：trace 提供全量 args/result；reasoning 补一条 Thought
   let entries = events.length ? [...liveEntries] : [];
   if (!events.length) {
-    entries = (msg.trace || []).map((t) => ({
+    entries = (msg.trace || []).map((entry) => ({
       type: 'tool',
-      name: t.tool || 'tool',
-      args: typeof t.args === 'string' ? t.args : t.args != null ? JSON.stringify(t.args) : '',
-      result: t.result,
+      name: entry.tool || 'tool',
+      args: typeof entry.args === 'string' ? entry.args : entry.args != null ? JSON.stringify(entry.args) : '',
+      result: entry.result,
       status: 'ok'
     })).filter((e) => !isCardTool(e));
   }

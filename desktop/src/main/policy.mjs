@@ -4,7 +4,8 @@
 //  - 路径先按目标平台解析/规范化，再做包含判断；不拿原始字符串 startsWith 当唯一判据。
 //  - 敏感路径在任何模式（含 off / full access）都拒绝；full access 不是审批豁免。
 //  - 拒绝记录只保留 tool / target / reason / at，绝不夹带环境变量值或密钥值。
-//  - 命令侧只做黑名单 + 要求 cwd 走路径检查；不从命令文本里猜绝对路径（误报会挡正常审计）。
+//  - 命令侧只做黑名单 + 要求 cwd 走路径检查；除「删除/改名类命令带字面绝对路径」这一种
+//    高置信情形外，不从命令文本里猜绝对路径（误报会挡正常审计）。
 //  - 环境变量按“名字”判定：命中密钥语义即剥除，removed 只记名字，不记值。
 
 import os from 'node:os';
@@ -443,6 +444,53 @@ export function checkCommand(policy, command) {
   for (const rule of COMMAND_RULES) {
     if (segments.some((seg) => rule.test(seg))) {
       return { ok: false, reason: t('命令命中安全黑名单：{rule}', { rule: rule.name }), matchedRule: rule.name };
+    }
+  }
+  return { ok: true };
+}
+
+// 删除/改名类命令的目标检查（只认字面绝对路径，不猜变量/通配符）。
+// 为什么需要：WRITE_RESTRICTED 令牌只过滤写权限位，DELETE 不在其中——实测沙箱里
+// `del "项目外文件"` 能删成功（`del /f`、PowerShell Remove-Item 反而被拒），
+// 所以这条必须在应用层兜住：目标解析到项目外，整条命令拒绝。
+const DESTRUCTIVE_HEAD = /^["']?(del|erase|rd|rmdir|remove-item|ri|move-item|mv|ren|rename)(?:\.exe)?["']?(?:\s|$)/i;
+const POWERSHELL_INNER = /(?:-command|-c)\s+"(.+)"$/i;
+
+function literalPathsIn(text) {
+  const found = [];
+  const re = /"([^"]+)"|'([^']+)'|([A-Za-z]:[\\/][^\s"'|;&<>)]*)/g;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const value = (m[1] || m[2] || m[3] || '').trim();
+    // 含 %VAR% / 通配符 / 管道符号的不猜，交给黑名单与审批
+    if (value && !value.includes('%') && !value.includes('*') && !value.includes('?')) found.push(value);
+  }
+  return found;
+}
+
+/**
+ * 删除/改名命令是否指向项目外（只覆盖字面绝对路径与父目录相对路径）。
+ * @returns {{ok:boolean, reason?:string, matchedRule?:string}}
+ */
+export function checkDestructiveTargets(policy, command, cwd) {
+  if (typeof command !== 'string' || !command) return { ok: true };
+  if (!policy || policy.mode === 'off') return { ok: true };
+  const base = cwd || (Array.isArray(policy.roots) ? policy.roots[0] : null);
+  for (const seg of commandSegments(command)) {
+    const inner = POWERSHELL_INNER.exec(seg);
+    const target = inner ? inner[1] : seg;
+    if (!DESTRUCTIVE_HEAD.test(target)) continue;
+    for (const raw of literalPathsIn(target)) {
+      const abs = path.isAbsolute(raw) ? raw : (base ? path.resolve(base, raw) : null);
+      if (!abs) continue;
+      const verdict = assertPathAllowed(policy, abs, { write: true, tool: 'run_command' });
+      if (verdict && verdict.ok === false) {
+        return {
+          ok: false,
+          reason: t('删除/改名目标在项目外，已拒绝：{path}', { path: raw.slice(0, 120) }),
+          matchedRule: 'destructive-outside'
+        };
+      }
     }
   }
   return { ok: true };

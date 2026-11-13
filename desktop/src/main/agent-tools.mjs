@@ -8,11 +8,12 @@ import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 import { loadCatalog, readPlaybook, catalogSummary } from '../../../src/playbooks.mjs';
 import { readFileTool, editFileTool, writeFileTool } from '../../../src/fs-tools.mjs';
-import { assertPathAllowed, assertCwd, checkCommand, scrubEnv } from './policy.mjs';
+import { assertPathAllowed, assertCwd, checkCommand, checkDestructiveTargets, scrubEnv } from './policy.mjs';
 import { runHookEvent } from './hooks.mjs';
 import { isBlocked } from './shell.mjs';
 import { dynamicRuntime, recordProbe, recordStress } from './dynamic-evidence.mjs';
 import { assertArtifactPath } from './artifact-gate.mjs';
+import { createSandboxedRun, sandboxAvailability, sandboxCompatible } from './sandbox.mjs';
 // 工作流兜底提示走双语词典（zh 原样返回，en 查表）
 import { t } from '../renderer/i18n/core.mjs';
 
@@ -34,6 +35,14 @@ function policyDenyResult(check) {
 // 与 shell.mjs 的护栏保持一致（灾难命令 / 超时 clamp / 输出截断 / System32 PATH），
 // 额外把 pid 留在手里，用于中断时 taskkill /PID <pid> /T /F。
 const CANCELLED_RESULT = () => ({ error: '已中断', cancelled: true, code: null, stdout: '', stderr: '' });
+
+// STATUS_DLL_INIT_FAILED（0xC0000142）：进程在初始化阶段就死了，命令本身一行都没执行。
+// Node 在所有 Windows 版本上按 32 位有符号数报退出码，两种写法都收。
+const DLL_INIT_FAILED_CODES = new Set([3221225794, -1073741502]);
+function isDllInitFailure(result) {
+  if (!result || result.blocked || result.error) return false;
+  return DLL_INIT_FAILED_CODES.has(Number(result.code));
+}
 
 // 空闲输出看门狗：不设「工作时长上限」（长任务可以跑 1 小时），只在「连续 N 毫秒没有任何输出
 // 且进程还活着」时认为命令卡住（常驻服务 / 静默网络请求），结束本轮等待、转入后台，但绝不杀进程。
@@ -84,6 +93,7 @@ export function planRunningPings(elapsedMs, startMs = RUNNING_PING_START_MS, eve
 
 export function runCommandWithSignal(command, {
   cwd, timeoutMs, idleMs = DEFAULT_COMMAND_IDLE_MS, background = false, env: envInput, signal = null,
+  sandbox = null, forceVisibleConsole = false,
   onActivity = null, pingStartMs = RUNNING_PING_START_MS, pingEveryMs = RUNNING_PING_EVERY_MS
 } = {}) {
   return new Promise((resolve) => {
@@ -106,6 +116,7 @@ export function runCommandWithSignal(command, {
       env.PATH = sys + old;
       env.Path = env.PATH;
     }
+    if (sandbox?.env && typeof sandbox.env === 'object') Object.assign(env, sandbox.env);
     let out = '', err = '', settled = false, proc = null, timer = null, idleTimer = null, pingTimer = null;
     const t0 = Date.now();
     let nextPingAt = Math.max(0, Number(pingStartMs) || 0); // 下一次活动提示的「已运行毫秒」
@@ -119,7 +130,11 @@ export function runCommandWithSignal(command, {
       if (settled) return;
       settled = true;
       cleanup();
-      resolve({ ...value, stdout: String(value.stdout ?? out).slice(0, 8000), stderr: String(value.stderr ?? err).slice(0, 4000) });
+      // 前台命令结束时释放沙箱私有 temp；后台进程仍在跑，留给后续手动清理
+      if (sandbox && !value?.background) {
+        try { setTimeout(() => sandbox.cleanup?.(), 300).unref?.(); } catch { /* ignore */ }
+      }
+      resolve({ ...value, sandbox: sandbox ? sandbox.mode : 'none', stdout: String(value.stdout ?? out).slice(0, 8000), stderr: String(value.stderr ?? err).slice(0, 4000) });
     };
     // 「仍在运行 Ns」活动提示：只报耗时，不带 stdout/stderr。
     // 目的：idle_ms:0 或超长命令时，UI 上看得见它在动，而不是像卡死。
@@ -179,14 +194,19 @@ export function runCommandWithSignal(command, {
     };
     if (signal) signal.addEventListener('abort', onAbort, { once: true });
     try {
-      proc = spawn(cmd, {
-        shell: true,
-        cwd: cwd && existsSync(String(cwd)) ? String(cwd) : undefined,
-        windowsHide: isWin,
+      const spawnOptions = {
+        cwd: (sandbox ? sandbox.cwd : cwd) && existsSync(String(sandbox ? sandbox.cwd : cwd)) ? String(sandbox ? sandbox.cwd : cwd) : undefined,
+        // 屏显：沙箱默认给 runner 一个不可见控制台（CREATE_NO_WINDOW），受限子进程继承它，
+        // 因此不会弹黑窗；若某个系统上受限子进程在 DLL 初始化阶段死亡（0xC0000142，命令未执行），
+        // 由调用方用 forceVisibleConsole 重试一次（见 run_command）。
+        windowsHide: sandbox ? !forceVisibleConsole : isWin,
         env,
         // 后台启动：新进程组 + 不接管道，父进程退出也不连带结束
         ...(wantsBackground ? { detached: true, stdio: 'ignore' } : {})
-      });
+      };
+      proc = sandbox
+        ? spawn(sandbox.file, sandbox.args, { ...spawnOptions, shell: false })
+        : spawn(cmd, { ...spawnOptions, shell: true });
     } catch (e) {
       return finish({ blocked: false, code: 1, stdout: '', stderr: e?.message || String(e) });
     }
@@ -350,8 +370,45 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
         const decision = await permissions?.requestApproval?.({ tool: 'quality_gate', target, summary: `质量命令闸（${dir}）：\n${summary}`, ...approvalScope });
         if (decision !== 'allowed-once' && decision !== 'always-session') return { error: '用户拒绝了质量闸执行' };
       }
-      const r = await checkQuality(dir, { tier: args?.tier || 'L2', run: true, repeat: args?.repeat, config: cfg });
-      return { dir, runs: r.runs, findings: r.findings.slice(0, 30), warnings: r.warnings, coverageGap: r.coverageGap };
+      const sandboxQualityRunner = async (command, projectDir, timeoutMs) => {
+        const sbPref = String(process.env.FINALCHECK_SANDBOX || '').trim().toLowerCase();
+        // 质量闸的命令基本是 npm/node/tsc/vitest：受限令牌下它们会 EPERM（捕获不了孙进程输出），
+        // 按兼容清单改在宿主机执行；路径策略、命令黑名单与审批照旧生效。
+        const compat = sandboxCompatible(command);
+        if (!compat.compatible && sbPref === 'required') {
+          return { code: 1, ms: 0, out: '', err: `沙箱不支持这条质量命令（${compat.reason}）；FINALCHECK_SANDBOX=required 已拒绝在宿主机执行`, timedOut: false };
+        }
+        const sb = sbPref === 'off' || !compat.compatible ? null : createSandboxedRun({
+          workspaceRoot: projectDir,
+          policyMode: policy?.mode || 'off',
+          command,
+          cwd: projectDir
+        });
+        const t0 = Date.now();
+        const run = await runCommandWithSignal(String(command), {
+          cwd: projectDir,
+          timeoutMs,
+          sandbox: sb
+        });
+        return {
+          code: run.code == null ? 1 : run.code,
+          ms: Date.now() - t0,
+          out: run.stdout || '',
+          err: run.stderr || '',
+          timedOut: run.code === 124
+        };
+      };
+      const r = await checkQuality(dir, {
+        tier: args?.tier || 'L2',
+        run: true,
+        repeat: args?.repeat,
+        config: cfg,
+        runner: sandboxQualityRunner
+      });
+      const qualitySandbox = policy?.mode === 'off' || !sandboxAvailability().available
+        ? (policy?.mode === 'off' ? 'none' : 'unavailable')
+        : 'per-command';
+      return { dir, runs: r.runs, findings: r.findings.slice(0, 30), warnings: r.warnings, coverageGap: r.coverageGap, sandbox: qualitySandbox };
     },
 
     // 只读 git 改动审查：路径走策略边界；不弹审批（不执行、不写盘）
@@ -376,7 +433,16 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
     },
 
     probe_target: async (args) => {
-      note(args.url); // 口头确认语义：记账不拦（用户定案 2026-11-07）
+      // 执行前授权闸：localhost 直放；已确认 host 直放；外部 host 必须过审批卡
+      if (typeof permissions?.ensureHostAuthorized === 'function') {
+        const auth = await permissions.ensureHostAuthorized(args?.url, {
+          approvalFn: permissions?.requestApproval,
+          scope: approvalScope,
+          tool: 'probe_target'
+        });
+        if (!auth.ok) return { error: auth.error, deniedBy: 'policy' };
+      }
+      note(args.url); // 记账：证据等级要能区分「声明了授权」和「本轮真的跑过」
       const { probeTarget } = await import(engineUrl('src/dynamic/probe.mjs'));
       const t0 = Date.now();
       const out = await probeTarget(args.url, { requests: args?.requests });
@@ -385,6 +451,14 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
     },
 
     stress_target: async (args) => {
+      if (typeof permissions?.ensureHostAuthorized === 'function') {
+        const auth = await permissions.ensureHostAuthorized(args?.url, {
+          approvalFn: permissions?.requestApproval,
+          scope: approvalScope,
+          tool: 'stress_target'
+        });
+        if (!auth.ok) return { error: auth.error, deniedBy: 'policy' };
+      }
       note(args.url);
       if ((args.duration ?? 10) > 60 || (args.connections ?? 10) > 50) throw new Error('超过温和上限');
       const { stressTarget } = await import(engineUrl('src/dynamic/stress.mjs'));
@@ -541,6 +615,9 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
         if (cwdCheck.path) runCwd = cwdCheck.path;
         const cmdCheck = checkCommand(policy, cmd);
         if (!cmdCheck.ok) return policyDenyResult(cmdCheck);
+        // 沙箱的 WRITE_RESTRICTED 令牌不过滤 DELETE（实测 del 能删项目外文件），这条在应用层兜。
+        const deleteCheck = checkDestructiveTargets(policy, cmd, runCwd);
+        if (!deleteCheck.ok) return policyDenyResult(deleteCheck);
       }
       const pattern = typeof permissions?.commandPrefix === 'function' ? permissions.commandPrefix(cmd) : cmd;
       if (!preApproved('run_command', pattern) && !permissions?.sessionAllowed?.('run_command', pattern, approvalScope)) {
@@ -556,15 +633,75 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
       // background:true = 起常驻服务后立刻返回（不让父命令等子进程退出）；
       // 其余命令走空闲输出看门狗：连续 idle 毫秒无输出才转后台，长任务只要还在输出就不设上限。
       const idleMs = args?.idle_ms ?? args?.idleMs ?? commandIdleMs ?? DEFAULT_COMMAND_IDLE_MS;
-      return runCommandWithSignal(cmd, {
+      const sandboxMode = policy?.mode || 'off';
+      const sandboxPref = String(process.env.FINALCHECK_SANDBOX || '').trim().toLowerCase();
+      const compat = sandboxCompatible(cmd);
+      const sandbox = sandboxPref === 'off' || !compat.compatible ? null : createSandboxedRun({
+        workspaceRoot: projectPath || runCwd,
+        policyMode: sandboxMode,
+        command: cmd,
+        cwd: runCwd
+      });
+      let result = await runCommandWithSignal(cmd, {
         cwd: runCwd,
         timeoutMs: args?.timeout_ms,
         idleMs,
         background: args?.background === true,
         env,
         signal: toolSignal,
+        sandbox,
         onActivity
       });
+      // 隐藏控制台下受限子进程初始化失败（命令未执行）→ 用可见控制台重试一次；
+      // 这样默认不弹黑窗，个别系统上退化为「有个窗但能跑」，而不是整条命令失败。
+      if (sandbox && isDllInitFailure(result)) {
+        // 重试用新的沙箱实例：上一次的私有 temp（含 run.cmd）已经在收尾时被清理。
+        const retrySandbox = createSandboxedRun({
+          workspaceRoot: projectPath || runCwd,
+          policyMode: sandboxMode,
+          command: cmd,
+          cwd: runCwd
+        });
+        if (retrySandbox) {
+          const retried = await runCommandWithSignal(cmd, {
+            cwd: runCwd,
+            timeoutMs: args?.timeout_ms,
+            idleMs,
+            background: args?.background === true,
+            env,
+            signal: toolSignal,
+            sandbox: retrySandbox,
+            forceVisibleConsole: true,
+            onActivity
+          });
+          retried.sandboxConsole = 'visible';
+          retried.stderr = `[控制台隔离不可用：受限子进程在隐藏控制台下初始化失败，已改用可见控制台重试]\n${retried.stderr || ''}`;
+          result = retried;
+        }
+      }
+      if (sandboxMode !== 'off' && !sandbox && sandboxPref !== 'off') {
+        if (!compat.compatible) {
+          // 刻意跳过沙箱：受限令牌下这条命令必然失败，宿主机执行 + 如实标注。
+          // required 模式下仍然 fail-closed：宁可不跑，也不在宿主机跑。
+          if (sandboxPref === 'required') {
+            return {
+              error: `沙箱不支持这条命令（${compat.reason}）；FINALCHECK_SANDBOX=required 已拒绝在宿主机执行`,
+              deniedBy: 'policy'
+            };
+          }
+          result.sandboxSkip = compat.reason;
+        } else {
+          const required = sandboxPref === 'required';
+          if (required) {
+            return {
+              error: `沙箱不可用（${sandboxAvailability().error || '平台不支持'}），FINALCHECK_SANDBOX=required 已拒绝在宿主机执行`,
+              deniedBy: 'policy'
+            };
+          }
+          result.sandboxWarning = `写/删沙箱不可用（${sandboxAvailability().error || '平台不支持'}）；本条命令在宿主机执行`;
+        }
+      }
+      return result;
     }
   };
 
