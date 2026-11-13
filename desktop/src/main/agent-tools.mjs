@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 import { loadCatalog, readPlaybook, catalogSummary } from '../../../src/playbooks.mjs';
 import { readFileTool, editFileTool, writeFileTool } from '../../../src/fs-tools.mjs';
-import { assertPathAllowed, assertCwd, checkCommand, scrubEnv } from './policy.mjs';
+import { assertPathAllowed, assertCwd, checkCommand, checkDestructiveTargets, scrubEnv } from './policy.mjs';
 import { runHookEvent } from './hooks.mjs';
 import { isBlocked } from './shell.mjs';
 import { dynamicRuntime, recordProbe, recordStress } from './dynamic-evidence.mjs';
@@ -615,6 +615,9 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
         if (cwdCheck.path) runCwd = cwdCheck.path;
         const cmdCheck = checkCommand(policy, cmd);
         if (!cmdCheck.ok) return policyDenyResult(cmdCheck);
+        // 沙箱的 WRITE_RESTRICTED 令牌不过滤 DELETE（实测 del 能删项目外文件），这条在应用层兜。
+        const deleteCheck = checkDestructiveTargets(policy, cmd, runCwd);
+        if (!deleteCheck.ok) return policyDenyResult(deleteCheck);
       }
       const pattern = typeof permissions?.commandPrefix === 'function' ? permissions.commandPrefix(cmd) : cmd;
       if (!preApproved('run_command', pattern) && !permissions?.sessionAllowed?.('run_command', pattern, approvalScope)) {

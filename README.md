@@ -1,7 +1,7 @@
 <img src="docs/assets/cover.png" alt="FinalCheck — pre-flight check for code" width="100%">
 
 [![CI](https://github.com/ccai40359-wq/finalcheck/actions/workflows/ci.yml/badge.svg)](https://github.com/ccai40359-wq/finalcheck/actions/workflows/ci.yml)
-![tests](https://img.shields.io/badge/tests-1187%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-1191%20passing-brightgreen)
 ![license](https://img.shields.io/badge/license-Apache--2.0-blue)
 
 **English** · [简体中文](README.zh-CN.md)
@@ -170,7 +170,8 @@ The UI ships in Chinese and English.
 - The API key lives **only** in the local `config.json` (`%APPDATA%\FinalCheck` in the installed build). It is never written to sessions, logs or reports.
 - Path and command access is controlled by a policy: `workspace` (writes inside the project only), `readonly`, or `off`. `workspace` is an application-level path policy, not an OS sandbox. Sensitive locations (`.ssh`, `.aws`, `.gnupg`, Git credentials, private keys) are blocked in every mode, and a command blacklist applies on top.
 - `readonly` rejects commands, quality-gate commands and project-memory writes. Path checks resolve junctions/symlinks to their real target before deciding whether a path is inside the workspace.
-- On Windows, `run_command` and quality-gate commands run inside a **dsh ACL restricted-token sandbox** when the package is available: writes/deletes are limited to the workspace plus a private temp directory, and the sandbox fails closed at setup. It does **not** restrict reads, network, or process visibility; those remain application-level policy. If the sandbox is unavailable, the command runs on the host with a warning; set `FINALCHECK_SANDBOX=required` to refuse instead.
+- On Windows, `run_command` and quality-gate commands run inside a **dsh ACL restricted-token sandbox** when the package is available: creating and modifying files is limited to the workspace plus a private temp directory, and the sandbox fails closed at setup. It does **not** restrict reads, network, or process visibility; those remain application-level policy. If the sandbox is unavailable, the command runs on the host with a warning; set `FINALCHECK_SANDBOX=required` to refuse instead.
+- That token filters **write** access, not `DELETE`, so a plain `del` of a file outside the workspace is not stopped by the kernel (`del /f` and PowerShell `Remove-Item` are). Delete/rename commands are therefore checked at the application layer: a literal absolute or `..` path outside the workspace rejects the whole command; `%VAR%` and wildcard forms are left to the command blacklist and the approval prompt.
 - Restricted tokens cannot write to Windows named pipes or cygwin shared memory, so Node toolchains (`npm test`, `node --test`) fail with `EPERM` and Git Bash utilities (`grep`, `cat`, `head`) fail outright — Codex's Windows sandbox has the same limit. Those commands run on the host with a `sandboxSkip` note (the path policy, command blacklist and approvals still apply), while cmd/PowerShell/git/python commands stay sandboxed. The sandboxed child runs in an invisible console, so no console window pops up; on the rare system where the hidden console aborts the child (`0xC0000142`) the tool retries once with a visible console and says so.
 - Approvals are isolated per session, project and tool; "always allow this session" never leaks across sessions or projects. The quality gate binds its approval to the normalized command config fingerprint and runs the approved config snapshot, so changing `finalcheck.quality.json` after approval requires a new approval.
 - Dynamic targets (probes, stress tests) require an explicit, per-target confirmation and are capped at 60s / 50 connections.
@@ -185,12 +186,12 @@ desktop/      Electron app (main / preload / renderer)
 playbooks/    audit playbooks
 integrations/ skill + hook wiring for coding agents
 docs/         ACCEPTANCE.md — tier SSOT; RELIABILITY.md — implemented scope and evidence limits
-tests/        node:test suites (1187 passing)
+tests/        node:test suites (1191 passing)
 ```
 
 ## Status
 
-Early but real: the engine, the desktop app, tiered gates, agent workflows (DAG + script DSL), adversarial verification and in-app updates are in place, with 1187 tests passing on every change. Development follows the project's own L3 standard — a known violation of any L2 item in this repository counts as a bug.
+Early but real: the engine, the desktop app, tiered gates, agent workflows (DAG + script DSL), adversarial verification and in-app updates are in place, with 1191 tests passing on every change. Development follows the project's own L3 standard — a known violation of any L2 item in this repository counts as a bug.
 
 ## Author
 

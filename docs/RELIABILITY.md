@@ -21,7 +21,8 @@ node bin/finalcheck.js audit . --tier L3 --run-tests
 
 - `readonly` 禁止任意命令、质量命令与项目记忆写入（`remember_project` 写 `AGENTS.md` 也按写操作拒绝）。静态只读工具仍可运行。
 - `workspace` 是**应用层路径策略**：限制写入范围、拦截敏感位置并叠加命令黑名单；它本身不是操作系统沙箱，不能隔离恶意代码、同机其他进程或 TOCTOU 竞争窗口。
-- Windows 上 `run_command` / 质量闸可用时跑在 **dsh ACL 受限令牌沙箱**：写/删限制在 workspace 与私有 temp；**不限制读、网络、进程可见性**（这些仍靠应用层策略）。沙箱初始化任何 Win32 失败即拒绝执行；`FINALCHECK_SANDBOX=required` 时无沙箱也拒绝，否则宿主执行并返回警告。
+- Windows 上 `run_command` / 质量闸可用时跑在 **dsh ACL 受限令牌沙箱**：新建/改写限制在 workspace 与私有 temp；**不限制读、网络、进程可见性**（这些仍靠应用层策略）。沙箱初始化任何 Win32 失败即拒绝执行；`FINALCHECK_SANDBOX=required` 时无沙箱也拒绝，否则宿主执行并返回警告。
+- `WRITE_RESTRICTED` 令牌只过滤写权限位，**DELETE 不在其中**：实测沙箱里普通 `del "项目外文件"` 能删成功（`del /f`、PowerShell `Remove-Item` 反而被内核拒绝）。因此删除/改名类命令（`del`/`erase`/`rd`/`rmdir`/`Remove-Item`/`Move-Item`/`mv`/`ren`）由应用层检查目标：字面绝对路径或 `..` 相对路径解析到项目外即整条拒绝；含 `%VAR%`、通配符的写法不做猜测，交给命令黑名单与人工审批。`move` 因目标写入被内核拒绝，实测搬不出项目外。
 - 受限令牌下拿不到命名管道写权限与 cygwin 共享内存：实测 `node --test` / `npm test` 静默 EPERM（退出码 1、无 stderr），Git Bash 的 `grep`/`cat`/`head` 直接 `CreateFileMapping` fatal；Codex 的 Windows 受限令牌沙箱同样报 `spawn EPERM`，这是该机制的共性而非本包缺陷。因此这类命令按兼容清单（Node 工具链、shell、cygwin 工具）改在宿主机执行并标注 `sandboxSkip`；`FINALCHECK_SANDBOX=required` 时改为拒绝。cmd / PowerShell / git / python / curl 等原生命令仍进沙箱。
 - 沙箱子进程默认跑在不可见控制台（不弹黑窗）：runner 以 `CREATE_NO_WINDOW` 建控制台、受限子进程继承它。若个别系统上隐藏控制台导致受限子进程 `0xC0000142`（命令一行都没执行），工具会用可见控制台重试一次并在 stderr 写明原因。
 - 目录工具和文件工具按真实路径校验：junction / 符号链接会解析到最终目标后再判断是否越出工作区；新文件会沿父目录逐级解析已有链接，坏链接不会被当作「新文件」放行。
@@ -94,4 +95,4 @@ Claude Code 下载 hook 会检查指定目标；`npm ci` / 无包名 `npm instal
 
 ## 本轮验证边界
 
-本仓库的回归依据是完整 `node:test` 套件（当前 1187 项）及桌面生产构建。源码与测试修复没有自动升级 Electron 等主要依赖，不代表已消除原依赖审计告警。真实 Electron 窗口、实际模型网关、Windows 安装包与自动更新仍需要独立的端到端验证；本文档更新不发布、不推送、不改变应用版本号（0.15.2）。
+本仓库的回归依据是完整 `node:test` 套件（当前 1191 项）及桌面生产构建。源码与测试修复没有自动升级 Electron 等主要依赖，不代表已消除原依赖审计告警。真实 Electron 窗口、实际模型网关、Windows 安装包与自动更新仍需要独立的端到端验证；本文档更新不发布、不推送、不改变应用版本号（0.15.2）。
