@@ -45,3 +45,14 @@ test('versions: both READMEs advertise the same test count', () => {
   for (const n of bodyNumbers(readme)) assert.equal(n, badgeEn, 'README.md prose must match the badge count');
   for (const n of bodyNumbers(readmeZh)) assert.equal(n, badgeZh, 'README.zh-CN.md prose must match the badge count');
 });
+
+// 历史上出现过 README 写 1185、docs/RELIABILITY.md 还停在 1141 的漂移：两边必须同源。
+test('versions: RELIABILITY 宣传的测试数与 README badge 一致', () => {
+  const readme = readFileSync(path.join(root, 'README.md'), 'utf8');
+  const badge = Number(readme.match(/img\.shields\.io\/badge\/tests-(\d+)%20passing/)?.[1]);
+  assert.ok(Number.isFinite(badge), 'README must carry a tests-<n>%20passing badge');
+  const reliability = readFileSync(path.join(root, 'docs', 'RELIABILITY.md'), 'utf8');
+  const claimed = reliability.match(/当前\s*(\d+)\s*项/)?.[1];
+  assert.ok(claimed, 'docs/RELIABILITY.md must state the current test count');
+  assert.equal(Number(claimed), badge, 'docs/RELIABILITY.md test count must match the README badge');
+});
