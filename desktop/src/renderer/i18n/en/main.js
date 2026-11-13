@@ -265,6 +265,8 @@ export const EN_MAIN = {
   '目录不在已确认名单：请先确认该目录': 'The directory is not on the confirmed list: confirm it first',
   '无效 URL': 'Invalid URL',
   '仅允许 http/https': 'Only http/https is allowed',
+  '探测目标 {host}': 'Probe target {host}',
+  '用户未授权动态测试目标：{host}': 'The user did not authorize this dynamic-test target: {host}',
 
   // ---- policy.mjs（路径/命令策略：deny 原因与敏感路径标签）----
   '未知策略模式：{mode}（允许 {modes}）': 'Unknown policy mode: {mode} (allowed: {modes})',

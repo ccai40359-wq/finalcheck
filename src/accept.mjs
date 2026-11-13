@@ -153,7 +153,8 @@ export async function applyAcceptances(projectDir, findings, { now = new Date() 
         }
         continue;
       }
-      if (location.line !== line) continue;
+      // 历史提交的 finding 行号是旧提交的行；指纹定位到当前行即可豁免。
+      if (location.line !== line && !String(f.rule).startsWith('S3.history-')) continue;
       exempted = true;
       if (location.moved) {
         warnOnce(`${key}|moved`, `豁免行已移动：${entry.file}:${entry.line} → ${location.line}（${entry.rule}）`);

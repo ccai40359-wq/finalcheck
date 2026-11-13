@@ -1,7 +1,7 @@
 <img src="docs/assets/cover.png" alt="FinalCheck — pre-flight check for code" width="100%">
 
 [![CI](https://github.com/ccai40359-wq/finalcheck/actions/workflows/ci.yml/badge.svg)](https://github.com/ccai40359-wq/finalcheck/actions/workflows/ci.yml)
-![tests](https://img.shields.io/badge/tests-1177%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-1185%20passing-brightgreen)
 ![license](https://img.shields.io/badge/license-Apache--2.0-blue)
 
 **English** · [简体中文](README.zh-CN.md)
@@ -94,6 +94,8 @@ npm test
 
 To smoke-test built artifacts locally, run `npm run smoke:e2e` from the repo root after `desktop/out` exists. It opens a real window against an isolated temp profile, so it never touches your real FinalCheck data.
 
+Coverage notes: `npm test` runs the node:test suites. `npm run lint` checks the `.mjs` engine/tooling plus the `.jsx` renderer for shadowed `t()` and React hook rules; the renderer is not fully linted. `npm run typecheck` is a per-file opt-in check for three core main-process modules, not the whole codebase. CI also runs a FinalCheck self-audit and verifies that every `.finalcheck/accept.json` entry still matches current line content.
+
 ## Environment variables
 
 Copy `.env.example` to `.env` if you want to override the defaults; the CLI and desktop app also run without any `.env` file. Variables used by the project:
@@ -112,6 +114,7 @@ Copy `.env.example` to `.env` if you want to override the defaults; the CLI and 
 | `FINALCHECK_MAX_TURNS` | No | Cap agent turns per session |
 | `FINALCHECK_STREAM_USAGE` | No | Enable streaming usage accounting |
 | `FINALCHECK_SQLITE_BINARY_HOST` | No | `better-sqlite3` prebuilt binary mirror |
+| `FINALCHECK_SANDBOX` | No | `auto` (default), `required` (refuse if the Windows ACL sandbox is unavailable), or `off` |
 | `ELECTRON_RENDERER_URL` | No | Dev-server URL used by `electron-vite` |
 | `APPDATA` / `USERPROFILE` | Auto | Windows profile locations (set by the OS) |
 | `CI` / `PYTHON` / `SMOKE_TARGET` | No | Test and smoke-test helpers |
@@ -167,6 +170,7 @@ The UI ships in Chinese and English.
 - The API key lives **only** in the local `config.json` (`%APPDATA%\FinalCheck` in the installed build). It is never written to sessions, logs or reports.
 - Path and command access is controlled by a policy: `workspace` (writes inside the project only), `readonly`, or `off`. `workspace` is an application-level path policy, not an OS sandbox. Sensitive locations (`.ssh`, `.aws`, `.gnupg`, Git credentials, private keys) are blocked in every mode, and a command blacklist applies on top.
 - `readonly` rejects commands, quality-gate commands and project-memory writes. Path checks resolve junctions/symlinks to their real target before deciding whether a path is inside the workspace.
+- On Windows, `run_command` and quality-gate commands run inside a **dsh ACL restricted-token sandbox** when the package is available: writes/deletes are limited to the workspace plus a private temp directory, and the sandbox fails closed at setup. It does **not** restrict reads, network, or process visibility; those remain application-level policy. If the sandbox is unavailable, the command runs on the host with a warning; set `FINALCHECK_SANDBOX=required` to refuse instead.
 - Approvals are isolated per session, project and tool; "always allow this session" never leaks across sessions or projects. The quality gate binds its approval to the normalized command config fingerprint and runs the approved config snapshot, so changing `finalcheck.quality.json` after approval requires a new approval.
 - Dynamic targets (probes, stress tests) require an explicit, per-target confirmation and are capped at 60s / 50 connections.
 - Removing a workspace from the list never deletes anything on disk.
@@ -180,12 +184,12 @@ desktop/      Electron app (main / preload / renderer)
 playbooks/    audit playbooks
 integrations/ skill + hook wiring for coding agents
 docs/         ACCEPTANCE.md — tier SSOT; RELIABILITY.md — implemented scope and evidence limits
-tests/        node:test suites (1177 passing)
+tests/        node:test suites (1185 passing)
 ```
 
 ## Status
 
-Early but real: the engine, the desktop app, tiered gates, agent workflows (DAG + script DSL), adversarial verification and in-app updates are in place, with 1177 tests passing on every change. Development follows the project's own L3 standard — a known violation of any L2 item in this repository counts as a bug.
+Early but real: the engine, the desktop app, tiered gates, agent workflows (DAG + script DSL), adversarial verification and in-app updates are in place, with 1185 tests passing on every change. Development follows the project's own L3 standard — a known violation of any L2 item in this repository counts as a bug.
 
 ## Author
 

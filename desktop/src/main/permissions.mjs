@@ -187,6 +187,43 @@ export function assertHost(host) {
   throw new Error(t('目标 {host} 不在已确认名单：请先在动态测试页确认该目标（或使用 localhost）', { host: h }));
 }
 
+/**
+ * 动态测试执行前的授权闸门：localhost 直接放行；已确认 host 放行；
+ * 其余 host 必须先经 requestApproval 允许，才写入台账并执行。
+ * @param {string} urlStr
+ * @param {{requestApproval?:Function, scope?:object, tool?:string, summary?:string}} [opts]
+ * @returns {Promise<{ok:true,host:string,url:string}|{ok:false,error:string,host:string|null}>}
+ */
+export async function ensureHostAuthorized(urlStr, { approvalFn = null, scope = {}, tool = 'probe_target', summary = '' } = {}) {
+  let u;
+  try { u = new URL(String(urlStr || '')); } catch { return { ok: false, error: t('无效 URL'), host: null }; }
+  if (!/^https?:$/.test(u.protocol)) return { ok: false, error: t('仅允许 http/https'), host: null };
+  const host = normalizeHost(u.hostname);
+  if (!host) return { ok: false, error: t('无效主机名'), host: null };
+  try {
+    assertHost(host);
+    return { ok: true, host, url: u.toString() };
+  } catch { /* 未确认：走审批 */ }
+  if (typeof approvalFn !== 'function') {
+    return {
+      ok: false,
+      host,
+      error: t('目标 {host} 不在已确认名单：请先在动态测试页确认该目标（或使用 localhost）', { host })
+    };
+  }
+  const decision = await approvalFn({
+    tool,
+    target: host,
+    summary: summary || t('探测目标 {host}', { host }),
+    ...scope
+  });
+  if (decision !== 'allowed-once' && decision !== 'always-session') {
+    return { ok: false, host, error: t('用户未授权动态测试目标：{host}', { host }) };
+  }
+  confirmHost(host);
+  return { ok: true, host, url: u.toString() };
+}
+
 // ---- 目录台账 ----
 function normalizeDir(dir) {
   const s = String(dir || '').trim();

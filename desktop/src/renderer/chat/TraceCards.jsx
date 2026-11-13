@@ -1048,16 +1048,16 @@ export function GenericToolDetail({ name = '', args, result, running }) {
 export function TraceBlock({ trace, onOpenStep = null, onRecover = null }) {
   if (!trace?.length) return null;
   // ask_user 的问答卡也放在这里：历史加载后从 tool part 还原（answered/cancelled/expired 只读态）
-  const cards = trace.filter((t) => BODY_CARD_TOOLS.has(t.tool) || t.tool === 'ask_user');
+  const cards = trace.filter((entry) => BODY_CARD_TOOLS.has(entry.tool) || entry.tool === 'ask_user');
   if (!cards.length) return null;
   return (
     <div>
-      {cards.map((t, i) => {
-        if (t.tool === 'ask_user') return <AskUserCard key={i} payload={askUserCardFromTrace(t)} />;
-        if (t.tool === 'audit_project' || t.tool === 'get_report') return <ReportCard key={i} args={t.args} result={t.result} />;
-        if (t.tool === 'probe_target') return <ProbeCard key={i} args={t.args} result={t.result} />;
-        if (t.tool === 'stress_target') return <StressCard key={i} args={t.args} result={t.result} />;
-        if (t.tool === 'run_workflow') return <WorkflowCard key={i} args={t.args} result={t.result} onOpenStep={onOpenStep} onRecover={onRecover} />;
+      {cards.map((entry, i) => {
+        if (entry.tool === 'ask_user') return <AskUserCard key={i} payload={askUserCardFromTrace(entry)} />;
+        if (entry.tool === 'audit_project' || entry.tool === 'get_report') return <ReportCard key={i} args={entry.args} result={entry.result} />;
+        if (entry.tool === 'probe_target') return <ProbeCard key={i} args={entry.args} result={entry.result} />;
+        if (entry.tool === 'stress_target') return <StressCard key={i} args={entry.args} result={entry.result} />;
+        if (entry.tool === 'run_workflow') return <WorkflowCard key={i} args={entry.args} result={entry.result} onOpenStep={onOpenStep} onRecover={onRecover} />;
         return null;
       })}
     </div>

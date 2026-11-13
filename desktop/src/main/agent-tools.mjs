@@ -13,6 +13,7 @@ import { runHookEvent } from './hooks.mjs';
 import { isBlocked } from './shell.mjs';
 import { dynamicRuntime, recordProbe, recordStress } from './dynamic-evidence.mjs';
 import { assertArtifactPath } from './artifact-gate.mjs';
+import { createSandboxedRun, sandboxAvailability } from './sandbox.mjs';
 // 工作流兜底提示走双语词典（zh 原样返回，en 查表）
 import { t } from '../renderer/i18n/core.mjs';
 
@@ -84,6 +85,7 @@ export function planRunningPings(elapsedMs, startMs = RUNNING_PING_START_MS, eve
 
 export function runCommandWithSignal(command, {
   cwd, timeoutMs, idleMs = DEFAULT_COMMAND_IDLE_MS, background = false, env: envInput, signal = null,
+  sandbox = null,
   onActivity = null, pingStartMs = RUNNING_PING_START_MS, pingEveryMs = RUNNING_PING_EVERY_MS
 } = {}) {
   return new Promise((resolve) => {
@@ -106,6 +108,7 @@ export function runCommandWithSignal(command, {
       env.PATH = sys + old;
       env.Path = env.PATH;
     }
+    if (sandbox?.env && typeof sandbox.env === 'object') Object.assign(env, sandbox.env);
     let out = '', err = '', settled = false, proc = null, timer = null, idleTimer = null, pingTimer = null;
     const t0 = Date.now();
     let nextPingAt = Math.max(0, Number(pingStartMs) || 0); // 下一次活动提示的「已运行毫秒」
@@ -119,7 +122,11 @@ export function runCommandWithSignal(command, {
       if (settled) return;
       settled = true;
       cleanup();
-      resolve({ ...value, stdout: String(value.stdout ?? out).slice(0, 8000), stderr: String(value.stderr ?? err).slice(0, 4000) });
+      // 前台命令结束时释放沙箱私有 temp；后台进程仍在跑，留给后续手动清理
+      if (sandbox && !value?.background) {
+        try { setTimeout(() => sandbox.cleanup?.(), 300).unref?.(); } catch { /* ignore */ }
+      }
+      resolve({ ...value, sandbox: sandbox ? sandbox.mode : 'none', stdout: String(value.stdout ?? out).slice(0, 8000), stderr: String(value.stderr ?? err).slice(0, 4000) });
     };
     // 「仍在运行 Ns」活动提示：只报耗时，不带 stdout/stderr。
     // 目的：idle_ms:0 或超长命令时，UI 上看得见它在动，而不是像卡死。
@@ -179,14 +186,18 @@ export function runCommandWithSignal(command, {
     };
     if (signal) signal.addEventListener('abort', onAbort, { once: true });
     try {
-      proc = spawn(cmd, {
-        shell: true,
-        cwd: cwd && existsSync(String(cwd)) ? String(cwd) : undefined,
-        windowsHide: isWin,
+      const spawnOptions = {
+        cwd: (sandbox ? sandbox.cwd : cwd) && existsSync(String(sandbox ? sandbox.cwd : cwd)) ? String(sandbox ? sandbox.cwd : cwd) : undefined,
+        // dsh runner 的受限令牌在 CREATE_NO_WINDOW 下会 DLL 初始化失败（0xC0000142），
+        // 所以沙箱路径不能设 windowsHide；非沙箱路径保持原来的隐藏行为。
+        windowsHide: sandbox ? false : isWin,
         env,
         // 后台启动：新进程组 + 不接管道，父进程退出也不连带结束
         ...(wantsBackground ? { detached: true, stdio: 'ignore' } : {})
-      });
+      };
+      proc = sandbox
+        ? spawn(sandbox.file, sandbox.args, { ...spawnOptions, shell: false })
+        : spawn(cmd, { ...spawnOptions, shell: true });
     } catch (e) {
       return finish({ blocked: false, code: 1, stdout: '', stderr: e?.message || String(e) });
     }
@@ -350,8 +361,36 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
         const decision = await permissions?.requestApproval?.({ tool: 'quality_gate', target, summary: `质量命令闸（${dir}）：\n${summary}`, ...approvalScope });
         if (decision !== 'allowed-once' && decision !== 'always-session') return { error: '用户拒绝了质量闸执行' };
       }
-      const r = await checkQuality(dir, { tier: args?.tier || 'L2', run: true, repeat: args?.repeat, config: cfg });
-      return { dir, runs: r.runs, findings: r.findings.slice(0, 30), warnings: r.warnings, coverageGap: r.coverageGap };
+      const sandboxQualityRunner = async (command, projectDir, timeoutMs) => {
+        const sbPref = String(process.env.FINALCHECK_SANDBOX || '').trim().toLowerCase();
+        const sb = sbPref === 'off' ? null : createSandboxedRun({
+          workspaceRoot: projectDir,
+          policyMode: policy?.mode || 'off',
+          command,
+          cwd: projectDir
+        });
+        const t0 = Date.now();
+        const run = await runCommandWithSignal(String(command), {
+          cwd: projectDir,
+          timeoutMs,
+          sandbox: sb
+        });
+        return {
+          code: run.code == null ? 1 : run.code,
+          ms: Date.now() - t0,
+          out: run.stdout || '',
+          err: run.stderr || '',
+          timedOut: run.code === 124
+        };
+      };
+      const r = await checkQuality(dir, {
+        tier: args?.tier || 'L2',
+        run: true,
+        repeat: args?.repeat,
+        config: cfg,
+        runner: sandboxQualityRunner
+      });
+      return { dir, runs: r.runs, findings: r.findings.slice(0, 30), warnings: r.warnings, coverageGap: r.coverageGap, sandbox: policy?.mode === 'off' ? 'none' : (sandboxAvailability().available ? 'workspace-write/read-only' : 'unavailable') };
     },
 
     // 只读 git 改动审查：路径走策略边界；不弹审批（不执行、不写盘）
@@ -376,7 +415,16 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
     },
 
     probe_target: async (args) => {
-      note(args.url); // 口头确认语义：记账不拦（用户定案 2026-11-07）
+      // 执行前授权闸：localhost 直放；已确认 host 直放；外部 host 必须过审批卡
+      if (typeof permissions?.ensureHostAuthorized === 'function') {
+        const auth = await permissions.ensureHostAuthorized(args?.url, {
+          approvalFn: permissions?.requestApproval,
+          scope: approvalScope,
+          tool: 'probe_target'
+        });
+        if (!auth.ok) return { error: auth.error, deniedBy: 'policy' };
+      }
+      note(args.url); // 记账：证据等级要能区分「声明了授权」和「本轮真的跑过」
       const { probeTarget } = await import(engineUrl('src/dynamic/probe.mjs'));
       const t0 = Date.now();
       const out = await probeTarget(args.url, { requests: args?.requests });
@@ -385,6 +433,14 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
     },
 
     stress_target: async (args) => {
+      if (typeof permissions?.ensureHostAuthorized === 'function') {
+        const auth = await permissions.ensureHostAuthorized(args?.url, {
+          approvalFn: permissions?.requestApproval,
+          scope: approvalScope,
+          tool: 'stress_target'
+        });
+        if (!auth.ok) return { error: auth.error, deniedBy: 'policy' };
+      }
       note(args.url);
       if ((args.duration ?? 10) > 60 || (args.connections ?? 10) > 50) throw new Error('超过温和上限');
       const { stressTarget } = await import(engineUrl('src/dynamic/stress.mjs'));
@@ -556,15 +612,35 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
       // background:true = 起常驻服务后立刻返回（不让父命令等子进程退出）；
       // 其余命令走空闲输出看门狗：连续 idle 毫秒无输出才转后台，长任务只要还在输出就不设上限。
       const idleMs = args?.idle_ms ?? args?.idleMs ?? commandIdleMs ?? DEFAULT_COMMAND_IDLE_MS;
-      return runCommandWithSignal(cmd, {
+      const sandboxMode = policy?.mode || 'off';
+      const sandboxPref = String(process.env.FINALCHECK_SANDBOX || '').trim().toLowerCase();
+      const sandbox = sandboxPref === 'off' ? null : createSandboxedRun({
+        workspaceRoot: projectPath || runCwd,
+        policyMode: sandboxMode,
+        command: cmd,
+        cwd: runCwd
+      });
+      const result = await runCommandWithSignal(cmd, {
         cwd: runCwd,
         timeoutMs: args?.timeout_ms,
         idleMs,
         background: args?.background === true,
         env,
         signal: toolSignal,
+        sandbox,
         onActivity
       });
+      if (sandboxMode !== 'off' && !sandbox && sandboxPref !== 'off') {
+        const required = String(process.env.FINALCHECK_SANDBOX || '').trim().toLowerCase() === 'required';
+        if (required) {
+          return {
+            error: `沙箱不可用（${sandboxAvailability().error || '平台不支持'}），FINALCHECK_SANDBOX=required 已拒绝在宿主机执行`,
+            deniedBy: 'policy'
+          };
+        }
+        result.sandboxWarning = `写/删沙箱不可用（${sandboxAvailability().error || '平台不支持'}）；本条命令在宿主机执行`;
+      }
+      return result;
     }
   };
 

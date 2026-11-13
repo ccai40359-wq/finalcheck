@@ -226,7 +226,7 @@ export default function Composer({
                 <span className="min-w-0 flex-1 truncate text-xs text-ink/85"
                   title={[item.text, ...(item.pasted || [])].filter(Boolean).join('\n\n') || 'Pasted text'}>
                   {item.text || (item.pasted?.length
-                    ? t('Pasted text · {n} 行', { n: item.pasted.reduce((n, t) => n + countLines(t), 0) })
+                    ? t('Pasted text · {n} 行', { n: item.pasted.reduce((n, chunk) => n + countLines(chunk), 0) })
                     : t('(空)'))}
                 </span>
                 {item.previews?.length ? <span className="shrink-0 text-[10px] text-mute/50">{t('附件 {n}', { n: item.previews.length })}</span> : null}

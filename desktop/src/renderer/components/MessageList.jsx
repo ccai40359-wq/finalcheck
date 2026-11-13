@@ -161,7 +161,7 @@ export default function MessageList({
                           {typedSk.text ? <div className="mt-2 whitespace-pre-wrap break-words">{typedSk.text}</div> : null}
                         </div>
                       ) : <div className="whitespace-pre-wrap">{m.typed}</div>) : null}
-                      {m.pasted.map((t, k) => <PastedTextBlock key={k} text={t} />)}
+                      {m.pasted.map((text, k) => <PastedTextBlock key={k} text={text} />)}
                     </div>
                   ) : wf ? (
                     // Workflow：金色符号 + 标题，正文另起一行；不用药丸/边框，原始指令折叠区低调内滚
