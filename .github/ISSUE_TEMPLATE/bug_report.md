@@ -12,7 +12,7 @@ A clear description of the problem. If the report is wrong, say which finding an
 
 ## Environment
 
-- FinalCheck version (Settings → About & updates, or `node bin/finalcheck.js version`):
+- FinalCheck version (Settings → About & updates, or `（见「设置 → 关于与更新」里的版本号，或读 desktop/package.json）`):
 - Windows version:
 - Desktop app or CLI:
 - If CLI, the exact command:

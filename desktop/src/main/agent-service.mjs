@@ -193,12 +193,12 @@ const STREAM_USAGE = process.env.FINALCHECK_STREAM_USAGE !== '0'; // 请求流�
 const spillDir = () => process.env.FINALCHECK_SPILL_DIR || path.resolve(__dirname, '..', '..', 'spill');
 
 /* ---------- Windows 路径的 JSON 转义（第二道防线，不是并行调用粘连的根因） ----------
- * 模型也常把 `{"dir":"D:\rcw-geo\yanshou"}` 写成单反斜杠：`\r` 会被 JSON 当成回车，
+ * 模型也常把 `{"dir":"D:\Projects\demo"}` 写成单反斜杠：`\r` 会被 JSON 当成回车，
  * `\g`/`\y` 不是合法转义 → 整个参数 ARGS_INVALID_JSON，audit_project/download_gate 不执行。
  * 根因（并行 tool_calls 被拼成一个 name/arguments）已在 mergeStreamingToolCall 修复；
  * 这里保留三段防线：① schema/系统提示预防；② 参数闸自动修复能确定语义的反斜杠路径与尾逗号；
  * ③ 修不了才回模型重发，仍失败才按原因码收尾。文案集中在这里，避免多处漂移。 */
-export const PATH_JSON_HINT = 'Windows 路径请用正斜杠（D:/rcw-geo/...），或把反斜杠写成双反斜杠（D:\\\\rcw-geo\\\\...）；JSON 字符串里不要写单反斜杠。';
+export const PATH_JSON_HINT = 'Windows 路径请用正斜杠（D:/Projects/demo），或把反斜杠写成双反斜杠（D:\\\\Projects\\\\demo）；JSON 字符串里不要写单反斜杠。';
 
 export const TOOLS_SCHEMA = [
   { type: 'function', function: { name: 'audit_project', description: '对项目目录跑全方位验收：返回 11 维结论（每维结论/证据等级/覆盖了哪些检查项）+ 发现。计划来自项目根 finalcheck.profile.json（有就用），没有就按 tier 合成 11 维同档。sources 说明输入面：只给代码=code；用户给了可访问地址就加 url；用户明确授权对该地址做动态探测/压测才加 dynamicAuth（仍以本轮真的跑过 probe/stress 才算 full）。缺工具/配置会记 coverageGap', parameters: { type: 'object', properties: { dir: { type: 'string', description: '项目绝对路径。' + PATH_JSON_HINT }, tier: { type: 'string', enum: ['L1', 'L2', 'L3'] }, sources: { type: 'object', description: '可选：输入面。不给默认 {code:true}；给了 url 才会尝试动态维度；dynamicAuth 只是授权声明，实测记录由 probe_target/stress_target 产生', properties: { code: { type: 'boolean', description: '有源码可读（默认 true）' }, url: { type: 'string', description: '可访问的目标地址（http/https 或 localhost）' }, dynamicAuth: { type: 'boolean', description: '用户已授权对该 url 做动态探测/压测' }, loadLimit: { type: 'object', description: '可选：压测上限 {seconds, connections}，默认 10s/10', properties: { seconds: { type: 'number' }, connections: { type: 'number' } } } } } }, required: ['dir'] } } },
@@ -319,7 +319,7 @@ const SYSTEM_BASE = [
   '边界：动态目标以用户在对话中的口头确认为准——用户给出目标 URL 或表示同意，即为授权，直接执行（压测默认温和参数）；结论引用工具返回的 verdict；覆盖不足要明说"没查到"。',
   '工具结果超长时会被截断为「头+尾」并完整落盘，按提示的 spill 路径用 run_command 检索，不要猜中间内容。',
   '修代码：先 read_file 看清原文，再用 edit_file 做最小替换（old_string 必须唯一）；新建文件用 write_file。改完明确告诉用户「改了哪个文件、+几行/-几行、为什么」。',
-  '路径参数转义（硬规则）：JSON 参数里的 Windows 路径一律优先写正斜杠（D:/rcw-geo/yanshou）；必须用反斜杠时一律双写（D:\\\\rcw-geo\\\\yanshou）；写成单反斜杠会让参数不是合法 JSON，工具不会执行。',
+  '路径参数转义（硬规则）：JSON 参数里的 Windows 路径一律优先写正斜杠（D:/Projects/demo）；必须用反斜杠时一律双写（D:\\\\Projects\\\\demo）；写成单反斜杠会让参数不是合法 JSON，工具不会执行。',
   '产出可预览文件（html / png / pdf / md 等）后，调用 present_artifact(path) 登记；用户在聊天里点一下就出现在右侧预览面板。',
   '多 agent 工作流（第一步先判断任务形状，再二选一；不要问用户用哪种，你自己判断，最后用一句话说明用了哪种、为什么）：步骤数量固定、方向并列/串行 → 用 steps（每步一个独立子代理：角色 + 自包含任务 + depends_on，引擎按依赖并行；拿到各步结果后汇总成一份结论）；步骤数量由上游结果决定（按列表扇出、循环到满足条件、按类型递归、条件分支、纯计算汇总）→ 用 script（受限 JSON 指令 step/fanout/if/gate/verify/report/loop/recurse/aggregate，只解释执行、不运行代码）；判断不了 → 默认 steps。不要用「我要开始第 1 步」的文字模拟并行。每步 name 必须是职位名（4-10 字，如「SQL 注入审查员」「依赖供应链专员」），不许写「步骤 1」「分析」这种。',
   '拆步铁律（写 depends_on 前先自问）：每写完一步先问「这一步真的需要上一步的结果吗」——不需要就写 depends_on: []（空数组 = 可立即并行，多路同时跑）；只有确实要消费上游产出（读到它的结论、复用它的清单）才写依赖。为了「看起来有顺序」把步骤串成链，会让子代理排队、总耗时按步数翻倍。最小示例（3 步、2 步并行）：[{id:"s1",prompt:"查 A 的证据",depends_on:[]},{id:"s2",prompt:"查 B 的证据",depends_on:[]},{id:"s3",prompt:"汇总 s1 与 s2 的结论",depends_on:["s1","s2"]}] — s1 与 s2 同时跑，s3 等两者都完成；不要写成 s2 依赖 s1。',
@@ -739,7 +739,7 @@ export function jsonErrorPosition(message) {
 }
 
 /* ---------- 参数自动修复（只做两类能确定语义的保守修复） ----------
- * 1) Windows 路径字符串：`"D:\rcw-geo\yanshou"` / `"src\app.js"` 里的单反斜杠是分隔符，
+ * 1) Windows 路径字符串：`"D:\Projects\demo"` / `"src\app.js"` 里的单反斜杠是分隔符，
  *    不是 JSON 转义 → 把该字符串里的反斜杠全部换成正斜杠；
  * 2) 对象/数组尾逗号：`{"dir":"D:/x",}` / `["a",]` → 删掉。
  * 不 eval、不猜缺失括号/引号；修完必须能 JSON.parse，否则原样失败（fail-closed）。 */

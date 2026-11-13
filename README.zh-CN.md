@@ -1,7 +1,7 @@
 <img src="docs/assets/hero.webp" alt="FinalCheck 终检" width="100%">
 
 [![CI](https://github.com/ccai40359-wq/finalcheck/actions/workflows/ci.yml/badge.svg)](https://github.com/ccai40359-wq/finalcheck/actions/workflows/ci.yml)
-![tests](https://img.shields.io/badge/tests-1196%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-1197%20passing-brightgreen)
 ![license](https://img.shields.io/badge/license-Apache--2.0-blue)
 
 # FinalCheck · 终检
@@ -27,7 +27,7 @@
 
 | 档 | 一句话 | 力度 |
 |---|---|---|
-| **L1 自用** | 数据丢了不心疼，只有自己用 | 只报高危，提醒不拦 |
+| **L1 自用** | 数据丢了不心疼，只有自己用 | 只有 S3 密钥实锤硬卡，其余提醒 |
 | **L2 有用户** | 挂公网、有别人的数据进来 | 高危拦截，中危必修 |
 | **L3 公司级** | 公司项目 / 收钱 / 有合规义务 | 未达标不放行，出可出示的达标报告 |
 
@@ -89,6 +89,59 @@ node bin/finalcheck.js audit . --tier L2
 
 覆盖范围说明：`npm test` 跑 node:test 套件；`npm run lint` 检查 `.mjs` 引擎/工具代码，并检查 `.jsx` 渲染层的 `t()` 遮蔽与 React Hooks 规则（渲染层不是全量 lint）；`npm run typecheck` 是逐文件 opt-in 的 3 个主进程核心模块，不是全仓。CI 还会跑 FinalCheck 自审，并校验 `.finalcheck/accept.json` 每条豁免仍与当前行内容一致。
 
+## 环境变量
+
+这些变量在 shell / 系统环境里设置（或在启动 app 前设置）；项目**没有 `.env` 加载器**，把 `.env.example` 复制成 `.env` 不会生效。CLI 与桌面端不设任何变量也能跑。
+
+| 变量 | 必填 | 作用 |
+|---|---|---|
+| `FINALCHECK_CONFIG_FILE` | 否 | 覆盖桌面端 `config.json` 路径 |
+| `FINALCHECK_PROJECTS_FILE` | 否 | 覆盖工作区列表文件 |
+| `FINALCHECK_SESSIONS_DIR` | 否 | 覆盖会话存储目录 |
+| `FINALCHECK_MEMORY_DIR` | 否 | 覆盖 agent 记忆目录 |
+| `FINALCHECK_SPILL_DIR` | 否 | 覆盖工具超长输出落盘目录 |
+| `FINALCHECK_USAGE_FILE` | 否 | 覆盖用量台账文件 |
+| `FINALCHECK_HOOKS_FILE` | 否 | 覆盖 hooks 配置文件 |
+| `FINALCHECK_SESSION_STORE` | 否 | 选择会话存储后端 |
+| `FINALCHECK_DEFAULT_PROJECT` | 否 | 未指定时的默认工作区 |
+| `FINALCHECK_MAX_TURNS` | 否 | 单会话 agent 轮数上限 |
+| `FINALCHECK_STREAM_USAGE` | 否 | 开启流式用量统计 |
+| `FINALCHECK_SQLITE_BINARY_HOST` | 否 | `better-sqlite3` 预编译包镜像 |
+| `FINALCHECK_SQLITE_ALLOW_UNVERIFIED` | 否 | 放行未登记的 SQLite 预编译包（默认 fail-closed） |
+| `FINALCHECK_SANDBOX` | 否 | `auto`（默认）/ `required`（沙箱不可用即拒绝）/ `off` |
+| `APPDATA` / `USERPROFILE` / `LOCALAPPDATA` | 自动 | Windows 用户目录（`LOCALAPPDATA` 存沙箱私有 temp） |
+| `CI` / `PYTHON` / `SMOKE_TARGET` | 否 | 测试与冒烟辅助 |
+
+模型 API Key **不**从环境变量读：安装版存在本地 `%APPDATA%\FinalCheck\config.json`（不入库、不进报告），在 **设置 → 模型设置** 里改。
+
+## 部署
+
+FinalCheck 是本地桌面工具，「部署」指打 Windows 安装包，不是跑服务器：
+
+```bash
+cd desktop && npm run dist
+```
+
+先跑 `electron-vite build` 再 `electron-builder --win nsis --publish never`；安装包输出到 `desktop/release/fc-setup-<version>.exe`（版本取 `desktop/package.json`）。CI 每次改动都跑测试与桌面构建；打包是手动发布步骤。
+
+## 备份与恢复
+
+备份是显式的、只落本地：
+
+```bash
+node scripts/backup.mjs --out "D:\Backups\FinalCheck"
+```
+
+脚本把配置目录（`%APPDATA%\FinalCheck`）与项目数据库（`.finalcheck/finalcheck.db`）打成一个带时间戳的 zip（如 `finalcheck-backup-20261111-194500.zip`）；`config.json` 里的 API Key 在入库前替换成 `[REDACTED]`，疑似密钥文件（`.env`、`*.pem`、`*.key`、凭据文件）跳过；默认保留最近 **7** 份，可用 `--keep <n>` / `--profile` / `--project` 调整。
+
+恢复：先关 app，解压后把 `config.json`、`sessions/`、`memory/` 拷回 `%APPDATA%\FinalCheck`，数据库拷回 `<项目>\.finalcheck\finalcheck.db`；确认恢复后的 app 能正常启动再删旧备份。
+
+## 回滚
+
+- **桌面端**：从 Releases 重装上一个安装包（如 `fc-setup-0.16.1.exe`）。用户数据在 `%APPDATA%\FinalCheck`，回滚前先备份。
+- **源码**：单个坏改动用 `git revert <commit>`，整体回退用 `git checkout <上一个 tag>`；切换 Electron 版本后重跑 `cd desktop && npm run setup:sqlite`。
+- **数据**：用 `scripts/backup.mjs` 产出的 zip 按上面的步骤恢复；app 不做向前兼容迁移，备份就是数据的回滚路径。
+
 ## 排障
 
 - **导出诊断**：**用量统计 → 导出诊断**（**设置 → 关于与更新** 里也有入口）。导出的是脱敏 JSON：版本、系统、最近 200 行日志、规则命中、配置（API Key 已打码）；不会自动上传。
@@ -124,12 +177,12 @@ desktop/      Electron 桌面端（main / preload / renderer）
 playbooks/    体检 playbook
 integrations/ 编码 agent 的 skill + hook 接线
 docs/         ACCEPTANCE.md（分级验收的唯一事实源）、RELIABILITY.md（已实现范围与边界）
-tests/        node:test 测试（当前 1196 项全绿）
+tests/        node:test 测试（当前 1197 项全绿）
 ```
 
 ## 状态
 
-已能真用但仍在早期：引擎、桌面端、分级闸门、Agent 工作流（DAG + 脚本 DSL）、对抗复核与内置更新都已落地，每次改动跑 1196 项测试。本项目自身按 L3 标准开发——本仓库违反 L2 矩阵任何一条，都算 bug。
+已能真用但仍在早期：引擎、桌面端、分级闸门、Agent 工作流（DAG + 脚本 DSL）、对抗复核与内置更新都已落地，每次改动跑 1197 项测试。本项目自身按 L3 标准开发——本仓库违反 L2 矩阵任何一条，都算 bug。
 
 ## 作者
 

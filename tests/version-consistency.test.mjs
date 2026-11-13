@@ -56,3 +56,16 @@ test('versions: RELIABILITY 宣传的测试数与 README badge 一致', () => {
   assert.ok(claimed, 'docs/RELIABILITY.md must state the current test count');
   assert.equal(Number(claimed), badge, 'docs/RELIABILITY.md test count must match the README badge');
 });
+
+// 0.16.2 发版时漏升了两个 lockfile 的 version 字段：加锁防止再漂。
+test('versions: lockfiles track the package versions', () => {
+  for (const [pkgPath, lockPath] of [
+    ['package.json', 'package-lock.json'],
+    ['desktop/package.json', 'desktop/package-lock.json']
+  ]) {
+    const pkg = JSON.parse(readFileSync(path.join(root, pkgPath), 'utf8'));
+    const lock = JSON.parse(readFileSync(path.join(root, lockPath), 'utf8'));
+    assert.equal(lock.version, pkg.version, `${lockPath} top-level version must match ${pkgPath}`);
+    assert.equal(lock.packages?.['']?.version, pkg.version, `${lockPath} packages[""].version must match ${pkgPath}`);
+  }
+});

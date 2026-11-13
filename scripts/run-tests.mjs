@@ -1,5 +1,5 @@
 // 跨版本可用的测试入口：显式列出 tests/*.test.mjs 交给 node --test。
-// 原因：Node 20（CI）不认识 `node --test "tests/*.test.mjs"` 这种 glob，Node 24 也不接受目录参数；
+// 原因：Node 20 不认识 `node --test "tests/*.test.mjs"` 这种 glob，Node 24 也不接受目录参数；
 // 这里统一由一个脚本枚举文件，本地和 CI 用完全相同的命令。
 import { readdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';

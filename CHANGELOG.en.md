@@ -36,7 +36,7 @@ Keep each item to one sentence, describe what users actually notice, and avoid i
 
 - When the model appends an extra `}` after otherwise valid tool-argument JSON, the extra closing delimiter is removed and the call executes instead of showing "arguments are not valid JSON" and retrying; only a prefix that parses is trimmed, so genuinely missing braces still fail as before.
 - Tool-argument JSON errors, output-limit truncation and "resending" notices are now fully translated in the English UI instead of falling back to Chinese.
-- Added regressions for trailing-brace repair and English error strings (currently 1149 tests).
+- Added regressions for trailing-brace repair and English error strings (1149 tests at the time).
 
 ## [0.16.0] - 2026-11-12
 

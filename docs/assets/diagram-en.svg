@@ -39,7 +39,7 @@
 
   <rect x="406" y="126" width="388" height="48" rx="6" fill="#1a1a1a" stroke="#fbbf24" stroke-width="1.2"/>
   <text x="420" y="146" class="nm" fill="#fbbf24">L1 Personal</text>
-  <text x="420" y="164" class="sm">High severity only, advisory</text>
+  <text x="420" y="164" class="sm">S3 secrets block; rest advisory</text>
 
   <rect x="406" y="182" width="388" height="48" rx="6" fill="#1a1a1a" stroke="#a78bfa" stroke-width="1.2"/>
   <text x="420" y="202" class="nm" fill="#a78bfa">L2 With users</text>

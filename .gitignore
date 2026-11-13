@@ -34,3 +34,12 @@ desktop/.project-migrated
 # 构建产物与运行记录（不入库：含打包副本/本机运行输出）
 desktop/release-*/
 desktop/workflow-runs/
+
+# 本地审计产物与临时文件（勿提交）
+.finalcheck/*
+!/.finalcheck/accept.json
+e2e-artifacts/
+.fc-probe-walk*/
+.scratch-robust/
+.tmp-*/
+*.log

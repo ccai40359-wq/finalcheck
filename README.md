@@ -1,7 +1,7 @@
 <img src="docs/assets/hero.webp" alt="FinalCheck — pre-flight check for code" width="100%">
 
 [![CI](https://github.com/ccai40359-wq/finalcheck/actions/workflows/ci.yml/badge.svg)](https://github.com/ccai40359-wq/finalcheck/actions/workflows/ci.yml)
-![tests](https://img.shields.io/badge/tests-1196%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-1197%20passing-brightgreen)
 ![license](https://img.shields.io/badge/license-Apache--2.0-blue)
 
 # FinalCheck
@@ -27,7 +27,7 @@
 
 | Tier | One line | Enforcement |
 |---|---|---|
-| **L1 Personal** | Losing the data would not hurt; only you use it | High-severity only, advisory |
+| **L1 Personal** | Losing the data would not hurt; only you use it | Only leaked secrets (S3) hard-block; everything else advisory |
 | **L2 With users** | Public and receiving other people's data | High severity blocks, medium must be fixed |
 | **L3 Company** | Company project, paid work, compliance obligations | Nothing ships until the matrix passes; produces a presentable acceptance report |
 
@@ -105,7 +105,7 @@ Coverage notes: `npm test` runs the node:test suites. `npm run lint` checks the 
 
 ## Environment variables
 
-Copy `.env.example` to `.env` if you want to override the defaults; the CLI and desktop app also run without any `.env` file. Variables used by the project:
+Set these in your shell or system environment (or before launching the app); there is no `.env` loader, so copying `.env.example` to `.env` has no effect. The CLI and desktop app run without any of them. Variables used by the project:
 
 | Variable | Required | Purpose |
 |---|---|---|
@@ -121,9 +121,10 @@ Copy `.env.example` to `.env` if you want to override the defaults; the CLI and 
 | `FINALCHECK_MAX_TURNS` | No | Cap agent turns per session |
 | `FINALCHECK_STREAM_USAGE` | No | Enable streaming usage accounting |
 | `FINALCHECK_SQLITE_BINARY_HOST` | No | `better-sqlite3` prebuilt binary mirror |
+| `FINALCHECK_SQLITE_ALLOW_UNVERIFIED` | No | Allow an unlisted SQLite prebuild instead of failing closed |
 | `FINALCHECK_SANDBOX` | No | `auto` (default), `required` (refuse if the Windows ACL sandbox is unavailable), or `off` |
 | `ELECTRON_RENDERER_URL` | No | Dev-server URL used by `electron-vite` |
-| `APPDATA` / `USERPROFILE` | Auto | Windows profile locations (set by the OS) |
+| `APPDATA` / `USERPROFILE` / `LOCALAPPDATA` | Auto | Windows profile locations (set by the OS; `LOCALAPPDATA` holds the sandbox temp dir) |
 | `CI` / `PYTHON` / `SMOKE_TARGET` | No | Test and smoke-test helpers |
 
 The model API key is **not** read from an environment variable in the installed app: it is stored in the local `%APPDATA%\FinalCheck\config.json` (never committed, never written to reports) and edited through **Settings → Model settings**. `.env.example` contains names and placeholders only; never put a real key in it.
@@ -154,7 +155,7 @@ Restore: close the app, unzip the archive, copy `config.json`, `sessions/` and `
 
 ## Rollback
 
-- **Desktop app:** reinstall the previous installer (for example `fc-setup-0.15.0.exe`) from the Releases page. User data stays in `%APPDATA%\FinalCheck`; take a backup first.
+- **Desktop app:** reinstall the previous installer (for example `fc-setup-0.16.1.exe`) from the Releases page. User data stays in `%APPDATA%\FinalCheck`; take a backup first.
 - **Source tree:** use `git revert <commit>` for a single bad change, or `git checkout <previous-tag>` to return to the previous release. Re-run `cd desktop && npm run setup:sqlite` after switching Electron versions.
 - **Data:** restore the zip produced by `scripts/backup.mjs` using the steps above. Backups are the rollback path for sessions and memory because the app does not migrate data backwards.
 
@@ -193,12 +194,12 @@ desktop/      Electron app (main / preload / renderer)
 playbooks/    audit playbooks
 integrations/ skill + hook wiring for coding agents
 docs/         ACCEPTANCE.md — tier SSOT; RELIABILITY.md — implemented scope and evidence limits
-tests/        node:test suites (1196 passing)
+tests/        node:test suites (1197 passing)
 ```
 
 ## Status
 
-Early but real: the engine, the desktop app, tiered gates, agent workflows (DAG + script DSL), adversarial verification and in-app updates are in place, with 1196 tests passing on every change. Development follows the project's own L3 standard — a known violation of any L2 item in this repository counts as a bug.
+Early but real: the engine, the desktop app, tiered gates, agent workflows (DAG + script DSL), adversarial verification and in-app updates are in place, with 1197 tests passing on every change. Development follows the project's own L3 standard — a known violation of any L2 item in this repository counts as a bug.
 
 ## Author
 
