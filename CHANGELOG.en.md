@@ -6,6 +6,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.16.2] - 2026-11-13
+
+### Added
+
+- On Windows, commands and quality-gate checks can run inside a restricted-token sandbox: creating or modifying files is limited to the project directory plus a private temp directory, and a sandbox setup failure refuses to run; `FINALCHECK_SANDBOX=auto|required|off` controls it (with `required`, even unsupported commands are refused).
+- Probing or stress-testing an external target now requires a per-target confirmation first (localhost excepted); anything unconfirmed is refused.
+
+### Fixed
+
+- The artifact preview panel only shows on the chat page: opening Settings no longer drags it along, and it comes back when you return to chat.
+- Real environment templates (`.env.example`, `.sample`, `.template`, and the like) are no longer reported as leaked secrets, and templates explicitly ignored by `git check-ignore` are allowed.
+- Ledger exemptions now match by content fingerprint first, so line drift no longer silently disables them.
+- SQLite prebuilt packages are checked against SHA256 before extraction; unlisted versions or platforms fail closed, with `FINALCHECK_SQLITE_ALLOW_UNVERIFIED=1` as a temporary override.
+- The download gate inspects lifecycle scripts in nested `package.json` files outside `node_modules`, and warns when only the root was scanned.
+- Quality-gate approval targets now match the directory actually executed, so 8.3 short paths can no longer sidestep approval.
+- A delete or rename whose target lies outside the project is rejected outright: the restricted token filters write access, not `DELETE` (a plain `del` could remove an outside file while `del /f` and `Remove-Item` were blocked by the kernel), so this case is closed at the application layer.
+- Sandboxed child processes run in an invisible console, so no black window pops up; on the rare system where the hidden console makes the child exit with `0xC0000142`, the tool retries once with a visible console and says why.
+
+### Improved
+
+- Tool-argument errors, output truncation and "resending" notices are now fully in English in the English UI.
+- The `.jsx` renderer is now linted for shadowed `t()` and React hook rules, fixing 10 shadowed variables.
+- CI now runs a FinalCheck self-audit plus an exemption-consistency check, and README/RELIABILITY state the sandbox boundaries honestly (no read, network or process-visibility limits; Node toolchains and Git Bash utilities run on the host because of the restricted token, and are labelled as such).
+
 ## [0.16.1] - 2026-11-12
 
 ### Fixed
