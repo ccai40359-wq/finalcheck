@@ -19,6 +19,10 @@
 
 > Not "possible IDOR (CWE-639)" but "the `register` route on line 12 has no auth guard — your user table is exposed to the internet", with the file and line. Dynamic reproduction is an opt-in second stage.
 
+## Why FinalCheck
+
+<img src="docs/assets/diagram-en.png" alt="Why FinalCheck: a tiered delivery gate — L1 personal, L2 with users, L3 company — fed by 11 dimensions and producing one verdict (pass, fix then pass, block, cannot accept)" width="100%">
+
 ## Tiers
 
 | Tier | One line | Enforcement |

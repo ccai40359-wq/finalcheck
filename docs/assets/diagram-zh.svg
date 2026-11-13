@@ -1,0 +1,108 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 660" width="1200" height="660" role="img" aria-label="为什么选终检：分级交付验收">
+  <defs>
+    <radialGradient id="glow" cx="50%" cy="45%" r="42%">
+      <stop offset="0%" stop-color="#d4a574" stop-opacity="0.05"/>
+      <stop offset="100%" stop-color="#d4a574" stop-opacity="0"/>
+    </radialGradient>
+    <marker id="arr-gold" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0,10 3.5,0 7" fill="#d4a574"/>
+    </marker>
+  </defs>
+  <rect width="1200" height="660" fill="#0a0a0a"/>
+  <rect width="1200" height="660" fill="url(#glow)"/>
+  <style>
+    text { font-family: -apple-system,"Segoe UI",Arial,"Microsoft YaHei","PingFang SC",sans-serif; }
+    .ttl { font-family: Georgia,"Times New Roman","SimSun",serif; font-size: 22px; font-weight: 700; fill: #f5f0eb; }
+    .tag { font-size: 11px; fill: #a39787; }
+    .lbl { font-family: Georgia,"Times New Roman","SimSun",serif; font-size: 11px; font-weight: 700; fill: #c9a96e; opacity: 0.75; }
+    .nm  { font-size: 13px; font-weight: 600; }
+    .sm  { font-size: 10px; fill: #a39787; }
+    .xs  { font-size: 9px; fill: #6b5f53; }
+    .pill { font-size: 9px; fill: #cdc4b6; }
+  </style>
+
+  <text x="60" y="52" class="ttl">为什么选终检</text>
+  <text x="1140" y="50" class="tag" text-anchor="end">分级交付验收 · 不是扫一遍告警</text>
+
+  <!-- A: 输入 -->
+  <rect x="60" y="110" width="230" height="120" rx="6" fill="#111111" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="76" y="140" class="nm" fill="#94a3b8">代码进来</text>
+  <text x="76" y="162" class="sm">AI 写的 / 下载的项目</text>
+  <text x="76" y="180" class="xs">11 个维度待验</text>
+  <text x="76" y="206" class="xs">桌面端 · 本地运行</text>
+
+  <line x1="292" y1="178" x2="384" y2="178" stroke="#d4a574" stroke-width="2" marker-end="url(#arr-gold)"/>
+
+  <!-- B: 交付闸 -->
+  <rect x="390" y="96" width="420" height="196" rx="8" fill="none" stroke="#d4a574" stroke-width="0.5" stroke-dasharray="6,4" opacity="0.45"/>
+  <text x="404" y="116" class="lbl">交付闸 · 三档</text>
+
+  <rect x="406" y="126" width="388" height="48" rx="6" fill="#1a1a1a" stroke="#fbbf24" stroke-width="1.2"/>
+  <text x="420" y="146" class="nm" fill="#fbbf24">L1 自用</text>
+  <text x="420" y="164" class="sm">只报高危，提醒不拦</text>
+
+  <rect x="406" y="182" width="388" height="48" rx="6" fill="#1a1a1a" stroke="#a78bfa" stroke-width="1.2"/>
+  <text x="420" y="202" class="nm" fill="#a78bfa">L2 有用户</text>
+  <text x="420" y="220" class="sm">高危拦截，中危必修</text>
+
+  <rect x="406" y="238" width="388" height="48" rx="6" fill="#1a1a1a" stroke="#f87171" stroke-width="1.2"/>
+  <text x="420" y="258" class="nm" fill="#f87171">L3 公司级</text>
+  <text x="420" y="276" class="sm">未达标不放行，出一份可出示的验收报告</text>
+
+  <line x1="812" y1="178" x2="856" y2="178" stroke="#d4a574" stroke-width="2" marker-end="url(#arr-gold)"/>
+
+  <!-- C: 判定 -->
+  <rect x="860" y="96" width="280" height="196" rx="8" fill="none" stroke="#d4a574" stroke-width="0.5" stroke-dasharray="6,4" opacity="0.45"/>
+  <text x="874" y="116" class="lbl">输出 · 一个判定</text>
+  <rect x="874" y="128" width="252" height="30" rx="15" fill="#111111" stroke="#5a9e6f" stroke-width="1.2"/>
+  <text x="890" y="147" class="nm" fill="#5a9e6f" font-size="12">过</text>
+  <text x="1112" y="147" class="sm" text-anchor="end">本轮范围内通过</text>
+  <rect x="874" y="166" width="252" height="30" rx="15" fill="#111111" stroke="#fbbf24" stroke-width="1.2"/>
+  <text x="890" y="185" class="nm" fill="#fbbf24" font-size="12">修完再过</text>
+  <text x="1112" y="185" class="sm" text-anchor="end">有待确认项</text>
+  <rect x="874" y="204" width="252" height="30" rx="15" fill="#111111" stroke="#f87171" stroke-width="1.2"/>
+  <text x="890" y="223" class="nm" fill="#f87171" font-size="12">拦</text>
+  <text x="1112" y="223" class="sm" text-anchor="end">高危实锤 / 卡项未过</text>
+  <rect x="874" y="242" width="252" height="30" rx="15" fill="#111111" stroke="#94a3b8" stroke-width="1.2"/>
+  <text x="890" y="261" class="nm" fill="#94a3b8" font-size="12">无法验收</text>
+  <text x="1112" y="261" class="sm" text-anchor="end">应跑未跑 / 有缺口</text>
+
+  <!-- 11 维度 -->
+  <rect x="60" y="316" width="1080" height="86" rx="8" fill="none" stroke="#d4a574" stroke-width="0.5" stroke-dasharray="6,4" opacity="0.35"/>
+  <text x="74" y="336" class="lbl">11 个维度 · 一张矩阵过关</text>
+  <g>
+    <rect x="68" y="350" width="92" height="32" rx="16" fill="#111111" stroke="#5a9e6f" stroke-width="1"/><text x="114" y="370" class="pill" text-anchor="middle">安全</text>
+    <rect x="166" y="350" width="92" height="32" rx="16" fill="#111111" stroke="#38bdf8" stroke-width="1"/><text x="212" y="370" class="pill" text-anchor="middle">隐私</text>
+    <rect x="264" y="350" width="120" height="32" rx="16" fill="#111111" stroke="#fbbf24" stroke-width="1"/><text x="324" y="370" class="pill" text-anchor="middle">供应链与许可</text>
+    <rect x="390" y="350" width="98" height="32" rx="16" fill="#111111" stroke="#a78bfa" stroke-width="1"/><text x="439" y="370" class="pill" text-anchor="middle">可维护</text>
+    <rect x="494" y="350" width="86" height="32" rx="16" fill="#111111" stroke="#94a3b8" stroke-width="1"/><text x="537" y="370" class="pill" text-anchor="middle">可读</text>
+    <rect x="586" y="350" width="86" height="32" rx="16" fill="#111111" stroke="#5a9e6f" stroke-width="1"/><text x="629" y="370" class="pill" text-anchor="middle">可测</text>
+    <rect x="678" y="350" width="86" height="32" rx="16" fill="#111111" stroke="#f87171" stroke-width="1"/><text x="721" y="370" class="pill" text-anchor="middle">鲁棒</text>
+    <rect x="770" y="350" width="86" height="32" rx="16" fill="#111111" stroke="#38bdf8" stroke-width="1"/><text x="813" y="370" class="pill" text-anchor="middle">稳定</text>
+    <rect x="862" y="350" width="86" height="32" rx="16" fill="#111111" stroke="#fbbf24" stroke-width="1"/><text x="905" y="370" class="pill" text-anchor="middle">性能</text>
+    <rect x="954" y="350" width="94" height="32" rx="16" fill="#111111" stroke="#a78bfa" stroke-width="1"/><text x="1001" y="370" class="pill" text-anchor="middle">可观测</text>
+    <rect x="1054" y="350" width="86" height="32" rx="16" fill="#111111" stroke="#94a3b8" stroke-width="1"/><text x="1097" y="370" class="pill" text-anchor="middle">可移交</text>
+  </g>
+
+  <!-- 三条独特性 -->
+  <rect x="60" y="438" width="340" height="150" rx="8" fill="#111111" stroke="#d4a574" stroke-width="1"/>
+  <text x="78" y="474" class="nm" fill="#d4a574">① 每条结论可复核</text>
+  <text x="78" y="498" class="sm">不是「可能有风险」，而是文件 + 行号。</text>
+  <text x="78" y="518" class="sm">另一路 agent 专门反驳，不确认不算过。</text>
+  <text x="78" y="546" class="xs">rule · file:line · fingerprint · verdict</text>
+
+  <rect x="430" y="438" width="340" height="150" rx="8" fill="#111111" stroke="#d4a574" stroke-width="1"/>
+  <text x="448" y="474" class="nm" fill="#d4a574">② 不知道 ≠ 通过</text>
+  <text x="448" y="498" class="sm">证据缺口单独记账：没跑的检查、</text>
+  <text x="448" y="518" class="sm">抓不到的目标，一律不许冒充通过。</text>
+  <text x="448" y="546" class="xs">coverage gap · 无法验收 · fail-closed</text>
+
+  <rect x="800" y="438" width="340" height="150" rx="8" fill="#111111" stroke="#d4a574" stroke-width="1"/>
+  <text x="818" y="474" class="nm" fill="#d4a574">③ 本地跑，不外传</text>
+  <text x="818" y="498" class="sm">引擎与报告都在你机器上，Key 只存本机。</text>
+  <text x="818" y="518" class="sm">命令执行有写/删边界，越界直接拒绝。</text>
+  <text x="818" y="546" class="xs">local-first · restricted token · Apache-2.0</text>
+
+  <text x="60" y="632" class="xs">Apache-2.0 · Windows 桌面端 + CLI · 中英双语</text>
+  <text x="1140" y="632" class="xs" text-anchor="end">github.com/ccai40359-wq/finalcheck</text>
+</svg>
