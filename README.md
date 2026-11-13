@@ -1,4 +1,4 @@
-<img src="docs/assets/cover.png" alt="FinalCheck — pre-flight check for code" width="100%">
+<img src="docs/assets/cover-en.png" alt="FinalCheck — pre-flight check for code" width="100%">
 
 [![CI](https://github.com/ccai40359-wq/finalcheck/actions/workflows/ci.yml/badge.svg)](https://github.com/ccai40359-wq/finalcheck/actions/workflows/ci.yml)
 ![tests](https://img.shields.io/badge/tests-1191%20passing-brightgreen)
@@ -8,13 +8,16 @@
 
 # FinalCheck
 
-> **Don't run code you can't read. Check it first.**
+**Check the code AI wrote for you — before it ships.** Eleven dimensions, `file:line` evidence, plain language. You don't need to be a security expert.
 
-FinalCheck is a tiered production-readiness desk for people who write with AI but are not security experts:
+- **Security & privacy** — exposed routes, injections, leaked keys, and what data the app actually collects versus what it claims.
+- **Supply chain & licenses** — the download gate before you install, dependency versions, whether the license lets you ship it.
+- **Someone else can take it over** — maintainability, readability, testability.
+- **It survives real use** — robustness, runtime stability, performance, observability / operability, handover.
 
-- **Audit before you run.** AI-written or downloaded code gets checked first, and you get a report in plain language.
-- **Evidence, not vibes.** Not "possible IDOR (CWE-639)" but "`register` route defined on line 12 with no auth guard — your user table is exposed to the internet", with file and line references. Dynamic reproduction is available as an opt-in second stage.
-- **Tiered gates.** Personal projects pass L1. Company projects must pass full L3 acceptance, and L3 does not ship until everything on the matrix is met.
+`Security · Privacy · Supply chain & licenses · Maintainability · Readability · Testability · Robustness · Stability · Performance · Observability · Handover`
+
+> Not "possible IDOR (CWE-639)" but "the `register` route on line 12 has no auth guard — your user table is exposed to the internet", with the file and line. Dynamic reproduction is an opt-in second stage.
 
 ## Tiers
 
