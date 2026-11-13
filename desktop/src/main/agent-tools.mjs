@@ -13,7 +13,7 @@ import { runHookEvent } from './hooks.mjs';
 import { isBlocked } from './shell.mjs';
 import { dynamicRuntime, recordProbe, recordStress } from './dynamic-evidence.mjs';
 import { assertArtifactPath } from './artifact-gate.mjs';
-import { createSandboxedRun, sandboxAvailability } from './sandbox.mjs';
+import { createSandboxedRun, sandboxAvailability, sandboxCompatible } from './sandbox.mjs';
 // 工作流兜底提示走双语词典（zh 原样返回，en 查表）
 import { t } from '../renderer/i18n/core.mjs';
 
@@ -35,6 +35,14 @@ function policyDenyResult(check) {
 // 与 shell.mjs 的护栏保持一致（灾难命令 / 超时 clamp / 输出截断 / System32 PATH），
 // 额外把 pid 留在手里，用于中断时 taskkill /PID <pid> /T /F。
 const CANCELLED_RESULT = () => ({ error: '已中断', cancelled: true, code: null, stdout: '', stderr: '' });
+
+// STATUS_DLL_INIT_FAILED（0xC0000142）：进程在初始化阶段就死了，命令本身一行都没执行。
+// Node 在所有 Windows 版本上按 32 位有符号数报退出码，两种写法都收。
+const DLL_INIT_FAILED_CODES = new Set([3221225794, -1073741502]);
+function isDllInitFailure(result) {
+  if (!result || result.blocked || result.error) return false;
+  return DLL_INIT_FAILED_CODES.has(Number(result.code));
+}
 
 // 空闲输出看门狗：不设「工作时长上限」（长任务可以跑 1 小时），只在「连续 N 毫秒没有任何输出
 // 且进程还活着」时认为命令卡住（常驻服务 / 静默网络请求），结束本轮等待、转入后台，但绝不杀进程。
@@ -85,7 +93,7 @@ export function planRunningPings(elapsedMs, startMs = RUNNING_PING_START_MS, eve
 
 export function runCommandWithSignal(command, {
   cwd, timeoutMs, idleMs = DEFAULT_COMMAND_IDLE_MS, background = false, env: envInput, signal = null,
-  sandbox = null,
+  sandbox = null, forceVisibleConsole = false,
   onActivity = null, pingStartMs = RUNNING_PING_START_MS, pingEveryMs = RUNNING_PING_EVERY_MS
 } = {}) {
   return new Promise((resolve) => {
@@ -188,9 +196,10 @@ export function runCommandWithSignal(command, {
     try {
       const spawnOptions = {
         cwd: (sandbox ? sandbox.cwd : cwd) && existsSync(String(sandbox ? sandbox.cwd : cwd)) ? String(sandbox ? sandbox.cwd : cwd) : undefined,
-        // dsh runner 的受限令牌在 CREATE_NO_WINDOW 下会 DLL 初始化失败（0xC0000142），
-        // 所以沙箱路径不能设 windowsHide；非沙箱路径保持原来的隐藏行为。
-        windowsHide: sandbox ? false : isWin,
+        // 屏显：沙箱默认给 runner 一个不可见控制台（CREATE_NO_WINDOW），受限子进程继承它，
+        // 因此不会弹黑窗；若某个系统上受限子进程在 DLL 初始化阶段死亡（0xC0000142，命令未执行），
+        // 由调用方用 forceVisibleConsole 重试一次（见 run_command）。
+        windowsHide: sandbox ? !forceVisibleConsole : isWin,
         env,
         // 后台启动：新进程组 + 不接管道，父进程退出也不连带结束
         ...(wantsBackground ? { detached: true, stdio: 'ignore' } : {})
@@ -363,7 +372,13 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
       }
       const sandboxQualityRunner = async (command, projectDir, timeoutMs) => {
         const sbPref = String(process.env.FINALCHECK_SANDBOX || '').trim().toLowerCase();
-        const sb = sbPref === 'off' ? null : createSandboxedRun({
+        // 质量闸的命令基本是 npm/node/tsc/vitest：受限令牌下它们会 EPERM（捕获不了孙进程输出），
+        // 按兼容清单改在宿主机执行；路径策略、命令黑名单与审批照旧生效。
+        const compat = sandboxCompatible(command);
+        if (!compat.compatible && sbPref === 'required') {
+          return { code: 1, ms: 0, out: '', err: `沙箱不支持这条质量命令（${compat.reason}）；FINALCHECK_SANDBOX=required 已拒绝在宿主机执行`, timedOut: false };
+        }
+        const sb = sbPref === 'off' || !compat.compatible ? null : createSandboxedRun({
           workspaceRoot: projectDir,
           policyMode: policy?.mode || 'off',
           command,
@@ -390,7 +405,10 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
         config: cfg,
         runner: sandboxQualityRunner
       });
-      return { dir, runs: r.runs, findings: r.findings.slice(0, 30), warnings: r.warnings, coverageGap: r.coverageGap, sandbox: policy?.mode === 'off' ? 'none' : (sandboxAvailability().available ? 'workspace-write/read-only' : 'unavailable') };
+      const qualitySandbox = policy?.mode === 'off' || !sandboxAvailability().available
+        ? (policy?.mode === 'off' ? 'none' : 'unavailable')
+        : 'per-command';
+      return { dir, runs: r.runs, findings: r.findings.slice(0, 30), warnings: r.warnings, coverageGap: r.coverageGap, sandbox: qualitySandbox };
     },
 
     // 只读 git 改动审查：路径走策略边界；不弹审批（不执行、不写盘）
@@ -614,13 +632,14 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
       const idleMs = args?.idle_ms ?? args?.idleMs ?? commandIdleMs ?? DEFAULT_COMMAND_IDLE_MS;
       const sandboxMode = policy?.mode || 'off';
       const sandboxPref = String(process.env.FINALCHECK_SANDBOX || '').trim().toLowerCase();
-      const sandbox = sandboxPref === 'off' ? null : createSandboxedRun({
+      const compat = sandboxCompatible(cmd);
+      const sandbox = sandboxPref === 'off' || !compat.compatible ? null : createSandboxedRun({
         workspaceRoot: projectPath || runCwd,
         policyMode: sandboxMode,
         command: cmd,
         cwd: runCwd
       });
-      const result = await runCommandWithSignal(cmd, {
+      let result = await runCommandWithSignal(cmd, {
         cwd: runCwd,
         timeoutMs: args?.timeout_ms,
         idleMs,
@@ -630,15 +649,54 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
         sandbox,
         onActivity
       });
-      if (sandboxMode !== 'off' && !sandbox && sandboxPref !== 'off') {
-        const required = String(process.env.FINALCHECK_SANDBOX || '').trim().toLowerCase() === 'required';
-        if (required) {
-          return {
-            error: `沙箱不可用（${sandboxAvailability().error || '平台不支持'}），FINALCHECK_SANDBOX=required 已拒绝在宿主机执行`,
-            deniedBy: 'policy'
-          };
+      // 隐藏控制台下受限子进程初始化失败（命令未执行）→ 用可见控制台重试一次；
+      // 这样默认不弹黑窗，个别系统上退化为「有个窗但能跑」，而不是整条命令失败。
+      if (sandbox && isDllInitFailure(result)) {
+        // 重试用新的沙箱实例：上一次的私有 temp（含 run.cmd）已经在收尾时被清理。
+        const retrySandbox = createSandboxedRun({
+          workspaceRoot: projectPath || runCwd,
+          policyMode: sandboxMode,
+          command: cmd,
+          cwd: runCwd
+        });
+        if (retrySandbox) {
+          const retried = await runCommandWithSignal(cmd, {
+            cwd: runCwd,
+            timeoutMs: args?.timeout_ms,
+            idleMs,
+            background: args?.background === true,
+            env,
+            signal: toolSignal,
+            sandbox: retrySandbox,
+            forceVisibleConsole: true,
+            onActivity
+          });
+          retried.sandboxConsole = 'visible';
+          retried.stderr = `[控制台隔离不可用：受限子进程在隐藏控制台下初始化失败，已改用可见控制台重试]\n${retried.stderr || ''}`;
+          result = retried;
         }
-        result.sandboxWarning = `写/删沙箱不可用（${sandboxAvailability().error || '平台不支持'}）；本条命令在宿主机执行`;
+      }
+      if (sandboxMode !== 'off' && !sandbox && sandboxPref !== 'off') {
+        if (!compat.compatible) {
+          // 刻意跳过沙箱：受限令牌下这条命令必然失败，宿主机执行 + 如实标注。
+          // required 模式下仍然 fail-closed：宁可不跑，也不在宿主机跑。
+          if (sandboxPref === 'required') {
+            return {
+              error: `沙箱不支持这条命令（${compat.reason}）；FINALCHECK_SANDBOX=required 已拒绝在宿主机执行`,
+              deniedBy: 'policy'
+            };
+          }
+          result.sandboxSkip = compat.reason;
+        } else {
+          const required = sandboxPref === 'required';
+          if (required) {
+            return {
+              error: `沙箱不可用（${sandboxAvailability().error || '平台不支持'}），FINALCHECK_SANDBOX=required 已拒绝在宿主机执行`,
+              deniedBy: 'policy'
+            };
+          }
+          result.sandboxWarning = `写/删沙箱不可用（${sandboxAvailability().error || '平台不支持'}）；本条命令在宿主机执行`;
+        }
       }
       return result;
     }

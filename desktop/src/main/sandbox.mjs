@@ -35,6 +35,39 @@ function modeOf(policyMode) {
   return null; // off：用户明确放开边界，不用沙箱
 }
 
+// 受限令牌拿不到「命名管道写权限」（Node 的 stdio:pipe）和 cygwin 的共享内存，
+// 实测 node --test / npm test 静默失败（EPERM），Git Bash 的 grep/cat/head 直接 fatal。
+// Codex 的 Windows restricted-token 沙箱同样报 spawn EPERM —— 这是这类沙箱的共性，不是本包缺陷。
+// 因此这些命令改在宿主机执行（应用层路径策略/命令黑名单/审批仍然生效），而不是让它们失败。
+const INCOMPATIBLE_HEADS = new Set([
+  // Node 工具链（都会用命名管道捕获孙进程输出）
+  'node', 'nodejs', 'npm', 'npx', 'yarn', 'pnpm', 'bun', 'deno', 'tsx', 'ts-node', 'tsc',
+  'jest', 'vitest', 'mocha', 'ava', 'playwright',
+  // CPython 用匿名管道捕获子进程（实测可用），pip 安装也是沙箱该管的写入，故不列入。
+  // shell / cygwin 工具（CreateFileMapping 在受限令牌下失败）
+  'bash', 'sh', 'dash', 'zsh', 'fish', 'busybox',
+  'grep', 'egrep', 'fgrep', 'rg', 'sed', 'awk', 'gawk', 'head', 'tail', 'cat', 'less',
+  'wc', 'cut', 'tr', 'tee', 'xargs', 'uniq', 'diff', 'patch', 'tar', 'gzip',
+  'rm', 'mv', 'cp', 'ln', 'ls', 'mkdir', 'rmdir', 'chmod', 'chown', 'touch', 'stat'
+]);
+
+const SHELL_SPLIT = /\|\||&&|\||;|&|\r?\n/;
+
+/** 命令是否能在 ACL 沙箱里跑：逐段看每个管道的第一个词，命中不兼容清单就改走宿主机。 */
+export function sandboxCompatible(command) {
+  const text = String(command || '');
+  for (const raw of text.split(SHELL_SPLIT)) {
+    const seg = raw.trim();
+    if (!seg) continue;
+    const first = seg.split(/\s+/)[0].replace(/^["']/, '').replace(/["']$/, '');
+    const base = first.replace(/^.*[\\/]/, '').replace(/\.(exe|cmd|bat|ps1|mjs|cjs|js)$/i, '').toLowerCase();
+    if (INCOMPATIBLE_HEADS.has(base)) {
+      return { compatible: false, reason: `${base} 需要命名管道/cygwin 共享内存，受限令牌下会失败` };
+    }
+  }
+  return { compatible: true, reason: null };
+}
+
 function tempDirFor(workspaceRoot) {
   const candidates = [
     path.join(os.tmpdir(), 'fc-sandbox'),
