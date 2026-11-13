@@ -96,4 +96,4 @@ Claude Code 下载 hook 会检查指定目标；`npm ci` / 无包名 `npm instal
 
 ## 本轮验证边界
 
-本仓库的回归依据是完整 `node:test` 套件（当前 1197 项）及桌面生产构建。源码与测试修复没有自动升级 Electron 等主要依赖，不代表已消除原依赖审计告警。真实 Electron 窗口、实际模型网关、Windows 安装包与自动更新仍需要独立的端到端验证；本文档本身不发布、不推送、不改变应用版本号（版本以 `desktop/package.json` 与 `CHANGELOG.md` 为准）。
+本仓库的回归依据是完整 `node:test` 套件（当前 1198 项）及桌面生产构建。源码与测试修复没有自动升级 Electron 等主要依赖，不代表已消除原依赖审计告警。真实 Electron 窗口、实际模型网关、Windows 安装包与自动更新仍需要独立的端到端验证；本文档本身不发布、不推送、不改变应用版本号（版本以 `desktop/package.json` 与 `CHANGELOG.md` 为准）。

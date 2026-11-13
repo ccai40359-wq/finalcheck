@@ -78,12 +78,16 @@ test('notifications/initialized 被忽略（不回包，通道继续可用）', 
   } finally { await s.close(); }
 });
 
-test('tools/list: 十二工具齐全（含文件编辑/产物/方法论库），schema 照抄 TOOLS_SCHEMA', { timeout: 20000 }, async () => {
+test('tools/list: 十二个有 handler 的工具齐全（含文件编辑/产物/方法论库），schema 照抄 TOOLS_SCHEMA', { timeout: 20000 }, async () => {
   const s = startServer();
   try {
     const res = await s.request(1, 'tools/list');
     const names = res.result.tools.map((t) => t.name);
-    assert.deepEqual([...names].sort(), [...FIVE_TOOLS, 'run_command', 'read_playbook', 'list_playbooks', 'read_file', 'edit_file', 'write_file', 'present_artifact', 'remember_project', 'quality_gate'].sort());
+    // 只广告本通道真的有 handler 的工具：run_command / remember_project / run_workflow
+    // 需要桌面端审批或子代理，MCP 没有对应 case，不能广告出去。
+    assert.deepEqual([...names].sort(), [...FIVE_TOOLS, 'read_playbook', 'list_playbooks', 'read_file', 'edit_file', 'write_file', 'present_artifact', 'quality_gate'].sort());
+    assert.ok(!names.includes('run_command'), 'run_command 没有 MCP handler，不能出现在 tools/list');
+    assert.ok(!names.includes('remember_project'), 'remember_project 没有 MCP handler，不能出现在 tools/list');
     for (const t of res.result.tools) {
       assert.ok(t.description, t.name + ' 缺 description');
       assert.equal(t.inputSchema?.type, 'object');

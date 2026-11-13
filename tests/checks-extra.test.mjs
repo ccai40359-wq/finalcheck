@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { checkExternal } from '../src/checks/external.mjs';
+import { checkConfig } from '../src/checks/config.mjs';
 import { checkData, checkBackup, checkPrivacy } from '../src/checks/data.mjs';
 import { checkSecretsHistory } from '../src/checks/secrets-history.mjs';
 
@@ -536,4 +537,23 @@ test('S3 历史：git log 失败 → coverageGap 而非抛错', async (t) => {
   assert.notEqual(r.coverageGap, null);
   assert.ok(String(r.coverageGap).includes('历史密钥未查'));
   assert.ok(r.warnings.some((w) => w.includes('git log')));
+});
+
+// S5 只在代码文件里认限流：README/docs 提到 express-rate-limit 不算已接入，
+// 否则文档一写就把真正缺失的限流压成假通过。
+test('S5: 文档里的 express-rate-limit 不算接入，代码里的才算', async (t) => {
+  const docDir = await mkdtemp(path.join(os.tmpdir(), 'fc-s5-doc-'));
+  const codeDir = await mkdtemp(path.join(os.tmpdir(), 'fc-s5-code-'));
+  t.after(async () => { await rm(docDir, { recursive: true, force: true }); await rm(codeDir, { recursive: true, force: true }); });
+
+  await writeFile(path.join(docDir, 'README.md'), 'We recommend express-rate-limit for production deployments.\n');
+  await writeFile(path.join(docDir, 'package.json'), JSON.stringify({ name: 'doc-only', dependencies: { 'express-rate-limit': '^7.0.0' } }));
+  const doc = await checkConfig(docDir, 'L3');
+  assert.ok(doc.findings.some((f) => f.rule === 'S5.no-rate-limit'), '只在文档/依赖里提到限流不能算接入');
+
+  await writeFile(path.join(codeDir, 'server.mjs'), "import rateLimit from 'express-rate-limit';\napp.use(rateLimit({ windowMs: 60000, max: 60 }));\n");
+  await mkdir(path.join(codeDir, 'src'), { recursive: true });
+  await writeFile(path.join(codeDir, 'src', 'app.mjs'), "import rateLimit from 'express-rate-limit';\napp.use(rateLimit({ windowMs: 60000, max: 60 }));\n");
+  const code = await checkConfig(codeDir, 'L3');
+  assert.deepEqual(code.findings.filter((f) => f.rule === 'S5.no-rate-limit'), [], '代码里接入限流应通过');
 });

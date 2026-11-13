@@ -1,4 +1,3 @@
-import { readdir } from 'node:fs/promises';
 import { dialog } from 'electron';
 import * as projects from '../projects.mjs';
 import { listForProject } from '../project-sessions.mjs';
@@ -16,11 +15,12 @@ export function registerProjectIpc({ ipcMain, getWin, getActiveProjectId, select
     const list = await projects.listProjects();
     const out = [];
     for (const p of list) {
-      // 列出项目时顺手登记它的会话（只 readdir 文件名；ZCode 语义：会话属于各自项目）
+      // 会话可能落在 SQLite（默认后端）或旧 JSON 文件里：用统一列表接口计数，
+      // 只数 *.json 会让非当前项目的会话数永远是 0。
       await scanSessionsDir(projects.sessionDirOf(p.path)).catch(() => {});
       out.push({
         ...p,
-        sessionCount: (await readdir(projects.sessionDirOf(p.path)).catch(() => [])).filter((f) => f.endsWith('.json')).length
+        sessionCount: (await listForProject(p.id).catch(() => [])).length
       });
     }
     return out;

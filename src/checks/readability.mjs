@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises';
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { parse } from '@babel/parser';
 import { t } from '../../desktop/src/renderer/i18n/core.mjs';
@@ -597,19 +597,39 @@ function isTopLevelVariable(parent, grandparent) {
   ));
 }
 
-// rust-code-analysis 是可选增强：查得到就试一次，任何失败静默回落到纯 Babel 结果
-function tryRustMetrics(projectDir) {
+// rust-code-analysis 是可选增强：查得到就试一次，任何失败静默回落到纯 Babel 结果。
+// 不能用 spawnSync：它会把 Electron 主线程阻塞到 15 秒（src/run-async.mjs 的约定）。
+async function tryRustMetrics(projectDir) {
   try {
     const binary = findBinary('rust-code-analysis');
     if (!binary) return null;
-    const result = spawnSync(binary, ['-O', 'json', '-p', projectDir], {
-      encoding: 'utf8',
-      timeout: 15000,
-      maxBuffer: 16 * 1024 * 1024,
-      windowsHide: true,
+    const stdout = await new Promise((resolve) => {
+      let out = '';
+      let done = false;
+      const proc = spawn(binary, ['-O', 'json', '-p', projectDir], { windowsHide: true });
+      const finish = (value) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        resolve(value);
+      };
+      const timer = setTimeout(() => {
+        try { proc.kill(); } catch { /* 已退出 */ }
+        finish(null);
+      }, 15000);
+      timer.unref?.();
+      proc.stdout.on('data', (chunk) => {
+        out += chunk;
+        if (out.length > 16 * 1024 * 1024) {
+          try { proc.kill(); } catch { /* 已退出 */ }
+          finish(null);
+        }
+      });
+      proc.on('error', () => finish(null));
+      proc.on('close', (code) => finish(code === 0 && out ? out : null));
     });
-    if (result.error || result.status !== 0 || !result.stdout) return null;
-    const json = JSON.parse(result.stdout);
+    if (!stdout) return null;
+    const json = JSON.parse(stdout);
     const spaces = Array.isArray(json && json.spaces) ? json.spaces.length : undefined;
     return { available: true, spaces };
   } catch {
@@ -748,7 +768,7 @@ export async function checkReadability(projectDir, opts = {}) {
   // 只有真的发生截断才加字段：未配置时返回形状与旧版一致
   if (reportTruncations.length) out.reportTruncations = reportTruncations;
   if (opts.rustMetrics !== false) {
-    const rust = tryRustMetrics(root);
+    const rust = await tryRustMetrics(root);
     if (rust) out.rustMetrics = rust;
   }
   return out;

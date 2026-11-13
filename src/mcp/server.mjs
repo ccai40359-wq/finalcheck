@@ -10,7 +10,7 @@
 import readline from 'node:readline';
 import path from 'node:path';
 import { lstat, realpath, stat } from 'node:fs/promises';
-import { statSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -18,7 +18,15 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const engineUrl = (rel) => pathToFileURL(path.join(REPO_ROOT, rel)).href;
 
 const PROTOCOL_VERSION = '2024-11-05';
-const SERVER_INFO = { name: 'finalcheck', version: '0.1.0' };
+// 版本从 desktop/package.json 读，别再写死（写死会跟发版漂移，MCP 客户端看到的是旧版本）
+const SERVER_INFO = (() => {
+  try {
+    const pkg = JSON.parse(readFileSync(path.join(REPO_ROOT, 'desktop', 'package.json'), 'utf8'));
+    return { name: 'finalcheck', version: String(pkg.version || '0.0.0') };
+  } catch {
+    return { name: 'finalcheck', version: '0.0.0' };
+  }
+})();
 const STRESS_MAX = { duration: 60, connections: 50 };
 const LOCAL_HOSTS = ['localhost', '127.0.0.1'];
 const ALLOW_COMMANDS_ENV = 'FINALCHECK_MCP_ALLOW_COMMANDS';
@@ -110,12 +118,16 @@ export async function resolveWithinRoot(root, inputPath) {
   }
 }
 
-// 工具 schema 照抄 agent-service 的 TOOLS_SCHEMA（SSOT：桌面与 MCP 两通道共用一份，防漂移）
-// run_workflow 需要宿主提供子代理调用（桌面端有网关配置），MCP 通道不暴露
-const DESKTOP_ONLY_TOOLS = new Set(['run_workflow']);
+// 工具 schema 照抄 agent-service 的 TOOLS_SCHEMA（SSOT：桌面与 MCP 两通道共用一份，防漂移）。
+// 只广告本通道真的有 handler 的工具：run_workflow / run_command / remember_project 需要桌面端的
+// 子代理调用或审批通道，MCP 里没有对应 case，广告出去只会让客户端拿到「未知工具」。
+const MCP_HANDLED_TOOLS = new Set([
+  'audit_project', 'quality_gate', 'download_gate', 'probe_target', 'stress_target', 'get_report',
+  'list_playbooks', 'read_playbook', 'read_file', 'edit_file', 'write_file', 'present_artifact',
+]);
 async function listTools() {
   const { TOOLS_SCHEMA } = await import(engineUrl('desktop/src/main/agent-service.mjs'));
-  return TOOLS_SCHEMA.filter((t) => !DESKTOP_ONLY_TOOLS.has(t.function.name)).map((t) => ({
+  return TOOLS_SCHEMA.filter((t) => MCP_HANDLED_TOOLS.has(t.function.name)).map((t) => ({
     name: t.function.name,
     description: t.function.description,
     inputSchema: t.function.parameters,

@@ -1,7 +1,7 @@
 // 项目文件夹（对齐 deepseek-harness / ZCode Projects）：
 // 每个项目是磁盘上的真实目录，会话与项目记忆都在 <project>/.finalcheck/ 下；
 // 全局只保存「项目列表」注册表（%APPDATA%/FinalCheck/projects.json）。
-import { existsSync } from 'node:fs';
+import { accessSync, constants, existsSync } from 'node:fs';
 import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -10,7 +10,13 @@ const registryFile = () => process.env.FINALCHECK_PROJECTS_FILE || path.join(pro
 
 const defaultRoot = () => {
   if (process.env.FINALCHECK_DEFAULT_PROJECT) return path.resolve(process.env.FINALCHECK_DEFAULT_PROJECT);
-  if (existsSync('D:\\')) return 'D:\\finalcheck';
+  // 只读/无权限的 D 盘上 mkdir 会抛错，启动链就没窗口了：先探可写性，不行回落到用户目录
+  try {
+    if (existsSync('D:\\')) {
+      accessSync('D:\\', constants.W_OK);
+      return 'D:\\finalcheck';
+    }
+  } catch { /* 落到用户目录 */ }
   return path.join(process.env.USERPROFILE || process.cwd(), 'finalcheck');
 };
 
@@ -91,10 +97,16 @@ export async function addProject(dir, { name, isDefault = false } = {}) {
 
 export async function ensureDefaultProject() {
   const list = await listProjects();
-  const root = defaultRoot();
+  let root = defaultRoot();
   const found = list.find((p) => path.resolve(p.path).toLowerCase() === path.resolve(root).toLowerCase());
   if (found) { await ensureDirs(found.path); return found; }
-  await mkdir(root, { recursive: true });
+  try {
+    await mkdir(root, { recursive: true });
+  } catch {
+    // 探测到可写但实际 mkdir 仍失败（权限/路径被占用）：回落用户目录，别让启动链断掉
+    root = path.join(process.env.USERPROFILE || process.cwd(), 'finalcheck');
+    await mkdir(root, { recursive: true });
+  }
   return addProject(root, { name: 'finalcheck', isDefault: true });
 }
 

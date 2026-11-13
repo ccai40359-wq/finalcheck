@@ -6,9 +6,13 @@ export async function checkConfig(projectDir, tier, { excludes = [], includeFixt
   const { files, skipped } = await listTextFiles(projectDir, excludes, { includeFixtures });
   const warnings = skipped.length ? [`跳过大文件 ${skipped.length} 个（>512KB 未扫描）`] : [];
   let sawRateLimit = false;
+  // 只有代码文件才算「接入限流 / 打开 debug」：README、docs、package.json 里提到
+  // express-rate-limit 或写个 debug:true 示例，不代表项目真的接入了。
+  const CODE_FILE = /\.(js|mjs|cjs|jsx|ts|tsx|py|go|java|rb|php|cs|rs|kt|swift|vue|svelte)$/i;
   for (const f of files) {
     const { file, text } = await readRel(projectDir, f);
     if (/package-lock|yarn\.lock|pnpm-lock/.test(file)) continue;
+    const isCode = CODE_FILE.test(file);
     const lines = text.split('\n');
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
@@ -16,8 +20,8 @@ export async function checkConfig(projectDir, tier, { excludes = [], includeFixt
       if (tier !== 'L1' && /origin:\s*['"]\*['"]|Access-Control-Allow-Origin['"]?\s*[,:]\s*['"]\*['"]/.test(line)) {
         findings.push({ checkId: 'S5', severity: 'medium', force: 'card', file, line: i + 1, rule: 'S5.cors-wildcard', snippet: line.trim().slice(0, 120), message: 'CORS 允许任意来源 (*)', source: 'program' });
       }
-      if (/express-rate-limit|rateLimit\(|rate-limit/.test(line)) sawRateLimit = true;
-      if (/\bDEBUG\b\s*[:=]\s*['"]?true|\bdebug\s*:\s*true\b/i.test(line)) { // P1#9：补矩阵 S5 的 debug 子项
+      if (isCode && /express-rate-limit|rateLimit\(|rate-limit/.test(line)) sawRateLimit = true;
+      if (isCode && /\bDEBUG\b\s*[:=]\s*['"]?true|\bdebug\s*:\s*true\b/i.test(line)) { // P1#9：补矩阵 S5 的 debug 子项
         findings.push({ checkId: 'S5', severity: 'medium', force: 'card', file, line: i + 1, rule: 'S5.debug-on', snippet: line.trim().slice(0, 120), message: 'debug 模式开启', source: 'program' });
       }
     }
