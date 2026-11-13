@@ -1,12 +1,12 @@
-<img src="docs/assets/cover-en.png" alt="FinalCheck — pre-flight check for code" width="100%">
+<img src="docs/assets/hero.webp" alt="FinalCheck — pre-flight check for code" width="100%">
 
 [![CI](https://github.com/ccai40359-wq/finalcheck/actions/workflows/ci.yml/badge.svg)](https://github.com/ccai40359-wq/finalcheck/actions/workflows/ci.yml)
 ![tests](https://img.shields.io/badge/tests-1191%20passing-brightgreen)
 ![license](https://img.shields.io/badge/license-Apache--2.0-blue)
 
-**English** · [简体中文](README.zh-CN.md)
-
 # FinalCheck
+
+**English** · [简体中文](README.zh-CN.md)
 
 **Check the code AI wrote for you — before it ships.** Eleven dimensions, `file:line` evidence, plain language. You don't need to be a security expert.
 

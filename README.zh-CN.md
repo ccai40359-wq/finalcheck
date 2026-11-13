@@ -1,12 +1,12 @@
-<img src="docs/assets/cover-zh.png" alt="FinalCheck 终检" width="100%">
+<img src="docs/assets/hero.webp" alt="FinalCheck 终检" width="100%">
 
 [![CI](https://github.com/ccai40359-wq/finalcheck/actions/workflows/ci.yml/badge.svg)](https://github.com/ccai40359-wq/finalcheck/actions/workflows/ci.yml)
 ![tests](https://img.shields.io/badge/tests-1191%20passing-brightgreen)
 ![license](https://img.shields.io/badge/license-Apache--2.0-blue)
 
-[English](README.md) · **简体中文**
-
 # FinalCheck · 终检
+
+[English](README.md) · **简体中文**
 
 **AI 写的代码，交付前先验一遍。** 11 个维度，每条结论带文件行号，人话报告。不需要你是安全专家。
 
