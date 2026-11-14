@@ -27,6 +27,7 @@ import { resolveReportCaps } from './report-caps.mjs';
 import { ACCEPT_FILE, applyAcceptances } from './accept.mjs';
 import { applyScopePolicy, detectLanguageGap } from './scope-policy.mjs';
 import { runPyBandit } from './checks/py-bandit.mjs';
+import { isLibraryRepo } from './project-kind.mjs';
 
 // 覆盖关（ACCEPTANCE §4 矩阵已实现子集）：S6/D/E/X 接线中
 // L2 = 安全/供应链/测试 + 交接(H1) + 可维护性(Q3)
@@ -195,6 +196,24 @@ export async function audit(projectDir, { tier = null, interactive = false, runT
   const scoped = applyScopePolicy(findings);
   findings = scoped.findings;
   if (scoped.downgraded) warnings.push(`非产品路径发现 ${scoped.downgraded} 条已降为提示（tests/examples/docs/benchmarks，不计入结论）`);
+  // 库/框架仓（fastapi/flask/requests/gin）：路由全是文档示例与框架内部代码，不是产品 HTTP 面。
+  // 降 card→check 留人工确认，不硬卡也不冒充通过；服务信号（Dockerfile/start/Django/requirements
+  // 带 web 框架）优先，识别失败按服务仓处理。
+  let libraryMode = false;
+  try {
+    libraryMode = await isLibraryRepo(projectDir, { excludes, includeFixtures });
+  } catch { libraryMode = false; }
+  if (libraryMode) {
+    let downgraded = 0;
+    findings = findings.map((f) => {
+      if (f.checkId === 'S1' && f.rule === 'S1.no-guard' && f.force === 'card') {
+        downgraded++;
+        return { ...f, force: 'check', message: `${f.message}（库/框架仓库：路由为文档示例或框架内部代码，需人工确认）` };
+      }
+      return f;
+    });
+    if (downgraded) warnings.push(`库/框架仓库：S1 的 ${downgraded} 条路由发现降为 check（无部署/服务信号，需人工确认）`);
+  }
   if (effective === 'L1') findings = findings.map((f) => (f.checkId === 'S3' ? f : { ...f, force: 'tip' })); // L1 只有 S3 是硬卡
   // S7/S8 属文件级启发式，人工确认机制（v2）接入前一律 check 级，不自动锁死结论（三轮 reviewer P1#3/#13）
   findings = findings.map((f) => (f.checkId === 'S7' || f.checkId === 'S8') && f.force === 'card' ? { ...f, force: 'check', message: f.message + '（人工确认机制接入后升级为卡）' } : f);

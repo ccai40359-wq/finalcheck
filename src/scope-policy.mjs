@@ -18,6 +18,8 @@ const NON_PRODUCT_SEGMENTS = new Set([
   // 第二轮实测补充：Svelte 的 benchmarking/playgrounds，juice-shop 的 codefixes/i18n。
   'benchmarking', 'playground', 'playgrounds', 'demo', 'demos',
   'codefixes', 'i18n', 'locales', 'locale', 'translations',
+  // FastAPI 仓库的 docs_src/ 是文档教程示例应用（round5 实测 451 条 FP 的来源）
+  'docs_src',
 ]);
 // docs/doc 只在仓库根、www/*/docs 等文档目录算文档面；src/doc/render.js 这类产品文档引擎仍算产品。
 const ROOT_ONLY_SEGMENTS = new Set(['docs', 'doc']);

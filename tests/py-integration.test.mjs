@@ -58,7 +58,8 @@ test('bandit 运行：runner 注入、非产品路径跳过、L1 只认 S3', asy
   };
   const r = await runPyBandit(dir, {
     tooling: { pythonBin: 'python' },
-    runner: async () => ({ status: 0, stdout: JSON.stringify(banditJson) }),
+    // Bandit 语义：exit 1 = 发现了问题（JSON 有效）；不能当运行失败
+    runner: async () => ({ status: 1, stdout: JSON.stringify(banditJson) }),
     tier: 'L2',
   });
   assert.equal(r.ran, true);

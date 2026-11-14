@@ -311,8 +311,11 @@ export async function checkSecrets(projectDir, { excludes = [], includeFixtures 
           .replace(/(['"])[^'"]{6,}\1/g, '$1***$1') // 密钥值脱敏：报告永不回显密钥本体
           .replace(/(=\s*)[^\s'"]{8,}/g, '$1***')
           .replace(/[A-Z0-9]{16,}/g, '***');
-        const hard = rule.id === 'S3.aws-key' || rule.id === 'S3.private-key'
-          || ((rule.id === 'S3.secret-literal' || rule.id === 'S3.secret-value') && hasKnownRealPrefix(m[1] || ''));
+  // Python 仓的测试证书私钥（requests: tests/certs/*.key 4 条、gin: testdata）不是生产凭据：
+  // 非产品路径上的私钥 hard=false（scope 降 tip，报告仍可见），产品路径保持 hard=true 硬卡。
+  const pkHard = rule.id !== 'S3.private-key' || !isNonProductPath(file);
+  const hard = rule.id === 'S3.aws-key' || (rule.id === 'S3.private-key' && pkHard)
+    || ((rule.id === 'S3.secret-literal' || rule.id === 'S3.secret-value') && hasKnownRealPrefix(m[1] || ''));
         findings.push({
           checkId: 'S3',
           severity: isDoc ? 'medium' : 'high',

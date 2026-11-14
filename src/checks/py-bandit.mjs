@@ -99,7 +99,10 @@ export async function runPyBandit(projectDir, { excludes = [], includeFixtures =
   const run = runner
     ? await runner(projectDir)
     : await runProcess(resolved.pythonBin, ['-m', 'bandit', '-r', projectDir, '-q', '-f', 'json', '-x', EXCLUDE_DIRS.join(',')], { timeoutMs: 180000, maxOut: 64 * 1024 * 1024 });
-  if (run.status !== 0 || !run.stdout || !run.stdout.trim().startsWith('{')) {
+  // Bandit 语义：exit 0 = 没发现问题，exit 1 = 发现了问题（JSON 仍有效）。
+  // 所以「有 JSON 就解析」，只有真的没输出/崩溃才记缺口——别把"发现了问题"当成"运行失败"。
+  const hasJson = run.stdout && run.stdout.trim().startsWith('{');
+  if (!hasJson) {
     return {
       ran: false, findings: [], warnings,
       coverageGap: `Bandit 运行失败（exit ${run.status ?? 'null'}${run.stderr ? `：${String(run.stderr).trim().slice(0, 160)}` : ''}），Python SAST 未覆盖`,

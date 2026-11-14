@@ -191,7 +191,8 @@ test('F5/Q1: 覆盖率产物 <40% → card finding；≥40% 才允许过', async
   t.after(() => rm(ok, { recursive: true, force: true }));
 
   const runner = (dir, percent) => async () => {
-    await writeFile(path.join(dir, 'coverage/coverage-summary.json'), JSON.stringify({ total: { lines: { pct: percent, covered: percent, total: 100 } } }));
+    // 带 nonce：真实 c8 产物每次运行内容都不同；字节相同的重写会撞 mtimeNs 粒度
+    await writeFile(path.join(dir, 'coverage/coverage-summary.json'), JSON.stringify({ total: { lines: { pct: percent, covered: percent, total: 100 } }, run: `${Date.now()}-${Math.random()}` }));
     return fakeTestRunner();
   };
   const lowRes = await checkQ1(low, { tier: 'L3', testRunner: runner(low, 20) });
