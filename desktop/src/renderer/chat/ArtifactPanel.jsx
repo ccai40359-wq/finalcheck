@@ -1,12 +1,16 @@
 // 右侧产物预览：图片 / HTML / PDF / 文本（agent 生成的文件可直接点开看）
+// .md/.markdown 走 markdown 渲染（与聊天气泡同一套净化渲染器），其余文本保持等宽原文
 import React, { useEffect, useRef, useState } from 'react';
 import { t } from '../i18n/core.mjs';
+import { renderMarkdown } from './md.jsx';
 
 export const PREVIEW_EXTS = new Set([
   '.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp',
   '.html', '.htm', '.pdf',
-  '.txt', '.md', '.json', '.js', '.mjs', '.css', '.csv', '.log', '.xml', '.yml', '.yaml'
+  '.txt', '.md', '.markdown', '.json', '.js', '.mjs', '.css', '.csv', '.log', '.xml', '.yml', '.yaml'
 ]);
+
+export const isMarkdownArtifact = (p) => /\.(md|markdown)$/i.test(String(p || ''));
 
 export const extOf = (p) => {
   const s = String(p || '');
@@ -118,6 +122,12 @@ export function ArtifactPanel({ artifact, loading, error, onClose, onReload, onO
                   className="w-full h-full bg-white border-0" />
               ) : a.kind === 'pdf' ? (
                 <iframe title={a.name} src={a.dataUrl} className="w-full h-full border-0 bg-white" />
+              ) : isMarkdownArtifact(a.path || a.name) ? (
+                <div
+                  title={t('Markdown 渲染（原文本可外部打开查看）')}
+                  className="md text-[13px] leading-relaxed p-5 h-full overflow-auto text-ink/90"
+                  dangerouslySetInnerHTML={{ __html: renderMarkdown(a.content) }}
+                />
               ) : (
                 <pre className="w-full h-full overflow-auto p-4 text-[11px] leading-relaxed font-mono text-ink/80 whitespace-pre-wrap break-words">{a.content}</pre>
               )}
