@@ -6,6 +6,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.16.5] - 2026-11-14
+
+### Fixed
+
+- Console windows popping up on every sandboxed command are largely gone: when a hidden console fails to initialize, the retry first uses a different process-creation flag that also stays hidden (most machines recover without any window); the visible console is now the last resort.
+
+### Improved
+
+- Context compaction refinement: the kept zone after compaction dropped from sitting at the threshold (400k) to ~150k, so very long sessions stop re-triggering compaction.
+
 ## [0.16.4] - 2026-11-14
 
 ### Added
