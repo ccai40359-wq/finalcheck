@@ -93,7 +93,7 @@ export function planRunningPings(elapsedMs, startMs = RUNNING_PING_START_MS, eve
 
 export function runCommandWithSignal(command, {
   cwd, timeoutMs, idleMs = DEFAULT_COMMAND_IDLE_MS, background = false, env: envInput, signal = null,
-  sandbox = null, forceVisibleConsole = false,
+  sandbox = null, forceVisibleConsole = false, sandboxWindowMode = 'hide',
   onActivity = null, pingStartMs = RUNNING_PING_START_MS, pingEveryMs = RUNNING_PING_EVERY_MS
 } = {}) {
   return new Promise((resolve) => {
@@ -196,10 +196,11 @@ export function runCommandWithSignal(command, {
     try {
       const spawnOptions = {
         cwd: (sandbox ? sandbox.cwd : cwd) && existsSync(String(sandbox ? sandbox.cwd : cwd)) ? String(sandbox ? sandbox.cwd : cwd) : undefined,
-        // 屏显：沙箱默认给 runner 一个不可见控制台（CREATE_NO_WINDOW），受限子进程继承它，
-        // 因此不会弹黑窗；若某个系统上受限子进程在 DLL 初始化阶段死亡（0xC0000142，命令未执行），
-        // 由调用方用 forceVisibleConsole 重试一次（见 run_command）。
-        windowsHide: sandbox ? !forceVisibleConsole : isWin,
+        // 屏显三形态（弹窗治理）：默认 hide（CREATE_NO_WINDOW，不弹窗）；DLL 初始化失败（0xC0000142）
+        // 时先试 detached（DETACHED_PROCESS，同为隐藏窗口但创建标志不同，多数能避开该失败）；
+        // 两段隐藏都救不回才用 visible（弹窗兜底）。沙箱受限令牌与窗口标志无关，三种形态保护相同。
+        windowsHide: sandbox ? (forceVisibleConsole ? false : sandboxWindowMode !== 'visible') : isWin,
+        ...(sandbox && sandboxWindowMode === 'detached' && !wantsBackground ? { detached: true } : {}),
         env,
         // 后台启动：新进程组 + 不接管道，父进程退出也不连带结束
         ...(wantsBackground ? { detached: true, stdio: 'ignore' } : {})
@@ -861,8 +862,9 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
         sandbox,
         onActivity
       });
-      // 隐藏控制台下受限子进程初始化失败（命令未执行）→ 用可见控制台重试一次；
-      // 这样默认不弹黑窗，个别系统上退化为「有个窗但能跑」，而不是整条命令失败。
+      // 隐藏控制台下受限子进程初始化失败（命令未执行）→ 两段重试：
+      // ① detached（DETACHED_PROCESS，同为隐藏窗口，创建标志不同——多数机器能避开 0xC0000142）；
+      // ② 可见控制台（弹窗兜底）。把弹窗压到「两段隐藏都救不回」才发生。
       if (sandbox && isDllInitFailure(result)) {
         // 重试用新的沙箱实例：上一次的私有 temp（含 run.cmd）已经在收尾时被清理。
         const retrySandbox = createSandboxedRun({
@@ -872,7 +874,8 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
           cwd: runCwd
         });
         if (retrySandbox) {
-          const retried = await runCommandWithSignal(cmd, {
+          // ① detached 隐藏重试
+          const retriedDetached = await runCommandWithSignal(cmd, {
             cwd: runCwd,
             timeoutMs: args?.timeout_ms,
             idleMs,
@@ -880,12 +883,30 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
             env,
             signal: toolSignal,
             sandbox: retrySandbox,
-            forceVisibleConsole: true,
+            sandboxWindowMode: 'detached',
             onActivity
           });
-          retried.sandboxConsole = 'visible';
-          retried.stderr = `[控制台隔离不可用：受限子进程在隐藏控制台下初始化失败，已改用可见控制台重试]\n${retried.stderr || ''}`;
-          result = retried;
+          if (!isDllInitFailure(retriedDetached)) {
+            retriedDetached.sandboxConsole = 'detached';
+            retriedDetached.stderr = `[控制台隔离形态已切换：DETACHED 隐藏窗口重试成功，未弹窗]\n${retriedDetached.stderr || ''}`;
+            result = retriedDetached;
+          } else {
+            // ② 可见控制台兜底（唯一会弹窗的路径）
+            const retriedVisible = await runCommandWithSignal(cmd, {
+              cwd: runCwd,
+              timeoutMs: args?.timeout_ms,
+              idleMs,
+              background: args?.background === true,
+              env,
+              signal: toolSignal,
+              sandbox: retrySandbox,
+              forceVisibleConsole: true,
+              onActivity
+            });
+            retriedVisible.sandboxConsole = 'visible';
+            retriedVisible.stderr = `[控制台隔离不可用：隐藏两形态下受限子进程均初始化失败，已改用可见控制台重试]\n${retriedVisible.stderr || ''}`;
+            result = retriedVisible;
+          }
         }
       }
       if (sandboxMode !== 'off' && !sandbox && sandboxPref !== 'off') {
