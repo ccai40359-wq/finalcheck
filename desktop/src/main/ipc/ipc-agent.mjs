@@ -525,7 +525,12 @@ export function registerAgentIpc({
     askUsers.beginTurn(sessionId);
     // 验收单同理：报告闸只判本回合的清单，上一回合的勾选不带过来
     todos.beginTurn(sessionId);
+    // 双轨纪律（2026-11-14 用户定案）：检验严格 fail-closed；开发听人类命令优先。
+    // 按回合意图选轨：用户消息命中验收/体检/审计/渗透/压测等 → audit 轨；其余（写码/改码/工具活）→ dev 轨。
+    const AUDIT_INTENT_RE = /验收|体检|审计|渗透|压测|下载闸|报告|red ?team|audit|pentest|probe\b|L1\b|L2\b|L3\b/i;
+    const roleMode = AUDIT_INTENT_RE.test(String(userMsg || '')) ? 'audit' : 'dev';
     const out = await runAgentTurn({
+      roleMode,
       // agent-service 入参形状不变：baseUrl / apiKey / model（取模型列表第一个）
       // Wave 2：窗口/输出预留/工具并发透传（供应商没配就用默认值；不改动 usage 采集逻辑）
       config: {

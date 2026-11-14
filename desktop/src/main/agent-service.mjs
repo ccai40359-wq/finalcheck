@@ -335,22 +335,42 @@ const SYSTEM_BASE = [
 ].join('\n');
 
 let systemPromise = null;
-export async function getSystemPromptParts() {
-  if (!systemPromise) {
-    systemPromise = (async () => {
+// ---- 双轨纪律（2026-11-14 用户定案）：检验严格 fail-closed；开发听人类命令优先 ----
+// audit 轨 = SYSTEM_BASE（验收员纪律，原样）；dev 轨 = SYSTEM_DEV_BASE（下面）。
+// 选轨按回合意图：用户消息命中验收/体检/审计/渗透等关键词 → audit，否则 dev（ipc-agent 判定后传 roleMode）。
+const SYSTEM_DEV_BASE = [
+  '你是 FinalCheck（终检）开发助手：帮用户写代码、改代码、做工具、排查问题。人类指令优先——用户明确要求的事直接动手做，不要用验收/审计纪律反问、推脱或要求先跑检查；拿不准的技术选型先选一个合理的默认并继续做，做完在结尾用一句话说明可替换点。',
+  '发现必须带证据说话：改了什么贴 diff/输出，报错贴原文，不编造测试结果——没跑就说没跑。',
+  '动手顺序：先 read_file 看清原文再改（edit_file 的 old_string 必须唯一，做最小替换）；新建文件用 write_file；改动尽量小而聚焦，一次一个目标，改完立即跑最小验证（语法检查 / 定向单测 / 启动冒烟）并把输出贴给用户。',
+  '修审计发现时按技能修：audit_project 报出的每类问题（S3 密钥轮换 / S1 路由鉴权 / S2 注入 / S4 依赖 / A1 权限收敛 / A2 提示注入 / A3 沙箱限额 / A4 数据脱敏 / H1 交接 / O1 运维）先 read_playbook(topic=对应编号 41-50) 读修复技能，按其「修复步骤」执行、按其「验证」段重跑对应 gate 确认归零。',
+  '需要并行查证/多路改造时用 run_workflow 分头跑（步骤 3-8 个，每步一个独立子代理；不需要上游结果就写 depends_on: [] 并行）；单文件小改动不要用工作流，自己直接做更快。每步 name 用职位名（4-10 字），不许写「步骤 1」。',
+  '需要用户拍板的事（砍功能/动线上数据/花钱的 API）用 ask_user 问一次就动手；其余决策自己定。一次回合最多问 3 次。',
+  '路径参数转义（硬规则）：JSON 参数里的 Windows 路径一律优先写正斜杠（D:/Projects/demo）；必须用反斜杠时一律双写（D:\\\\Projects\\\\demo）；写成单反斜杠会让参数不是合法 JSON，工具不会执行。',
+  '工具结果超长时会被截断为「头+尾」并完整落盘，按提示的 spill 路径用 run_command 检索，不要猜中间内容。',
+  '产出可预览文件（html / png / pdf / md 等）后，调用 present_artifact(path) 登记；用户在聊天里点一下就出现在右侧预览面板。',
+  '项目记忆：项目根的 AGENTS.md 每轮自动注入，其中约定优先遵守；用户说「记住」时用 remember_project 追加。',
+  '底线（与模式无关）：写操作限制在工作区/用户指定目录内；灾难性命令由系统拦截兜底；密钥/凭据不写进代码、不上传外部服务。',
+  '回答简洁，先结论后证据；用与用户提问相同的语言作答（用户写中文就用中文，写英文就用英文）。用 markdown 排版（结论加粗、改动用列表、长输出用代码块）。'
+].join('\n');
+
+const systemPromptCache = new Map();
+export function getSystemPromptParts(mode = 'audit') {
+  const key = mode === 'dev' ? 'dev' : 'audit';
+  if (!systemPromptCache.has(key)) {
+    systemPromptCache.set(key, (async () => {
+      const base = key === 'dev' ? SYSTEM_DEV_BASE : SYSTEM_BASE;
+      let skills = '';
       try {
         const catalog = await loadCatalog();
-        const skills = renderCatalog(catalog);
-        return { base: SYSTEM_BASE, skills, full: SYSTEM_BASE + '\n\n' + skills };
-      } catch {
-        return { base: SYSTEM_BASE, skills: '', full: SYSTEM_BASE }; // 方法论库缺失不阻断对话
-      }
-    })();
+        skills = renderCatalog(catalog);
+      } catch { /* 方法论库缺失不阻断对话 */ }
+      return { base, skills, full: base + (skills ? '\n\n' + skills : '') };
+    })());
   }
-  return systemPromise;
+  return systemPromptCache.get(key);
 }
-async function getSystemPrompt() {
-  return (await getSystemPromptParts()).full;
+async function getSystemPrompt(mode = 'audit') {
+  return (await getSystemPromptParts(mode)).full;
 }
 
 async function spillResult(toolName, callId, text) {  try {
@@ -1147,7 +1167,7 @@ async function runToolCallsGuarded(toolCalls, invalid, { tools, onEvent, toolCon
   return results;
 }
 
-export async function runAgentTurn({ config, messages, confirmedHosts = [], onToken, onEvent, onToolLifecycle = null, onUsage = null, tools, toolsSchema = null, systemPrompt: systemPromptOverride = null, forceFirstToolChoice = false, fetchImpl = fetch, summarize, signal, maxTurns = DEFAULT_MAX_TURNS, maxTurnMs: maxTurnMsOpt, maxTurnTokens: maxTurnTokensOpt, retryBaseMs = 600, noLimits = false, hooksConfig = null, hooksRunner = null, sessionId = null, drainSteer = null, resolveConfig = null, cwd = process.cwd() }) {
+export async function runAgentTurn({ config, messages, confirmedHosts = [], onToken, onEvent, onToolLifecycle = null, onUsage = null, tools, toolsSchema = null, systemPrompt: systemPromptOverride = null, roleMode = 'audit', forceFirstToolChoice = false, fetchImpl = fetch, summarize, signal, maxTurns = DEFAULT_MAX_TURNS, maxTurnMs: maxTurnMsOpt, maxTurnTokens: maxTurnTokensOpt, retryBaseMs = 600, noLimits = false, hooksConfig = null, hooksRunner = null, sessionId = null, drainSteer = null, resolveConfig = null, cwd = process.cwd() }) {
   if (signal?.aborted) return { cancelled: true, interrupted: true, partialContent: '', answer: '', trace: [] };
   if (!config?.baseUrl || !config?.apiKey) {
     return { error: t('尚未配置网关：请到左下角「模型设置」添加供应商（Base URL / API Key / 模型）并启用'), trace: [] };
@@ -1233,7 +1253,7 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
     if (willCompact) onEvent?.({ kind: 'compact-end', scope: 'auto', before: beforeTokens, error: e?.message || String(e) });
     /* 压缩失败不阻断对话 */
   }
-  const convo = [{ role: 'system', content: String(systemPromptOverride != null ? systemPromptOverride : await getSystemPrompt()) }, ...viewMessages];
+  const convo = [{ role: 'system', content: String(systemPromptOverride != null ? systemPromptOverride : await getSystemPrompt(roleMode)) }, ...viewMessages];
   // Steer：回合进行中用户从界面注入的消息。每次发起模型请求前 drain，追加为一条 user 消息
   // （不重置已完成的工具结果，直接计入本轮上下文），并推送给渲染层画「已注入」气泡。
   const applySteer = () => {
