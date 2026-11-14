@@ -239,5 +239,6 @@ export const EN_APP = {
   '新建会话失败，消息未发送：{msg}': 'Failed to create a session; message not sent: {msg}',
   '未命名': 'Untitled',
   '未命名会话': 'Untitled session',
-  '仍在后台运行（记录没丢）：': 'Still running in the background (records kept):'
+  '仍在后台运行（记录没丢）：': 'Still running in the background (records kept):',
+  'Markdown 渲染（原文本可外部打开查看）': 'Rendered as Markdown (open externally for the raw text)'
 };

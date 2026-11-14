@@ -1,6 +1,6 @@
 {
   "name": "finalcheck",
-  "version": "0.16.2",
+  "version": "0.16.3",
   "description": "分级生产就绪验收：人看不懂的代码，跑之前先过闸",
   "author": "Sean (https://github.com/ccai40359-wq)",
   "type": "module",

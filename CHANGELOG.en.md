@@ -6,6 +6,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.16.3] - 2026-11-14
+
+### Added
+
+- The artifact preview panel now renders Markdown: README-style documents show headings, tables and code blocks directly (use "Open externally" for the raw text).
+- Skills come in three tiers: give a single project (`.finalcheck/skills/`) or yourself (user skills directory) dedicated skills; closer tiers shadow same-named builtin ones.
+- Ten new repair-methodology skills: every audit finding category now has a matching fix guide with verification steps (41-50).
+- Development and acceptance are fully separated: coding/fixing tasks follow your instructions directly, while acceptance tasks still run the strict tiered gates with fail-closed.
+- Repairs are reversible: every file edit auto-snapshots first, and `repair_rollback` restores the pre-edit state in one call.
+- Each turn logs its configuration facts (model/tools/skills/track) to a ledger, so past judgments are replayable.
+- Multiple independent findings get repaired in parallel (multi-agent fanout, one subagent per finding) with honest failure reporting.
+
+### Fixed
+
+- Clicking "New Session" no longer makes a running turn "disappear": the draft page shows a still-running banner with one-click jump back.
+- Reopening an unfinished session restores its thinking and tool records instead of silently dropping them.
+- AI SDK library repos (langchain / vercel-ai / openai-agents-js) audit with far fewer false positives: three card-level FP clusters are gone while real issues stay as "needs human confirmation".
+
+### Improved
+
+- Test suite at 1310 green; methodology numbering is globally unique across domains (web-vuln 01-40, dev-fix 41-50).
+
 ## [0.16.2] - 2026-11-13
 
 ### Added
