@@ -218,6 +218,22 @@ export function registerAgentIpc({
 用户说「当前项目 / 这个项目 / 工作区」时指的就是它：代码体检、下载闸默认对它执行，不要反问路径。`
       }, ...contextMessages];
     }
+    // 三级技能目录（Agent Skills 对齐）：内置目录在系统提示里；用户级/项目级每回合按项目注入。
+    // 就近覆盖 project > user > builtin；同名覆盖内置后这里只列非 builtin 条目，避免重复。
+    if (turnProjectPath) {
+      try {
+        const { loadSkills, catalogSummary } = await import(engineUrl('src/playbooks.mjs'));
+        const skills = await loadSkills({ projectDir: turnProjectPath });
+        const extras = skills.filter((e) => e.scope !== 'builtin');
+        if (extras.length) {
+          contextMessages = [{
+            role: 'system',
+            content: `【用户/项目技能（${extras.length} 套，就近覆盖内置同名技能；read_playbook 的 topic 用编号或英文名）】\n` +
+              catalogSummary(extras).map((x) => `${x.id} ${x.cn}｜${x.name}｜${x.triggers}`).join('\n')
+          }, ...contextMessages];
+        }
+      } catch { /* 技能目录读取失败不阻断对话 */ }
+    }
     // 项目记忆：项目根的 AGENTS.md 每轮整篇注入（标注为背景资料，不是系统指令）
     try {
       const mem = await readProjectMemory(turnProjectPath);

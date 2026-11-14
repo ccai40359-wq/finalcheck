@@ -8,6 +8,112 @@ import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const PLAYBOOK_ROOT = path.join(REPO_ROOT, 'playbooks', 'web-vuln');
+export const PLAYBOOKS_ROOT = path.join(REPO_ROOT, 'playbooks');
+
+// ---- 三级技能目录（对齐 Claude Code / Codex / ZCode 的 Agent Skills 口径）----
+//   builtin：仓库 playbooks/<域>/（web-vuln、dev-fix、…，域内仍是编号目录）
+//   user   ：FINALCHECK_SKILLS_DIR（缺省 <repo>/desktop/skills/）下的扁平 <slug>/SKILL.md
+//   project：<被审项目>/.finalcheck/skills/ 下的扁平 <slug>/SKILL.md
+// 同名冲突就近覆盖：project > user > builtin。用户/项目技能不要求编号前缀。
+
+export function userSkillsRoot() {
+  return process.env.FINALCHECK_SKILLS_DIR || path.join(REPO_ROOT, 'desktop', 'skills');
+}
+
+export function projectSkillsRoot(projectDir) {
+  const d = String(projectDir || '').trim();
+  return d ? path.join(d, '.finalcheck', 'skills') : null;
+}
+
+export async function buildLooseCatalog(root, scope) {
+  let entries;
+  try { entries = await readdir(root, { withFileTypes: true }); } catch { return []; }
+  const dirs = entries
+    .filter((d) => d.isDirectory() && d.name !== 'node_modules' && !d.name.startsWith('.'))
+    .map((d) => d.name)
+    .sort();
+  const out = [];
+  for (const dir of dirs) {
+    const full = path.join(root, dir);
+    const names = await readdir(full).catch(() => []);
+    const skill = names.find((n) => n.toLowerCase() === 'skill.md');
+    if (!skill) continue;
+    const files = [];
+    for (const name of names.sort((a, b) => (a === 'SKILL.md' ? -1 : b === 'SKILL.md' ? 1 : a.localeCompare(b)))) {
+      try {
+        const st = await stat(path.join(full, name));
+        if (st.isFile()) files.push({ name, size: st.size });
+      } catch { /* 单个文件读不到不影响目录 */ }
+    }
+    const front = await readFile(path.join(full, skill), 'utf8').then(parseFrontmatter).catch(() => ({ name: '', description: '', descriptionEn: '' }));
+    out.push({
+      id: dir.toLowerCase(),
+      dir,
+      name: front.name || dir.toLowerCase(),
+      cn: dir,
+      title: dir,
+      description: front.description,
+      descriptionEn: front.descriptionEn,
+      triggers: triggersOf(front.description),
+      files,
+      scope,
+      __root: root,
+    });
+  }
+  return out;
+}
+
+async function buildBuiltinDomains() {
+  let domains;
+  try { domains = await readdir(PLAYBOOKS_ROOT, { withFileTypes: true }); } catch { return []; }
+  const sorted = domains.filter((d) => d.isDirectory() && !d.name.startsWith('.')).map((d) => d.name).sort();
+  const out = [];
+  for (const dom of sorted) {
+    const root = path.join(PLAYBOOKS_ROOT, dom);
+    let cat;
+    try { cat = await buildCatalog(root); } catch { continue; }
+    for (const e of cat) out.push({ ...e, scope: 'builtin', domain: dom, __root: root });
+  }
+  return out;
+}
+
+const skillsCache = new Map();
+const SCOPE_RANK = { builtin: 0, user: 1, project: 2 };
+
+export async function loadSkills({ projectDir = null } = {}) {
+  const key = path.resolve(String(projectDir || ''));
+  if (!skillsCache.has(key)) {
+    skillsCache.set(key, (async () => {
+      const builtin = await buildBuiltinDomains().catch(() => []);
+      const user = await buildLooseCatalog(userSkillsRoot(), 'user').catch(() => []);
+      const pRoot = projectSkillsRoot(projectDir);
+      const project = pRoot ? await buildLooseCatalog(pRoot, 'project').catch(() => []) : [];
+      // 就近覆盖 project > user > builtin：两遍算法——先登记每个键的最高层级，
+      // 再只保留「自己所有键都没有被更高层级占用」的条目（name/dir 双键不留残影）。
+      const norm = (s) => String(s || '').replace(/[^a-z0-9]/gi, '').toLowerCase();
+      const keyRank = new Map();
+      for (const [rank, list] of [[0, builtin], [1, user], [2, project]]) {
+        for (const e of list) {
+          for (const k of [norm(e.name), norm(e.dir)]) {
+            keyRank.set(k, Math.max(keyRank.get(k) ?? -1, rank));
+          }
+        }
+      }
+      const out = [];
+      const ids = new Set();
+      for (const [rank, list] of [[0, builtin], [1, user], [2, project]]) {
+        for (const e of list) {
+          const shadowed = [norm(e.name), norm(e.dir)].some((k) => keyRank.get(k) > rank);
+          if (!shadowed && !ids.has(e)) { ids.add(e); out.push(e); }
+        }
+      }
+      return out;
+    })().catch((e) => { skillsCache.delete(key); throw e; }));
+  }
+  return skillsCache.get(key);
+}
+
+export function clearSkillsCache() { skillsCache.clear(); }
 
 const catalogCache = new Map();
 
@@ -154,11 +260,13 @@ function resolveFile(entry, raw) {
 const DEFAULT_INLINE = 14000;
 const MAX_INLINE = 30000;
 
-export async function readPlaybook({ topic, file, offset = 0, limit = DEFAULT_INLINE, root = PLAYBOOK_ROOT } = {}) {
-  const catalog = await loadCatalog(root);
-  const hit = resolveTopic(catalog, topic);
+export async function readPlaybook({ topic, file, offset = 0, limit = DEFAULT_INLINE, root = PLAYBOOK_ROOT, catalog = null } = {}) {
+  const cat = catalog || await loadCatalog(root);
+  const hit = resolveTopic(cat, topic);
   if (!hit.entry) return hit;
   const entry = hit.entry;
+  // 三级合并目录的条目自带 __root（user/project 技能不在 builtin root 下）
+  const entryRoot = entry.__root || root;
 
   let chosen;
   if (file) {
@@ -171,9 +279,9 @@ export async function readPlaybook({ topic, file, offset = 0, limit = DEFAULT_IN
   }
   if (!chosen) return { dir: entry.dir, name: entry.name, cn: entry.cn, error: '该类目没有可读手册' };
 
-  const fullPath = path.join(root, entry.dir, chosen);
-  // 路径监狱第二道：目录里若有符号链接指向库外，realpath 必须仍在库内
-  const realRoot = await realpath(root);
+  const fullPath = path.join(entryRoot, entry.dir, chosen);
+  // 路径监狱第二道：目录里若有符号链接指向库外，realpath 必须仍在该技能根内
+  const realRoot = await realpath(entryRoot);
   const realFull = await realpath(fullPath);
   if (realFull !== realRoot && !realFull.startsWith(realRoot + path.sep)) {
     return { dir: entry.dir, name: entry.name, cn: entry.cn, error: '路径越界（符号链接指向方法论库之外）' };

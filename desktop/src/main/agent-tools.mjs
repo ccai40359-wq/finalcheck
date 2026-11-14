@@ -6,7 +6,7 @@ import { existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
-import { loadCatalog, readPlaybook, catalogSummary } from '../../../src/playbooks.mjs';
+import { loadCatalog, loadSkills, readPlaybook, catalogSummary } from '../../../src/playbooks.mjs';
 import { readFileTool, editFileTool, writeFileTool } from '../../../src/fs-tools.mjs';
 import { assertPathAllowed, assertCwd, checkCommand, checkDestructiveTargets, scrubEnv } from './policy.mjs';
 import { runHookEvent } from './hooks.mjs';
@@ -481,7 +481,7 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
     },
 
     list_playbooks: async () => {
-      const catalog = await loadCatalog(playbookRoot);
+      const catalog = await loadSkills({ projectDir: projectPath });
       return { total: catalog.length, categories: catalogSummary(catalog) };
     },
 
@@ -490,7 +490,9 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
       file: args?.file,
       offset: args?.offset,
       limit: args?.limit,
-      root: playbookRoot
+      root: playbookRoot,
+      // 三级合并目录：内置 + 用户级 + 项目级（project > user > builtin），条目自带 __root
+      catalog: await loadSkills({ projectDir: projectPath })
     }),
 
     read_file: async (args) => {
