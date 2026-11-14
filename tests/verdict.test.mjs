@@ -97,9 +97,11 @@ test('runTests=false 的 L2：Q1 只算未授权 → 待授权，不是无法验
   const q1 = res.gates.gapItems.find((g) => g.checkId === 'Q1');
   assert.equal(q1.kind, 'unauthorized');
   assert.deepEqual(res.conclusion.pendingAuth.map((g) => g.checkId), ['Q1']);
-  // 其余计划内检查确实跑完了
+  // 其余计划内检查确实跑完了（A 系列在干净仓如实 N/A，不计入 executed）
   const plannedMinusQ1 = res.gates.planned.filter((id) => id !== 'Q1');
-  assert.deepEqual(res.gates.executed, plannedMinusQ1);
+  const naIds = res.notApplicable.map((g) => g.checkId);
+  assert.deepEqual(res.gates.executed, plannedMinusQ1.filter((id) => !naIds.includes(id)));
+  assert.ok(naIds.every((id) => ['A1', 'A2', 'A3', 'A4'].includes(id)), `N/A 应只含 A 系列，实际 ${naIds}`);
 
   const text = renderReport(res);
   assert.match(text, /待授权/);
@@ -140,7 +142,8 @@ test('无 gap：L2 全过 → 过', async (t) => {
   const dir = await makeProject(t);
   const res = await audit(dir, { tier: 'L2', interactive: true, runTests: true });
 
-  assert.deepEqual(res.gates.gapItems, []);
+  assert.deepEqual(res.gates.gapItems.filter((g) => g.kind !== 'not-applicable'), []);
+  assert.deepEqual(res.notApplicable.map((g) => g.checkId).sort(), ['A1', 'A2', 'A3', 'A4'], '干净仓上 A 系列如实点名 N/A');
   assert.equal(res.conclusion.verdict, '过', JSON.stringify(res.findings));
 });
 
@@ -148,7 +151,7 @@ test('无 gap：中危卡条目 → 修完再过', async (t) => {
   const dir = await makeProject(t, { app: "const cfg = { debug: true };\nconsole.log(cfg);\n" });
   const res = await audit(dir, { tier: 'L2', interactive: true, runTests: true });
 
-  assert.deepEqual(res.gates.gapItems, []);
+  assert.deepEqual(res.gates.gapItems.filter((g) => g.kind !== 'not-applicable'), []);
   assert.equal(res.conclusion.verdict, '修完再过');
   assert.ok(res.findings.some((f) => f.rule === 'S5.debug-on'));
 });
@@ -157,7 +160,7 @@ test('无 gap：高危实锤 → 拦', async (t) => {
   const dir = await makeProject(t, { app: "const apiKey = 'abcdef1234567890';\nconsole.log(apiKey);\n" });
   const res = await audit(dir, { tier: 'L2', interactive: true, runTests: true });
 
-  assert.deepEqual(res.gates.gapItems, []);
+  assert.deepEqual(res.gates.gapItems.filter((g) => g.kind !== 'not-applicable'), []);
   assert.equal(res.conclusion.verdict, '拦');
   assert.ok(res.findings.some((f) => f.checkId === 'S3' && f.severity === 'high' && f.force === 'card'));
 });

@@ -180,7 +180,8 @@ function textHasExternalInput(text, params = null) {
 
 // 去掉 // 行注释与 /* */ 块注释（跨行状态由调用方保存）。
 // 字符串/模板内容保留，SQL 关键词识别仍依赖字面量内容。
-function stripComments(line, inBlockComment) {
+// 供 A 系列（ai-agent.mjs）复用：同一套注释剥离口径，防止注释/docstring 里的示例代码自咬。
+export function stripComments(line, inBlockComment) {
   let out = '';
   let quote = '';
   let i = 0;

@@ -187,13 +187,13 @@ test('detectLanguageGap：纯非 JS 必报；混合仓非 JS 产品代码 ≥5 �
   assert.equal(detectLanguageGap(['src/app.mts', 'main.py']), null, 'mts 也是 TS 代码');
 
   const py = detectLanguageGap(['main.py']);
-  assert.deepEqual(py, { nonJsCount: 1, jsCount: 0, exts: ['.py'], checkIds: ['S1', 'S2', 'S7', 'Q3', 'Q4', 'Q5'] });
+  assert.deepEqual(py, { nonJsCount: 1, jsCount: 0, exts: ['.py'], checkIds: ['S1', 'S2', 'S7', 'Q3', 'Q4', 'Q5', 'A2', 'A3', 'A4'] });
 
   const mixed = detectLanguageGap(['main.py', 'models/app.php', 'C:\\proj\\Main.java', 'svc/main.go', 'lib/run.rb']);
   assert.equal(mixed.nonJsCount, 5);
   assert.equal(mixed.jsCount, 0);
   assert.deepEqual(mixed.exts, ['.go', '.java', '.php', '.py', '.rb']);
-  assert.deepEqual(mixed.checkIds, ['S1', 'S2', 'S7', 'Q3', 'Q4', 'Q5']);
+  assert.deepEqual(mixed.checkIds, ['S1', 'S2', 'S7', 'Q3', 'Q4', 'Q5', 'A2', 'A3', 'A4']);
 
   const mixedWithFrontend = detectLanguageGap([
     'src/app.ts',

@@ -22,6 +22,7 @@ const LOAD_LIMIT_CAPS = { seconds: 60, connections: 50 };
 // 全 L2/L3 profile 合并后与老路径逐项相等（而不是仅集合相等）。
 const CHECK_ORDER = [
   'S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7', 'S8',
+  'A1', 'A2', 'A3', 'A4',
   'Q1', 'Q2', 'H1', 'Q3', 'Q4', 'Q5',
   'C1', 'O1', 'D1', 'D2', 'D3',
 ];
@@ -42,9 +43,9 @@ const emptyLevel = () => level([], false, false, 'small', 1);
 // planFromProfile 会按 checkId 去重，不会重复执行。
 export const DIMENSIONS = {
   安全性: {
-    L1: level(['S2', 'S3', 'S5'], false, false, 'small', 1),
-    L2: level(['S1', 'S2', 'S3', 'S5', 'S6', 'S7', 'S8'], 'local', 'single', 'standard', 8),
-    L3: level(['S1', 'S2', 'S3', 'S5', 'S6', 'S7', 'S8'], 'authorized', 'adversarial', 'strong', 20),
+    L1: level(['S2', 'S3', 'S5', 'A1'], false, false, 'small', 1),
+    L2: level(['S1', 'S2', 'S3', 'S5', 'S6', 'S7', 'S8', 'A1', 'A2', 'A3', 'A4'], 'local', 'single', 'standard', 8),
+    L3: level(['S1', 'S2', 'S3', 'S5', 'S6', 'S7', 'S8', 'A1', 'A2', 'A3', 'A4'], 'authorized', 'adversarial', 'strong', 20),
   },
   数据与隐私: {
     L1: emptyLevel(),

@@ -230,7 +230,10 @@ test('audit 带 profile：tier.dimensions 给出每维 level/verdict；不带 pr
   }
   assert.equal(withProfile.conclusion.verdict, '过');
   assert.deepEqual(withProfile.gates.planned, GATES.L2);
-  assert.deepEqual(withProfile.gates.executed, GATES.L2);
+  // 干净仓上 A 系列（AI 检查面）如实 N/A：executed = 计划 − N/A，且 N/A 只应是 A 系列
+  const naIds = withProfile.notApplicable.map((g) => g.checkId);
+  assert.deepEqual(withProfile.gates.executed, GATES.L2.filter((id) => !naIds.includes(id)));
+  assert.ok(naIds.every((id) => ['A1', 'A2', 'A3', 'A4'].includes(id)), `N/A 应只含 A 系列，实际 ${naIds}`);
 
   const legacy = await audit(dir, { tier: 'L2', interactive: true, runTests: true });
   assert.ok(!('dimensions' in legacy.tier));

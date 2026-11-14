@@ -110,7 +110,7 @@ test('profile + 只有源码：代码类维度 full、动态类 static-only', as
   });
   const text = renderReport(res);
 
-  assert.match(rowOf(text, '安全性'), /\| static-only \| S1、S2、S3、S5、S6、S7、S8 \|/);
+  assert.match(rowOf(text, '安全性'), /\| static-only \| S1、S2、S3、S5、S6、S7、S8、A1、A2、A3、A4（不适用：A1、A2、A3、A4） \|/);
   assert.match(rowOf(text, '数据与隐私'), /\| static-only \| S3、S8 \|/);
   for (const name of ['供应链与许可证', '可维护性', '代码可读性', '可测试性', '可移交性']) {
     assert.match(rowOf(text, name), /\| full \|/, `${name} 只有源码时应为 full`);

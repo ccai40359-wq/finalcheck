@@ -82,7 +82,7 @@ test('维度格式同样分层：维度表保持在前，Findings 内按三层�
   const table = text.indexOf('维度结论表：');
   const findings = text.indexOf('## Findings');
   assert.ok(table >= 0 && table < findings, '维度表必须保持在 Findings 之前');
-  assert.match(text, /^\| 安全性 \| L2 \| 修完再过 \| static-only \| S1、S2、S3、S5、S6、S7、S8 \|$/m);
+  assert.match(text, /^\| 安全性 \| L2 \| 修完再过 \| static-only \| S1、S2、S3、S5、S6、S7、S8、A1、A2、A3、A4 \|$/m);
   assert.match(text, /^\| 代码可读性 \| L2 \| 修完再过 \| full \| Q4 \|$/m);
   assert.ok(text.indexOf('**会卡交付的（1 条：force=card 或 severity=high）**') < text.indexOf('**需要人工判断的（1 条：medium）**'));
   assert.match(text, /风格与可读性建议 6 条（命名 4 \/ 重复字符串 2），默认不展开/);

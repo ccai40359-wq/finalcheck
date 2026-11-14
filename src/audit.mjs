@@ -27,18 +27,19 @@ import { resolveReportCaps } from './report-caps.mjs';
 import { ACCEPT_FILE, applyAcceptances } from './accept.mjs';
 import { applyScopePolicy, detectLanguageGap } from './scope-policy.mjs';
 import { runPyBandit } from './checks/py-bandit.mjs';
+import { checkAiToolPerms, checkAiPromptInjection, checkAiSandbox, checkAiDataBoundary } from './checks/ai-agent.mjs';
 import { isLibraryRepo } from './project-kind.mjs';
 
 // 覆盖关（ACCEPTANCE §4 矩阵已实现子集）：S6/D/E/X 接线中
 // L2 = 安全/供应链/测试 + 交接(H1) + 可维护性(Q3)
 // L3 = L2 + 许可证(C1) + 运维就绪(O1)
-// L1 = 个人底线：只有 S3（含 git 历史密钥）是硬卡
-// L2 = 安全/供应链/测试 + 外部入口(S6) + 交接(H1) + 可维护性(Q3)
+// L1 = 个人底线：只有 S3（含 git 历史密钥）与 A1 hard（入库配置把 agent 执行权开到不受限）是硬卡
+// L2 = 安全/供应链/测试 + 外部入口(S6) + AI Agent 检查面(A1-A4) + 交接(H1) + 可维护性(Q3)
 // L3 = L2 + 数据层(D1 事务/D2 备份/D3 隐私) + 许可证(C1) + 运维就绪(O1)
 export const GATES = {
-  L1: ['S2', 'S3', 'S4', 'S5'],
-  L2: ['S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7', 'S8', 'Q1', 'H1', 'Q3', 'Q4', 'Q5'],
-  L3: ['S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7', 'S8', 'Q1', 'H1', 'Q3', 'Q4', 'Q5', 'C1', 'O1', 'D1', 'D2', 'D3'],
+  L1: ['S2', 'S3', 'S4', 'S5', 'A1'],
+  L2: ['S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7', 'S8', 'A1', 'A2', 'A3', 'A4', 'Q1', 'H1', 'Q3', 'Q4', 'Q5'],
+  L3: ['S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7', 'S8', 'A1', 'A2', 'A3', 'A4', 'Q1', 'H1', 'Q3', 'Q4', 'Q5', 'C1', 'O1', 'D1', 'D2', 'D3'],
 };
 // Q2 只在项目根有 finalcheck.quality.json 时才加入计划：没声明就不假装查过质量
 const QUALITY_TIERS = new Set(['L2', 'L3']);
@@ -126,6 +127,10 @@ export async function audit(projectDir, { tier = null, interactive = false, runT
     if (id === 'S2') results.push(await checkInject(projectDir, { tier: effective, excludes, routeResult, includeFixtures }));
     if (id === 'S7') results.push(await checkAuthz(projectDir, { tier: effective, excludes, routeResult, includeFixtures }));
     if (id === 'S8') results.push(await checkPassword(projectDir, { tier: effective, excludes, includeFixtures }));
+    if (id === 'A1') results.push(await checkAiToolPerms(projectDir, { tier: effective, excludes, includeFixtures }));
+    if (id === 'A2') results.push(await checkAiPromptInjection(projectDir, { tier: effective, excludes, includeFixtures }));
+    if (id === 'A3') results.push(await checkAiSandbox(projectDir, { tier: effective, excludes, includeFixtures }));
+    if (id === 'A4') results.push(await checkAiDataBoundary(projectDir, { tier: effective, excludes, includeFixtures }));
     if (id === 'H1') results.push(await checkHandover(projectDir, { tier: effective, excludes, includeFixtures }));
     if (id === 'Q3') results.push(await checkMetrics(projectDir, { tier: effective, excludes, includeFixtures, reportCaps }));
     if (id === 'Q4') results.push(await checkReadability(projectDir, { tier: effective, excludes, includeFixtures, reportCaps }));
@@ -214,7 +219,7 @@ export async function audit(projectDir, { tier = null, interactive = false, runT
     });
     if (downgraded) warnings.push(`库/框架仓库：S1 的 ${downgraded} 条路由发现降为 check（无部署/服务信号，需人工确认）`);
   }
-  if (effective === 'L1') findings = findings.map((f) => (f.checkId === 'S3' ? f : { ...f, force: 'tip' })); // L1 只有 S3 是硬卡
+  if (effective === 'L1') findings = findings.map((f) => (f.checkId === 'S3' || (f.checkId === 'A1' && f.hard === true) ? f : { ...f, force: 'tip' })); // L1 只有 S3 与 A1 hard 是硬卡
   // S7/S8 属文件级启发式，人工确认机制（v2）接入前一律 check 级，不自动锁死结论（三轮 reviewer P1#3/#13）
   findings = findings.map((f) => (f.checkId === 'S7' || f.checkId === 'S8') && f.force === 'card' ? { ...f, force: 'check', message: f.message + '（人工确认机制接入后升级为卡）' } : f);
   // gap 分两类：能力缺失（unavailable：缺 lockfile/二进制/配置）与未授权（unauthorized：runTests=false）。
@@ -377,8 +382,9 @@ function baseVerdict(tier, findings) {
   const high = findings.filter((f) => f.severity === 'high' && f.force === 'card'); // S7/S8 在 L2 是'check'级（只报不拦），不得误触发
   const card = findings.filter((f) => f.force === 'card');
   if (tier === 'L1') {
-    // P0#2：只认 S3 高危实锤（程序判定），文档线索不算
+    // P0#2：只认 S3 高危实锤（程序判定），文档线索不算；A1 hard（入库配置不受限执行权）同权
     if (findings.some((f) => f.checkId === 'S3' && f.severity === 'high' && f.force === 'card')) return { verdict: '拦', reason: 'S3 密钥项高危实锤（L1 唯一硬卡）' };
+    if (findings.some((f) => f.checkId === 'A1' && f.severity === 'high' && f.force === 'card' && f.hard === true)) return { verdict: '拦', reason: 'A1 工具权限不受限（入库配置硬卡，L1 底线）' };
     return { verdict: '过', reason: 'L1 底线达标（其余项为提醒）' };
   }
   if (tier === 'L2') {

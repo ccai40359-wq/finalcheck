@@ -25,14 +25,16 @@ const NON_PRODUCT_SEGMENTS = new Set([
 const ROOT_ONLY_SEGMENTS = new Set(['docs', 'doc']);
 
 // 命中非产品路径就降级的产品类 check。S3 先按硬规则白名单过滤，其余 S3 规则同样可降。
-const SCOPE_DOWNGRADE_CHECKS = new Set(['S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7', 'S8', 'Q3', 'Q4', 'Q5']);
+// A1-A4 同样可降；A1 的 hard（入库 agent 配置卡）在 applyScopePolicy 里豁免，见下。
+const SCOPE_DOWNGRADE_CHECKS = new Set(['S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7', 'S8', 'Q3', 'Q4', 'Q5', 'A1', 'A2', 'A3', 'A4']);
 
 // S3 的硬规则：真实密钥即使出现在 tests 里也要按原 force/severity 硬卡（L1 底线）。
 // 现在所有 S3（除 S3.weak-default 的测试期望值）都不降级，见 applyScopePolicy。
 
 const JS_TS_EXTS = new Set(['.js', '.mjs', '.cjs', '.ts', '.mts', '.cts', '.jsx', '.tsx']);
 const NON_JS_EXTS = new Set(['.py', '.php', '.java', '.go', '.rb', '.rs', '.kt', '.cs']);
-const LANGUAGE_GAP_CHECKS = ['S1', 'S2', 'S7', 'Q3', 'Q4', 'Q5'];
+// A1 不进语言缺口：agent 配置文件是 JSON/TOML/YAML/MD frontmatter，语言无关。
+const LANGUAGE_GAP_CHECKS = ['S1', 'S2', 'S7', 'Q3', 'Q4', 'Q5', 'A2', 'A3', 'A4'];
 
 const TEST_FILE_RE = /\.test\.(?:js|mjs|cjs|ts|jsx|tsx)$/;
 const SPEC_FILE_RE = /\.spec\.[^/]+$/;
@@ -95,7 +97,9 @@ export function applyScopePolicy(findings) {
     if (!finding || !SCOPE_DOWNGRADE_CHECKS.has(finding.checkId)) return finding;
     // S3 只有「非真实密钥」可降：secrets.mjs 用 hard=false 标记测试夹具/占位值；
     // 真实密钥（AWS/PEM/ghp_/sk- 等）即使出现在 tests/examples 也保持硬卡，L1 底线不被绕过。
+    // A1 的 hard（入库 agent 配置的 bypass/通配授权）同理不降：配置文件本身就是产品面。
     if (finding.checkId === 'S3' && finding.rule !== 'S3.weak-default' && finding.hard !== false) return finding;
+    if (finding.checkId === 'A1' && finding.hard === true) return finding;
     if (!isNonProductPath(finding.file)) return finding;
     const message = String(finding.message || '');
     downgraded++;
