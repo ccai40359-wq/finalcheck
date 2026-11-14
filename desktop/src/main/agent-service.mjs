@@ -287,6 +287,8 @@ export const TOOLS_SCHEMA = [
 // TOOLS_SCHEMA 同时是 MCP 通道的 SSOT（src/mcp/server.mjs 照抄并精确断言工具表），
 // MCP 通道没有 review_diff 的实现，放进去会让 tools/list 暴露一个调不通的工具。
 export const AGENT_ONLY_TOOLS_SCHEMA = [
+  // 修复回路（③）：回滚到 edit_file/write_file 改动前的快照（主 agent 专属，子代理不给）
+  { type: 'function', function: { name: 'repair_rollback', description: '把文件回滚到本次编辑前的快照（edit_file/write_file 每次覆盖已存在文件都会自动留一份快照）。改坏了就用它恢复，不要手工拼回原文', parameters: { type: 'object', properties: { path: { type: 'string', description: '文件绝对路径（与 edit 时一致）。' + PATH_JSON_HINT }, snapshotId: { type: 'string', description: '可选：edit_file 结果里返回的 snapshotId；不给就恢复到最新一次改动前' } }, required: ['path'] } } },
   { type: 'function', function: { name: 'review_diff', description: '只读审查 git 改动（默认对比 HEAD，也可 HEAD~1 / 分支名）：返回改动文件与 +/- 行数，并标出新增 SQL 拼接 / 命令执行 / 密钥字面量、删除的鉴权中间件、被改的 .env/.gitignore。不执行被审项目代码，不做 add/commit/checkout', parameters: { type: 'object', properties: { dir: { type: 'string', description: '项目绝对路径。' + PATH_JSON_HINT }, base: { type: 'string', description: '可选：对比基线，默认 HEAD（也可 HEAD~1 或分支名）' } }, required: ['dir'] } } },
   // 回合中途向用户提问：只在主 agent 的工具表；子代理不注册（避免并行子代理同时弹多个问题）。
   // 卡片 UI 用 callId 关联；回答经 finalcheck:ask-user-answer 回填，工具返回 { answer }。
@@ -343,6 +345,7 @@ const SYSTEM_DEV_BASE = [
   '发现必须带证据说话：改了什么贴 diff/输出，报错贴原文，不编造测试结果——没跑就说没跑。',
   '动手顺序：先 read_file 看清原文再改（edit_file 的 old_string 必须唯一，做最小替换）；新建文件用 write_file；改动尽量小而聚焦，一次一个目标，改完立即跑最小验证（语法检查 / 定向单测 / 启动冒烟）并把输出贴给用户。',
   '修审计发现时按技能修：audit_project 报出的每类问题（S3 密钥轮换 / S1 路由鉴权 / S2 注入 / S4 依赖 / A1 权限收敛 / A2 提示注入 / A3 沙箱限额 / A4 数据脱敏 / H1 交接 / O1 运维）先 read_playbook(topic=对应编号 41-50) 读修复技能，按其「修复步骤」执行、按其「验证」段重跑对应 gate 确认归零。',
+  '多条独立发现并行修：≥3 条互不依赖的审计发现（不同文件/不同规则）→ run_workflow 扇出修复——每条发现一个独立子代理（prompt 写明「先 read_playbook(topic=对应编号) 读修复技能再动手」），depends_on 全部空数组并行；最后一步汇总「各发现修没修好 + 重跑 gate 的结果」。修复失败的发现如实列「未修好 + 原因」，不许为了结论好看硬说修完。',
   '需要并行查证/多路改造时用 run_workflow 分头跑（步骤 3-8 个，每步一个独立子代理；不需要上游结果就写 depends_on: [] 并行）；单文件小改动不要用工作流，自己直接做更快。每步 name 用职位名（4-10 字），不许写「步骤 1」。',
   '需要用户拍板的事（砍功能/动线上数据/花钱的 API）用 ask_user 问一次就动手；其余决策自己定。一次回合最多问 3 次。',
   '路径参数转义（硬规则）：JSON 参数里的 Windows 路径一律优先写正斜杠（D:/Projects/demo）；必须用反斜杠时一律双写（D:\\\\Projects\\\\demo）；写成单反斜杠会让参数不是合法 JSON，工具不会执行。',

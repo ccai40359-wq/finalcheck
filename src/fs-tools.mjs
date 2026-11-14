@@ -4,6 +4,7 @@
 import { readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { snapshotBeforeWrite } from './repair-loop.mjs';
 
 const MAX_BYTES = 2 * 1024 * 1024;
 const MAX_READ_LIMIT = 40000;
@@ -118,6 +119,12 @@ export async function editFileTool({ path: p, old_string, new_string } = {}) {
   if (count > 1) return { error: `old_string 在文件中出现 ${count} 次，必须唯一；请带上更多上下文再改`, path: abs };
   const idx = before.indexOf(old_string);
   const after = before.slice(0, idx) + new_string + before.slice(idx + old_string.length);
+  // 修复回路（③）：写盘前自动快照——失败可用 repair_rollback 回滚到本次改动前
+  let snapshotId = null;
+  try {
+    const snap = await snapshotBeforeWrite(abs);
+    if (snap && snap.snapId) snapshotId = snap.snapId;
+  } catch { /* 快照失败不阻断编辑（回滚能力尽力而为） */ }
   try {
     await atomicWrite(abs, after);
   } catch (e) {
@@ -131,7 +138,8 @@ export async function editFileTool({ path: p, old_string, new_string } = {}) {
     removed: d.removed,
     diff: d.lines,
     diffTruncated: d.truncated,
-    totalLines: toLines(after).length
+    totalLines: toLines(after).length,
+    ...(snapshotId ? { snapshotId, rollbackHint: '改坏了可调 repair_rollback({ path, snapshotId }) 回滚到本次改动前' } : {})
   };
 }
 
@@ -156,6 +164,14 @@ export async function writeFileTool({ path: p, content } = {}) {
       return { error: `父目录不存在：${parent}（先创建目录再写文件）`, path: abs };
     }
   }
+  // 修复回路（③）：覆盖已存在文件 → 写盘前快照旧内容（新建文件无旧内容不快照）
+  let snapshotId = null;
+  if (!created) {
+    try {
+      const snap = await snapshotBeforeWrite(abs);
+      if (snap && snap.snapId) snapshotId = snap.snapId;
+    } catch { /* 快照失败不阻断写入 */ }
+  }
   try {
     await atomicWrite(abs, content);
   } catch (e) {
@@ -170,6 +186,7 @@ export async function writeFileTool({ path: p, content } = {}) {
     removed: d.removed,
     diff: d.lines,
     diffTruncated: d.truncated,
-    totalLines: toLines(content).length
+    totalLines: toLines(content).length,
+    ...(snapshotId ? { snapshotId, rollbackHint: '改坏了可调 repair_rollback({ path, snapshotId }) 回滚到本次写入前' } : {}),
   };
 }

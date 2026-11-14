@@ -226,6 +226,7 @@ app.whenReady().then(async () => {
   process.env.FINALCHECK_SESSIONS_DIR ||= path.join(DATA_ROOT, 'sessions');
   process.env.FINALCHECK_MEMORY_DIR ||= path.join(DATA_ROOT, 'memory');
   process.env.FINALCHECK_SPILL_DIR ||= path.join(DATA_ROOT, 'spill');
+  process.env.FINALCHECK_SNAPSHOTS_DIR ||= path.join(DATA_ROOT, 'snapshots'); // 修复回路（③）：edit/write 改前快照
   process.env.FINALCHECK_PROJECTS_FILE ||= path.join(DATA_ROOT, 'projects.json');
   await mkdir(DATA_ROOT, { recursive: true });
   // 崩溃/未捕获异常日志：与诊断包读的是同一个 main.log（app.getPath('logs')，拿不到就回落 DATA_ROOT）

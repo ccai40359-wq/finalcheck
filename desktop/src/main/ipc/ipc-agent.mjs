@@ -225,6 +225,8 @@ export function registerAgentIpc({
         const { loadSkills, catalogSummary } = await import(engineUrl('src/playbooks.mjs'));
         const skills = await loadSkills({ projectDir: turnProjectPath });
         const extras = skills.filter((e) => e.scope !== 'builtin');
+        turnSkillsBuiltin = skills.length - extras.length;
+        turnSkillsExtra = extras.map((e) => e.id);
         if (extras.length) {
           contextMessages = [{
             role: 'system',
@@ -235,8 +237,10 @@ export function registerAgentIpc({
       } catch { /* 技能目录读取失败不阻断对话 */ }
     }
     // 项目记忆：项目根的 AGENTS.md 每轮整篇注入（标注为背景资料，不是系统指令）
+    let agentsMdLoaded = false;
     try {
       const mem = await readProjectMemory(turnProjectPath);
+      agentsMdLoaded = !!mem;
       if (mem) {
         contextMessages = [{
           role: 'system',
@@ -529,6 +533,8 @@ export function registerAgentIpc({
     // 按回合意图选轨：用户消息命中验收/体检/审计/渗透/压测等 → audit 轨；其余（写码/改码/工具活）→ dev 轨。
     const AUDIT_INTENT_RE = /验收|体检|审计|渗透|压测|下载闸|报告|red ?team|audit|pentest|probe\b|L1\b|L2\b|L3\b/i;
     const roleMode = AUDIT_INTENT_RE.test(String(userMsg || '')) ? 'audit' : 'dev';
+    let turnSkillsBuiltin = 0;
+    let turnSkillsExtra = [];
     const out = await runAgentTurn({
       roleMode,
       // agent-service 入参形状不变：baseUrl / apiKey / model（取模型列表第一个）
@@ -782,6 +788,24 @@ export function registerAgentIpc({
     if (sessionId) {
       // dsh 语义：中断的输出也要落盘（content 已含已流出部分），会话历史不丢内容
       try { out.persisted = await sessions.appendAssistantMessage(sessionId, { content: out.answer ?? '', error: out.cancelled ? null : (out.error ?? null), interrupted: !!out.interrupted, reasoning: out.reasoning ?? '', trace: out.trace ?? [], workedMs: out.workedMs ?? null }); } catch { /* 会话落盘失败不影响回答 */ }
+      // 回合上下文快照（④，pi 显式会话口径）：当时的配置事实落成 JSONL——复盘「当时为什么这么判」有账可查
+      if (turnProjectPath && sessionId) {
+        try {
+          const { appendTurnContext } = await import(engineUrl('src/turn-context.mjs'));
+          await appendTurnContext(turnProjectPath, sessionId, {
+            roleMode,
+            provider: prov.id,
+            model,
+            tools: Object.keys(tools || {}),
+            skillsBuiltin: turnSkillsBuiltin,
+            skillsExtra: turnSkillsExtra,
+            agentsMd: agentsMdLoaded,
+            cancelled: !!out.cancelled,
+            error: out.error || null,
+            turns: out.trace?.length || 0
+          });
+        } catch { /* 快照失败不影响回答 */ }
+      }
       // 首轮结束后用 AI 起标题（dsh 式）：后台跑，不拖慢回答；失败就保留「第一条消息」当标题
       if (!out.cancelled && !out.error) {
         (async () => {

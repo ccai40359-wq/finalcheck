@@ -495,6 +495,19 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
       catalog: await loadSkills({ projectDir: projectPath })
     }),
 
+    // 修复回路（③）：回滚到 edit/write 前的快照（主 agent 专属；快照由 fs-tools 写盘前自动留）
+    repair_rollback: async (args) => {
+      const a = args || {};
+      if (!a.path || typeof a.path !== 'string') return { error: 'path 必填' };
+      if (policy) {
+        const check = assertPathAllowed(policy, a.path, { write: true, tool: 'repair_rollback' });
+        if (!check.ok) return policyDenyResult(check);
+      }
+      const { rollbackFile, listSnapshots } = await import('../../../src/repair-loop.mjs');
+      if (a.list) return { snapshots: await listSnapshots(path.resolve(a.path)) };
+      return rollbackFile(a.path, a.snapshotId || null);
+    },
+
     read_file: async (args) => {
       let a = args || {};
       if (policy) {
