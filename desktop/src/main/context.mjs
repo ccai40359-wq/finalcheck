@@ -60,13 +60,18 @@ export async function assembleContext(messages, { budgetTokens, budgetChars = 80
   const { total, limit, useTokens } = measureContext(list, { budgetTokens, budgetChars });
   if (total <= limit) return { messages: list, compacted: false };
 
+  // 保留区预算 = 触发阈值的一部分（默认 37.5%）：压缩后明显低于阈值，
+  // 避免「压缩后贴线 → 下一回合又触发 → 反复烧摘要调用」；不足部分由摘要条目承担。
+  // KEEP_RECENT 保底不受比例影响：最新的几条永远原文保留。
+  const keepLimit = Math.floor(limit * KEEP_BUDGET_RATIO);
+
   // 从尾部往回累积；最近 KEEP_RECENT 条无条件保留，更早的进"被压缩区"
   const costOf = useTokens ? (m) => estimateMessagesTokens([m]) : charLen;
   let keptChars = 0;
   let keepFrom = list.length;
   for (let i = list.length - 1; i >= 0; i--) {
     const c = costOf(list[i]);
-    if (i < list.length - KEEP_RECENT && keptChars + c > limit) break;
+    if (i < list.length - KEEP_RECENT && keptChars + c > keepLimit) break;
     keptChars += c;
     keepFrom = i;
   }
@@ -154,6 +159,10 @@ export function contextBudget(config = {}) {
 }
 
 const CLEANED_TOOL_PREFIX = '[旧工具结果已清理：';
+
+// 保留区预算占触发阈值的比例：0.375 × 400k ≈ 150k（2026-11-14 用户拍板的精修）。
+// 压缩后总占用 ≈ 保留区 + 摘要条目，明显低于触发阈值——不会「压缩完贴线、下一回合又触发」。
+const KEEP_BUDGET_RATIO = 0.375;
 
 // microcompact：最近 5 条 tool 结果保留原文，更早的正文换成固定占位说明。
 // 只改 tool 消息的 content，保留 tool_call_id（不破坏 assistant tool_calls ↔ tool 配对）。

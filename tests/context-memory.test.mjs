@@ -374,3 +374,22 @@ function assertNoOrphanTool(list) {
     }
   }
 }
+
+/* ---------- 保留预算精修（2026-11-14 用户拍板）：压缩后不贴线 ---------- */
+
+test('context: 压缩后保留区 ≈ 阈值 37.5%——不再贴线反复触发', async () => {
+  // 500k 字符历史，阈值 400k → 触发压缩；keep 预算 = 400k × 0.375 = 150k
+  const messages = [];
+  for (let i = 0; i < 250; i++) {
+    messages.push({ role: i % 2 ? 'assistant' : 'user', content: 'm' + i + '-' + 'x'.repeat(1990) });
+  }
+  const limit = 400000;
+  const out = await assembleContext(messages, { budgetChars: limit, summarize: async () => 'SUM' });
+  assert.equal(out.compacted, true);
+  const kept = out.messages.filter((m) => !String(m.content || '').startsWith('[历史摘要]'));
+  const keptChars = kept.reduce((n, m) => n + String(m.content || '').length, 0);
+  assert.ok(keptChars <= 160000, `保留区 ${keptChars} 应 ≤ ~160k（0.375 × 阈值 + 余量）`);
+  assert.ok(keptChars >= 140000, `保留区 ${keptChars} 应接近 150k（预算被用满）`);
+  const totalAfter = out.messages.reduce((n, m) => n + String(m.content || '').length, 0);
+  assert.ok(totalAfter < limit * 0.6, `压缩后总占用 ${totalAfter} 应明显低于阈值 ${limit}——不再贴线`);
+});
