@@ -6,7 +6,7 @@ import { existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
-import { loadCatalog, loadSkills, readPlaybook, catalogSummary } from '../../../src/playbooks.mjs';
+import { loadSkills, readPlaybook, catalogSummary } from '../../../src/playbooks.mjs';
 import { readFileTool, editFileTool, writeFileTool } from '../../../src/fs-tools.mjs';
 import { assertPathAllowed, assertCwd, checkCommand, checkDestructiveTargets, scrubEnv } from './policy.mjs';
 import { runHookEvent } from './hooks.mjs';

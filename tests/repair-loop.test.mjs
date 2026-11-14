@@ -41,7 +41,7 @@ test('快照→改坏→回滚到改动前；list 顺序新→旧', async (t) =>
   const rb = await rollbackFile(abs, s1.snapId);
   assert.equal(rb.ok, true);
   assert.equal(await readFile(abs, 'utf8'), 'const a = 1;\n', '回滚恢复到指定快照的内容');
-  const rb2 = await rollbackFile(abs);
+  await rollbackFile(abs);
   assert.equal(await readFile(abs, 'utf8'), 'const a = 2; // 改坏了\n', '不给 snapId 恢复到最新快照');
 });
 
@@ -67,6 +67,7 @@ test('fs-tools 钩子：edit_file/write_file 返回 snapshotId；rollback 恢复
   assert.match(e.rollbackHint, /repair_rollback/);
   assert.equal(await readFile(abs, 'utf8'), 'let x = 2; // broken\n');
   const rb = await rollbackFile(abs, e.snapshotId);
+  assert.equal(rb.ok, true, '回滚成功');
   assert.equal(await readFile(abs, 'utf8'), 'let x = 1;\n', '改坏后回滚到改动前');
 
   const w = await writeFileTool({ path: abs, content: 'let x = 3;\n' });

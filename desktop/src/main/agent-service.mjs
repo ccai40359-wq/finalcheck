@@ -336,7 +336,6 @@ const SYSTEM_BASE = [
   '回答简洁，先结论后证据；用与用户提问相同的语言作答（用户写中文就用中文，写英文就用英文）。用 markdown 排版（结论加粗、证据用列表、长输出用代码块）。'
 ].join('\n');
 
-let systemPromise = null;
 // ---- 双轨纪律（2026-11-14 用户定案）：检验严格 fail-closed；开发听人类命令优先 ----
 // audit 轨 = SYSTEM_BASE（验收员纪律，原样）；dev 轨 = SYSTEM_DEV_BASE（下面）。
 // 选轨按回合意图：用户消息命中验收/体检/审计/渗透等关键词 → audit，否则 dev（ipc-agent 判定后传 roleMode）。

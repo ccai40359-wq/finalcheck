@@ -6,6 +6,7 @@
 // 服务信号优先：只要有任何一个，就按服务仓处理（S1 照常硬卡）。
 import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
+import { listTextFiles } from './walk.mjs';
 import { isNonProductPath } from './scope-policy.mjs';
 
 const DEPLOY_ROOT_FILE_RE = /^(?:Dockerfile|docker-compose(?:[.-][\w-]+)?\.ya?ml|Procfile|fly\.toml|vercel\.json|netlify\.toml|render\.yaml|app\.yaml|compose\.ya?ml)$/i;

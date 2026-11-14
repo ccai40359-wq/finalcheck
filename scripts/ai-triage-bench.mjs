@@ -112,7 +112,7 @@ const m = text.match(/\[[\s\S]*\]/);
 let triage = null;
 try {
   triage = m ? JSON.parse(m[0]) : null;
-} catch (e) {
+} catch {
   console.error('[parse] JSON 解析失败，保存原始回答');
 }
 const outDir = 'D:/rcw-geo/.fc-bench2/round4';

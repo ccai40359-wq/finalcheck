@@ -39,7 +39,6 @@ const BYPASS_MODE_RE = /["']?defaultMode["']?\s*:\s*["']bypassPermissions["']/;
 
 const LLM_CALL_RE = /\b(?:chat\.completions\.create|completions\.create|messages\.create|responses\.create|generateContent|generate_content|embeddings\.create)\b|messages\s*:\s*\[|\.messages\s*=\s*\[/;
 const PROMPT_FIELD_RE = /\b(?:content|system|prompt|input|messages)\s*[:=]\s*[`'"]?\s*[`'"]?/;
-const EXTERNAL_FETCH_RE = /(?:\b(?:fetch|axios(?:\.\w+)*|https?\.get)\s*\(|readFile(?:Sync)?\s*\(|\.(?:text|json)\s*\(\))/;
 const ASSIGN_EXTERNAL_RE = /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:await\s+)?[^\n]*?(?:\bfetch\s*\(|axios(?:\.\w+)*\s*\(|https?\.get\s*\(|readFile(?:Sync)?\s*\(|\.(?:text|json)\s*\(\))/;
 // SDK 调用赋值必须有「调用动词」（create/generate）：`messages.map(` 这类普通方法链不算
 // （round6 langchainjs 实测：无动词版本把 chat-model 正常 payload 组装全线误报成 A2 card）。

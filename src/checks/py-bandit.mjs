@@ -2,7 +2,6 @@
 // yaml.load / shell=True / 弱随机等 14 类是 FC 自研规则的空白面（pygoat 实测）。
 // 本模块只做三件事：找 python+bandit、跑 JSON 扫描、把结果映射成 FC finding；
 // 不复述 Bandit 的判定逻辑。没装 → coverageGap（fail-closed），不冒充通过。
-import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { runProcess } from '../run-async.mjs';
 import { listTextFiles } from '../walk.mjs';

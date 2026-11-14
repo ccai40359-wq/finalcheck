@@ -78,7 +78,6 @@ async function buildBuiltinDomains() {
 }
 
 const skillsCache = new Map();
-const SCOPE_RANK = { builtin: 0, user: 1, project: 2 };
 
 export async function loadSkills({ projectDir = null } = {}) {
   const key = path.resolve(String(projectDir || ''));

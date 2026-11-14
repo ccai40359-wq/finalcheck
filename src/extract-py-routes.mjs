@@ -6,7 +6,6 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { listTextFiles } from './walk.mjs';
-import { isNonProductPath } from './scope-policy.mjs';
 
 const DECOR_RE = /^\s*@([\w.]+)\.(get|post|put|delete|patch|route|api_route|websocket)\s*\(/;
 const ROUTE_METHODS = new Set(['get', 'post', 'put', 'delete', 'patch']);
