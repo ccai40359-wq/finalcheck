@@ -833,6 +833,7 @@ function detectUnsupportedFrameworks(rootDir, maxFiles) {
 export async function extractRoutes(projectDir, options = {}) {
   const warnings = [];
   const routes = [];
+  let pyScannedFiles = 0; // py 路由提取真实扫过的产品文件数（0 = 没扫过或全被目录豁免）
   const publicRoutes = [];
   const unsupportedFrameworks = [];
   const ineffectiveGuards = [];
@@ -953,6 +954,8 @@ export async function extractRoutes(projectDir, options = {}) {
     // Bandit 只查代码模式不做路由/鉴权，这一段必须自研；解析出的路由让 S1/S7 真正执行。
     const py = await extractPyRoutes(rootDir, { warnings });
     routes.push(...py.routes);
+    pyScannedFiles = py.scannedFiles || 0;
+    if (Array.isArray(py.warnings) && py.warnings.length) warnings.push(...py.warnings); // py 侧跳过数保持透明
     // FastAPI/Flask 现已支持：不再把它们标成 unsupported framework（Django/Rails/Gin 等仍不支持）
     for (let i = unsupportedFrameworks.length - 1; i >= 0; i--) {
       if (/^(?:FastAPI|Flask)/.test(unsupportedFrameworks[i])) unsupportedFrameworks.splice(i, 1);
@@ -966,6 +969,7 @@ export async function extractRoutes(projectDir, options = {}) {
     publicRoutes,
     warnings,
     httpSurface,
+    pyScannedFiles,
     ...(unsupportedFrameworks.length ? { unsupportedFrameworks } : {}),
     ...(ineffectiveGuards.length ? { ineffectiveGuards } : {}),
   };

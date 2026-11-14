@@ -9,6 +9,9 @@ import { listTextFiles } from './walk.mjs';
 
 const DECOR_RE = /^\s*@([\w.]+)\.(get|post|put|delete|patch|route|api_route|websocket)\s*\(/;
 const ROUTE_METHODS = new Set(['get', 'post', 'put', 'delete', 'patch']);
+// 非产品目录：路由是教程/测试/示例里的演示代码，不构成真实鉴权面（fastapi 实测 S1 洪泛 1776 条的根因之一）。
+// 文件级跳过 + 跳过数进 warnings（fail-open 为「路由表更小」，覆盖缺口仍由 httpSignal 兜底，不冒充已解析）。
+const NON_PRODUCT_DIRS = new Set(['tests', 'test', 'docs', 'docs_src', 'examples', 'example', 'demos', 'demo', 'tutorials', 'tutorial', 'benchmarks']);
 // 鉴权装饰器/依赖：命中即算有守卫（与 TS 侧 GUARD_RE 同思路，词边界防 user_id 误判）
 const AUTH_PY_RE = /login_required|jwt_required|jwt_protected|get_current_user|current_user|requires_auth|auth_required|AuthenticatedUser|Depends\s*\(\s*\w*(?:auth|Auth|user|User|token|Token)/;
 const HTTP_VERBS_RE = /methods\s*=\s*\[([^\]]*)\]/i;
@@ -50,17 +53,56 @@ function firstStringLiteral(text) {
   return m ? m[1] : null;
 }
 
+// docstring 屏蔽：模块/函数文档字符串里常带 @app.get("/items/") 教程示例（fastapi 实测 28 条产品目录误报的根因）。
+// 三引号状态机：进入 """ / ''' 块后所有行视为文本；同一行内闭合不算块。返回每行是否处于 docstring 内。
+function docstringMask(lines) {
+  const inDoc = new Array(lines.length).fill(false);
+  let inside = false;
+  let delim = null;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (inside) {
+      inDoc[i] = true;
+      const closeIdx = line.indexOf(delim);
+      if (closeIdx >= 0) {
+        inside = false;
+        delim = null;
+        const reopen = /("""|''')/.exec(line.slice(closeIdx + 3));
+        if (reopen) { inside = true; delim = reopen[1]; }
+      }
+      continue;
+    }
+    const open = /("""|''')/.exec(line);
+    if (open) {
+      const after = line.slice(open.index + 3);
+      if (after.includes(open[1])) continue; // 同一行内闭合（单行 docstring），不开启块
+      inside = true;
+      delim = open[1];
+      inDoc[i] = true;
+    }
+  }
+  return inDoc;
+}
+
 export async function extractPyRoutes(projectDir, { excludes = [], includeFixtures = false } = {}) {
   const routes = [];
   const warnings = [];
   const { files } = await listTextFiles(projectDir, excludes, { includeFixtures });
   const pyFiles = files.filter((f) => /\.py$/i.test(f));
+  let skippedNonProduct = 0;
+  let scannedFiles = 0;
   for (const abs of pyFiles) {
+    const rel0 = path.relative(projectDir, abs).replace(/\\/g, '/');
+    // 教程/测试/示例目录里的路由是演示代码，不进鉴权面（跳过数记入 warnings 保持透明）
+    if (rel0.split('/').some((seg) => NON_PRODUCT_DIRS.has(seg.toLowerCase()))) { skippedNonProduct++; continue; }
     const text = await readFile(abs, 'utf8').catch(() => null);
     if (text == null) continue;
-    const rel = path.relative(projectDir, abs).replace(/\\/g, '/');
+    scannedFiles++;
+    const rel = rel0;
     const lines = text.split('\n');
+    const inDoc = docstringMask(lines);
     for (let i = 0; i < lines.length; i++) {
+      if (inDoc[i]) continue; // docstring 里的示例路由不是产品面
       const head = DECOR_RE.exec(lines[i]);
       if (!head) continue;
       const collected = collectParens(lines, i);
@@ -110,5 +152,9 @@ export async function extractPyRoutes(projectDir, { excludes = [], includeFixtur
       i = collected.endLine; // 跳过已消费的跨行参数
     }
   }
-  return { routes, warnings };
+  if (skippedNonProduct) {
+    warnings.push(`路由提取跳过 ${skippedNonProduct} 个非产品目录文件（tests/docs/examples 里的演示路由不计入鉴权面）`);
+  }
+  // scannedFiles：py 路由提取真实扫过的产品文件数——audit 用它把 S1 从「只解析 JS/TS」的语言缺口里摘出来
+  return { routes, warnings, scannedFiles };
 }

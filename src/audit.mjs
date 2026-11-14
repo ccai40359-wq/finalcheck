@@ -93,6 +93,7 @@ export async function audit(projectDir, { tier = null, interactive = false, runT
     // 只透传信号，让 S1/S7 记 unavailable，而不是把「没解析到」说成「没有 HTTP 面」。
     httpSurface: raw.httpSurface || { exists: false, hints: [], mounts: [] },
     warnings: (raw.warnings || []).filter((w) => !excl(w)),
+    pyScannedFiles: raw.pyScannedFiles || 0, // py 路由提取扫过的产品文件数（S1 语言缺口解除判定用）
   };
 
   const qualityOn = QUALITY_TIERS.has(effective) && await hasQualityConfig(projectDir);
@@ -243,17 +244,22 @@ export async function audit(projectDir, { tier = null, interactive = false, runT
       ? `仓库有 ${languageGap.nonJsCount} 个非 JS 源码（${languageGap.exts.join('/')}），该检查只解析 JS/TS，非 JS 部分未覆盖`
       : `仓库仅有 ${languageGap.exts.join('/')} 源码（${languageGap.nonJsCount} 个文件），该检查目前只解析 JS/TS，未覆盖`;
     // Bandit 已跑成时，S2（注入/反序列化/弱哈希）由它提供部分覆盖，语言缺口不再封顶 S2；
-    // 路由表里已有非 JS 路由（FastAPI/Flask 提取成功）时，S1 的路由/鉴权面也已真覆盖。
+    // 路由表里已有非 JS 路由（FastAPI/Flask 提取成功）时，S1 的路由/鉴权面也已真覆盖；
+    // py 提取器真实扫过产品文件（即使 0 条路由）时同理——S1 的结论由路由提取自身给出，
+    // 不再套「只解析 JS/TS」的帽子（fastapi 实测：库仓产品目录 0 条路由是真没有，不是没查）。
     const nonJsRoutesCovered = (routeResult.routes || []).some((r) => !/\.[cm]?[jt]sx?$/i.test(String(r.file || '')));
+    const pyRoutesScanned = Number(routeResult.pyScannedFiles || 0) > 0;
     const gapCheckIds = languageGap.checkIds.filter((id) => {
       if (pyBanditRan && id === 'S2') return false;
-      if (nonJsRoutesCovered && id === 'S1') return false;
+      if ((nonJsRoutesCovered || pyRoutesScanned) && id === 'S1') return false;
       return true;
     });
     if (pyBanditRan && gapCheckIds.length !== languageGap.checkIds.length) {
       warnings.push('S2 的语言缺口已由 Bandit 部分覆盖（Python SAST：注入/反序列化/弱哈希），框架路由与鉴权面由路由提取结果决定');
     } else if (nonJsRoutesCovered && gapCheckIds.length !== languageGap.checkIds.length) {
       warnings.push('S1 的语言缺口已解除：Python（FastAPI/Flask）路由提取成功，路由鉴权面已真覆盖');
+    } else if (pyRoutesScanned && gapCheckIds.length !== languageGap.checkIds.length) {
+      warnings.push(`S1 的语言缺口已解除：Python 路由提取已真实扫描 ${routeResult.pyScannedFiles} 个产品文件（tests/docs 示例不计入），鉴权面由提取结果自身给出`);
     }
     for (const checkId of gapCheckIds) {
       const existing = gapItems.find((g) => g.checkId === checkId);

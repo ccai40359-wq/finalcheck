@@ -182,6 +182,9 @@ installProcessGuards({ proc: process, getWin: () => win, log: writeLog });
 function createWindow() {
   win = new BrowserWindow({
     width: 1280, height: 820, minWidth: 980,
+    // 后台驱动模式（FINALCHECK_WINDOW_BG=1）：不建可见窗口、不抢焦点，CDP 照常驱动
+    // （自动化跑批/长任务验收用——窗口是真实的，只是不弹到用户面前）
+    show: process.env.FINALCHECK_WINDOW_BG !== '1',
     title: 'FinalCheck',
     backgroundColor: '#0a0a0c',
     autoHideMenuBar: true,
@@ -207,6 +210,9 @@ function createWindow() {
   });
   if (process.env.ELECTRON_RENDERER_URL) win.loadURL(process.env.ELECTRON_RENDERER_URL);
   else win.loadFile(path.join(__dirname, '../renderer/index.html'));
+  if (process.env.FINALCHECK_WINDOW_BG === '1') {
+    win.once('ready-to-show', () => { try { win?.showInactive(); } catch { /* 销毁竞态忽略 */ } });
+  }
 }
 
 app.whenReady().then(async () => {

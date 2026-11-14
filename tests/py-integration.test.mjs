@@ -188,3 +188,47 @@ test('py 路由：FastAPI/Flask 装饰器提取 + 鉴权识别 + 不再标 unsup
   assert.ok(!s1.findings.some((f) => f.snippet === 'POST /admin/users'), '有守卫路由不报');
   assert.ok(!s1.findings.some((f) => f.snippet === 'GET /me'), 'login_required 不报');
 });
+
+test('py 路由提取：docstring 示例路由与 tests/docs 目录不计入产品鉴权面（fastapi S1 洪泛 1776 根因）', async (t) => {
+  const dir = await fixture({
+    'app.py': [
+      '"""Module doc with tutorial examples inside.',
+      '',
+      '    @app.get("/items/")',
+      '    def read_items():',
+      '        return []',
+      '',
+      '    More prose mentioning @app.post("/demo") too.',
+      '"""',
+      '',
+      '@app.get("/real")',
+      'def real():',
+      '    return 1',
+      '',
+      'ONE_LINER = """@app.get("/inline")"""',
+      '',
+      'TEXT = """',
+      '    @app.delete("/gone")',
+      '"""',
+      '',
+      '@app.get("/after-doc")',
+      'def after():',
+      '    return 2',
+      '',
+    ].join('\n'),
+    'tests/test_x.py': '@app.get("/in-tests")\ndef t():\n    return 1\n',
+    'docs_src/tutorial001.py': '@app.get("/in-docs")\ndef d():\n    return 1\n',
+  });
+  cleanup(t, dir);
+  const raw = await extractRoutes(dir);
+  const paths = raw.routes.map((r) => r.path);
+  assert.ok(paths.includes('/real'), '真实路由保留');
+  assert.ok(paths.includes('/after-doc'), 'docstring 结束后的真实路由保留');
+  assert.ok(!paths.includes('/items/'), 'docstring 多行示例路由不提取');
+  assert.ok(!paths.includes('/demo'), 'docstring 提到的路由不提取');
+  assert.ok(!paths.includes('/inline'), '单行 docstring 不提取');
+  assert.ok(!paths.includes('/gone'), '闭合 docstring 后恢复正常');
+  assert.ok(!paths.includes('/in-tests'), 'tests 目录路由不计入产品面');
+  assert.ok(!paths.includes('/in-docs'), 'docs_src 目录路由不计入产品面');
+  assert.ok(raw.warnings.some((w) => w.includes('非产品目录')), '跳过数写进 warnings 保持透明');
+});

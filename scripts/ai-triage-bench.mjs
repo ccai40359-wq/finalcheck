@@ -33,10 +33,31 @@ console.log(`[provider] ${prov.id} model=${model}`);
 
 // 2) 取 FC 审计的可行动项（card/block 的 high+medium）
 const audit = JSON.parse(readFileSync(auditPath, 'utf8'));
-const findings = (audit.findings || [])
-  .filter((f) => ['card', 'block'].includes(f.force) && ['high', 'medium'].includes(f.severity))
-  .sort((a, b) => String(a.file).localeCompare(String(b.file)) || (a.line || 0) - (b.line || 0))
-  .slice(0, maxFindings);
+// 取发现清单：默认=可行动项（card/block 的 high+medium）。
+// FINALCHECK_TRIAGE_SAMPLE=N：全量发现的去重采样（severity/force 优先、同 rule 最多 2 条），
+// 供库仓（可行动项≈0，如 fastapi/express/hono）也能测分诊准确率。
+let findings;
+if (process.env.FINALCHECK_TRIAGE_SAMPLE) {
+  const n = Number(process.env.FINALCHECK_TRIAGE_SAMPLE) || 12;
+  const sevRank = { high: 0, medium: 1, low: 2, info: 3 };
+  const forceRank = { block: 0, card: 1, check: 2, tip: 3 };
+  const byRule = new Map(); // 同 rule 最多 2 条：既看洪泛一致性，又不让单一规则占满样本
+  findings = (audit.findings || [])
+    .slice()
+    .sort((a, b) => (sevRank[a.severity] ?? 9) - (sevRank[b.severity] ?? 9) || (forceRank[a.force] ?? 9) - (forceRank[b.force] ?? 9))
+    .filter((f) => {
+      const c = byRule.get(f.rule) || 0;
+      if (c >= 2) return false;
+      byRule.set(f.rule, c + 1);
+      return true;
+    })
+    .slice(0, n);
+} else {
+  findings = (audit.findings || [])
+    .filter((f) => ['card', 'block'].includes(f.force) && ['high', 'medium'].includes(f.severity))
+    .sort((a, b) => String(a.file).localeCompare(String(b.file)) || (a.line || 0) - (b.line || 0))
+    .slice(0, maxFindings);
+}
 if (!findings.length) {
   console.log('[triage] 无可行动项，无需分诊');
   process.exit(0);
@@ -66,7 +87,8 @@ const tools = createAgentTools({
 
 const prompt = [
   `你是 FinalCheck 的分诊员。项目目录：${repoDir}`,
-  `静态审计已经完成，下面是 ${compact.length} 条可行动发现（card/block 的 high+medium）。`,
+  `静态审计已经完成，下面是 ${compact.length} 条发现（${process.env.FINALCHECK_TRIAGE_SAMPLE ? '按规则去重的采样' : '可行动项 card/block high+medium'}）。`,
+  `工具预算硬上限：全程最多 16 次工具调用，用完必须立即输出结论 JSON。每条发现默认信已给的 snippet，只有 snippet 本身可疑（命中行看起来不像发现内容）才读文件；读文件只读命中行 ±40 行（用 offset/limit），禁止整文件通读——证据不足的条目判 unclear，不许为完美证据烧预算。`,
   `不要重跑审计（audit_project 已被禁用）；用 read_file 读每条发现的命中行上下文（±30 行），判断它是：`,
   `- TP：真实问题，应该修`,
   `- FP：误报。只有六种事实性理由允许判 FP，且都必须引用证据行号：`,
@@ -115,7 +137,7 @@ try {
 } catch {
   console.error('[parse] JSON 解析失败，保存原始回答');
 }
-const outDir = 'D:/rcw-geo/.fc-bench2/round4';
+const outDir = `D:/rcw-geo/.fc-bench2/${process.env.FINALCHECK_BENCH_ROUND || 'round4'}`;
 mkdirSync(outDir, { recursive: true });
 const outFile = path.join(outDir, `triage-${repoName}.json`);
 writeFileSync(outFile, JSON.stringify({ repo: repoName, model, elapsedSec: Number(elapsed), answer: text, triage }, null, 1));
