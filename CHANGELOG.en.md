@@ -6,6 +6,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.16.6] - 2026-11-15
+
+### Fixed
+
+- Model "repetition loops" are now contained: when the AI restates the same progress dozens of times with zero actual movement for many minutes, the engine cuts in automatically and nudges it to continue with real work, instead of accepting a full screen of restatement as a normal reply; a repeat offense fails the turn with a clear error.
+- False-positive flood on library repos receded: example routes inside Python docstrings (like `@app.get("/items/")`) are no longer treated as real endpoints, and demo routes under tests/tutorial directories no longer count; framework repos like FastAPI drop from ~2000 findings to 182.
+
+### Improved
+
+- Automated runs get a background-window mode: batch acceptance runs no longer steal focus (no change for normal use).
+
 ## [0.16.5] - 2026-11-14
 
 ### Fixed
