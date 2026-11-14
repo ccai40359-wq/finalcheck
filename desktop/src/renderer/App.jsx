@@ -1448,6 +1448,20 @@ export default function App() {
   const openStep = (s) => setStepView({ sessionId: activeId, stepId: s.id, name: s.name, role: s.role, kind: s.kind || null, opType: s.opType || s.op || null, key: Date.now() });
 
   const hasMsgs = messages.length > 0;
+  // 草稿页横幅：New Session 清屏后，还在跑的会话要「看得见、点得回」——记录没丢，别让用户以为清屏=丢失
+  const draftRunners = (!activeId && page === 'chat')
+    ? Object.keys(runningIds).map((sid) => {
+        let hit = null;
+        let host = null;
+        for (const p of projects) {
+          const list = projectSessionsRef.current[p.id] || (p.id === activeProjectId ? sessions : []);
+          const found = list.find((s) => s.id === sid);
+          if (found) { hit = found; host = p; break; }
+        }
+        if (hit) return { id: sid, label: prettyTitle(hit.title) || t('未命名'), session: hit, project: host };
+        return { id: sid, label: t('未命名会话'), session: null, project: null };
+      })
+    : [];
   // 实时提问卡与历史 trace 的互斥渲染（同 callId 只出一张卡）：
   // - 已收尾的 ask 以历史卡为准，藏掉实时卡；
   // - 仍在进行的 ask 以实时卡为准，从展示用消息里摘掉它的历史 trace 条目。
@@ -1500,6 +1514,23 @@ export default function App() {
               busy={busy} showSetup={showSetup} y={y} cfg={cfg}
               onArchiveSession={archiveSession} onSaved={finishSetup} onSkip={skipSetup}
             />
+
+            {/* 草稿页运行横幅：New Session 只是清屏开草稿，后台回合没停、记录没丢——一键跳回 */}
+            {!activeId && draftRunners.length > 0 && (
+              <div className="mx-4 mt-2 rounded-lg bg-goldSoft/[0.07] border border-goldSoft/25 px-3.5 py-2.5 flex items-center gap-2 text-[12px] shrink-0">
+                <span className="w-1.5 h-1.5 shrink-0 rounded-full bg-goldSoft animate-pulse" />
+                <span className="text-ink/60 shrink-0">{t('仍在后台运行（记录没丢）：')}</span>
+                <div className="flex flex-wrap gap-1.5 min-w-0">
+                  {draftRunners.map((r) => (
+                    <button key={r.id}
+                      onClick={() => { r.session && r.project ? openProjectSession(r.project, r.session) : openSession(r.id); }}
+                      className="px-2 py-0.5 rounded-md bg-white/[0.06] hover:bg-white/[0.12] text-goldSoft truncate max-w-[240px] transition-colors">
+                      {r.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {hasMsgs ? (
               <MessageList
