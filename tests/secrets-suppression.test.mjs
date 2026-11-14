@@ -342,3 +342,42 @@ test('S3 历史：--depth 1 浅克隆 → 0 命中 + 浅克隆 warning，coverag
   assert.ok(r.warnings.some((w) => w === '浅克隆：历史规则未运行（需完整 clone）'), '必须给出浅克隆 warning');
   assert.equal(r.coverageGap, null);
 });
+
+/* ---------- round6 真仓回归：LangChain 映射表 / 类型声明文件 ---------- */
+
+test('round6 S3：lc_secrets/lc_aliases 映射表与 .d.ts 声明文件不硬卡；真实前缀仍硬卡', async (t) => {
+  const dir = await fixture({
+    // LangChain 系「字段名 → 环境变量名」映射：值不是凭据
+    'models/chat.ts': [
+      'export class ChatModel {',
+      '  static lc_secrets = {',
+      "    openAIApiKey: 'OPENAI_API_KEY',",
+      '  };',
+      "  static lc_aliases = { apiKey: 'copyOfOpenAIApiKey' };",
+      '}',
+    ].join('\n'),
+    // 类型声明文件：示例值不是运行时凭据（真凭据不会住进 .d.ts）
+    'types/opts.d.ts': [
+      'export interface Opts {',
+      "  apiKey: 'key-abc123def456';",
+      '}',
+    ].join('\n'),
+    // 已知真实前缀即使在 .d.ts 也硬卡（可能是真泄漏）
+    'danger.d.ts': [
+      "declare const token: 'ghp_" + 'Abcdefghijklmnopqrstuvwxyz1234567890' + "';",
+    ].join('\n'),
+  });
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const r = await checkSecrets(dir, {});
+  const s3All = s3(r);
+  assert.ok(!s3All.some((f) => f.file === 'models/chat.ts'), 'lc_secrets/lc_aliases 映射表整块不报');
+  const decl = s3All.find((f) => f.file === 'types/opts.d.ts');
+  assert.ok(decl, '声明文件里的假 key 仍可见');
+  assert.equal(decl.force, 'check', '声明文件降为 check');
+  assert.equal(decl.hard, false);
+  assert.match(decl.message, /类型声明/);
+  const real = s3All.find((f) => f.file === 'danger.d.ts');
+  assert.ok(real, '真实前缀仍报');
+  assert.equal(real.force, 'card', '真实前缀在声明文件里仍硬卡');
+  assert.equal(real.hard, true);
+});

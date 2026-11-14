@@ -41,9 +41,13 @@ const LLM_CALL_RE = /\b(?:chat\.completions\.create|completions\.create|messages
 const PROMPT_FIELD_RE = /\b(?:content|system|prompt|input|messages)\s*[:=]\s*[`'"]?\s*[`'"]?/;
 const EXTERNAL_FETCH_RE = /(?:\b(?:fetch|axios(?:\.\w+)*|https?\.get)\s*\(|readFile(?:Sync)?\s*\(|\.(?:text|json)\s*\(\))/;
 const ASSIGN_EXTERNAL_RE = /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:await\s+)?[^\n]*?(?:\bfetch\s*\(|axios(?:\.\w+)*\s*\(|https?\.get\s*\(|readFile(?:Sync)?\s*\(|\.(?:text|json)\s*\(\))/;
-const SDK_CALL_ASSIGN_RE = /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:await\s+)?[\w$.]*?(?:chat\.completions|completions|messages|responses|generateContent)\b[\w.]*(?:create|generate)?\s*\(/;
+// SDK 调用赋值必须有「调用动词」（create/generate）：`messages.map(` 这类普通方法链不算
+// （round6 langchainjs 实测：无动词版本把 chat-model 正常 payload 组装全线误报成 A2 card）。
+const SDK_CALL_ASSIGN_RE = /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:await\s+)?[\w$.]*?(?:chat\.completions|completions|responses|messages)\b[\w.]*?(?:create|generate)\s*\(|(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:await\s+)?[\w$.]*?\.generateContent\s*\(/;
 // 只认裸调用：`re.exec(text)`、`db.exec(sql)` 这类成员方法（正则/DB）不是子进程执行（照 inject 的 RE_EXEC_BARE 口径）。
 const EXEC_CALL_RE = /(?:^|[^\w.$])(?:exec|execSync|spawn|spawnSync|execFile|execFileSync)\s*\(/;
+// TS 方法签名/重载声明（`exec(cmd: string, opts): Promise<X> {`）不是运行时调用（round6 agents/ai ≥16 条声明 FP）。
+const TS_TYPED_RETURN_RE = /\)\s*:\s*[A-Za-z<][^;]{0,160}?[;{]\s*$/;
 // shell 包装器形状：`sh -c ${cmd}`（无引号模板）、spawn('bash',['-c',v])、exec('sh -c '+v)、shell:true。
 const SHELL_WRAP_RE = /(?:^|[(,\s'"`])(?:(?:\/bin\/)?(?:ba|z)?sh|cmd(?:\.exe)?|powershell|pwsh)\s+[-/]?(?:c\b|Command\b)|(?:^|[(,\s])(?:(?:\/bin\/)?(?:ba|z)?sh|cmd(?:\.exe)?|powershell|pwsh)['"`]?\s*,\s*(?:\[?\s*)?['"`](?:-\/?c|-Command)\b|\bshell\s*:\s*true\b/;
 const SANITIZER_RE = /(?:sanitize|redact|escape|truncate|\.slice\s*\(|\.substring\s*\(|\.substring\(|stripSecret|maskSecret)/i;
@@ -52,6 +56,8 @@ const ENV_SECRET_NAME_RE = /(?:KEY|TOKEN|SECRET|PASSWORD|PASS\b|CREDENTIAL|API)/
 const PERSIST_WRITE_RE = /\b(?:writeFile|appendFile|writeFileSync|appendFileSync|createWriteStream)\s*\(/;
 const PERSIST_NAME_RE = /['"`][^'"`]*(?:transcript|conversation|chat[-_]?history|session[-_]?log|messages)[^'"`]*['"`]/i;
 const DEBUG_LOG_RE = /\b(?:console|logger)\.\w+\s*\([^)\n]*(?:\bprompt\b|\bmessages\b|completion|\bresponse\b)/i;
+// 日志参数剥掉字符串字面量后必须仍有含数据关键词的标识符（userPrompt / theResponse 都算）
+const LOG_DATA_ARG_RE = /\b\w*(?:prompt|messages?|completion|response|reply|history|transcript|content)\w*\b/i;
 const EXTRACTED_VAR_RE = /\$\{([\w$]+)(?:[.\w()'"[\]]*)?\}/g;
 // 函数边界（近似口径）：变量血缘不跨函数，遇声明/块级箭头函数重置追踪。
 const FUNC_BOUNDARY_RE = /(?:^|\)\s*)(?:export\s+)?(?:async\s+)?function\s+[A-Za-z_$]|\b(?:async\s*)?\([^)]*\)\s*=>\s*\{\s*$/;
@@ -111,6 +117,7 @@ async function loadJsSources(projectDir, { excludes, includeFixtures }) {
   for (const abs of files) {
     const rel = path.relative(projectDir, abs).replace(/\\/g, '/');
     if (isNonProductPath(rel)) continue;
+    if (/\.d\.ts$/i.test(rel)) continue; // 类型声明文件：形状全是签名/示例，A 系列不扫（round6 ≥16 条声明 FP）
     const { text } = await readRel(projectDir, abs);
     if (!text) continue;
     const lines = [];
@@ -299,7 +306,7 @@ export async function checkAiPromptInjection(projectDir, { excludes = [], includ
       if (assign) { llmVar.add(assign[1]); sanitizedVars.delete(assign[1]); continue; }
       if (!PROMPT_FIELD_RE.test(line) || !LLM_PROMPT_LINE_RE.test(line)) continue;
       const referenced = [...line.matchAll(EXTRACTED_VAR_RE)].map((x) => x[1]).find((v) => llmVar.has(v))
-        || [...llmVar].find((v) => new RegExp(`(?:\\+\\s*|[(\\s'"[])${v}\\b`).test(line));
+        || [...llmVar].find((v) => new RegExp(`\\+\\s*${v}\\b`).test(line)); // 只认插值与显式拼接，裸提及不算（CSS/type 注解误报源）
       if (!referenced) continue;
       // 链上有消毒动作 → 降 check（不评估消毒质量）
       const between = lines.slice(Math.max(0, i - 12), i).join('\n');
@@ -337,7 +344,9 @@ export async function checkAiSandbox(projectDir, { excludes = [], includeFixture
       const assign = SDK_CALL_ASSIGN_RE.exec(line) || /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*[^\n]*\btool_calls\b/.exec(line);
       if (assign) { llmVar.add(assign[1]); continue; }
       if (!EXEC_CALL_RE.test(line)) continue;
-      const window = lines.slice(i, i + 4).join('\n');
+      if (TS_TYPED_RETURN_RE.test(line)) continue; // 类型化签名（带返回注解）不是调用
+      // timeout/maxBuffer 可能写在调用对象后几行（round6 实证第 7 行）或前面几行：窗口前后都看
+      const window = lines.slice(Math.max(0, i - 3), i + 10).join('\n');
       const modelDriven = [...line.matchAll(EXTRACTED_VAR_RE)].map((x) => x[1]).find((v) => llmVar.has(v))
         || [...llmVar].find((v) => new RegExp(`(?:\\+\\s*|[(\\s'"[])${v}\\b`).test(window));
       if (modelDriven && SHELL_WRAP_RE.test(window)) {
@@ -382,9 +391,13 @@ export async function checkAiDataBoundary(projectDir, { excludes = [], includeFi
           continue;
         }
       }
-      // 3) 调试日志打印 prompt/对话 → check
+      // 3) 调试日志打印 prompt/对话 → check；纯字面量（'Response received'）不是数据边界问题：
+      //    整行剥掉字符串字面量后必须仍有含数据关键词的标识符（userPrompt/response 等）。
       if (DEBUG_LOG_RE.test(line)) {
-        findings.push(mkFinding('A4', 'A4.debug-log', { severity: 'medium', force: 'check', hard: false, file: rel, line: i + 1, snippet: line, message: '日志打印 prompt/对话/模型响应（需人工确认是否含敏感数据）' }));
+        const argsNoStr = line.replace(/(['"`])(?:\\.|(?!\1).)*\1/g, '""');
+        if (LOG_DATA_ARG_RE.test(argsNoStr)) {
+          findings.push(mkFinding('A4', 'A4.debug-log', { severity: 'medium', force: 'check', hard: false, file: rel, line: i + 1, snippet: line, message: '日志打印 prompt/对话/模型响应（需人工确认是否含敏感数据）' }));
+        }
       }
     }
   }

@@ -105,6 +105,8 @@ export function isSuppressedSecretValue(value, { key = '', file = '' } = {}) {
 
   // 5b) 键名语义：token_url / TOKEN_KEY / IPC channel 描述的是地址、存储键或事件名，
   // 不是凭据本身。已知真实前缀（sk-/ghp_/AKIA…）优先，不会被这里误杀。
+  // 前缀常量（'sk-ant-' / '\u0000ns:' 以分隔符结尾）：完整凭据不会有分隔符尾巴。
+  if (/[-_:]$/.test(v) && !/\s/.test(v)) return true;
   if (!hasKnownRealPrefix(v)) {
     const keyName = String(key || '');
     // UI 文案键（LABEL_PASSWORD / SHOW_PASSWORD_ADVICE）的值是界面文字，不是口令
@@ -124,10 +126,9 @@ export function isSuppressedSecretValue(value, { key = '', file = '' } = {}) {
     if (/^[a-z0-9]+(?:-[a-z0-9]+)*:[a-z0-9:.-]+$/.test(v)) return true;
   }
 
-  // 5c) 测试路径里的 sk- 顺序串（DSH 的 sk-1234567890abcdef...）是测试夹具；
-  // 只对 sk- 生效，ghp_/AKIA/AIza 等真实前缀不受影响（它们可能是真实泄漏）。
-  if (/^sk[-_]/i.test(v) && isNonProductPath(file)
-    && /1234567890|abcdefghijklmnopqrstuvwxyz|fixture|e2e|do-not-log|secret[-_]key/i.test(v)) return true;
+  // 5c) 测试路径里的 sk- 值（DSH 的 sk-1234567890…、langchain 的 sk-SUPER-SECRET-12345 教学串）
+  // 都不是生产凭据：tests/examples/docs 上 sk- 一律跳过。ghp_/AKIA/AIza 等其他真实前缀不受影响。
+  if (/^sk[-_]/i.test(v) && isNonProductPath(file)) return true;
 
   // 6) 测试占位词；命中已知真实前缀（且有熵）时不算占位
   if (!hasKnownRealPrefix(v) && (PLACEHOLDER_RE.test(v) || PLACEHOLDER_TOKEN_RE.test(v))) return true;
@@ -270,6 +271,16 @@ function stripSecretComment(line) {
   return raw;
 }
 
+// lc_secrets / lc_aliases（LangChain 系）是「字段名 → 环境变量名/字段名」映射表：值不是凭据。
+// 行自身在映射表内，或映射表头（lc_secrets|lc_aliases）在上方 6 行内（多行块）。
+function isSecretsMappingContext(lines, i, code) {
+  if (/lc_secrets|lc_aliases/.test(code)) return true;
+  for (let j = i; j >= Math.max(0, i - 6); j--) {
+    if (/lc_secrets|lc_aliases/.test(lines[j] || '')) return true; // 原始行（含注释里的标注）
+  }
+  return false;
+}
+
 export async function checkSecrets(projectDir, { excludes = [], includeFixtures = false, gitleaks = {} } = {}) {
   const findings = [];
   const warnings = [];
@@ -304,6 +315,9 @@ export async function checkSecrets(projectDir, { excludes = [], includeFixtures 
         if (/finalcheck:allow/.test(line)) continue;
         if ((rule.id === 'S3.secret-literal' || rule.id === 'S3.secret-value' || rule.id === 'S3.weak-default')
           && isSuppressedSecretValue(m[1] || '', { key: keyFromMatch(m[0]), file })) continue;
+        // LangChain 系 lc_secrets/lc_aliases：字段名映射表，值不是凭据（round6 langchainjs 15 card 全 FP）
+        if ((rule.id === 'S3.secret-literal' || rule.id === 'S3.secret-value')
+          && isSecretsMappingContext(lines, i, code)) continue;
         const raw = line.trim().slice(0, 120);
         // 捕获到的值无论长短都先抹掉（弱默认口令可能只有 5 位，通用引号规则盖不住）。
         const masked = m[1] ? raw.split(m[1]).join('***') : raw;
@@ -316,14 +330,19 @@ export async function checkSecrets(projectDir, { excludes = [], includeFixtures 
   const pkHard = rule.id !== 'S3.private-key' || !isNonProductPath(file);
   const hard = rule.id === 'S3.aws-key' || (rule.id === 'S3.private-key' && pkHard)
     || ((rule.id === 'S3.secret-literal' || rule.id === 'S3.secret-value') && hasKnownRealPrefix(m[1] || ''));
+  // .d.ts / *.test-d.ts 是类型声明：字面量是类型示例，不是运行时凭据——降为 check；
+  // 已知真实前缀（sk-/ghp_/AKIA…）不受影响，仍然硬卡。
+  const decl = /(?:^|[.\-_])d\.ts$/i.test(file)
+    && (rule.id === 'S3.secret-literal' || rule.id === 'S3.secret-value')
+    && !hasKnownRealPrefix(m[1] || '');
         findings.push({
           checkId: 'S3',
-          severity: isDoc ? 'medium' : 'high',
-          force: isDoc ? 'tip' : 'card',
+          severity: decl || isDoc ? 'medium' : 'high',
+          force: decl ? 'check' : isDoc ? 'tip' : 'card',
           file, line: i + 1, rule: rule.id,
           hard,
           snippet,
-          message: isDoc ? `${rule.msg}（出现在文档中，可能是示例）` : rule.msg,
+          message: isDoc ? `${rule.msg}（出现在文档中，可能是示例）` : decl ? `${rule.msg}（类型声明文件：示例值，非运行时凭据）` : rule.msg,
           source: 'program',
         });
       }

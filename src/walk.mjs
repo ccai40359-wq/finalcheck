@@ -18,12 +18,13 @@ const TEXT_EXTS = new Set(['.js', '.mjs', '.cjs', '.ts', '.jsx', '.tsx', '.json'
   '.key', '.pem', '.crt']);
 const CODE_EXTS = new Set(['.js', '.mjs', '.cjs', '.ts', '.jsx', '.tsx']);
 const MAX_BYTES = 512 * 1024;
-const FIXTURE_DIR = 'fixtures';
+// 夹具判定的唯一口径：路径里任意一段叫 fixtures/__fixtures__（vitest/pytest 常用夹具目录），
+// src/fixtures、tests/fixtures、**/fixtures/**、**/__fixtures__/** 都算
+const FIXTURE_DIRS = new Set(['fixtures', '__fixtures__']);
 
-// 夹具判定的唯一口径：路径里任意一段叫 fixtures（src/fixtures、tests/fixtures、**/fixtures/**）
 export function isFixturePath(rel) {
   return String(rel || '').replace(/\\/g, '/').split('/')
-    .some((seg) => seg.toLowerCase() === FIXTURE_DIR);
+    .some((seg) => FIXTURE_DIRS.has(seg.toLowerCase()));
 }
 
 // 返回 { files, skipped, pruned, fixtures, overLimit }：
@@ -65,7 +66,7 @@ export async function listTextFiles(root, excludes = [], opts = {}) {
       if (e.isDirectory()) {
         if (excluded(rel)) continue; // 目录级剪枝（reviewer P2#13）
         if (SKIP_DIRS.has(e.name.toLowerCase()) || e.name.startsWith('.')) continue;
-        if (!includeFixtures && e.name.toLowerCase() === FIXTURE_DIR) { fixtures.push(rel); continue; }
+        if (!includeFixtures && FIXTURE_DIRS.has(e.name.toLowerCase())) { fixtures.push(rel); continue; }
         if (BUILD_OUTPUT_DIRS.has(e.name.toLowerCase()) || BUILD_OUTPUT_RE.test(e.name)) { pruned.push(rel); continue; }
         await walk(p, depth + 1);
         continue;

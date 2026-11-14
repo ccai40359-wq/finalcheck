@@ -236,5 +236,8 @@ export const EN_APP = {
   '（后台会话）{msg}': '(background session) {msg}',
   '有一个过程事件渲染失败（已跳过，不影响本轮结果）': 'One process event failed to render and was skipped; this turn is unaffected',
   '发送失败：{msg}（消息未发出，可直接重试）': 'Send failed: {msg} (message not sent; retry directly)',
-  '新建会话失败，消息未发送：{msg}': 'Failed to create a session; message not sent: {msg}'
+  '新建会话失败，消息未发送：{msg}': 'Failed to create a session; message not sent: {msg}',
+  '未命名': 'Untitled',
+  '未命名会话': 'Untitled session',
+  '仍在后台运行（记录没丢）：': 'Still running in the background (records kept):'
 };

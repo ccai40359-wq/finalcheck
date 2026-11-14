@@ -162,6 +162,12 @@ test('A3 正例/反例：shell 执行模型命令 = card；字面量命令带限
       '}',
       'async function safe() {',
       "  await spawn('git', ['status'], { timeout: 30000, maxBuffer: 1024 * 1024 });",
+      '  // 与下一个无限额 spawn 隔开 5 行：加宽后的窗口不应把上面的 timeout 错配过来',
+      '  const a = 1;',
+      '  const b = 2;',
+      '  const c = 3;',
+      '  const d = 4;',
+      '  const e = 5;',
       '  const proc = spawn(commandVar);',
       '  return proc;',
       '}',
@@ -286,4 +292,70 @@ test('接线：L2 计划含 A1-A4 且 executed 登记；A1 hard 卡在 L1 判「
   }
   const high = l2.findings.find((f) => f.checkId === 'A1' && f.rule === 'A1.bypass-mode');
   assert.ok(high, 'L2 下 bypass 配置仍是 card');
+});
+
+/* ---------- round6 真仓回归（langchainjs / vercel/ai / openai-agents-js 实测 FP） ---------- */
+
+test('round6 A2：messages.map( 不构成 SDK 调用血缘，正常 payload 组装不报', async (t) => {
+  const dir = await fixture({
+    'chat-model.ts': [
+      "import OpenAI from 'openai';",
+      'const client = new OpenAI(process.env.OPENAI_API_KEY);',
+      'async function call(rows: string[]) {',
+      '  const raw = rows.map((x) => ({ role: "user", content: x }));',
+      '  const messagesList = raw.map((x) => x);',
+      '  const res = await client.chat.completions.create({ messages: messagesList });',
+      '  return res;',
+      '}',
+    ].join('\n'),
+    'package.json': JSON.stringify({ dependencies: { openai: '^4.0.0' } }),
+  });
+  cleanup(t, dir);
+  const r = await checkAiPromptInjection(dir, { tier: 'L2' });
+  assert.deepEqual(r.findings, [], 'messages.map( 无调用动词 → 不注入血缘 → 无 A2 card');
+});
+
+test('round6 A3：.d.ts 声明与 TS 方法签名不报；timeout 写在调用对象第 7 行也认', async (t) => {
+  const dir = await fixture({
+    'sandbox.d.ts': [
+      'declare class Sandbox {',
+      '  exec(cmd: string, opts?: ExecOptions): Promise<void>;',
+      '  spawn(command: string, args: string[]): ChildProcess;',
+      '}',
+    ].join('\n'),
+    'worker.ts': [
+      'export class Worker {',
+      '  exec(cmd: string, opts?: ExecOptions): Promise<void> {',
+      "    return spawnSync('git', ['status'], {",
+      '      cwd: root,',
+      '      env: process.env,',
+      '      stdio: [null, pipe, pipe],',
+      '      windowsHide: true,',
+      '      timeout: options?.timeoutMs,',
+      '    });',
+      '  }',
+      '}',
+    ].join('\n'),
+    'package.json': JSON.stringify({ dependencies: { openai: '^4.0.0' } }),
+  });
+  cleanup(t, dir);
+  const r = await checkAiSandbox(dir, { tier: 'L2' });
+  assert.ok(!r.findings.some((f) => f.file.endsWith('.d.ts')), '声明文件不扫');
+  assert.ok(!r.findings.some((f) => f.file === 'worker.ts'), '签名行不报；timeout 在对象后第 6 行 → 不报 unbounded');
+});
+
+test('round6 A4：纯字面量日志不报，含数据变量的日志报', async (t) => {
+  const dir = await fixture({
+    'logger.js': [
+      "console.log('Response received');",
+      'console.log(response);',
+      "console.error('messages saved to disk');",
+    ].join('\n'),
+    'package.json': JSON.stringify({ dependencies: { openai: '^4.0.0' } }),
+  });
+  cleanup(t, dir);
+  const r = await checkAiDataBoundary(dir, { tier: 'L2' });
+  const logs = r.findings.filter((f) => f.rule === 'A4.debug-log');
+  assert.equal(logs.length, 1, '只有 console.log(response) 是数据日志');
+  assert.match(logs[0].snippet, /console\.log\(response\)/);
 });
