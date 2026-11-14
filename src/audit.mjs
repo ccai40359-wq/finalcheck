@@ -21,10 +21,11 @@ import { checkPerfStatic } from './checks/perf-static.mjs';
 import { checkLicense } from './checks/license.mjs';
 import { checkOps } from './checks/ops.mjs';
 import { planFromProfile, highestLevel, evidenceMatrix } from './profile.mjs';
-import { isFixturePath } from './walk.mjs';
+import { isFixturePath, listTextFiles } from './walk.mjs';
 import { dedupeCrossCopies } from './dedupe.mjs';
 import { resolveReportCaps } from './report-caps.mjs';
 import { ACCEPT_FILE, applyAcceptances } from './accept.mjs';
+import { applyScopePolicy, detectLanguageGap } from './scope-policy.mjs';
 
 // 覆盖关（ACCEPTANCE §4 矩阵已实现子集）：S6/D/E/X 接线中
 // L2 = 安全/供应链/测试 + 交接(H1) + 可维护性(Q3)
@@ -85,6 +86,9 @@ export async function audit(projectDir, { tier = null, interactive = false, runT
     ineffectiveGuards: (raw.ineffectiveGuards || []).filter((guard) => !excl(guard.file) && !fixtureBlocked(guard.file)),
     routes: (raw.routes || []).filter((r) => !excl(r.file) && !fixtureBlocked(r.file)),
     publicRoutes: raw.publicRoutes || [],
+    // HTTP 面存在但路由表没解析出来（node:http / 自定义 table / NodeGoat 式 routes(app) 挂载）：
+    // 只透传信号，让 S1/S7 记 unavailable，而不是把「没解析到」说成「没有 HTTP 面」。
+    httpSurface: raw.httpSurface || { exists: false, hints: [], mounts: [] },
     warnings: (raw.warnings || []).filter((w) => !excl(w)),
   };
 
@@ -155,6 +159,11 @@ export async function audit(projectDir, { tier = null, interactive = false, runT
   const acceptance = await applyAcceptances(projectDir, findings);
   findings = acceptance.findings;
   warnings.push(...acceptance.warnings);
+  // 非产品路径（tests/examples/docs/benchmarks）上的产品类发现只作提示，不计入结论；
+  // S3 真实密钥硬规则与 H1/C1/O1/D1-D3 不降级（README/docs 就是它们的产品面）。
+  const scoped = applyScopePolicy(findings);
+  findings = scoped.findings;
+  if (scoped.downgraded) warnings.push(`非产品路径发现 ${scoped.downgraded} 条已降为提示（tests/examples/docs/benchmarks，不计入结论）`);
   if (effective === 'L1') findings = findings.map((f) => (f.checkId === 'S3' ? f : { ...f, force: 'tip' })); // L1 只有 S3 是硬卡
   // S7/S8 属文件级启发式，人工确认机制（v2）接入前一律 check 级，不自动锁死结论（三轮 reviewer P1#3/#13）
   findings = findings.map((f) => (f.checkId === 'S7' || f.checkId === 'S8') && f.force === 'card' ? { ...f, force: 'check', message: f.message + '（人工确认机制接入后升级为卡）' } : f);
@@ -168,6 +177,21 @@ export async function audit(projectDir, { tier = null, interactive = false, runT
   if (profilePlan) {
     for (const gap of profilePlan.gapsForUnimplemented) {
       gapItems.push({ checkId: gap.dimension, dimension: gap.dimension, kind: 'unavailable', reason: gap.reason });
+    }
+  }
+  // 语言覆盖缺口：仓库只有 .py/.php/.java/.go/.rb 时，只解析 JS/TS 的检查不能算「已执行」，
+  // 更不能把空结果当通过。文件列表只扫一次（复用 walk.mjs 的统一排除/夹具口径）。
+  const { files: textFiles } = await listTextFiles(projectDir, excludes, { includeFixtures: false });
+  const languageGap = detectLanguageGap(textFiles, projectDir);
+  if (languageGap) {
+    const reason = languageGap.jsCount > 0
+      ? `仓库有 ${languageGap.nonJsCount} 个非 JS 源码（${languageGap.exts.join('/')}），该检查只解析 JS/TS，非 JS 部分未覆盖`
+      : `仓库仅有 ${languageGap.exts.join('/')} 源码（${languageGap.nonJsCount} 个文件），该检查目前只解析 JS/TS，未覆盖`;
+    for (const checkId of languageGap.checkIds) {
+      const existing = gapItems.find((g) => g.checkId === checkId);
+      // 已有 unavailable/unauthorized 的缺口保留原条目（不重复追加）；N/A 升级为能力缺失。
+      if (!existing) gapItems.push({ checkId, kind: 'unavailable', reason });
+      else if (existing.kind === 'not-applicable') Object.assign(existing, { kind: 'unavailable', reason });
     }
   }
   const gaps = gapItems.map(gapLabel);
@@ -193,7 +217,10 @@ export async function audit(projectDir, { tier = null, interactive = false, runT
     },
     gates: {
       planned,
-      executed: results.filter((r) => !r.coverageGap).map((r) => r.checkId),
+      // 被 unavailable 缺口覆盖的检查不算已执行（例如纯 Python 仓库里的 Q3/Q4/Q5）。
+      executed: results
+        .filter((r) => !r.coverageGap && !gapItems.some((g) => g.checkId === r.checkId && g.kind === 'unavailable'))
+        .map((r) => r.checkId),
       gaps,
       gapItems, // 保留 gaps 字符串兼容老调用方；gapItems 带 kind 供结论分级
     },
@@ -258,7 +285,14 @@ export function conclude(tier, findings, gapItems = []) {
   const unauthorized = gapItems.filter((g) => g.kind === 'unauthorized');
   // 能力缺失：应跑而本机跑不了 → 依旧封顶「无法验收」
   if (unavailable.length) {
-    return { verdict: '无法验收', reason: `覆盖不足（${unavailable.length} 关未跑）：${unavailable.map(gapLabel).join('；')}` };
+    const reason = `覆盖不足（${unavailable.length} 关未跑）：${unavailable.map(gapLabel).join('；')}`;
+    // 未授权项不能因为有能力缺口就从 reason 里消失：结论仍是无法验收，但要同时点名待授权。
+    if (!unauthorized.length) return { verdict: '无法验收', reason };
+    return {
+      verdict: '无法验收',
+      reason: `${reason}；另待授权：${unauthorized.map(gapLabel).join('；')}`,
+      pendingAuth: unauthorized.map((g) => ({ checkId: g.checkId, reason: g.reason })),
+    };
   }
   // 仅缺授权：结论是「待授权」，不是「无法验收」，更不是「拦」；同时给出其余检查的初判，不掩盖已发现的问题
   if (unauthorized.length) {

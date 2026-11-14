@@ -48,6 +48,33 @@ export async function checkAuthz(projectDir, { tier, excludes = [], routeResult 
   // 才允许在零命中时给出「通过」；否则 S7 必须记 coverageGap（kind=unavailable）。
   const routes = Array.isArray(routeResult && routeResult.routes) ? routeResult.routes : [];
   if (!routes.length) {
+    // 空路由表但有 HTTP 服务/路由注册信号（自定义 server、框架工厂、非 JS 框架）
+    // → 路由提取器未解析出路由表，S7 未覆盖，不能记 not-applicable。
+    const httpSignal = Boolean(routeResult?.unsupportedFrameworks?.length) || Boolean(routeResult?.httpSurface?.exists);
+    if (httpSignal) {
+      const fw = routeResult?.unsupportedFrameworks?.length
+        ? `框架：${routeResult.unsupportedFrameworks.join('；')}`
+        : '检测到自定义 HTTP server / 路由挂载调用';
+      // HTTP 面未解析不等于没有 IPC 面：Electron/桌面项目可能同时有 node:http 服务与 ipcMain。
+      // 先跑 IPC 兜底，有 IPC 结果就把 findings 保留、HTTP 缺口附加进去，不能把 IPC 漏洞吞掉。
+      const ipc = scanIpcFallback(projectDir, excludes, warnings);
+      const httpGap = `检测到 HTTP 服务/路由注册，但路由提取器未解析出路由表，S7 越权检查未覆盖（${fw}）`;
+      if (ipc) {
+        return {
+          ...ipc,
+          coverageGap: ipc.coverageGap ? `${ipc.coverageGap}；${httpGap}` : httpGap,
+          gapKind: 'unavailable',
+          warnings: [...(ipc.warnings || []), ...warnings],
+        };
+      }
+      return {
+        checkId: 'S7',
+        findings,
+        coverageGap: httpGap,
+        gapKind: 'unavailable',
+        warnings,
+      };
+    }
     // 无 HTTP 路由：桌面项目改查 IPC 权限面。有 handler → 正常结果（coverageGap=null）；
     // 两者都没有 → 结构性不适用，不封顶结论，但报告必须点名「该项未验证」。
     const ipc = scanIpcFallback(projectDir, excludes, warnings);

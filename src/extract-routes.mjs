@@ -7,8 +7,9 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { parse } from '@babel/parser';
-import { isPublicPath, isRelativeSource, joinPath, prefixMatches, staticPathValue } from './route-path.mjs';
+import { isPublicPath, isRelativeSource, joinPath, prefixMatches, staticPathValue, staticPathValues } from './route-path.mjs';
 import { sourceModel, walkSource, isFunction } from './source-analysis.mjs';
+import { isNonProductPath } from './scope-policy.mjs';
 
 const ROUTE_METHODS = new Set(['get', 'post', 'put', 'delete', 'patch']);
 // Loose match over the spec'd guard names (auth/requireAuth/.../jwt/passport/session).
@@ -17,11 +18,45 @@ const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', 'coverage', 
 const SCANNED_EXTS = new Set(['.js', '.mjs', '.cjs', '.jsx', '.ts', '.tsx', '.mts', '.cts']);
 const MAX_DEPTH = 16;
 const MAX_CHAIN = 50;
+// handler 内部鉴权：juice-shop 的 profile upload 路由没有中间件，但在 handler/factory 里
+// 检查 authenticatedUsers / loggedInUser / req.user。按导入文件做一层静态确认（不跨第三方包）。
+const INTERNAL_AUTH_RE = /\bauthenticatedUsers\b|\bloggedInUser\b|\bisAuthenticated\s*\(|\bappendUserId\s*\(|\bverifyToken\s*\(|\bcurrentUser\b|\b(?:req|request)\.user\b/;
+const INTERNAL_AUTH_CACHE = new Map();
 // File-level pre-screen: only parse files that plausibly touch Express.
 // Non-Express files (Angular frontends etc.) are skipped silently so their
 // syntax errors never flood S1 warnings; Express-referencing files that fail
 // to parse still warn (a real route file's parse failure is a signal).
 const EXPRESS_REF_RE = /from\s+['"]express|require\(\s*['"]express|express\(\)/i;
+// NodeGoat-style route modules export a function that receives the app:
+// `module.exports = (app, db) => { app.get('/x', ...) }` with no express import.
+// Prescreen on the app/router/server route-call shape so those files are parsed.
+const APP_ROUTE_CALL_RE = /\b(?:app|router|server)\s*\.\s*(?:get|post|put|delete|patch|use|all|route)\s*\(/;
+const ROUTE_PATH_ARG_RE = /^[/*]/;
+
+// HTTP-surface signals: frameworks/transports we cannot turn into a route table
+// but which prove an HTTP permission surface exists. Used by S1/S7/S6 to report
+// "unavailable" instead of "not applicable" when extraction yields no routes.
+const HTTP_SURFACE_RULES = [
+  { hint: 'http.createServer', re: /\b(?:http|https|http2)\s*\.\s*createServer\s*\(/g, mount: false },
+  // 只认 node:http 的入口，不认裸 createServer：net.createServer / tls.createServer 不是 HTTP 面，
+  // 否则 Electron 的 IPC 项目会被误判成 HTTP 项目，S7 IPC 检查被跳过。
+  { hint: 'node:http', re: /\b(?:from\s*['"]node:http['"]|require\s*\(\s*['"]node:http['"]\s*\))/g, mount: false },
+  { hint: 'table.set(route.path', re: /table\.set\s*\(\s*route\.path/g, mount: true },
+  { hint: 'registerUpgrade', re: /\bregisterUpgrade\s*\(/g, mount: true },
+  { hint: 'routes(app)', re: /\broutes\s*\(\s*(?:app|server|router)\s*[,)]/g, mount: true },
+  { hint: "require('./routes')(app)", re: /require\s*\(\s*['"][^'"]*routes[^'"]*['"]\s*\)\s*\(\s*(?:app|db|server|router)\s*(?:,|\))/g, mount: true },
+  { hint: 'webserver/authorize', re: /webserver\/authorize/g, mount: true },
+];
+const NON_JS_EXTS = new Set(['.py', '.java', '.php', '.rb', '.go', '.rs', '.kt', '.cs']);
+const PROBE_SKIP_DIRS = new Set([
+  ...SKIP_DIRS, 'test', 'tests', '__tests__', 'spec', 'specs',
+  'example', 'examples', 'doc', 'docs', 'fixture', 'fixtures',
+]);
+const MAX_PROBE_FILES = 500;
+const MAX_PROBE_BYTES = 256 * 1024;
+// 探测优先读「像服务端」的文件：大仓（deepseek-harness 7000+ JS 文件）里
+// 按字母序前 300 个根本到不了 packages/host/webserver，会漏掉 node:http 信号。
+const PROBE_PRIORITY_RE = /(?:^|\/)(?:server|host|webserver|http|https|api|route|routes|web|app|service|services)(?:\/|\.|-)/i;
 
 /* ---------- generic AST walk ---------- */
 
@@ -73,8 +108,16 @@ function isFunctionNode(n) {
   return n.type === 'ArrowFunctionExpression' || n.type === 'FunctionExpression' || n.type === 'FunctionDeclaration';
 }
 
-function exprName(n) {
-  if (!n) return null;
+// Express route paths: literal/template starting with "/" or "*", regex literal,
+// or an array of paths. Config getters such as app.get('env') are not routes.
+function isRoutePathArg(n) {
+  if (!n) return false;
+  if (n.type === 'RegExpLiteral' || n.type === 'ArrayExpression') return true;
+  const v = staticPathValue(n);
+  return typeof v === 'string' && ROUTE_PATH_ARG_RE.test(v);
+}
+
+function exprName(n) {  if (!n) return null;
   if (n.type === 'Identifier') return n.name;
   if (n.type === 'MemberExpression') {
     const obj = n.object.type === 'Identifier' ? n.object.name : exprName(n.object);
@@ -248,7 +291,7 @@ function analyzeFile(abs, rel, warnings) {
     warnings.push(`${rel}: file too large, skipped`);
     return null;
   }
-  if (!EXPRESS_REF_RE.test(code)) return null; // non-Express file: skip without warnings
+  if (!EXPRESS_REF_RE.test(code) && !APP_ROUTE_CALL_RE.test(code)) return null; // non-HTTP file: skip without warnings
   let ast;
   try {
     ast = parse(code, {
@@ -375,8 +418,11 @@ function analyzeFile(abs, rel, warnings) {
         routeBases.push(typeof node.start === 'number' ? node.start : 0);
       }
 
-      // Direct form: app.get(...) / router.use(...)
+      // Direct form: app.get('/x', mw, handler) / router.use(...)
+      // Express single-argument app.get('env'|'port'|...) is a config getter,
+      // not a route; a route needs >=2 args and a path-like first argument.
       if (objNode.type === 'Identifier' && propName && (ROUTE_METHODS.has(propName) || propName === 'use' || propName === 'all')) {
+        if (propName !== 'use' && (node.arguments.length < 2 || !isRoutePathArg(node.arguments[0]))) return;
         events.push({
           kind: propName === 'use' ? 'use' : 'route',
           obj: objNode.name,
@@ -564,6 +610,36 @@ function mountTarget(target, subPrefix, passDown, stack, ctx, depth, fromFile, l
   return false;
 }
 
+// handler 内部鉴权：无中间件但 handler/factory 里检查 authenticatedUsers/loggedInUser/req.user。
+// 只跟相对导入一层文件，不跨第三方包；缓存结果避免每个路由重复读文件。
+function handlerHasInternalAuth(argNodes, file) {
+  for (const arg of (argNodes || []).slice(1)) {
+    const names = new Set();
+    walk(arg, (n) => {
+      if (n.type === 'Identifier') names.add(n.name);
+      if (n.type === 'MemberExpression') {
+        const prop = memberPropName(n);
+        if (prop) names.add(prop);
+        if (prop === 'user' && n.object?.type === 'Identifier' && ['req', 'request'].includes(n.object.name)) names.add('req.user');
+      }
+    });
+    for (const name of names) {
+      if (INTERNAL_AUTH_RE.test(name)) return true;
+      const imp = file.imports?.get(name);
+      if (!imp || !isRelativeSource(imp.source)) continue;
+      const abs = resolveImportPath(path.dirname(file.abs), imp.source);
+      if (!abs) continue;
+      if (!INTERNAL_AUTH_CACHE.has(abs)) {
+        let hit = false;
+        try { hit = INTERNAL_AUTH_RE.test(readFileSync(abs, 'utf8')); } catch { hit = false; }
+        INTERNAL_AUTH_CACHE.set(abs, hit);
+      }
+      if (INTERNAL_AUTH_CACHE.get(abs)) return true;
+    }
+  }
+  return false;
+}
+
 function emitTree(file, varName, prefix, initGuards, stack, ctx, depth, events = file.events, keySuffix = '') {
   const key = `${file.abs}#${varName}${keySuffix}`;
   if (stack.has(key)) {
@@ -585,22 +661,27 @@ function emitTree(file, varName, prefix, initGuards, stack, ctx, depth, events =
         ctx.warnings.push(`${file.rel}:${ev.line}: ${ev.obj || 'router'}.${ev.method}() has no single method; skipped`);
         continue;
       }
-      const p = ev.pathOverride !== undefined ? ev.pathOverride : staticPathValue(ev.argNodes.length ? ev.argNodes[0] : null);
-      if (p === undefined) {
+      const routePaths = ev.pathOverride !== undefined
+        ? [ev.pathOverride]
+        : staticPathValues(ev.argNodes.length ? ev.argNodes[0] : null);
+      if (!routePaths.length) {
         ctx.warnings.push(`${file.rel}:${ev.line}: non-static route path on ${ev.obj || 'router'}.${ev.method}(); skipped`);
         continue;
       }
-      const fullPath = joinPath(prefix, p);
-      const inherited = [];
-      for (const g of guards) if (prefixMatches(fullPath, g.prefix)) inherited.push(...g.names);
-      ctx.routes.push({
-        method: ev.method,
-        path: fullPath,
-        file: file.rel,
-        line: ev.line,
-        middlewares: [...inherited, ...ev.mwNames],
-        hasGuard: false,
-      });
+      for (const p of routePaths) {
+        const fullPath = joinPath(prefix, p);
+        const inherited = [];
+        for (const g of guards) if (prefixMatches(fullPath, g.prefix)) inherited.push(...g.names);
+        ctx.routes.push({
+          method: ev.method,
+          path: fullPath,
+          file: file.rel,
+          line: ev.line,
+          middlewares: [...inherited, ...ev.mwNames],
+          hasGuard: false,
+          ...(handlerHasInternalAuth(ev.argNodes, file) ? { hasInternalGuard: true } : {}),
+        });
+      }
       continue;
     }
 
@@ -639,6 +720,117 @@ function emitTree(file, varName, prefix, initGuards, stack, ctx, depth, events =
   stack.delete(key);
 }
 
+/* ---------- HTTP surface probes ---------- */
+
+function isProbeBlockedDir(name) {
+  return PROBE_SKIP_DIRS.has(name);
+}
+
+// Walk source files only (tests/examples/docs/fixtures/node_modules excluded),
+// capped so probing never dominates scan time. Failures are swallowed.
+function collectProbeFiles(rootDir, exts, maxFiles = MAX_PROBE_FILES) {
+  const candidates = [];
+  const visit = (dir) => {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    for (const ent of entries) {
+      if (ent.name.startsWith('.')) continue;
+      const p = path.join(dir, ent.name);
+      if (ent.isDirectory()) {
+        if (!isProbeBlockedDir(ent.name)) visit(p);
+      } else if (exts.has(path.extname(ent.name).toLowerCase())) {
+        const rel = path.relative(rootDir, p).replace(/\\/g, '/');
+        if (isNonProductPath(rel)) continue; // tests/examples/docs/benchmarks 的 server 不是产品 HTTP 面
+        const rootEntry = /^(?:bin\/|src\/(?:main|index|server|app|bootstrap)\.)|^(?:main|index|server|app|bootstrap)\.[a-z]+$/i.test(rel);
+        const score = rootEntry ? 0 : PROBE_PRIORITY_RE.test(rel) ? 1 : 2;
+        candidates.push({ p, score });
+      }
+    }
+  };
+  visit(rootDir);
+  // 先扫服务端/HTTP 相关路径，再扫其余；根级入口（bin/www、src/main.ts、src/index.ts）
+  // 优先级最高，避免被 apps/web 里几百个文件挤掉。
+  candidates.sort((a, b) => a.score - b.score || (a.p < b.p ? -1 : a.p > b.p ? 1 : 0));
+  return candidates.slice(0, maxFiles).map((c) => c.p);
+}
+
+function readProbeText(abs) {
+  try {
+    const st = statSync(abs);
+    if (!st.isFile() || st.size > MAX_PROBE_BYTES) return null;
+    return readFileSync(abs, 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+function scanHttpSurface(rootDir, maxFiles) {
+  const hints = [];
+  const mounts = [];
+  const files = collectProbeFiles(rootDir, SCANNED_EXTS, maxFiles);
+  for (const abs of files) {
+    const text = readProbeText(abs);
+    if (text == null) continue;
+    for (const rule of HTTP_SURFACE_RULES) {
+      let m;
+      rule.re.lastIndex = 0; // global regexes are shared; reset before each file
+      while ((m = rule.re.exec(text)) !== null) {
+        hints.push(rule.hint);
+        if (rule.mount && m[0]) mounts.push(m[0].trim());
+        if (m[0].length === 0) rule.re.lastIndex++; // guard against zero-length matches
+      }
+    }
+    // 已经确认「有 HTTP 面」就够了：继续读上千个文件只会拖慢大仓审计。
+    if (hints.length >= 2) break;
+  }
+  return { surface: { exists: hints.length > 0, hints: [...new Set(hints)], mounts: [...new Set(mounts)] }, scanned: files.length };
+}
+
+// Non-JS frameworks: detect the presence of an HTTP framework so S1/S7/S6 can
+// say "unavailable" instead of "not applicable". Route tables are intentionally
+// not parsed for these frameworks.
+function detectUnsupportedFrameworks(rootDir, maxFiles) {
+  const hits = [];
+  const seen = { fastapiImport: false, fastapiRoutes: false, flaskApp: false, flaskRoutes: false };
+  for (const abs of collectProbeFiles(rootDir, NON_JS_EXTS, maxFiles)) {
+    const text = readProbeText(abs);
+    if (text == null) continue;
+    // FastAPI：`from fastapi import ... FastAPI` 与路由装饰器/APIRouter 常常分在不同文件，
+    // 不能要求同一个文件同时命中（autogen 的 app.py 只 include_router，路由在 routes/*.py）。
+    if (/from\s+fastapi\s+import[^\n]*FastAPI|\bFastAPI\s*\(/i.test(text)) seen.fastapiImport = true;
+    if (/@(?:app|router)\s*\.\s*(?:get|post|put|delete|patch|route|api_route)\s*\(/i.test(text)
+      || /\bAPIRouter\s*\(/i.test(text)) seen.fastapiRoutes = true;
+    if (/\bFlask\s*\(/i.test(text)) seen.flaskApp = true;
+    if (/@(?:app|bp|blueprint)\s*\.\s*route\s*\(/i.test(text) || /\bBlueprint\s*\(/i.test(text)) seen.flaskRoutes = true;
+    // Rails / Go / Rust：只用于「HTTP 面存在但解析不了」的诚实缺口，不解析路由表。
+    if (/Rails\.application\.routes\.draw|ActionController::Base|config\/routes\.rb/i.test(text)
+      && !hits.includes('Rails')) hits.push('Rails');
+    if (/\bgin\.(?:Default|New)\s*\(|\bgin\.Context\b/i.test(text) && !hits.includes('Gin')) hits.push('Gin');
+    if (/\becho\.New\s*\(/i.test(text) && !hits.includes('Echo')) hits.push('Echo');
+    if (/\bfiber\.New\s*\(/i.test(text) && !hits.includes('Fiber')) hits.push('Fiber');
+    if (/\bchi\.NewRouter\s*\(/i.test(text) && !hits.includes('Chi')) hits.push('Chi');
+    if (/\bhttp\.(?:ServeMux|NewServeMux|HandleFunc|ListenAndServe)\b/i.test(text)
+      && !hits.includes('net/http')) hits.push('net/http');
+    if (/\bactix_web\b|\bactix_web::/i.test(text) && !hits.includes('Actix')) hits.push('Actix');
+    if (/\baxum::Router\b|\baxum::serve\b/i.test(text) && !hits.includes('Axum')) hits.push('Axum');
+    if (/\bwarp::serve\b/i.test(text) && !hits.includes('Warp')) hits.push('Warp');
+    if (/\brocket::/i.test(text) && !hits.includes('Rocket')) hits.push('Rocket');
+    if (/\burlpatterns\s*=/i.test(text) && !hits.includes('Django')) hits.push('Django');
+    if (/@(?:RestController|GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping|RequestMapping)\b/.test(text)
+      && !hits.includes('Spring')) hits.push('Spring');
+    // 已经找到两个非 JS 框架就够了；继续扫只会拖慢大仓。
+    if (hits.length >= 2) break;
+  }
+  if ((seen.fastapiImport || seen.fastapiRoutes) && !hits.includes('FastAPI')) hits.push('FastAPI');
+  if ((seen.flaskApp || seen.flaskRoutes) && !hits.includes('Flask')) hits.push('Flask');
+  return hits;
+}
+
 /* ---------- public API ---------- */
 
 /**
@@ -652,11 +844,12 @@ export async function extractRoutes(projectDir, options = {}) {
   const publicRoutes = [];
   const unsupportedFrameworks = [];
   const ineffectiveGuards = [];
+  let httpSurface = { exists: false, hints: [], mounts: [] };
   try {
     const rootDir = path.resolve(String(projectDir ?? '.'));
     if (!existsSync(rootDir) || !statSync(rootDir).isDirectory()) {
       warnings.push(`project directory not found: ${rootDir}`);
-      return { routes, publicRoutes, warnings };
+      return { routes, publicRoutes, warnings, httpSurface };
     }
 
     const cfgFile = options.configPath ? path.resolve(rootDir, String(options.configPath)) : path.join(rootDir, 'finalcheck.config.json');
@@ -671,6 +864,15 @@ export async function extractRoutes(projectDir, options = {}) {
     }
 
     const ctx = { rootDir, warnings, routes, cache: new Map(), reached: new Set() };
+    // Signals that an HTTP permission surface exists even when no route table
+    // can be extracted (custom servers, framework factories, non-JS stacks).
+    const jsProbe = scanHttpSurface(rootDir, MAX_PROBE_FILES);
+    httpSurface = jsProbe.surface;
+    // 非 JS 探测用独立预算：JS 探测用满 1200 个文件时不能把 Python/Java 探测饿死，
+    // 否则 autogen 的 FastAPI 永远检测不到。
+    for (const fw of detectUnsupportedFrameworks(rootDir, MAX_PROBE_FILES)) {
+      if (!unsupportedFrameworks.includes(fw)) unsupportedFrameworks.push(fw);
+    }
     const analyses = [];
     for (const abs of collectFiles(rootDir)) {
       const text = readFileSync(abs, 'utf8');
@@ -753,13 +955,20 @@ export async function extractRoutes(projectDir, options = {}) {
     // Guard verdict: auth-ish middleware anywhere in the chain, or an explicit
     // publicRoutes whitelist hit (S1 exemption, spec'd to count as guarded).
     for (const r of routes) {
-      r.hasGuard = r.middlewares.some((m) => GUARD_RE.test(m) && !ineffectiveGuards.some((guard) => guard.file === r.file && guard.name === m)) || isPublicPath(r.path, publicRoutes);
+      r.hasGuard = r.hasInternalGuard || r.middlewares.some((m) => GUARD_RE.test(m) && !ineffectiveGuards.some((guard) => guard.file === r.file && guard.name === m)) || isPublicPath(r.path, publicRoutes);
     }
     routes.sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : a.line - b.line || (a.path < b.path ? -1 : a.path > b.path ? 1 : a.method < b.method ? -1 : 1)));
   } catch (e) {
     warnings.push(`extractRoutes failed unexpectedly: ${e && e.message ? e.message : e}`);
   }
-  return { routes, publicRoutes, warnings, ...(unsupportedFrameworks.length ? { unsupportedFrameworks } : {}), ...(ineffectiveGuards.length ? { ineffectiveGuards } : {}) };
+  return {
+    routes,
+    publicRoutes,
+    warnings,
+    httpSurface,
+    ...(unsupportedFrameworks.length ? { unsupportedFrameworks } : {}),
+    ...(ineffectiveGuards.length ? { ineffectiveGuards } : {}),
+  };
 }
 
 function collectFiles(rootDir) {
@@ -778,6 +987,8 @@ function collectFiles(rootDir) {
       if (ent.isDirectory()) {
         if (!SKIP_DIRS.has(ent.name)) visit(p);
       } else if (SCANNED_EXTS.has(path.extname(ent.name).toLowerCase())) {
+        const rel = path.relative(rootDir, p).replace(/\\/g, '/');
+        if (isNonProductPath(rel)) continue; // tests/examples/docs 里的 Express/test server 不生成产品路由
         out.push(p);
       }
     }

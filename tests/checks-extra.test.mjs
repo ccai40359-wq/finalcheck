@@ -26,13 +26,17 @@ async function fixture(files = {}) {
 }
 
 function assertResult(r, checkId) {
-  assert.deepEqual(Object.keys(r).sort(), RESULT_KEYS);
+  // gapKind 是可选字段（S6 的 not-applicable 等），不破坏旧结果形状
+  assert.deepEqual(Object.keys(r).sort().filter((k) => k !== 'gapKind'), RESULT_KEYS);
+  assert.ok(!('gapKind' in r) || ['unavailable', 'unauthorized', 'not-applicable'].includes(r.gapKind));
   assert.equal(r.checkId, checkId);
   assert.ok(Array.isArray(r.findings), 'findings 必须是数组');
   assert.ok(Array.isArray(r.warnings), 'warnings 必须是数组');
   assert.ok(r.warnings.every((w) => typeof w === 'string'), 'warnings 必须是字符串');
   for (const f of r.findings) {
-    assert.deepEqual(Object.keys(f).sort(), FINDING_KEYS);
+    // hard 是 S3 的可选字段（真实密钥=true / 测试占位=false），不破坏旧 finding 形状
+    assert.deepEqual(Object.keys(f).sort().filter((k) => k !== 'hard'), FINDING_KEYS);
+    assert.ok(!('hard' in f) || typeof f.hard === 'boolean', 'hard 必须是布尔');
     assert.equal(f.checkId, checkId);
     assert.equal(f.source, 'program');
     assert.ok(['high', 'medium', 'low'].includes(f.severity), `非法 severity: ${f.severity}`);
@@ -486,7 +490,8 @@ test('S3 历史：提交过 AWS Key / PEM / 赋值字面量 → high/card，snip
     'config.js': [
       'const cfg = { api_key: "' + SECRET_VALUE + '" };',
       "const aws = '" + AWS_KEY + "';",
-      "const pem = '" + PEM_HEADER + "';",
+      // 真实私钥必须有 base64 体；只有头部的字符串不是私钥（2026-11-13 规则收紧后的夹具）
+      "const pem = '" + PEM_HEADER + "\\n" + "MIIBOgIBAAJBAK9q0kQm3kE1sV0m8Tq0n7b1k9Q2w4e6r8t0y2u4i6o8p0a2s4d6f8g0h2j4k6m8n0p2q4r6s8t0v2w4x6y8z0A2B4C6D8E0F2G4H6I8J0K2L4M6N8O0P2Q4R6S8T0U2V4W6X8Y0Z" + "';",
     ].join('\n'),
   });
   const r = await checkSecretsHistory(dir, { tier: 'L2' });

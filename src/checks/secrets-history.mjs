@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { runProcess } from '../run-async.mjs';
+import { isSuppressedSecretValue, looksLikeSecret, pemHasBody, hasKnownRealPrefix } from './secrets.mjs';
 
 // S3 历史密钥（ACCEPTANCE §4-A S3 的补充面）：只看 git 历史里“新增过”的行。
 // 仅项目根存在 .git 时执行；git log 失败/超时 → coverageGap（不抛错、不冒充通过）。
@@ -69,86 +70,110 @@ function parseGitPath(raw) {
 // git log -p 输出 → 补丁内的新增/删除/上下文行扫描。
 // 只看 hunk 内容（不看 commit message / 文件头），同一密钥按「规则+文件+脱敏片段」去重，
 // 避免它在后续每个提交里重复出现。line 对新增/上下文行取新文件行号，对删除行取旧文件行号。
+// 值抑制与工作树检查共用（secrets.mjs 的 isSuppressedSecretValue），不按路径跳过。
 function scanPatch(stdout, excludes, findings) {
   let currentFile = null;
   let oldLine = 0;
   let newLine = 0;
   let inHunk = false;
   let commitHash = '';
+  let hunk = [];
   const seen = new Set();
 
-  const hit = (content, lineNo) => {
+  const emit = (rule, content, lineNo, texts, index) => {
     if (!currentFile || isExcluded(currentFile, excludes)) return;
-    for (const rule of HISTORY_RULES) {
-      const m = rule.re.exec(content);
-      if (!m) continue;
-      const snippet = rule.snippet(m);
-      const key = `${rule.id}|${currentFile}|${snippet}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      findings.push({
-        checkId: 'S3',
-        severity: 'high',
-        force: 'card',
-        file: currentFile,
-        line: lineNo,
-        rule: rule.id,
-        snippet,
-        message: `git 历史提交 ${commitHash.slice(0, 8) || '(未知)'} 中出现疑似${rule.label}（值已抹除）——请轮换该密钥并清理历史`,
-        source: 'program',
-      });
+    const m = rule.re.exec(content);
+    if (!m) return;
+    if (rule.id === 'S3.history-private-key' && !pemHasBody(texts, index, content)) return;
+    if (rule.id === 'S3.history-secret-literal') {
+      const value = m[2] || '';
+      if (!looksLikeSecret(value)) return;
+      if (isSuppressedSecretValue(value, { key: m[1], file: currentFile })) return;
     }
+    const snippet = rule.snippet(m);
+    const key = `${rule.id}|${currentFile}|${snippet}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    const hard = rule.id !== 'S3.history-secret-literal' || hasKnownRealPrefix(m[2] || '');
+    findings.push({
+      checkId: 'S3',
+      severity: 'high',
+      force: 'card',
+      file: currentFile,
+      line: lineNo,
+      rule: rule.id,
+      hard,
+      snippet,
+      message: `git 历史提交 ${commitHash.slice(0, 8) || '(未知)'} 中出现疑似${rule.label}（值已抹除）——请轮换该密钥并清理历史`,
+      source: 'program',
+    });
+  };
+
+  const flush = () => {
+    if (inHunk && hunk.length) {
+      const texts = hunk.map((h) => h.text);
+      for (let i = 0; i < hunk.length; i++) {
+        for (const rule of HISTORY_RULES) emit(rule, hunk[i].text, hunk[i].lineNo, texts, i);
+      }
+    }
+    hunk = [];
   };
 
   for (const rawLine of stdout.split('\n')) {
     const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
 
     if (line.startsWith('commit ')) {
+      flush();
       commitHash = line.slice(7).trim();
       currentFile = null;
       inHunk = false;
       continue;
     }
     if (line.startsWith('diff --git ')) {
+      flush();
       inHunk = false;
       continue;
     }
     if (line.startsWith('+++ ')) {
+      flush();
       inHunk = false;
       currentFile = parseGitPath(line.slice(4));
       continue;
     }
     if (line.startsWith('--- ')) continue;
 
-    const hunk = /^@@+ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
-    if (hunk) {
-      oldLine = Number(hunk[1]) || 0;
-      newLine = Number(hunk[2]) || 0;
+    const hunkHead = /^@@+ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+    if (hunkHead) {
+      flush();
+      oldLine = Number(hunkHead[1]) || 0;
+      newLine = Number(hunkHead[2]) || 0;
       inHunk = true;
       continue;
     }
     if (!inHunk) continue;
 
     if (line.startsWith('+')) {
-      hit(line.slice(1), newLine);
+      hunk.push({ text: line.slice(1), lineNo: newLine });
       newLine++;
       continue;
     }
     if (line.startsWith('-')) {
-      hit(line.slice(1), oldLine);
+      hunk.push({ text: line.slice(1), lineNo: oldLine });
       oldLine++;
       continue;
     }
     if (line.startsWith(' ')) {
-      hit(line.slice(1), newLine);
+      hunk.push({ text: line.slice(1), lineNo: newLine });
       oldLine++;
       newLine++;
       continue;
     }
-    if (line.startsWith('\\')) { inHunk = false; continue; } // "\ No newline at end of file"
-    if (line === '') { inHunk = false; continue; } // 补丁分隔
+    flush();
     inHunk = false;
+    if (line.startsWith('\\')) continue; // "\ No newline at end of file"
+    if (line === '') continue; // 补丁分隔
   }
+  flush();
 }
 
 export async function checkSecretsHistory(projectDir, { tier, excludes = [] } = {}) {
@@ -158,6 +183,14 @@ export async function checkSecretsHistory(projectDir, { tier, excludes = [] } = 
   const gitDir = path.join(projectDir, '.git');
   if (!existsSync(gitDir)) {
     return { checkId: 'S3', findings, coverageGap: 'S3：无 git 历史，历史密钥未查', warnings };
+  }
+
+  // 浅克隆（--depth 1）里 git log -p 的“历史”就是 HEAD 本身，会把当前夹具重复当历史报。
+  // 用 rev-parse 判定，而不是 commit 数：普通单 commit 仓不是浅克隆，必须继续扫描。
+  const shallow = await runProcess('git', ['-C', projectDir, 'rev-parse', '--is-shallow-repository'], { timeoutMs: 10000 });
+  if (shallow.status === 0 && String(shallow.stdout || '').trim() === 'true') {
+    warnings.push('浅克隆：历史规则未运行（需完整 clone）');
+    return { checkId: 'S3', findings, coverageGap: null, warnings };
   }
 
   const run = await runProcess(

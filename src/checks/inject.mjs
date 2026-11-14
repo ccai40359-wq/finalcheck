@@ -1,5 +1,5 @@
 import { listTextFiles, readRel, prunedWarning } from '../walk.mjs';
-import { sourceModel, walkSource, memberName } from '../source-analysis.mjs';
+import { sourceModel, walkSource, memberName, isFunction } from '../source-analysis.mjs';
 
 // S2 注入类（ACCEPTANCE §4-A）：SQLi / eval / 命令注入 / 路径穿越 / SSRF / 反射 XSS。
 // 正则只认“调用形态”（自食教训：扫描器源码里的正则字面量若含裸词会被自咬，
@@ -12,10 +12,10 @@ import { sourceModel, walkSource, memberName } from '../source-analysis.mjs';
 const RE_CONCAT = /['"`]\s*[+]|[+]\s*['"`]|\$\{/; // 字符串拼接或模板插值
 const RE_SQL_KW = /\b(?:select|insert|update|delete)\b/i;
 const RE_SQL_CALL = /\b(?:query|exec|execute)\s*\(/i;
-const RE_EVAL_CALL = /\beval\s*\(|\bnew\s+Function\s*\(/i;
+// eval/new Function 都是大小写敏感的内建调用；`obj.eval()` 是插件/库方法（Ruby JSAPI、
+// REPL 等），不算动态代码执行。`Eval(s)` 这类 UI 文案不算（dsh overview 误报）。
+const RE_EVAL_CALL = /(?:^|[^.\w$])eval\s*\(|\bnew\s+Function\s*\(/;
 const RE_EXEC_BARE = /(?:^|[(=,\s!{])exec(?:Sync)?\s*\(/;
-const RE_EXEC_MEMBER = /\.\s*exec(?:Sync)?\s*\(/;
-const RE_RX_EXEC = /\b(?:re|rx|regexp?|pattern|matcher?)\w*\s*\.\s*exec\s*\(/i; // 正则的 exec 不是命令执行
 const RE_FILE_CALL = /\b(?:sendFile|readFile|unlink|createReadStream)\s*\(/;
 const RE_REQ_INPUT = /\breq\s*\.\s*(?:query|params|body)\b/;
 const RE_SSRF = /\b(?:fetch|axios(?:\s*\.\s*\w+)?|https?\s*\.\s*(?:get|request)|request)\s*\(\s*(?:req(?:uest)?)\s*\.\s*(?:query|params|body)\b/;
@@ -36,15 +36,77 @@ function isRegexLiteralExec(line) {
   return before.slice(cut + 1).trim().startsWith('/');
 }
 
-function cmdiHit(line) {
+// `.exec()` 的接收者分类：数据库/驱动/正则/解析器上的 exec 不是命令执行。
+// 宁可漏报第三方插件/驱动，也不再把 `this.db.exec(...)`、`new RegExp(...).exec(...)` 当 child_process。
+const EXEC_SKIP_RECEIVER = /^(?:db|database|conn|connection|client|pool|stmt|statement|observer|sqlite|pg|mysql|mssql|mongo|redis|regexp|regex|re|rx|pattern|matcher|rule|parser|compiler|sandbox|vfs|fs)$/;
+const EXEC_COMMAND_RECEIVER = /^(?:child_process|cp|sh|shell|spawn)$/;
+
+function baseIdentifier(text) {
+  // 忽略字符串字面量里的词，避免 getExec('spawn') 这种调用的字符串实参被当成接收者名。
+  const stripped = String(text || '').replace(/'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"|`(?:\\.|[^`\\])*`/g, ' ');
+  const ids = [...stripped.matchAll(/[A-Za-z_$][\w$]*/g)].map((m) => m[0]);
+  return ids.length ? ids[ids.length - 1] : '';
+}
+
+// 返回 'command' / 'non-command' / 'regexp' / 'unknown'。
+// unknown 的第三方 .exec() 按非命令处理（插件、驱动上的 exec 太常见）。
+function classifyReceiverText(text, execAliases = null) {
+  const receiver = String(text || '').trim();
+  if (!receiver) return 'unknown';
+  if (/RegExp/.test(receiver)
+    && (receiver.startsWith('RegExp(') || receiver.startsWith('new RegExp(') || receiver.endsWith(')'))) {
+    return 'regexp';
+  }
+  if (/(?:require|import)\s*\(\s*(?:'|")(?:node:)?child_process(?:'|")/.test(receiver)) return 'command';
+  const base = baseIdentifier(receiver);
+  if (!base) return 'unknown';
+  if (EXEC_SKIP_RECEIVER.test(base.toLowerCase())) return 'non-command';
+  if (EXEC_COMMAND_RECEIVER.test(base.toLowerCase())) return 'command';
+  if (execAliases?.has(base)) return 'command';
+  return 'unknown';
+}
+
+// 从 `.exec(` 的点号往前取接收者文本（支持 `new RegExp(...)` 这类带括号/空格的表达式）。
+function receiverTextBeforeDot(line, dotIndex) {
+  let i = dotIndex - 1;
+  while (i >= 0 && /\s/.test(line[i])) i--;
+  if (i < 0) return '';
+  const end = i + 1;
+  if (line[i] === ')') {
+    let depth = 0;
+    for (; i >= 0; i--) {
+      if (line[i] === ')') depth++;
+      else if (line[i] === '(') {
+        depth--;
+        if (depth === 0) break;
+      }
+    }
+    let j = i - 1;
+    while (j >= 0 && /[\w$.]/.test(line[j])) j--;
+    return line.slice(j + 1, end);
+  }
+  let j = i;
+  while (j >= 0 && /[\w$.\]]/.test(line[j])) j--;
+  return line.slice(j + 1, end);
+}
+
+function execMemberDot(line) {
+  const m = RE_EXEC_METHOD.exec(line);
+  return m ? m.index + m[0].indexOf('.') : -1;
+}
+
+function cmdiHit(line, ctx = {}) {
   if (!RE_CONCAT.test(line)) return false;
+  // 裸 exec/execSync 仍按拼接命中（解构自 child_process 的调用没有接收者）。
   if (RE_EXEC_BARE.test(line)) return true;
   if (isRegexLiteralExec(line)) return false;
   // 收尾是 `/` 的接收者也是正则字面量（如 `/(?:[:：=]|\s)/.exec(line)`）：
   // 正则里带 `+` 或括号时 isRegexLiteralExec 的切分可能失效，这里再兜一层，别把 RegExp.exec 当命令执行。
-  const receiver = /([^\s]+)\s*\.\s*exec(?:Sync)?\s*\(/.exec(line);
-  if (receiver && receiver[1].trim().endsWith('/')) return false;
-  return RE_EXEC_MEMBER.test(line) && !RE_RX_EXEC.test(line);
+  const dot = execMemberDot(line);
+  if (dot < 0) return false;
+  const receiver = receiverTextBeforeDot(line, dot);
+  if (receiver.trim().endsWith('/')) return false;
+  return classifyReceiverText(receiver, ctx.execAliases) === 'command';
 }
 
 function xssHit(line) {
@@ -96,21 +158,157 @@ function isParameterizedSqlText(text) {
   return RE_SQL_PLACEHOLDER.test(s.slice(1, -1));
 }
 
-function sqliHit(line) {
-  if (!RE_SQL_CALL.test(line) || !RE_SQL_KW.test(line) || !RE_CONCAT.test(line)) return false;
-  const spans = [];
-  const calls = /\b(?:query|exec|execute)\s*\(/gi;
+// 文本里是否有可确认的外部输入：req.* 或当前文件的函数参数。
+// 属性访问（obj.paramName）不算，避免把同名的对象字段当外部输入。
+function textHasExternalInput(text, params = null) {
+  if (!text) return false;
+  if (RE_REQ_INPUT.test(text)) return true;
+  if (!params?.size) return false;
+  const identifier = /[A-Za-z_$][\w$]*/g;
   let match;
-  while ((match = calls.exec(line))) spans.push(firstArgText(line, match.index + match[0].lastIndexOf('(')));
-  if (!spans.length) return true;
-  // 只有「每个 SQL 调用的首参都是带占位符的静态字面量，且首参内无拼接」才不报；
-  // 拼接在 SQL 首参内、模板插值、或首参形态不明时一律保留原判定。
-  return spans.some((span) => RE_CONCAT.test(span) || !isParameterizedSqlText(span));
+  while ((match = identifier.exec(text))) {
+    let j = match.index - 1;
+    while (j >= 0 && /\s/.test(text[j])) j--;
+    if (j >= 0 && text[j] === '.') continue; // 属性名 obj.param
+    let k = match.index + match[0].length;
+    while (k < text.length && /\s/.test(text[k])) k++;
+    if (text[k] === '.' || (text[k] === '?' && text[k + 1] === '.')) continue; // 对象本身 obj.id，不是 obj
+    if (params.has(match[0])) return true;
+  }
+  return false;
+}
+
+// 去掉 // 行注释与 /* */ 块注释（跨行状态由调用方保存）。
+// 字符串/模板内容保留，SQL 关键词识别仍依赖字面量内容。
+function stripComments(line, inBlockComment) {
+  let out = '';
+  let quote = '';
+  let i = 0;
+  while (i < line.length) {
+    const ch = line[i];
+    if (inBlockComment) {
+      if (ch === '*' && line[i + 1] === '/') { inBlockComment = false; i += 2; }
+      else i++;
+      continue;
+    }
+    if (quote) {
+      out += ch;
+      if (ch === '\\') {
+        if (i + 1 < line.length) { out += line[i + 1]; i += 2; continue; }
+        i++;
+        continue;
+      }
+      if (ch === quote) quote = '';
+      i++;
+      continue;
+    }
+    if (ch === '\'' || ch === '"' || ch === '`') { quote = ch; out += ch; i++; continue; }
+    if (ch === '/' && line[i + 1] === '/') break;
+    if (ch === '/' && line[i + 1] === '*') { inBlockComment = true; i += 2; continue; }
+    out += ch;
+    i++;
+  }
+  return { code: out, inBlockComment };
+}
+
+// 找模板插值 `${...}` 的结束 `}`（考虑嵌套括号与字符串）。
+function interpolationEnd(code, from) {
+  let depth = 1;
+  let quote = '';
+  for (let i = from; i < code.length; i++) {
+    const ch = code[i];
+    if (quote) {
+      if (ch === '\\') { i++; continue; }
+      if (ch === quote) quote = '';
+      continue;
+    }
+    if (ch === '\'' || ch === '"' || ch === '`') { quote = ch; continue; }
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+// eval/new Function 检测前去掉字符串与模板里的静态文本（只留引号/括号/运算符），
+// 避免 `const s = 'eval("x"+y)'`、`\`new Function(...)\`` 这类文本自咬；
+// 模板插值 `${...}` 是表达式，保留并递归处理，`eval(\`x=${req.query.v}\`)` 仍算动态。
+function stripEvalLiterals(code) {
+  let out = '';
+  for (let i = 0; i < code.length; i++) {
+    const ch = code[i];
+    if (ch === '\'' || ch === '"') {
+      out += ch;
+      i++;
+      while (i < code.length) {
+        if (code[i] === '\\') { i += 2; continue; }
+        if (code[i] === ch) { out += ch; break; }
+        i++;
+      }
+      continue;
+    }
+    if (ch === '`') {
+      out += '`';
+      i++;
+      while (i < code.length) {
+        if (code[i] === '\\') { i += 2; continue; }
+        if (code[i] === '`') { out += '`'; break; }
+        if (code[i] === '$' && code[i + 1] === '{') {
+          const end = interpolationEnd(code, i + 2);
+          if (end < 0) { i = code.length; break; }
+          out += '${' + stripEvalLiterals(code.slice(i + 2, end)) + '}';
+          i = end;
+          continue;
+        }
+        i++; // 模板静态文本丢弃
+      }
+      continue;
+    }
+    out += ch;
+  }
+  return out;
+}
+
+function sqliHit(line, ctx = {}) {
+  if (!RE_SQL_CALL.test(line) || !RE_SQL_KW.test(line) || !RE_CONCAT.test(line)) return false;
+  const calls = /\b(?:query|exec|execute)\s*\(/gi;
+  let firstConcatSpan = '';
+  let match;
+  while ((match = calls.exec(line))) {
+    // 只认 SQL 首参内的拼接；第二个实参是参数数组，里面的拼接不算注入。
+    const span = firstArgText(line, match.index + match[0].lastIndexOf('('));
+    if (isParameterizedSqlText(span) || !RE_CONCAT.test(span)) continue;
+    firstConcatSpan = span;
+    break;
+  }
+  if (!firstConcatSpan) return false;
+  // 有 SQL 拼接但确认不了外部输入时仍保留规则，只降为 check，要求人工复核。
+  return textHasExternalInput(firstConcatSpan, ctx.params) ? 'high' : 'check';
+}
+
+// 代码执行组件（evaluator/sandbox/repl/inspector/runtime）里的 eval/new Function
+// 是产品功能本身（CDP 调试器、插件运行器、REPL），不是注入漏洞；仍保留发现但降为 check。
+const EVAL_BY_DESIGN = /(?:^|\/)(?:evaluator|evaluators|sandbox|repl|inspector|runtime|runner|compiler|vm)(?:\/|\.)/i;
+
+function evalHit(line, ctx = {}) {
+  if (!RE_EVAL_CALL.test(line)) return false;
+  // 拼接构造代码（真实动态执行）优先；直接 eval(req.body.x) 也要保留（NodeGoat 类真阳）。
+  if (RE_CONCAT.test(line)) return EVAL_BY_DESIGN.test(String(ctx.file || '')) ? 'check' : 'high';
+  if (textHasExternalInput(line, ctx.params)) {
+    return EVAL_BY_DESIGN.test(String(ctx.file || '')) ? 'check' : 'high';
+  }
+  // eval(someVariable) / new Function(someVariable)：即使变量名不在白名单，也不能静默，
+  // 至少交人工复核（避免 `function render(source){ eval(source) }` 这类 RCE sink 漏报）。
+  if (/\beval\s*\(\s*[A-Za-z_$][\w$]*\s*\)/.test(line)
+    || /\bnew\s+Function\s*\(\s*[A-Za-z_$][\w$]*\s*\)/.test(line)) return 'check';
+  return false;
 }
 
 const RULES = [
   { rule: 'S2.sqli-concat', msg: '疑似 SQL 注入：查询调用以字符串拼接（加号或模板插值）构造 SQL——改用参数化查询（占位符 ? 或 $1）', hit: sqliHit },
-  { rule: 'S2.eval-dynamic', msg: '疑似动态代码执行：eval / new Function 拼接了变量——改用显式逻辑或 JSON.parse', hit: (l) => RE_EVAL_CALL.test(l) && RE_CONCAT.test(l) },
+  { rule: 'S2.eval-dynamic', msg: '疑似动态代码执行：eval / new Function 拼接了变量——改用显式逻辑或 JSON.parse', hit: evalHit, stripped: true },
   { rule: 'S2.cmdi', msg: '疑似命令注入：exec/execSync 拼接了外部输入——改用 execFile/spawn 的参数数组形式', hit: cmdiHit },
   { rule: 'S2.path-traversal', msg: '疑似路径穿越：文件读取/发送以拼接方式使用 req 输入——校验后用 path.basename/path.resolve 收敛到固定目录', hit: (l) => RE_FILE_CALL.test(l) && RE_REQ_INPUT.test(l) && RE_CONCAT.test(l) },
   { rule: 'S2.ssrf', msg: '疑似 SSRF：外呼地址直接取自 req 输入——对目标做域名白名单校验', hit: (l) => RE_SSRF.test(l) },
@@ -132,12 +330,16 @@ function sanitize(raw) {
 
 const FLOW_EMPTY = Object.freeze({ input: false, sql: false, concat: false });
 
-function flowInfo(raw, model, seen = new Set()) {
+function flowInfo(raw, model, seen = new Set(), params = null) {
   if (!raw || seen.has(raw)) return FLOW_EMPTY;
   seen.add(raw);
+  // 函数参数没有本地绑定，但按外部输入处理（跨函数追踪不做，宁可交给人工复核）。
+  if (raw.type === 'Identifier' && params?.has(raw.name)) {
+    return { input: true, sql: false, concat: false };
+  }
   const node = raw.type === 'Identifier' ? model.binding(raw) : raw;
   if (!node) return FLOW_EMPTY;
-  if (node !== raw) return flowInfo(node, model, seen);
+  if (node !== raw) return flowInfo(node, model, seen, params);
   if (node.type === 'CallExpression') return FLOW_EMPTY;
   const text = model.text(node);
   const combined = {
@@ -148,7 +350,7 @@ function flowInfo(raw, model, seen = new Set()) {
   };
   if (node.type === 'StringLiteral' || node.type === 'TemplateLiteral') combined.sql = RE_SQL_KW.test(text);
   for (const child of [node.left, node.right, ...(node.expressions || [])]) {
-    const sub = flowInfo(child, model, new Set(seen));
+    const sub = flowInfo(child, model, new Set(seen), params);
     combined.input ||= sub.input;
     combined.sql ||= sub.sql;
     combined.concat ||= sub.concat;
@@ -268,21 +470,98 @@ function parameterizedSqlLines(model) {
   return safe;
 }
 
-function localFlowFindings(model) {
+function collectPatternNames(node, out) {
+  if (!node) return;
+  if (node.type === 'Identifier') out.add(node.name);
+  else if (node.type === 'AssignmentPattern') collectPatternNames(node.left, out);
+  else if (node.type === 'RestElement') collectPatternNames(node.argument, out);
+  else if (node.type === 'ObjectPattern') {
+    for (const prop of node.properties || []) {
+      collectPatternNames(prop.type === 'RestElement' ? prop.argument : prop.value, out);
+    }
+  } else if (node.type === 'ArrayPattern') {
+    for (const el of node.elements || []) collectPatternNames(el, out);
+  } else if (node.type === 'TSParameterProperty') collectPatternNames(node.parameter, out);
+}
+
+// 当前文件里「像外部输入」的函数参数名。把所有参数都当外部输入会把数据库迁移的
+// tableName/columnName、TypeORM 的 tablePath 也当用户输入，造成 SQLi 误报；
+// 只保留请求/命令行/文件路径这类语义的参数名（inject-sqli 的 name/email 仍在）。
+const EXTERNAL_PARAM_RE = /^(?:req|request|ctx|context|input|payload|body|query|querystring|params?|parameters|args?|argv|user|username|name|email|url|uri|host|cmd|command|code|script|file|filename|path|id|key|token|search|keyword|q|value|data)$/i;
+
+// 当前文件所有函数参数名。不做跨函数/作用域追踪，按外部输入对待。
+function collectParamNames(model) {
+  const names = new Set();
+  walkSource(model.ast, (node) => {
+    if (!isFunction(node)) return;
+    for (const param of node.params || []) {
+      const tmp = new Set();
+      collectPatternNames(param, tmp);
+      for (const n of tmp) if (EXTERNAL_PARAM_RE.test(n)) names.add(n);
+    }
+  });
+  return names;
+}
+
+// child_process 的本地别名（require/import 形式），供 `.exec` 接收者分类使用。
+// Map<本地名, 'command'>：支持 `const { exec: run } = require('child_process')` 这类重命名。
+function collectExecAliases(model) {
+  const aliases = new Map();
+  const mark = (name) => { if (name) aliases.set(name, 'command'); };
+  const isChildProcessSource = (node) => node?.type === 'StringLiteral'
+    && /^(?:node:)?child_process$/.test(node.value);
+  walkSource(model.ast, (node) => {
+    if (node.type === 'VariableDeclarator' && node.init?.type === 'CallExpression'
+      && node.init.callee?.type === 'Identifier' && node.init.callee.name === 'require'
+      && isChildProcessSource(node.init.arguments?.[0])) {
+      if (node.id.type === 'Identifier') mark(node.id.name);
+      else if (node.id.type === 'ObjectPattern') {
+        for (const prop of node.id.properties || []) {
+          const keyName = prop.key?.name || prop.key?.value;
+          const local = prop.value?.name;
+          if (local && /^(?:exec|execSync)$/.test(String(keyName || ''))) mark(local);
+        }
+      }
+    }
+    if (node.type === 'ImportDeclaration' && isChildProcessSource(node.source)) {
+      for (const spec of node.specifiers || []) {
+        const local = spec.local?.name;
+        if (!local) continue;
+        if (spec.type === 'ImportSpecifier' && /^(?:exec|execSync)$/.test(String(spec.imported?.name || ''))) mark(local);
+        else if (spec.type === 'ImportNamespaceSpecifier' || spec.type === 'ImportDefaultSpecifier') mark(local);
+      }
+    }
+  });
+  return aliases;
+}
+
+function isCommandExecCallee(callee, model, execAliases) {
+  if (callee?.type === 'Identifier') {
+    return /^(?:exec|execSync)$/.test(callee.name) || execAliases?.get?.(callee.name) === 'command';
+  }
+  if (callee?.type !== 'MemberExpression' && callee?.type !== 'OptionalMemberExpression') return false;
+  if (!/^(?:exec|execSync)$/.test(memberName(callee) || '')) return false;
+  return classifyReceiverText(model.text(callee.object), execAliases) === 'command';
+}
+
+function localFlowFindings(model, { params = null, execAliases = null } = {}) {
   const hits = [];
   walkSource(model.ast, (node) => {
     if (node.type !== 'CallExpression') return;
     const name = memberName(node.callee) || node.callee?.name || '';
     const first = node.arguments[0];
-    const arg = flowInfo(first, model);
+    const arg = flowInfo(first, model, new Set(), params);
+    // SSRF/XSS 保持原有 req.* 判据：函数参数（如 fetch(url) 的 url）不在此扩大范围。
+    const reqArg = params?.size ? flowInfo(first, model) : arg;
     const add = (rule) => hits.push({ rule, line: node.loc?.start.line || 1 });
     if (/^(query|exec|execute)$/i.test(name) && arg.input && arg.sql && arg.concat) add('S2.sqli-concat');
-    if (/^(fetch|axios|request|get|post|put)$/i.test(name) && arg.input
+    if (/^(fetch|axios|request|get|post|put)$/i.test(name) && reqArg.input
       && (node.callee.type === 'Identifier' || /^(?:axios|https?)$/.test(node.callee.object?.name || ''))
       && urlScope(first, model) === 'dynamic') add('S2.ssrf');
-    if (/^(exec|execSync)$/.test(name) && arg.input && arg.concat) add('S2.cmdi');
+    if (/^(exec|execSync)$/.test(name) && arg.input && arg.concat
+      && isCommandExecCallee(node.callee, model, execAliases)) add('S2.cmdi');
     if (/^(sendFile|readFile|unlink|createReadStream)$/.test(name) && hasRequestInput(first, model)) add('S2.path-traversal');
-    if (/^(send|write)$/.test(name) && ['res', 'response'].includes(node.callee.object?.name) && arg.input && arg.concat) add('S2.reflected-xss');
+    if (/^(send|write)$/.test(name) && ['res', 'response'].includes(node.callee.object?.name) && reqArg.input && reqArg.concat) add('S2.reflected-xss');
   });
   return hits;
 }
@@ -304,57 +583,88 @@ export async function checkInject(projectDir, { tier, excludes = [], routeResult
     const lines = text.split('\n');
     const minified = lines.filter((l) => l.length > 1000).length;
     if (minified) warnings.push(`疑似压缩/第三方代码跳过 ${minified} 行：${file}`); // 自食教训#5
+    const parseable = !isDoc && /\.[cm]?[jt]sx?$/.test(file);
+    const model = parseable ? sourceModel(text) : null;
+    const ctx = {
+      params: model ? collectParamNames(model) : null,
+      execAliases: model ? collectExecAliases(model) : null,
+      file,
+    };
+    let inBlockComment = false;
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
       if (line.length > 1000) continue;
       if (line.includes('finalcheck:allow')) continue;
+      const stripped = stripComments(line, inBlockComment);
+      inBlockComment = stripped.inBlockComment;
+      const evalCode = stripEvalLiterals(stripped.code);
       for (const r of RULES) {
-        if (!r.hit(line)) continue;
+        const verdict = r.hit(r.stripped ? evalCode : stripped.code, ctx);
+        if (!verdict) continue;
+        const checkOnly = verdict === 'check';
+        // 开发者已用 eslint/oxlint 的 no-implied-eval 注释显式确认了动态执行：
+        // 保留发现但降为提示，不再按高危卡（DSH sandbox.ts 的 compile-only gate）。
+        const lintAck = r.rule === 'S2.eval-dynamic'
+          && (/(?:oxlint|eslint)-disable(?:-next-line|-line)?.*(?:no-implied-eval|no-eval)/.test(line)
+            || (i > 0 && /(?:oxlint|eslint)-disable-next-line.*(?:no-implied-eval|no-eval)/.test(lines[i - 1])));
         findings.push({
           checkId: 'S2',
           severity: isDoc ? 'medium' : 'high',
-          force: isDoc ? 'tip' : force,
+          force: isDoc || lintAck ? 'tip' : checkOnly ? 'check' : force,
           file,
           line: i + 1,
           rule: r.rule,
           snippet: sanitize(line.trim().slice(0, 120)),
-          message: isDoc ? `${r.msg}（出现在文档中，可能是示例）` : r.msg,
+          message: isDoc
+            ? `${r.msg}（出现在文档中，可能是示例）`
+            : `${r.msg}${checkOnly ? '；未确认外部输入，需人工复核' : ''}`,
           source: 'program',
         });
       }
     }
-    if (!isDoc && /\.[cm]?[jt]sx?$/.test(file)) {
-      const model = sourceModel(text);
-      if (model) {
-        // 行级规则只看整行拼接；若该行所有 SQL 调用首参（含别名）都参数化，
-        // 拼接只可能落在后续参数里 → 撤掉该行的行级 sqli 误报。
-        const safeSqlLines = parameterizedSqlLines(model);
-        if (safeSqlLines.size) {
-          for (let i = findings.length - 1; i >= 0; i--) {
-            const finding = findings[i];
-            if (finding.file === file && finding.rule === 'S2.sqli-concat' && safeSqlLines.has(finding.line)) findings.splice(i, 1);
+    if (model) {
+      // 行级规则只看整行拼接；若该行所有 SQL 调用首参（含别名）都参数化，
+      // 拼接只可能落在后续参数里 → 撤掉该行的行级 sqli 误报。
+      const safeSqlLines = parameterizedSqlLines(model);
+      if (safeSqlLines.size) {
+        for (let i = findings.length - 1; i >= 0; i--) {
+          const finding = findings[i];
+          if (finding.file === file && finding.rule === 'S2.sqli-concat' && safeSqlLines.has(finding.line)) findings.splice(i, 1);
+        }
+      }
+      const seen = new Map();
+      for (let i = 0; i < findings.length; i++) {
+        const finding = findings[i];
+        if (finding.file === file) seen.set(`${finding.line}|${finding.rule}`, i);
+      }
+      for (const hit of localFlowFindings(model, ctx)) {
+        const key = `${hit.line}|${hit.rule}`;
+        const existing = seen.get(key);
+        if (existing !== undefined) {
+          // 行级只看到局部文本时可能降为 check；AST 能确认外部输入则升级回 card。
+          const current = findings[existing];
+          if (hit.rule === 'S2.sqli-concat' && current.force === 'check') {
+            const base = RULES.find((r) => r.rule === hit.rule);
+            current.force = force;
+            current.message = `${base?.msg || hit.rule}（含本地变量数据流线索，需复核）`;
           }
+          continue; // 同一 file+line+rule 只报一次（正则与数据流不重复）
         }
-        const seen = new Set(findings.filter((finding) => finding.file === file).map((finding) => `${finding.line}|${finding.rule}`));
-        for (const hit of localFlowFindings(model)) {
-          const key = `${hit.line}|${hit.rule}`;
-          if (seen.has(key)) continue; // 同一 file+line+rule 只报一次（正则与数据流不重复）
-          const line = lines[hit.line - 1] || '';
-          if (line.includes('finalcheck:allow')) continue;
-          seen.add(key);
-          const base = RULES.find((r) => r.rule === hit.rule);
-          findings.push({
-            checkId: 'S2',
-            severity: 'high',
-            force,
-            file,
-            line: hit.line,
-            rule: hit.rule,
-            snippet: sanitize(line.trim().slice(0, 120)),
-            message: `${base?.msg || hit.rule}（含本地变量数据流线索，需复核）`,
-            source: 'program',
-          });
-        }
+        const line = lines[hit.line - 1] || '';
+        if (line.includes('finalcheck:allow')) continue;
+        seen.set(key, findings.length);
+        const base = RULES.find((r) => r.rule === hit.rule);
+        findings.push({
+          checkId: 'S2',
+          severity: 'high',
+          force,
+          file,
+          line: hit.line,
+          rule: hit.rule,
+          snippet: sanitize(line.trim().slice(0, 120)),
+          message: `${base?.msg || hit.rule}（含本地变量数据流线索，需复核）`,
+          source: 'program',
+        });
       }
     }
   }

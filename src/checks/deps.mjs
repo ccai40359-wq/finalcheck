@@ -3,6 +3,7 @@ import { readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { findBinary } from '../which.mjs';
 import { runProcess } from '../run-async.mjs';
+import { isNonProductPath } from '../scope-policy.mjs';
 
 // S4 依赖 CVE（v1.2）：npm audit 为主判（Node 环境必得），osv-scanner 为增强
 //
@@ -70,11 +71,36 @@ async function runNpmAudit(projectDir, { tooling, registry } = {}) {
 
 // 所有 workspace lockfile 都要扫：根目录 + 任意子目录（monorepo 的 desktop/ 等）。
 // 排除 node_modules / release-* / dist-* / *-unpacked / fixtures；隐藏目录默认跳过。
-const LOCKFILE_NAMES = new Set(['package-lock.json', 'npm-shrinkwrap.json', 'pnpm-lock.yaml', 'yarn.lock']);
+//
+// 生态声明（只做发现，不新增扫描器）：
+//   - npm 系（package-lock/npm-shrinkwrap/yarn/pnpm）交给现有 npm audit；pnpm/yarn 若 npm audit
+//     不认（如 “This command requires an existing lockfile”）仍按失败/gap 处理。
+//   - 其余生态只记录 lockfile 存在性，由 coverageGap 按生态逐条声明「未接入审计」。
+//     ecosystem 用稳定的小写标识（npm/go/python/php/java），展示文案再映射成正式名称。
+export const LOCKFILE_TYPES = Object.freeze({
+  'package-lock.json': { ecosystem: 'npm', auditable: true },
+  'npm-shrinkwrap.json': { ecosystem: 'npm', auditable: true },
+  'yarn.lock': { ecosystem: 'npm', auditable: true },
+  'pnpm-lock.yaml': { ecosystem: 'npm', auditable: true },
+  'go.sum': { ecosystem: 'go', auditable: false },
+  'uv.lock': { ecosystem: 'python', auditable: false },
+  'poetry.lock': { ecosystem: 'python', auditable: false },
+  'Pipfile.lock': { ecosystem: 'python', auditable: false },
+  'requirements.txt': { ecosystem: 'python', auditable: false },
+  'requirements-dev.txt': { ecosystem: 'python', auditable: false },
+  'pyproject.toml': { ecosystem: 'python', auditable: false },
+  'composer.lock': { ecosystem: 'php', auditable: false },
+  'pom.xml': { ecosystem: 'java', auditable: false },
+  'gradle.lockfile': { ecosystem: 'java', auditable: false },
+  'Gemfile.lock': { ecosystem: 'ruby', auditable: false },
+  'Cargo.lock': { ecosystem: 'rust', auditable: false },
+});
+const ECOSYSTEM_LABEL = { npm: 'npm', go: 'Go', python: 'Python', php: 'PHP', java: 'Java', ruby: 'Ruby', rust: 'Rust' };
 const LOCK_SKIP_DIRS = new Set(['node_modules', '.git', 'coverage', '.next', 'vendor']);
 const LOCK_BUILD_DIR_RE = /^(?:dist|build|out|release|release-[A-Za-z0-9._-]+|dist-[A-Za-z0-9._-]+|[A-Za-z0-9._-]+-unpacked)$/i;
 
-export async function discoverLockfiles(projectDir, { maxDepth = 8 } = {}) {
+// 发现结果带 ecosystem/auditable；导出给需要调用方判断「能不能交给 npm audit」。
+export async function discoverLockfileEntries(projectDir, { maxDepth = 8 } = {}) {
   const out = [];
   const rootDir = path.resolve(String(projectDir || '.'));
   async function walk(dir, depth) {
@@ -94,13 +120,62 @@ export async function discoverLockfiles(projectDir, { maxDepth = 8 } = {}) {
         await walk(p, depth + 1);
         continue;
       }
-      if (LOCKFILE_NAMES.has(e.name)) out.push(rel);
+      const type = LOCKFILE_TYPES[e.name];
+      if (type) out.push({ path: rel, ecosystem: type.ecosystem, auditable: type.auditable });
     }
   }
   await walk(rootDir, 0);
   // 根 lockfile 优先；其余按路径深度、字典序，报告稳定可复现。
-  out.sort((a, b) => a.split('/').length - b.split('/').length || (a < b ? -1 : a > b ? 1 : 0));
+  out.sort((a, b) => a.path.split('/').length - b.path.split('/').length || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
   return out;
+}
+
+// 兼容旧调用方：默认仍返回路径字符串（tests/finalcheck-evidence.test.mjs 依赖该形状）。
+// 需要 ecosystem/auditable 时传 { withMeta: true } 或直接用 discoverLockfileEntries。
+export async function discoverLockfiles(projectDir, { maxDepth = 8, withMeta = false } = {}) {
+  const entries = await discoverLockfileEntries(projectDir, { maxDepth });
+  return withMeta ? entries : entries.map((e) => e.path);
+}
+
+function describeLockfile(rel) {
+  const base = path.posix.basename(String(rel).replace(/\\/g, '/'));
+  const type = LOCKFILE_TYPES[base];
+  if (type) return { path: String(rel).replace(/\\/g, '/'), ecosystem: type.ecosystem, auditable: type.auditable };
+  // 兼容注入的自定义 lockfile 名（旧调用方只传 npm 锁文件路径）：按 npm 审计处理。
+  return { path: String(rel).replace(/\\/g, '/'), ecosystem: 'npm', auditable: true };
+}
+
+function normalizeLockfileEntries(lockfiles) {
+  const out = [];
+  const seen = new Set();
+  for (const item of lockfiles || []) {
+    const entry = typeof item === 'string'
+      ? describeLockfile(item)
+      : describeLockfile(item?.path ?? item?.rel ?? '');
+    if (item && typeof item === 'object') {
+      if (typeof item.ecosystem === 'string' && item.ecosystem) entry.ecosystem = item.ecosystem;
+      if (typeof item.auditable === 'boolean') entry.auditable = item.auditable;
+    }
+    if (!entry.path || seen.has(entry.path)) continue;
+    seen.add(entry.path);
+    out.push(entry);
+  }
+  return out;
+}
+
+// 按生态汇总非 npm lockfile，逐条给出「某生态未接入审计（发现 ...）」，不合并成一句“无 lockfile”。
+function nonNpmGaps(entries) {
+  const byEco = new Map();
+  for (const e of entries) {
+    if (e.auditable) continue;
+    if (!byEco.has(e.ecosystem)) byEco.set(e.ecosystem, []);
+    const files = byEco.get(e.ecosystem);
+    if (!files.includes(e.path)) files.push(e.path);
+  }
+  return [...byEco.entries()].map(([eco, files]) => {
+    const label = ECOSYSTEM_LABEL[eco] || eco;
+    return `${label} 生态未接入审计（发现 ${files.join('、')}）`;
+  });
 }
 
 // 零外部依赖的 lockfile（常见于测试夹具/纯本地项目）没有可审计的第三方包：
@@ -158,13 +233,49 @@ async function auditOneLockfile(projectDir, rel, { tooling, warnings, auditRunne
 }
 
 export async function checkDeps(projectDir, options = {}) {
-  const lockfiles = options.lockfiles || await discoverLockfiles(projectDir);
-  if (!lockfiles.length) {
+  const allEntries = options.lockfileEntries
+    ? normalizeLockfileEntries(options.lockfileEntries)
+    : options.lockfiles
+      ? normalizeLockfileEntries(options.lockfiles)
+      : await discoverLockfileEntries(projectDir);
+  // 示例/测试/文档目录里的 lockfile 不是产品依赖面：examples/java/pom.xml、fixtures/yarn.lock
+  // 不能把整个仓库封顶成「无法验收」；产品 lockfile 仍在下面的审计/缺口中处理。
+  const entries = allEntries.filter((e) => !isNonProductPath(e.path));
+
+  if (!entries.length && allEntries.length) {
     return {
       checkId: 'S4',
       findings: [],
-      coverageGap: '未发现任何 lockfile（package-lock.json/npm-shrinkwrap.json/pnpm-lock.yaml/yarn.lock），依赖关未跑',
+      coverageGap: `仅发现非产品路径 lockfile（${allEntries.map((e) => e.path).slice(0, 3).join('、')}${allEntries.length > 3 ? '…' : ''}），依赖关未跑`,
       warnings: [],
+      auditedCount: 0,
+      lockfileEntries: allEntries,
+    };
+  }
+  if (!entries.length) {
+    return {
+      checkId: 'S4',
+      findings: [],
+      coverageGap: '未发现任何可识别 lockfile（npm：package-lock.json/npm-shrinkwrap.json/pnpm-lock.yaml/yarn.lock；Go：go.sum；Python：uv.lock/poetry.lock/Pipfile.lock/requirements.txt/pyproject.toml；PHP：composer.lock；Java：pom.xml/gradle.lockfile；Ruby：Gemfile.lock；Rust：Cargo.lock），依赖关未跑',
+      warnings: [],
+      auditedCount: 0,
+      lockfileEntries: [],
+    };
+  }
+
+  // npm 生态才可交给 npm audit；Go/Python/PHP/Java 只声明发现，不伪装成已审计。
+  const npmEntries = entries.filter((e) => e.auditable);
+  const nonNpmEntries = entries.filter((e) => !e.auditable);
+  const gaps = nonNpmGaps(nonNpmEntries);
+
+  if (!npmEntries.length) {
+    return {
+      checkId: 'S4',
+      findings: [],
+      coverageGap: gaps.join('；'),
+      warnings: [],
+      auditedCount: 0,
+      lockfileEntries: entries,
     };
   }
 
@@ -172,11 +283,14 @@ export async function checkDeps(projectDir, options = {}) {
   const warnings = [];
   const tooling = options.tooling || resolveNodeTooling();
   if (!tooling.node || !tooling.npmCli) {
+    const npmGap = `发现 ${npmEntries.length} 个 npm lockfile，但未找到 Node.js/npm（装 Node.js 后依赖关才可跑）：${npmEntries.map((e) => e.path).join('、')}`;
     return {
       checkId: 'S4',
       findings,
-      coverageGap: `发现 ${lockfiles.length} 个 lockfile，但未找到 Node.js/npm（装 Node.js 后依赖关才可跑）：${lockfiles.join('、')}`,
+      coverageGap: [npmGap, ...gaps].join('；'),
       warnings,
+      auditedCount: 0,
+      lockfileEntries: entries,
     };
   }
   const auditRunner = options.auditRunner || runNpmAudit;
@@ -186,7 +300,8 @@ export async function checkDeps(projectDir, options = {}) {
   const failures = [];
   let auditRegistry = null;
   let auditedCount = 0;
-  for (const rel of lockfiles) {
+  for (const entry of npmEntries) {
+    const rel = entry.path;
     const absLock = path.join(projectDir, rel);
     // 零外部依赖：lockfile 本身就是证据，不必访问 registry。
     if (hasNoExternalDeps(absLock)) { auditedCount++; continue; }
@@ -217,11 +332,23 @@ export async function checkDeps(projectDir, options = {}) {
   }
   if (!osvPath) warnings.push('osv-scanner 未安装：仅 npm audit 覆盖（广度足够日常使用）');
 
-  const coverageGap = failures.length
-    ? `${failures.length}/${lockfiles.length} 个 lockfile 未完成审计（不能当成 0 漏洞）：${failures.join('；')}`
-    : null;
-  if (auditedCount && failures.length) {
-    warnings.push(`S4：${auditedCount}/${lockfiles.length} 个 lockfile 已审计完成；其余按覆盖缺口计`);
+  // 分子/分母都只数 npm lockfile；非 npm 生态的缺口单独逐条列出，不并入“已审计”。
+  const parts = [];
+  if (failures.length) {
+    parts.push(`${failures.length}/${npmEntries.length} 个 npm lockfile 未完成审计（不能当成 0 漏洞）：${failures.join('；')}`);
   }
-  return { checkId: 'S4', findings, coverageGap, warnings, auditRegistry };
+  parts.push(...gaps);
+  const coverageGap = parts.length ? parts.join('；') : null;
+  if (auditedCount && failures.length) {
+    warnings.push(`S4：${auditedCount}/${npmEntries.length} 个 npm lockfile 已审计完成；其余按覆盖缺口计`);
+  }
+  return {
+    checkId: 'S4',
+    findings,
+    coverageGap,
+    warnings,
+    auditRegistry,
+    auditedCount,
+    lockfileEntries: entries,
+  };
 }

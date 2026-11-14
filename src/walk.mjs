@@ -9,7 +9,13 @@ const SKIP_DIRS = new Set(['node_modules', '.git', '.finalcheck', 'workflow-runs
 const BUILD_OUTPUT_DIRS = new Set(['release', 'out', 'dist', 'build']);
 // electron-builder 的产物目录名千变万化（release-next/win-unpacked、release-0110、linux-x64-unpacked…），按形态认
 const BUILD_OUTPUT_RE = /^(?:[A-Za-z0-9._-]+-unpacked|release-[A-Za-z0-9._-]+)$/i;
-const TEXT_EXTS = new Set(['.js', '.mjs', '.cjs', '.ts', '.jsx', '.tsx', '.json', '.md', '.yml', '.yaml', '.html', '.css', '.txt', '.py', '.php', '.sh', '.sql', '.cfg', '.conf']);
+const TEXT_EXTS = new Set(['.js', '.mjs', '.cjs', '.ts', '.jsx', '.tsx', '.json', '.md', '.yml', '.yaml', '.html', '.css', '.txt', '.py', '.php', '.sh', '.sql', '.cfg', '.conf',
+  // 非 JS 生态也要进文本扫描：S3 密钥/历史、依赖清单与语言覆盖声明都靠它。
+  // Q3/Q4/Q5 仍走 CODE_EXTS（只解析 JS/TS），不会把这些语言冒充成已做质量分析。
+  '.java', '.go', '.rb', '.rs', '.kt', '.cs', '.toml',
+  // 私钥/证书：NodeGoat artifacts/cert/server.key 是 git 跟踪的真实 PEM 私钥，
+  // 不扫 .key/.pem 会让工作树侧完全看不到它（2026-11-13 H 路回归发现）。
+  '.key', '.pem', '.crt']);
 const CODE_EXTS = new Set(['.js', '.mjs', '.cjs', '.ts', '.jsx', '.tsx']);
 const MAX_BYTES = 512 * 1024;
 const FIXTURE_DIR = 'fixtures';

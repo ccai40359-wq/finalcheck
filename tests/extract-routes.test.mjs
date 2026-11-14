@@ -9,7 +9,8 @@ const find = (routes, p) => routes.find((r) => r.path === p);
 
 test('result shape matches the export contract', async () => {
   const r = await extractRoutes(fx('no-guard-get'));
-  assert.deepEqual(Object.keys(r).sort(), ['publicRoutes', 'routes', 'warnings']);
+  // httpSurface 是新增的常驻字段（exists/hints/mounts）；无 HTTP 信号时为 exists:false
+  assert.deepEqual(Object.keys(r).sort(), ['httpSurface', 'publicRoutes', 'routes', 'warnings']);
   const route = r.routes[0];
   assert.deepEqual(Object.keys(route).sort(), ['file', 'hasGuard', 'line', 'method', 'middlewares', 'path']);
   assert.ok(r.warnings.every((w) => typeof w === 'string'));

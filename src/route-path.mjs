@@ -9,6 +9,16 @@ export function staticPathValue(n) {
   return undefined;
 }
 
+// Express 支持 `app.get(['/a', '/b'], h)`：逐条展开静态路径；非静态元素丢弃。
+export function staticPathValues(n) {
+  if (!n) return [];
+  if (n.type === 'ArrayExpression') {
+    return (n.elements || []).flatMap((e) => staticPathValues(e));
+  }
+  const v = staticPathValue(n);
+  return typeof v === 'string' ? [v] : [];
+}
+
 export function joinPath(prefix, sub) {
   let base = prefix || '';
   let rest = sub || '';

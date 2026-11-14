@@ -145,12 +145,13 @@ test('tools/call 文件工具：read_file / edit_file / write_file 全链路（r
   } finally { await s.close(); }
 });
 
-test('tools/call audit_project: 仓库根自审返回 verdict', { timeout: 40000 }, async () => {
+test('tools/call audit_project: 仓库根自审返回 verdict', { timeout: 60000 }, async () => {
   const s = startServer({ root: REPO_ROOT });
   try {
     // S4 现在按全部 workspace lockfile 各跑一次 npm audit（根 + desktop），离线回退官方源时
-    // 单次审计可达数秒；并行跑整个测试套件时 18s 不够，放宽到 35s（只影响测试等待，不放宽判定）。
-    const res = await s.request(1, 'tools/call', { name: 'audit_project', arguments: { dir: REPO_ROOT } }, 35000);
+    // 单次审计可达数秒；并行跑整个测试套件时 35s 不够（新增非 JS 语言扫描/HTTP 面探测后
+    // 仓库根自审约 20s，满载可到 40s+），放宽到 55s（只影响测试等待，不放宽判定）。
+    const res = await s.request(1, 'tools/call', { name: 'audit_project', arguments: { dir: REPO_ROOT } }, 55000);
     assert.ok(!res.result.isError, 'audit_project 不应报错: ' + res.result?.content?.[0]?.text);
     const parsed = JSON.parse(res.result.content[0].text);
     assert.ok('verdict' in parsed, '结果需含 verdict: ' + res.result.content[0].text.slice(0, 200));

@@ -16,14 +16,32 @@ const LOCK_NAMES = new Set(['package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 
 
 // README 五段：只在「标题行 / 代码块标题」里匹配，正文出现 deployment 不算部署段。
 const README_SECTIONS = [
-  { key: 'install', label: '安装', re: /\binstall(?:ation|ing)?\b|安装/i },
-  { key: 'run', label: '运行', re: /\b(?:run|running|start|starting)\b|quick\s*start|getting\s+started|运行|启动|快速开始/i },
-  { key: 'env', label: '环境变量', re: /\b(?:env|environment|configuration|config)\b|环境变量|配置/i },
-  { key: 'deploy', label: '部署', re: /\bdeploy(?:ment|ing)?\b|部署|上线/i },
-  { key: 'rollback', label: '回滚', re: /\broll[\s-]?back\b|\brevert\b|回滚|回退/i },
+  { key: 'install', label: '安装', re: /\binstall(?:ation|ing)?\b|\bsetup\b|\bprerequisites?\b|getting\s+started|build(?:ing)?|compile|安装|准备/i },
+  { key: 'run', label: '运行', re: /\b(?:run|running|start|starting|usage|quick\s*start)\b|运行|启动|快速开始|使用/i },
+  { key: 'env', label: '环境变量', re: /\b(?:env|environment|configuration|config|settings)\b|环境变量|配置/i },
+  { key: 'deploy', label: '部署', re: /\bdeploy(?:ment|ing)?\b|\bcontainer\b|\bdocker\b|\bkubernetes\b|\bk8s\b|\bimage\b|部署|上线/i },
+  { key: 'rollback', label: '回滚', re: /\broll[\s-]?back\b|\brevert\b|\bprevious\s+version\b|\bdowngrade\b|回滚|回退/i },
 ];
 const ROLLBACK_RE = README_SECTIONS[4].re;
 const ROLLBACK_CLUE_RE = /(?:上一版(?:本)?|回滚到|回退到|恢复到|roll[\s-]?back\s+(?:to|the\s+previous|previous)|revert(?:ing)?\s+to|git\s+revert|helm\s+rollback|kubectl\s+rollout\s+undo|previous\s+version|\bv?\d+\.\d+\.\d+\b)/i;
+// 服务型仓库才要求的章节：库/CLI 不该被逼着写 env/deploy/rollback。
+const DEPLOY_ROOT_FILE_RE = /^(?:Dockerfile|docker-compose(?:[.-][\w-]+)?\.ya?ml|Procfile|fly\.toml|vercel\.json|netlify\.toml|render\.yaml|app\.yaml|compose\.ya?ml)$/i;
+const SERVICE_ENV_RE = /^(?:DATABASE_URL|DB_|REDIS_|MONGO_|AWS_|SMTP_|JWT_|SESSION_|OAUTH_|NEXTAUTH_|.*_SECRET|.*_TOKEN|.*_API_KEY|.*_KEY|.*_PASSWORD)$/i;
+
+function escapeRegExp(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+// README 先教读者创建文件、再运行它（gin 的 "Save the code above as main.go"）
+function readmeCreatesPath(text, target) {
+  const base = path.basename(String(target || ''));
+  if (!base) return false;
+  const b = escapeRegExp(base);
+  return new RegExp(`(?:save|create|touch|write|add|新建|创建|写入)[^\\n]{0,120}${b}|${b}[^\\n]{0,40}(?:创建|新建|生成)`, 'i').test(String(text || ''));
+}
+// README 命令属于生成器/脚手架创建的新项目（express-generator 的 npm start）
+function readmeUsesGenerator(text) {
+  return /express-generator|express\(1\)|\bnpx\s+[\w@/.-]+\s+(?:new|create|init)|\bnpm\s+init\b|\bcreate-[\w-]+\b|cookiecutter|rails\s+new|django-admin\s+startproject/i.test(String(text || ''));
+}
 
 // 部署线索：Dockerfile / compose / CI / 启动脚本（systemd/pm2/Procfile）
 const CI_ROOT_FILES = new Set([
@@ -264,6 +282,31 @@ export async function checkHandover(projectDir, { tier, excludes = [], includeFi
     return { checkId: 'H1', findings, coverageGap: 'H1：无文本文件可查', warnings };
   }
 
+  // 服务型 vs 库/CLI：只有服务型仓库才强制要求 env/deploy/rollback 章节。
+  // gin/ripgrep/express/svelte 这类库不该因为没有部署章节被扣分。
+  let pkgForType = null;
+  if (hasPkgFile) {
+    try { pkgForType = JSON.parse(await readFile(path.join(projectDir, 'package.json'), 'utf8')); } catch { pkgForType = null; }
+  }
+  const deployArtifact = root.some((e) => DEPLOY_ROOT_FILE_RE.test(e.name)
+    || (e.isDirectory() && /^(?:k8s|kubernetes|deploy|charts)$/i.test(e.name)));
+  const rootDeps = { ...(pkgForType?.dependencies || {}), ...(pkgForType?.peerDependencies || {}) };
+  let serviceLike = Boolean(deployArtifact || (typeof pkgForType?.scripts?.start === 'string' && pkgForType.scripts.start.trim()));
+  if (!serviceLike && ['express', 'fastify', 'koa', 'hono', '@nestjs/core', 'next', 'socket.io', '@trpc/server'].some((k) => rootDeps[k])) {
+    serviceLike = true;
+  }
+  if (!serviceLike) {
+    const readMaybe = async (p) => readFile(p, 'utf8').catch(() => '');
+    const pom = files.find((f) => /pom\.xml$/i.test(f));
+    if (pom && /spring-boot-starter-(?:web|actuator)/i.test(await readMaybe(pom))) serviceLike = true;
+    const railsRoutes = files.find((f) => /config\/routes\.rb$/i.test(f));
+    if (railsRoutes) serviceLike = true;
+    const goMain = files.find((f) => /(?:^|\/)main\.go$/i.test(f));
+    if (goMain && /http\.(?:ListenAndServe|ServeMux)|gin\.(?:Default|New)|echo\.New|fiber\.New/i.test(await readMaybe(goMain))) serviceLike = true;
+    const gemfile = files.find((f) => /(?:^|\/)Gemfile$/i.test(f));
+    if (gemfile && /\brails\b/i.test(await readMaybe(gemfile))) serviceLike = true;
+  }
+
   // 1) README：缺失 high；过短 medium；无启动/安装关键词 medium
   let readmeText = null;
   if (!readme) {
@@ -290,8 +333,12 @@ export async function checkHandover(projectDir, { tier, excludes = [], includeFi
   if (readmeText != null) {
     readmeModel = scanReadme(readmeText);
 
-    // 1a) 五段：安装 / 运行 / 环境变量 / 部署 / 回滚；缺哪段报哪段
-    const sectionHits = README_SECTIONS.map((def) => ({ def, hit: readmeModel.headings.find((h) => def.re.test(h.text)) }));
+    // 1a) 五段：安装 / 运行 / 环境变量 / 部署 / 回滚；服务型仓库缺哪段报哪段。
+    // 库/CLI 只要求安装/运行；强行要求 env/deploy/rollback 是 round2 实测的主要 H1 误报。
+    const sectionDefs = serviceLike
+      ? README_SECTIONS
+      : README_SECTIONS.filter((d) => d.key === 'install' || d.key === 'run');
+    const sectionHits = sectionDefs.map((def) => ({ def, hit: readmeModel.headings.find((h) => def.re.test(h.text)) }));
     const missing = sectionHits.filter((x) => !x.hit);
     const sectionSeverity = missing.length >= 3 ? 'medium' : 'low';
     // 缺段分级：L1 提示、L2 只报（force:'check'，不进卡闸）、L3 才卡。
@@ -304,8 +351,8 @@ export async function checkHandover(projectDir, { tier, excludes = [], includeFi
         sectionForce);
     }
 
-    // 1b) 回滚段只有标题、没有可执行线索
-    const rollbackHit = sectionHits.find((x) => x.def.key === 'rollback').hit;
+    // 1b) 回滚段只有标题、没有可执行线索（只对服务型仓库）
+    const rollbackHit = serviceLike ? sectionHits.find((x) => x.def.key === 'rollback').hit : null;
     if (rollbackHit) {
       const content = collectSectionContent(readmeModel, ROLLBACK_RE).replace(/<!--[\s\S]*?-->/g, '').trim();
       if (!ROLLBACK_CLUE_RE.test(content)) {
@@ -368,10 +415,21 @@ export async function checkHandover(projectDir, { tier, excludes = [], includeFi
       }
     }
     for (const [missingPath, item] of missingFiles) {
+      // 包管理器安装/下载/URL 里的名字不是本地文件（npm i ollama、curl https://...）
+      if (/^(?:npm\s+(?:i|install|add)|pnpm\s+(?:add|i|install)|yarn\s+add|brew\s+install|apt(?:-get)?\s+install|docker\s+pull|go\s+(?:install|get)|pip3?\s+install|cargo\s+install|gem\s+install)\b/i.test(item.cmd)) continue;
+      if (/^(?:https?:\/\/|<|\.\.\.|…)/.test(String(missingPath || '')) || /https?:\/\//i.test(item.cmd)) continue;
+      // README 先教读者创建/保存这个文件（gin: "Save the code above as main.go"），
+      // 再运行它 —— 不是命令引用了缺失文件。
+      if (readmeText && readmeCreatesPath(readmeText, missingPath)) continue;
       push('H1.command-missing-file', 'medium', readme.name, item.line, item.cmd,
         t('README 命令引用的本地路径不存在：{paths}（命令见证据）', { paths: missingPath }));
     }
     for (const [script, item] of missingScripts) {
+      // express-generator / npm init / create-* 生成的新应用里的 npm start 不属于本仓
+      const before = readmeText
+        ? readmeText.split('\n').slice(0, Math.max(0, Number(item.line) - 1)).join('\n')
+        : '';
+      if (readmeUsesGenerator(before || readmeText || '')) continue;
       push('H1.command-missing-script', 'medium', readme.name, item.line, item.cmd,
         t('README 命令引用的 npm script 不存在：{script}（命令见证据）', { script }));
     }
@@ -405,6 +463,8 @@ export async function checkHandover(projectDir, { tier, excludes = [], includeFi
   const codeSet = new Set(codeNames);
 
   let sampleKeys = null;
+  // 根目录之外（examples/*/.env.example）有样本也算有证据；H1 只认根目录会误报 trpc 这类 monorepo。
+  const envTemplateAnywhere = sample || files.find((f) => /\.env\.(?:example|sample|template|dist|default)(?:\.|$)/i.test(path.basename(f)));
   if (sample) {
     const sampleText = await readFile(path.join(projectDir, sample.name), 'utf8').catch(() => null);
     if (sampleText == null) {
@@ -427,10 +487,15 @@ export async function checkHandover(projectDir, { tier, excludes = [], includeFi
           t('{file} 的 {key} 值疑似真实密钥：请改为占位符（报告不回显该值）', { file: sample.name, key: entry.key }));
       }
     }
-  } else if (codeNames.length) {
-    const first = codeNames.slice(0, 10);
-    push('H1.env-no-sample', 'medium', '(环境变量)', 0, first.join(', '),
-      t('代码使用 {n} 个环境变量，但没有 .env.example/.env.sample：{names}', { n: codeNames.length, names: `${first.join(', ')}${codeNames.length > 10 ? ` 等 ${codeNames.length} 个` : ''}` }));
+  } else if (!envTemplateAnywhere && codeNames.length) {
+    // 库/CLI 的环境变量多是构建/测试开关（NODE_ENV/CI/NO_DEPRECATION），不是部署配置；
+    // 只保留像凭据/连接串的变量再报，避免把库的构建变量当部署缺口。
+    const relevant = serviceLike ? codeNames : codeNames.filter((n) => SERVICE_ENV_RE.test(n));
+    if (relevant.length) {
+      const first = relevant.slice(0, 10);
+      push('H1.env-no-sample', 'medium', '(环境变量)', 0, first.join(', '),
+        t('代码使用 {n} 个环境变量，但没有 .env.example/.env.sample：{names}', { n: relevant.length, names: `${first.join(', ')}${relevant.length > 10 ? ` 等 ${relevant.length} 个` : ''}` }));
+    }
   }
 
   // 4b) 反向 diff：README / 样本声明了、但代码没用到的变量（可能过期）；只比对变量名

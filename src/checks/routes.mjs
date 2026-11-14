@@ -2,7 +2,35 @@
 // 常见天然公开接口：命中则给白名单引导，降噪（2026-11-07 某真实项目实测 91 条里一大半是这类）
 import { isPublicPath } from '../route-path.mjs';
 
-const PUBLIC_HINT = /(login|logout|register|signup|auth\/|ping|health|status|version|metrics|docs|openapi)/i;
+// 常见天然公开接口按「路径段」精确匹配，避免 /docs-internal、/healthcheck-admin
+// 这类同前缀的敏感路径被误降噪。
+const PUBLIC_SEGMENTS = new Set([
+  'health', 'healthz', 'ready', 'readiness', 'live', 'liveness',
+  'ping', 'status', 'version', 'metrics', 'docs', 'openapi', 'swagger', 'api-docs',
+  'login', 'logout', 'register', 'signup',
+  'well-known', 'security.txt',
+]);
+
+function isCommonPublicPath(routePath) {
+  const segs = String(routePath || '').toLowerCase().split('/').filter(Boolean);
+  if (segs.some((s) => PUBLIC_SEGMENTS.has(s))) return true;
+  // `auth/...` 前缀（/auth/login、/api/auth/token 等）
+  return segs.some((s, i) => s === 'auth' && i < segs.length - 1);
+}
+
+// 文档/接口说明包里的路由（Flowise packages/api-documentation 的 GET /）
+// 本身就是公开文档面，不按产品鉴权面硬卡。
+function isDocsSurfaceFile(file) {
+  return /(?:^|\/)(?:api-documentation|api-docs|swagger|openapi|docs?)\//i.test(String(file || ''));
+}
+
+// MCP 参考/传输服务器的 /sse、/message、/mcp 是协议传输端点，不是产品鉴权面；
+// 按文件路径 + 精确端点匹配，避免把普通 /message 产品接口一起降噪。
+function isMcpTransportEndpoint(routePath, file) {
+  const p = String(routePath || '').toLowerCase();
+  if (!/^(?:\/sse|\/message|\/mcp)(?:\/|$)/.test(p)) return false;
+  return /(?:^|\/)(?:everything|transport|transports|mcp)(?:\/|\.)/i.test(String(file || ''));
+}
 
 // ---------------------------------------------------------------------------
 // 守卫名识别（S1 假通过治理）
@@ -23,8 +51,8 @@ const PUBLIC_HINT = /(login|logout|register|signup|auth\/|ping|health|status|ver
 const GUARD_TOKENS = new Set([
   'auth', 'authn', 'authz', 'authguard',
   'authentication', 'authenticate', 'authenticated',
-  'authorization', 'authorize', 'authorized',
-  'jwt', 'passport', 'token', 'guard', 'protect', 'protected',
+  'authorize', 'authorized',
+  'jwt', 'passport', 'protect', 'protected',
   'login', 'signin', 'loggedin',
 ]);
 // 全小写连写的常见守卫名（camelCase 切不开时兜底，例如 `requireauth`）。
@@ -34,6 +62,8 @@ const GUARD_COMPOUNDS = new Set([
   'requireauth', 'requirelogin', 'loginrequired', 'checkauth', 'checktoken',
   'verifytoken', 'authenticate', 'authorize', 'passportauthenticate',
   'jwtauth', 'jwtmiddleware', 'authrequired', 'authnrequired',
+  // juice-shop 的 security.appendUserId()：JWT 校验并 401，是登录守卫
+  'appenduserid',
 ]);
 // 这些 token 说明名字描述的是路由表 / 存储 / 限流器等载体，而不是一个守卫。
 const CONTAINER_TOKENS = new Set([
@@ -78,11 +108,18 @@ export function isGuardName(name) {
   if (typeof name !== 'string') return false;
   const raw = name.trim();
   if (!raw) return false;
-  // `require('./auth')` / `passport.authenticate('jwt')` 直接按整串切 token；
-  // 去掉调用参数里的引号不影响 token 边界。
-  const tokens = tokenize(raw);
+  // Member expressions judge only the last member segment:
+  // routes.isLoggedIn / router.authMiddleware / passport.authenticate('jwt')
+  // are guards, while routes.authRoutes / router.author are not.
+  // A dot inside a module path (`require('./auth')`) leaves the last segment
+  // as `/auth')`, whose auth token still identifies a guard.
+  const segment = raw.includes('.') ? raw.slice(raw.lastIndexOf('.') + 1) : raw;
+  const callIdx = segment.indexOf('(');
+  const head = callIdx >= 0 ? segment.slice(0, callIdx) : segment;
+  const tokens = tokenize(head);
   if (!tokens.length) return false;
-  // 容器/路由表类名字先否决：authRoutes、sessionStore、loginLimiter、authController
+  // 容器/路由表类 token 只否决它所在的那一段：authRoutes 不是守卫，
+  // 但 routes.isLoggedIn 的 routes 段不影响 isLoggedIn。
   if (tokens.some((t) => CONTAINER_TOKENS.has(t))) return false;
   const joined = tokens.join('');
   if (GUARD_COMPOUNDS.has(joined)) return true;
@@ -103,6 +140,7 @@ function publicHit(routePath, publicRoutes) {
 // hasGuard 由 extract-routes 用旧裸子串算出来，可能是假阳性。
 // 有 middlewares 数组时以 isGuardName 重新判定；老调用方只给 hasGuard 布尔值时保留原语义。
 function routeHasGuard(route, publicRoutes, ineffectiveGuards = []) {
+  if (route.hasInternalGuard) return true; // handler/factory 内部已校验登录
   if (Array.isArray(route.middlewares)) {
     return route.middlewares.some((m) => isGuardName(m) && !ineffectiveGuards.some((guard) => guard.file === route.file && guard.name === m));
   }
@@ -114,11 +152,21 @@ export async function checkAuthCoverage(routeResult) {
   const routes = Array.isArray(routeResult && routeResult.routes) ? routeResult.routes : [];
   const unsupportedGap = routeResult?.unsupportedFrameworks?.length
     ? `HTTP 框架尚未支持：${routeResult.unsupportedFrameworks.join('；')}（目前仅支持 Express 路由）` : null;
-  // 空路由表 = 没有可分析的 HTTP 接口。但「没有 HTTP」不等于「没查」：
-  // 桌面应用没有 HTTP 路由，S1（只覆盖 HTTP 鉴权）属结构性不适用，不封顶结论；
-  // 本地 IPC 权限面由 S7 检查。gapKind=not-applicable 由结论引擎过滤，不再算「无法验收」。
+  // 空路由表但有 HTTP 服务/路由注册信号 → 提取器没解析出来，S1 未覆盖（unavailable）。
+  // 只有完全没有 HTTP 信号时才是结构性的 not-applicable（本地 IPC 权限面由 S7 检查）。
+  const httpSignal = Boolean(unsupportedGap) || Boolean(routeResult?.httpSurface?.exists);
   if (!routes.length) {
-    if (unsupportedGap) return { checkId: 'S1', findings, coverageGap: unsupportedGap, gapKind: 'unavailable' };
+    if (httpSignal) {
+      const hint = unsupportedGap
+        ? `框架：${routeResult.unsupportedFrameworks.join('；')}`
+        : '检测到自定义 HTTP server / 路由挂载调用';
+      return {
+        checkId: 'S1',
+        findings,
+        coverageGap: `检测到 HTTP 服务/路由注册，但路由提取器未解析出路由表，S1 未覆盖（${hint}）`,
+        gapKind: 'unavailable',
+      };
+    }
     return {
       checkId: 'S1',
       findings,
@@ -131,8 +179,33 @@ export async function checkAuthCoverage(routeResult) {
     if (r.method === 'use') continue; // 装配路径不是独立接口
     if (publicHit(r.path, publicRoutes)) continue;
     if (!routeHasGuard(r, publicRoutes, routeResult.ineffectiveGuards || [])) {
-      const hint = PUBLIC_HINT.test(r.path) ? '（常见公开接口：确认后登记进 finalcheck.config.json 的 publicRoutes 即可消除）' : '';
-      findings.push({ checkId: 'S1', severity: 'high', force: 'card', file: r.file, line: r.line, rule: 'S1.no-guard', snippet: `${r.method.toUpperCase()} ${r.path}`, message: `接口无登录守卫${hint}`, source: 'program' });
+      // 常见公开接口（健康检查/文档/登录入口）仍报，但降为 medium/check 并提示
+      // 登记 publicRoutes；/docs-internal、/healthcheck-admin 等不会按段误命中。
+      if (isCommonPublicPath(r.path) || isDocsSurfaceFile(r.file) || isMcpTransportEndpoint(r.path, r.file)) {
+        findings.push({
+          checkId: 'S1',
+          severity: 'medium',
+          force: 'check',
+          file: r.file,
+          line: r.line,
+          rule: 'S1.no-guard',
+          snippet: `${r.method.toUpperCase()} ${r.path}`,
+          message: '接口无登录守卫；常见公开接口，确认后登记 publicRoutes（若并非公开接口，请补登录守卫）',
+          source: 'program',
+        });
+      } else {
+        findings.push({
+          checkId: 'S1',
+          severity: 'high',
+          force: 'card',
+          file: r.file,
+          line: r.line,
+          rule: 'S1.no-guard',
+          snippet: `${r.method.toUpperCase()} ${r.path}`,
+          message: '接口无登录守卫',
+          source: 'program',
+        });
+      }
     }
   }
   return { checkId: 'S1', findings, coverageGap: unsupportedGap || (routeResult.warnings?.length ? `路由提取警告 ${routeResult.warnings.length} 条` : null) };
