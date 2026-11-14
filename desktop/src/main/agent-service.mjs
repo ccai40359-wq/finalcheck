@@ -391,6 +391,11 @@ async function spillResult(toolName, callId, text) {  try {
 /* ---------- 空回复补交（nudge）：同一轮最多催两次，第二次强制只输出正文 ---------- */
 const MAX_EMPTY_NUDGES = 2;
 const EMPTY_NUDGE_DIGEST_ITEMS = 12;
+/* ---------- 复读熔断参数（round8 实测：自检阶段同义复述 20+ 分钟，被 402 才收场） ---------- */
+// 正文 exact-tail 检测（每 400 字查一次）+ 20k 正文帽是老闸；下面补思考流与工具参数流两块盲区
+const REASONING_LOOP_CAP = 60000; // 思考流字数帽：content 检测够不着 reasoning，理论流会无限增长
+const ARGS_LOOP_CAP = 100000; // 单轮工具参数总量帽：正常 write 大文件也远够不着，读到这基本是参数复读
+const MAX_REPETITION_NUDGES = 1; // 复读熔断后先催收一次（不是直接判死）；再犯才报错收轮
 const EMPTY_NUDGE_DIGEST_LINE_MAX = 200;
 const EMPTY_NUDGE_DIGEST_MAX = 2400;
 
@@ -468,6 +473,15 @@ function mergeStreamingToolCall(toolCalls, meta, tc) {
   return call;
 }
 
+// 重叠计数：String.split 只数「不重叠」的出现——复读周期 < 尾窗长度（如 150 < 200）时，
+// 5 次重复会被数成 3 次，检测因此漏报（round8 单测实测踩中）。indexOf 步进 1 数重叠出现。
+function countOverlapping(hay, needle, cap = 8) {
+  let n = 0;
+  let i = hay.indexOf(needle);
+  while (i >= 0 && n < cap) { n++; i = hay.indexOf(needle, i + 1); }
+  return n;
+}
+
 export async function consumeStream(res, onToken, onEvent, ctl, onChunk = null) {
   let content = '';
   let reasoning = '';
@@ -478,6 +492,10 @@ export async function consumeStream(res, onToken, onEvent, ctl, onChunk = null) 
   let finishReason = null;
   let lastCheckLen = 0;
   let repetitive = false;
+  // 复读熔断专用标记：熔断也走 ctl.abort()，如果不与「用户停止」区分，
+  // catch 会把 AbortError 归成 aborted（中断），repetitive 分支永远不可达——
+  // round8 实测：20 分钟的同义复述被当成「已中断」照单全收（用户截图为证）。
+  let loopAbort = false;
   // 活动提示（WorkingStatus 实时文案）：真实增量驱动，不伪造进度。
   // 首 token → Writing…；tool_calls 参数流 → Writing <tool>…；参数继续增长时
   // 每累计 ≥512 字符且距上次提示 ≥500ms 才再发一条（带 chars），避免刷屏。
@@ -531,7 +549,13 @@ export async function consumeStream(res, onToken, onEvent, ctl, onChunk = null) 
     const d = j.choices?.[0]?.delta || {};
     // 思考流：不同网关字段名不同（DeepSeek reasoning_content / 本网关 reasoning / thinking）
     const think = [d.reasoning_content, d.reasoning, d.thinking].find((x) => typeof x === 'string' && x);
-    if (think) { reasoning += think; chunkProgress = true; onEvent?.({ kind: 'reasoning', text: think }); }
+    if (think) {
+      reasoning += think;
+      chunkProgress = true;
+      onEvent?.({ kind: 'reasoning', text: think });
+      // 思考频道的复读同样要熔断：content 帽子够不着 reasoning，理论流会无限增长
+      if (reasoning.length > REASONING_LOOP_CAP) { repetitive = true; loopAbort = true; ctl?.abort(); }
+    }
     if (d.content) {
       chunkProgress = true;
       if (!act.contentSeen) {
@@ -545,14 +569,20 @@ export async function consumeStream(res, onToken, onEvent, ctl, onChunk = null) 
       if (content.length - lastCheckLen >= 400) {
         lastCheckLen = content.length;
         const tail = content.slice(-200);
-        if (tail.length >= 50 && content.split(tail).length - 1 >= 4) { repetitive = true; ctl?.abort(); }
+        if (tail.length >= 50 && countOverlapping(content, tail) >= 4) { repetitive = true; loopAbort = true; ctl?.abort(); }
       }
-      if (content.length > 20000) { repetitive = true; ctl?.abort(); }
+      if (content.length > 20000) { repetitive = true; loopAbort = true; ctl?.abort(); }
     }
     let sawToolDelta = false;
     for (const tc of d.tool_calls || []) {
       mergeStreamingToolCall(toolCalls, toolCallMeta, tc);
       sawToolDelta = true;
+    }
+    if (sawToolDelta && toolArgsTotal() > ARGS_LOOP_CAP) {
+      // 工具参数流的复读（round8 实测「Writing read_file… 21m57s」：参数无限增长）同样熔断
+      repetitive = true;
+      loopAbort = true;
+      ctl?.abort();
     }
     if (sawToolDelta) { chunkProgress = true; noteToolDelta(); } // 首次出现 → Writing <tool>…；之后按 512 字符/500ms 节流更新
   };
@@ -570,14 +600,22 @@ export async function consumeStream(res, onToken, onEvent, ctl, onChunk = null) 
       try { onChunk?.(chunkProgress); } catch { /* 观测回调失败不影响流 */ }
     }
   } catch (e) {
-    // dsh 语义：中断不截断——已流出的内容原样保留，返回 aborted 标记交给上层合成「已中断」收尾
-    if (ctl?.signal?.aborted || e?.name === 'AbortError' || /abort/i.test(e?.message || '')) {
+    if (loopAbort) {
+      // 内部复读熔断：不冒充用户中断（否则 repetitive 标志丢失，循环输出被当成「已中断」落账）
+    } else if (ctl?.signal?.aborted || e?.name === 'AbortError' || /abort/i.test(e?.message || '')) {
+      // dsh 语义：中断不截断——已流出的内容原样保留，返回 aborted 标记交给上层合成「已中断」收尾
       aborted = true;
     } else {
       throw e;
     }
   }
   if (lineBuf) handleLine(lineBuf); // 末行没有换行（网关直接断流）时也要解析，否则 usage/内容丢
+  // 收尾补检：节流节奏（每 400 字查一次）会漏掉流末尾不足 400 字的最后一段——
+  // 「整轮复读刚好卡在阈值下收尾」会被放行（单测构造 912 字复读实测踩中）
+  if (!repetitive && content.length >= 400) {
+    const tail = content.slice(-200);
+    if (tail.length >= 50 && countOverlapping(content, tail) >= 4) repetitive = true;
+  }
   if (aborted) return { content, reasoning, toolCalls: [], raw, aborted: true, usage, finishReason };
   if (repetitive) return { content, reasoning, toolCalls: [], raw, repetitive: true, usage, finishReason };
   // 终审 P2#4：非标准网关返回裸 JSON（无视 stream）时兜底解析
@@ -1335,6 +1373,7 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
   let toolChoiceUnsupported = false; // 网关拒绝 tool_choice 后不再带该字段
   let retriedForTools = false; // 首轮空转提醒只重试一次
   let emptyNudges = 0; // 空回复补交次数：最多 MAX_EMPTY_NUDGES 次（第一次普通催，第二次强制只输出正文）
+  let repetitiveNudges = 0; // 复读熔断后的催收次数：最多 MAX_REPETITION_NUDGES 次（round8 新增）
   let forceAnswerNoTools = false; // 下一次请求带 tool_choice='none'（第二次补交用，成功发出后复位）
   let argsTruncatedRetried = false; // finish_reason=length 且带 tool_calls：整轮重发一次（参数半截，一律不执行）
   let argsRepaired = false; // 参数非法 JSON：纠错一次（把那一个调用回给模型重发），再失败才报错
@@ -1552,8 +1591,19 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
     }
     if (reasoning) reasoningAll += (reasoningAll ? '\n' : '') + reasoning;
     if (repetitive) {
+      // 复读熔断（round8 实测：同义复述刷了 20+ 分钟，最终被 402 才收场；此前熔断标志还会被
+      // consumeStream 的 catch 误标成用户中断，本分支根本不可达——两处都已修）。
+      // 第一次：催收一轮（不复述状态，直接推进）；再犯：人话报错收轮。
+      if (repetitiveNudges < MAX_REPETITION_NUDGES) {
+        repetitiveNudges += 1;
+        const nudge = '你上一轮输出陷入重复循环，已被自动截断。不要复述已完成的状态、计划或检查清单；直接继续：要么调用下一个工具推进任务，要么给出最终结论（带证据）。';
+        convo.push({ role: 'user', content: `[系统] ${nudge}` });
+        onEvent?.({ kind: 'warning', message: t('检测到重复输出循环，已截断并催收（{n}/{max}）', { n: repetitiveNudges, max: MAX_REPETITION_NUDGES }) });
+        onEvent?.({ kind: 'activity', label: t('复读截断，催收推进（{n}/{max}）…', { n: repetitiveNudges, max: MAX_REPETITION_NUDGES }) });
+        continue;
+      }
       onEvent?.({ kind: 'turn-end', ms: Date.now() - turnStart, error: true });
-      return { error: t('检测到模型输出异常循环，已自动中止——这是模型问题不是你的问题。可重试，或到模型设置换一个模型。'), reasoning: reasoningAll, trace, roundsUsed: turnsUsed };
+      return { error: t('检测到模型输出异常循环（已催收 {n} 次仍复发），已自动中止——这是模型问题不是你的问题。可重试，或到模型设置换一个模型。', { n: repetitiveNudges }), reasoning: reasoningAll, trace, roundsUsed: turnsUsed, warnings };
     }
     // ---- 截断闸①：finish_reason=length 且这一轮带 tool_calls → 参数可能半截，一个都不执行 ----
     // 旧逻辑直接把半截 JSON 丢给 runToolCall，parse 失败 → 卡片一条红条，用户以为回合断了。
