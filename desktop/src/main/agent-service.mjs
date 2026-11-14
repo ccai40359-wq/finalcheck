@@ -482,6 +482,33 @@ function countOverlapping(hay, needle, cap = 8) {
   return n;
 }
 
+/* ---------- 行为层防复读（CC 式）：同工具+同参数连续重复调用 ---------- */
+// 时间照旧不限（用户拍板），拦的是「零进展的动作重复」：相同输入必然得到相同输出，
+// 连续多轮完全相同的调用就是卡死循环。轮询类合法场景（改了中间步骤）会打断连续计数，不受影响。
+function canonArgs(a) {
+  const s = String(a || '');
+  try {
+    const sort = (v) => (Array.isArray(v) ? v.map(sort) : (v && typeof v === 'object'
+      ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, sort(v[k])]))
+      : v));
+    return JSON.stringify(sort(JSON.parse(s)));
+  } catch {
+    return s; // 非 JSON 参数按原文比对
+  }
+}
+
+// 一轮调用的签名：工具名 + 规范化参数；并行多调用排序后拼接（顺序抖动不算不同）
+export function toolCallSig(calls) {
+  if (!Array.isArray(calls) || !calls.length) return null;
+  return calls
+    .map((c) => `${String(c?.function?.name || '')}:${canonArgs(c?.function?.arguments)}`)
+    .sort()
+    .join(' | ');
+}
+
+const TOOL_LOOP_WARN_ROUNDS = 3; // 连续 3 轮相同 → 注入「换思路」提醒（工具照常执行，结果可能合法）
+const TOOL_LOOP_STOP_ROUNDS = 5; // 连续 5 轮相同 → 不执行，人话报错收轮
+
 export async function consumeStream(res, onToken, onEvent, ctl, onChunk = null) {
   let content = '';
   let reasoning = '';
@@ -1374,6 +1401,8 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
   let retriedForTools = false; // 首轮空转提醒只重试一次
   let emptyNudges = 0; // 空回复补交次数：最多 MAX_EMPTY_NUDGES 次（第一次普通催，第二次强制只输出正文）
   let repetitiveNudges = 0; // 复读熔断后的催收次数：最多 MAX_REPETITION_NUDGES 次（round8 新增）
+  let lastToolLoopSig = null; // 行为层防复读：上一轮的工具调用签名
+  let toolLoopRounds = 0; // 连续相同签名的轮数
   let forceAnswerNoTools = false; // 下一次请求带 tool_choice='none'（第二次补交用，成功发出后复位）
   let argsTruncatedRetried = false; // finish_reason=length 且带 tool_calls：整轮重发一次（参数半截，一律不执行）
   let argsRepaired = false; // 参数非法 JSON：纠错一次（把那一个调用回给模型重发），再失败才报错
@@ -1650,6 +1679,29 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
         roundsUsed: turnsUsed,
         warnings
       };
+    }
+    // ---- 行为层防复读：连续 N 轮「同工具+同参数」的调用 → 先提醒换思路，再犯判停（CC 式） ----
+    // 文字复读由上面 repetitive 熔断兜，这里兜「动作复读」：文字各不相同但每轮都在重跑完全一样的调用。
+    if (toolCalls.length) {
+      const sig = toolCallSig(toolCalls);
+      if (sig && sig === lastToolLoopSig) toolLoopRounds += 1;
+      else { toolLoopRounds = 1; lastToolLoopSig = sig; }
+      if (toolLoopRounds >= TOOL_LOOP_STOP_ROUNDS) {
+        onEvent?.({ kind: 'turn-end', ms: Date.now() - turnStart, error: true });
+        return {
+          error: t('模型连续 {n} 轮发起完全相同的工具调用（参数逐字节相同，相同输入必然得到相同输出），疑似卡死循环，已自动停止——已做的工作都在记录里。可重试、换个模型，或把任务拆小。', { n: toolLoopRounds }),
+          reasoning: reasoningAll || undefined,
+          trace,
+          roundsUsed: turnsUsed,
+          warnings
+        };
+      }
+      if (toolLoopRounds >= TOOL_LOOP_WARN_ROUNDS) {
+        const nudge = `你已经连续 ${toolLoopRounds} 轮发起完全相同的工具调用（参数逐字节相同）。相同输入必然得到相同输出——停止重复：换参数、换工具、改用计划拆步，或直接给出基于已有证据的最终结论。`;
+        convo.push({ role: 'user', content: `[系统] ${nudge}` });
+        onEvent?.({ kind: 'warning', message: t('检测到连续 {n} 轮相同的工具调用，已提醒换思路（第 {stop} 轮判停）', { n: toolLoopRounds, stop: TOOL_LOOP_STOP_ROUNDS }) });
+        onEvent?.({ kind: 'activity', label: t('动作复读，已提醒换思路（第 {stop} 轮判停）', { stop: TOOL_LOOP_STOP_ROUNDS }) });
+      }
     }
     if (!toolCalls.length) {
       // 强制首轮工具却只回了话：追加 system 提醒后再请求一次（与旧 runSubagentStep 一致，最多一次）

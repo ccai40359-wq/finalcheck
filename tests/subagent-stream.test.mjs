@@ -212,9 +212,15 @@ test('subagent-stream: 0 工具 + 审查角色 → failed（空转硬闸文案�
 });
 
 test('subagent-stream: 显式 maxTurns=40 时，第 41 次是不带工具的收尾请求（默认已不限轮数）', async (t) => {
-  const fake = await startFakeProvider((body) => (Array.isArray(body.tools)
-    ? [toolCallChunk('c' + Math.random(), 'read_file', '{"path":"a.txt"}')]
-    : [finalText('40 轮后收尾结论')]));
+  // 参数每轮带轮次：行为层防复读会拦「逐字节相同的连续调用」（round8 新增），夹具不能自己踩这条线
+  let toolRounds = 0;
+  const fake = await startFakeProvider((body) => {
+    if (Array.isArray(body.tools)) {
+      toolRounds += 1;
+      return [toolCallChunk('c' + toolRounds, 'read_file', JSON.stringify({ path: 'a-' + toolRounds + '.txt' }))];
+    }
+    return [finalText('40 轮后收尾结论')];
+  });
   t.after(() => fake.close());
   const result = await runSubagentTurn({
     config: { baseUrl: fake.baseUrl, apiKey: 'k', model: 'm' },
@@ -237,7 +243,7 @@ test('subagent-stream: 默认不限轮数（长时间自主工作）——连跑
   const events = [];
   const fake = await startFakeProvider((body) => {
     calls += 1;
-    if (calls <= 6) return [toolCallChunk('c' + calls, 'read_file', '{"path":"a.txt"}')];
+    if (calls <= 6) return [toolCallChunk('c' + calls, 'read_file', JSON.stringify({ path: 'a-' + calls + '.txt' }))];
     return [finalText('6 轮后自己收尾')];
   });
   t.after(() => fake.close());
