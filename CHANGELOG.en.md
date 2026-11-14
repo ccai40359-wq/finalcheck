@@ -6,6 +6,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.16.4] - 2026-11-14
+
+### Added
+
+- Long tasks no longer degrade: tool outputs inside a single turn are auto-folded — context stays at "latest 5 tool results verbatim + earlier placeholders", so hundreds-of-steps turns stop growing unbounded.
+- New dedicated code-search tool `grep_code`: prefers bundled ripgrep (rg.exe ships in the installer), returns structured file:line:match — no more hand-written findstr commands.
+- Acceptance checklist upgraded: only one in-progress item at a time; marking done with failing tests or unresolved errors is forbidden.
+
+### Fixed
+
+- Fixed a silent real bug: file-level service signals in library-repo detection were swallowed by an unimported function call (one of the 10 lint findings).
+
 ## [0.16.3] - 2026-11-14
 
 ### Added
