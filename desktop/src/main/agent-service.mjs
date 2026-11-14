@@ -4,8 +4,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
-import { assembleContext, estimateTokens, estimateMessagesTokens, microcompact, fullCompact, contextBudget, needsCompaction } from './context.mjs';
+import { assembleContext, estimateTokens, estimateMessagesTokens, microcompact, countToolsToClean, fullCompact, contextBudget, needsCompaction } from './context.mjs';
 import { crossTurnBudgetTokens } from './model-config.mjs';
+import { GREP_CODE_SCHEMA, TODO_CC_RULES_TEXT } from './agent-tools.mjs';
 // token 估算/两级压缩原语实现放在 context.mjs（与上下文视图同源）；这里重新导出，单测可直接从 agent-service 取
 export { estimateTokens, estimateMessagesTokens, microcompact, fullCompact, contextBudget } from './context.mjs';
 import { loadCatalog, renderCatalog } from '../../../src/playbooks.mjs';
@@ -295,9 +296,9 @@ export const AGENT_ONLY_TOOLS_SCHEMA = [
   { type: 'function', function: { name: 'ask_user', description: '回合中途向用户提问并等待回答（同一回合最多 3 次）。只在真有分叉且影响结论时使用（例如「按 L2 还是 L3」「动态探测要不要授权」「两个方向只能选一个」），信息足够时不要打扰用户。最多给 6 个选项；纯开放式提问可以不给 options，由用户自己输入。调用后本回合暂停，直到用户回答或点击停止', parameters: { type: 'object', properties: { question: { type: 'string', description: '要问用户的问题，一句话说清分叉点与影响' }, options: { type: 'array', maxItems: 6, description: '可选：2-6 个候选答案；不给则纯开放式提问', items: { type: 'object', properties: { label: { type: 'string', description: '选项短标签' }, description: { type: 'string', description: '可选的补充说明（影响/代价）' } }, required: ['label'] } }, multiSelect: { type: 'boolean', description: '可选：是否允许多选，默认 false' } }, required: ['question'] } } },
   // 验收单（ZCode todo 式）：用户可见的勾选清单，3-8 条，每条必须写清验收标准。
   // 可多次调用更新状态；done 必须带 evidence，failed/skipped 会被报告闸要求写进 ## Not covered。
-  { type: 'function', function: { name: 'todo_write', description: '维护本轮任务的验收单（勾选清单）：3-8 条，每条必须给 acceptance（怎么算做完）；可多次调用按 id 更新 status。开工时先写一遍，做完一条就把 status 改成 done 并补 evidence（文件:行 / 命令输出 / HTTP 复现）。不能做或跳过的条目标 failed/skipped，最终回答的 ## Not covered 必须点名它们', parameters: { type: 'object', properties: { items: { type: 'array', minItems: 3, maxItems: 8, description: '3-8 条任务；id 稳定（更新状态时按 id 合并）', items: { type: 'object', properties: { id: { type: 'string', description: '稳定标识（如 s1 / step-1）' }, task: { type: 'string', description: '这一步要做什么（一句话）' }, acceptance: { type: 'string', description: '验收标准（必填）：怎么算这一步完成，可检查的条件' }, status: { type: 'string', enum: ['pending', 'running', 'done', 'failed', 'skipped'], description: '状态，默认 pending' }, evidence: { type: 'string', description: '证据（done 时必填）：文件:行 / 命令输出摘要 / HTTP 复现' } }, required: ['id', 'task', 'acceptance'] } } }, required: ['items'] } } }
+  { type: 'function', function: { name: 'todo_write', description: '维护本轮任务的验收单（勾选清单）：3-8 条，每条必须给 acceptance（怎么算做完）；可多次调用按 id 更新 status。开工时先写一遍，做完一条就把 status 改成 done 并补 evidence（文件:行 / 命令输出 / HTTP 复现）。不能做或跳过的条目标 failed/skipped，最终回答的 ## Not covered 必须点名它们。' + TODO_CC_RULES_TEXT, parameters: { type: 'object', properties: { items: { type: 'array', minItems: 3, maxItems: 8, description: '3-8 条任务；id 稳定（更新状态时按 id 合并）', items: { type: 'object', properties: { id: { type: 'string', description: '稳定标识（如 s1 / step-1）' }, task: { type: 'string', description: '这一步要做什么（一句话）' }, acceptance: { type: 'string', description: '验收标准（必填）：怎么算这一步完成，可检查的条件' }, status: { type: 'string', enum: ['pending', 'running', 'done', 'failed', 'skipped'], description: '状态，默认 pending' }, evidence: { type: 'string', description: '证据（done 时必填）：文件:行 / 命令输出摘要 / HTTP 复现' } }, required: ['id', 'task', 'acceptance'] } } }, required: ['items'] } } }
 ];
-export const AGENT_TOOLS_SCHEMA = [...TOOLS_SCHEMA, ...AGENT_ONLY_TOOLS_SCHEMA];
+export const AGENT_TOOLS_SCHEMA = [...TOOLS_SCHEMA, GREP_CODE_SCHEMA, ...AGENT_ONLY_TOOLS_SCHEMA];
 
 // 工作流子代理工具集：与主 agent 同一份 schema，按 swarm.mjs 的清单过滤。
 // 共 14 个：含 review_diff（review_diff 只在 AGENT_ONLY_TOOLS_SCHEMA），
@@ -1328,6 +1329,8 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
   // 压缩熔断：连续 3 次失败就不再压，只发一次 compact-warning（未知事件 UI 会忽略）
   let compactFails = 0;
   let compactWarned = false;
+  // 回合内折叠提示只发一次：microcompact 每步都会跑，第一次真正清掉旧结果时通知，之后不再刷屏
+  let microNoticeSent = false;
   const warnings = [];
   let toolChoiceUnsupported = false; // 网关拒绝 tool_choice 后不再带该字段
   let retriedForTools = false; // 首轮空转提醒只重试一次
@@ -1682,6 +1685,16 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
       trace.push(r.trace);
       convo.push({ role: 'tool', tool_call_id: r.id, content: r.modelContent });
     });
+    // 回合内折叠（microcompact）：每步工具结果落地后、下一次模型请求前立即清旧——不等 token 阈值，
+    // convo 始终保持「最近 5 条工具结果原文 + 更早的占位符」，几百步的长回合不再无限膨胀。
+    // 只改 role==='tool' 的 content：system/assistant 原样、tool_call_id 配对不破，且幂等（已清理的跳过）。
+    const cleanedNow = countToolsToClean(convo, { keepRecentTool: 5 });
+    if (cleanedNow > 0 && microcompact(convo, { keepRecentTool: 5 })) {
+      if (!microNoticeSent) {
+        microNoticeSent = true; // 同一回合只提示一次
+        onEvent?.({ kind: 'notice', message: t('上下文折叠：已清理 {n} 条旧工具结果（原文可重跑获取）', { n: cleanedNow }) });
+      }
+    }
     if (inspected.invalid.length) {
       const badNames = [...new Set(inspected.invalid.map((x) => x.name))].join('、');
       if (!argsRepaired) {

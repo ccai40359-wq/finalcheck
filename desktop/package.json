@@ -40,6 +40,10 @@
     ],
     "extraResources": [
       {
+        "from": "../vendor/rg/rg.exe",
+        "to": "rg/rg.exe"
+      },
+      {
         "from": "../CHANGELOG.md",
         "to": "CHANGELOG.md"
       },

@@ -182,6 +182,21 @@ export function microcompact(list, { keepRecentTool = 5 } = {}) {
   return changed;
 }
 
+// 统计 microcompact 将会清理的条数（保留区之外、且还不是占位符的 tool 消息）。
+// 与 microcompact 同一套判定口径（同前缀 / 同保留数），供调用方在折叠实际发生时发「已清理 N 条」通知；
+// 先用这里计数、>0 才调 microcompact，避免白跑一遍。
+export function countToolsToClean(list, { keepRecentTool = 5 } = {}) {
+  if (!Array.isArray(list)) return 0;
+  const toolIdx = [];
+  list.forEach((m, i) => { if (m?.role === 'tool') toolIdx.push(i); });
+  const keepCount = Math.min(toolIdx.length, Math.max(0, keepRecentTool));
+  let n = 0;
+  for (let k = 0; k < toolIdx.length - keepCount; k++) {
+    if (!contentText(list[toolIdx[k]]?.content).startsWith(CLEANED_TOOL_PREFIX)) n++;
+  }
+  return n;
+}
+
 // full compact 的本地抽取式摘要：用户问题前 60 字 + 助手调用的工具名列表 + 结论前 80 字。
 // 纯本地，不额外调用模型（避免压缩本身又烧一次上下文）。
 function summarizeZone(zone) {

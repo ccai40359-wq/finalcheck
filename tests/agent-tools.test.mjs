@@ -3,9 +3,10 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import os from 'node:os';
 import { realpathSync } from 'node:fs';
-import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import server from './fixtures/dynamic-target/app.mjs';
-import { createAgentTools } from '../desktop/src/main/agent-tools.mjs';
+import { createAgentTools, resolveRipgrepPath, GREP_CODE_SCHEMA, TODO_CC_RULES_TEXT } from '../desktop/src/main/agent-tools.mjs';
+import { createTodoRegistry } from '../desktop/src/main/todo-list.mjs';
 import { createPolicy } from '../desktop/src/main/policy.mjs';
 import * as permissions from '../desktop/src/main/permissions.mjs';
 
@@ -441,4 +442,190 @@ test('run_workflow 空参：返回可执行的自纠错提示，不调用引擎'
   const r2 = await tools.run_workflow({ goal: 'g', steps: [], script: [] });
   assert.match(r2.error, /先判断任务形状/);
   assert.equal(calls, 0, '空参不在引擎里猜语义，直接要求模型重选表示');
+});
+
+/* ---------- grep_code：专用代码搜索（rg 优先 → findstr 回退） ---------- */
+
+test('agent-tools: resolveRipgrepPath 检测顺序（env 覆盖 → vendor/rg 捆绑 → PATH → null）', async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'fc-rg-detect-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const envBackup = process.env.FINALCHECK_RG_PATH;
+  const pathBackup = process.env.PATH;
+  try {
+    // 1) FINALCHECK_RG_PATH 显式覆盖最优先
+    const marker = path.join(dir, 'rg-from-env.exe');
+    await writeFile(marker, 'fake');
+    process.env.FINALCHECK_RG_PATH = marker;
+    assert.equal(resolveRipgrepPath({ repoRoot: dir }), path.resolve(marker));
+
+    // 2) 没有 env 时认开发态捆绑 vendor/rg/rg.exe（打包态走 process.resourcesPath/rg，单测环境无 resourcesPath）
+    delete process.env.FINALCHECK_RG_PATH;
+    const vendored = path.join(dir, 'vendor', 'rg', 'rg.exe');
+    await mkdir(path.dirname(vendored), { recursive: true });
+    await writeFile(vendored, 'fake');
+    assert.equal(resolveRipgrepPath({ repoRoot: dir }), vendored);
+
+    // 3) 全都找不到 → null（grep_code 自动回退 findstr，不报错）
+    await rm(path.join(dir, 'vendor'), { recursive: true, force: true });
+    process.env.PATH = '';
+    assert.equal(resolveRipgrepPath({ repoRoot: dir }), null);
+  } finally {
+    if (envBackup === undefined) delete process.env.FINALCHECK_RG_PATH;
+    else process.env.FINALCHECK_RG_PATH = envBackup;
+    if (pathBackup === undefined) delete process.env.PATH;
+    else process.env.PATH = pathBackup;
+  }
+});
+
+test('agent-tools: grep_code 结构化搜索 + glob 过滤 + maxResults 截断', async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'fc-grep-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  await mkdir(path.join(dir, 'sub'), { recursive: true });
+  await writeFile(path.join(dir, 'a.js'), 'const needle = 1;\nother(needle);\n', 'utf8');
+  await writeFile(path.join(dir, 'sub', 'b.js'), '// needle here\nrun(needle);\n', 'utf8');
+  await writeFile(path.join(dir, 'c.txt'), 'needle in txt\n', 'utf8');
+
+  const tools = createAgentTools({ repoRoot: dir, permissions: fakePermissions() });
+  const r = await tools.grep_code({ pattern: 'needle', path: dir });
+  assert.ok(['ripgrep', 'findstr (literal-only)'].includes(r.engine));
+  assert.equal(r.total, 5);
+  assert.equal(r.results.length, 5);
+  for (const row of r.results) {
+    assert.equal(typeof row.line, 'number');
+    assert.ok(row.line >= 1);
+    assert.match(row.text, /needle/);
+    assert.ok(path.isAbsolute(row.file), 'file 必须是绝对路径');
+  }
+  assert.deepEqual(r.results.map((x) => path.basename(x.file)).sort(), ['a.js', 'a.js', 'b.js', 'b.js', 'c.txt']);
+
+  // glob 过滤：*.js 排除 c.txt（rg -g 与 findstr 的文件 spec 都按任意深度匹配）
+  const g = await tools.grep_code({ pattern: 'needle', path: dir, glob: '*.js' });
+  assert.equal(g.total, 4);
+  assert.ok(g.results.every((x) => x.file.endsWith('.js')));
+
+  // maxResults 截断：total 仍是收集到的总数，results 只留前 N 条并提示缩小范围
+  const tr = await tools.grep_code({ pattern: 'needle', path: dir, maxResults: 2 });
+  assert.equal(tr.results.length, 2);
+  assert.equal(tr.total, 5);
+  assert.equal(tr.truncated, true);
+  assert.match(tr.note, /缩小 path 范围/);
+
+  // 不传 path 默认搜 repoRoot
+  const dflt = await tools.grep_code({ pattern: 'needle' });
+  assert.equal(dflt.total, 5);
+
+  // 缺 pattern 给出可自纠的报错
+  const miss = await tools.grep_code({});
+  assert.match(miss.error, /pattern 必填/);
+});
+
+test('agent-tools: grep_code rg 启动失败时自动回退 findstr（literal-only，不报错）', async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'fc-grep-fb-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  await writeFile(path.join(dir, 'a.js'), 'hello world\nconst hel = 1;\n', 'utf8');
+  // 坏二进制：检测得到但启动失败 → 必须静默回退 findstr
+  const fakeRg = path.join(dir, 'rg.exe');
+  await writeFile(fakeRg, 'this is not a real executable', 'utf8');
+
+  const envBackup = process.env.FINALCHECK_RG_PATH;
+  process.env.FINALCHECK_RG_PATH = fakeRg;
+  try {
+    const tools = createAgentTools({ repoRoot: dir, permissions: fakePermissions() });
+    const r = await tools.grep_code({ pattern: 'hello', path: dir });
+    assert.equal(r.engine, 'findstr (literal-only)');
+    assert.equal(r.total, 1);
+    assert.match(r.results[0].text, /hello world/);
+    assert.match(r.note, /literal-only/);
+
+    // findstr 走 /L 字面量：正则语法不生效（hel.o 不匹配 hello）
+    const lit = await tools.grep_code({ pattern: 'hel.o', path: dir });
+    assert.equal(lit.engine, 'findstr (literal-only)');
+    assert.equal(lit.total, 0);
+  } finally {
+    if (envBackup === undefined) delete process.env.FINALCHECK_RG_PATH;
+    else process.env.FINALCHECK_RG_PATH = envBackup;
+  }
+});
+
+test('agent-tools: grep_code 与 read_file 同一道路径闸（项目外拒绝）', async (t) => {
+  const inside = await mkdtemp(path.join(os.tmpdir(), 'fc-grep-in-'));
+  const outside = await mkdtemp(path.join(os.tmpdir(), 'fc-grep-out-'));
+  t.after(async () => {
+    await rm(inside, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  });
+  await writeFile(path.join(inside, 'i.js'), 'const needle = 1;\n', 'utf8');
+  await writeFile(path.join(outside, 'o.js'), 'const needle = 2;\n', 'utf8');
+  const tools = createAgentTools({
+    repoRoot,
+    permissions: fakePermissions(),
+    policy: createPolicy({ projectPath: inside }),
+    projectPath: inside
+  });
+  const denied = await tools.grep_code({ pattern: 'needle', path: outside });
+  assert.equal(denied.deniedBy, 'policy');
+  assert.match(denied.reason, /项目边界/);
+
+  const ok = await tools.grep_code({ pattern: 'needle', path: inside });
+  assert.equal(ok.total, 1);
+  assert.equal(ok.results[0].file, realpathSync.native(path.join(inside, 'i.js')));
+});
+
+/* ---------- todo_write：CC 式规则（同一时间恰好一个 in_progress） ---------- */
+
+test('agent-tools: todo_write CC 规则①——多个 running 自动降回 pending 并提示', async () => {
+  const todos = createTodoRegistry();
+  const sessionId = 's-cc';
+  const tools = createAgentTools({
+    repoRoot,
+    permissions: fakePermissions(),
+    todoWrite: (args) => todos.write(sessionId, args)
+  });
+  const mk = (id, status, extra = {}) => ({ id, task: `任务 ${id}`, acceptance: `${id} 的验收标准`, status, ...extra });
+
+  // 提交 3 个 running：只保留第一个，其余自动降级并在返回里提示
+  const r = await tools.todo_write({ items: [mk('s1', 'running'), mk('s2', 'running'), mk('s3', 'pending'), mk('s4', 'running')] });
+  assert.equal(r.ok, true);
+  const statusOf = (id) => r.items.find((x) => x.id === id)?.status;
+  assert.equal(statusOf('s1'), 'running', '第一个 running 保留');
+  assert.equal(statusOf('s2'), 'pending', '第二个 running 降回 pending');
+  assert.equal(statusOf('s4'), 'pending', '后续 running 降回 pending');
+  assert.equal(r.progress.running, 1);
+  assert.match(r.note, /同一时间只保留一个进行中/);
+  assert.match(r.note, /s2/);
+  assert.match(r.note, /s4/);
+  // 台账（报告闸读的那份）与返回一致：恰好一个 running
+  assert.equal(todos.list(sessionId).filter((x) => x.status === 'running').length, 1);
+
+  // 只有一个 running：不降级、无提示
+  const r2 = await tools.todo_write({
+    items: [mk('s1', 'done', { evidence: 'a.js:1' }), mk('s2', 'done'), mk('s3', 'done'), mk('s4', 'running')]
+  });
+  assert.equal(r2.ok, true);
+  assert.equal(r2.note, undefined);
+  assert.equal(r2.progress.running, 1);
+
+  // 既有 evidence 合并语义不受 CC 规则影响：只改状态不重发 evidence，旧证据保留
+  const r3 = await tools.todo_write({ items: [mk('s1', 'done'), mk('s2', 'done'), mk('s3', 'done'), mk('s4', 'done')] });
+  assert.equal(r3.items.find((x) => x.id === 's1')?.evidence, 'a.js:1');
+
+  // acceptance 必填语义不被破坏：缺 acceptance 仍然报错拒绝
+  const bad = await tools.todo_write({
+    items: [{ id: 'x1', task: '任务 x1', status: 'running' }, mk('x2', 'pending'), mk('x3', 'pending')]
+  });
+  assert.equal(bad.ok, false);
+  assert.match(bad.error, /acceptance/);
+});
+
+test('agent-tools: grep_code / todo CC 规则的 schema 待并轨导出', () => {
+  assert.equal(GREP_CODE_SCHEMA.type, 'function');
+  assert.equal(GREP_CODE_SCHEMA.function.name, 'grep_code');
+  assert.deepEqual(GREP_CODE_SCHEMA.function.parameters.required, ['pattern']);
+  assert.ok(GREP_CODE_SCHEMA.function.parameters.properties.glob);
+  assert.match(GREP_CODE_SCHEMA.function.description, /ripgrep/);
+  assert.match(GREP_CODE_SCHEMA.function.description, /findstr/);
+  assert.match(GREP_CODE_SCHEMA.function.description, /正斜杠/);
+  assert.match(TODO_CC_RULES_TEXT, /恰好一个 in_progress/);
+  assert.match(TODO_CC_RULES_TEXT, /禁止标 done/);
+  assert.match(TODO_CC_RULES_TEXT, /不要攒批/);
 });

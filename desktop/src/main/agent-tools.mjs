@@ -2,7 +2,7 @@
 // 只负责「工具做什么」；工具名/参数的模型可见 schema 在 agent-service.mjs（SSOT）
 import path from 'node:path';
 import { stat } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
@@ -237,6 +237,159 @@ export function runCommandWithSignal(command, {
     armPing(); // 前 60s 静默；之后每 30s 一条「仍在运行 Ns」（不含输出内容）
   });
 }
+
+// ---- grep_code：专用代码搜索（ripgrep 优先，找不到自动回退 findstr 字面量，不报错） ----
+export const GREP_DEFAULT_MAX_RESULTS = 50;
+// stdout 收集上限（字符）：超大仓库全库命中时防止刷爆内存；截断后 total 可能偏小，返回里会注明
+export const GREP_OUTPUT_CAP = 2000000;
+
+/**
+ * rg.exe 检测（独立导出，打包 extraResources 与启动诊断复用）。检测顺序：
+ *   1) 环境变量 FINALCHECK_RG_PATH 显式指定（测试 / 用户自定义）；
+ *   2) 打包捆绑：Electron extraResources → <process.resourcesPath>/rg/rg.exe；
+ *   3) 开发态捆绑：<repoRoot>/vendor/rg/rg.exe（下载的 rg.exe 放这里即被检测到）；
+ *   4) PATH 上的 rg（Windows 只认 rg.exe，避免命中同名包装脚本）。
+ * 都找不到返回 null —— grep_code 会自动回退 findstr，不报错。
+ */
+export function resolveRipgrepPath({ repoRoot = null } = {}) {
+  const bin = process.platform === 'win32' ? 'rg.exe' : 'rg';
+  const envPath = String(process.env.FINALCHECK_RG_PATH || '').trim();
+  if (envPath) {
+    try { if (existsSync(envPath)) return path.resolve(envPath); } catch { /* 忽略坏路径 */ }
+  }
+  const bundled = [
+    process.resourcesPath ? path.join(process.resourcesPath, 'rg', bin) : null,
+    repoRoot ? path.join(repoRoot, 'vendor', 'rg', bin) : null
+  ].filter(Boolean);
+  for (const candidate of bundled) {
+    try { if (existsSync(candidate)) return candidate; } catch { /* 忽略 */ }
+  }
+  const dirs = String(process.env.PATH || process.env.Path || '')
+    .split(path.delimiter).map((d) => d.trim()).filter(Boolean);
+  for (const dir of dirs) {
+    const candidate = path.join(dir, bin);
+    try {
+      if (existsSync(candidate) && statSync(candidate).isFile()) return candidate;
+    } catch { /* 忽略无权限 / 断链 */ }
+  }
+  return null;
+}
+
+/** 不经 shell 的进程捕获：argv 数组直传（杜绝命令注入），stdout 有收集上限 */
+function spawnCapture(file, argv, { cwd = null, stdoutCap = GREP_OUTPUT_CAP } = {}) {
+  return new Promise((resolve) => {
+    let out = '', err = '', settled = false;
+    let proc;
+    try {
+      proc = spawn(file, argv, { cwd: cwd && existsSync(cwd) ? cwd : undefined, windowsHide: true, shell: false });
+    } catch (e) {
+      return resolve({ code: null, stdout: '', stderr: e?.message || String(e), spawnFailed: true });
+    }
+    proc.on('error', (e) => {
+      if (settled) return;
+      settled = true;
+      resolve({ code: null, stdout: out, stderr: String(e?.message || e), spawnFailed: true });
+    });
+    proc.stdout?.on('data', (d) => { if (out.length < stdoutCap) out += d.toString(); });
+    proc.stderr?.on('data', (d) => { if (err.length < 20000) err += d.toString(); });
+    proc.on('close', (code) => {
+      if (settled) return;
+      settled = true;
+      resolve({ code, stdout: out, stderr: err, outTruncated: out.length >= stdoutCap });
+    });
+  });
+}
+
+/**
+ * rg / findstr 行输出解析：`<path>:<line>:<text>`。
+ * 非贪婪切第一个 `:数字:`：路径盘符冒号（C:\）与匹配行里的 URL 冒号（localhost:3000）不误切。
+ */
+function parseGrepRow(row) {
+  const m = /^(.+?):(\d+):(.*)$/.exec(row);
+  if (!m) return null;
+  const line = Number(m[2]);
+  if (!Number.isFinite(line) || line <= 0) return null;
+  return { file: m[1], line, text: m[3] };
+}
+
+/** 结构化结果收口：{file,line,text} 前 max 条 + total 计数；超限截断并提示缩小范围 */
+function finishGrepResult(rows, { max, target, glob, pattern, engine, truncatedOut = false }) {
+  const total = rows.length;
+  const truncated = total > max;
+  const notes = [];
+  if (engine.startsWith('findstr')) notes.push('findstr 回退仅支持字面量匹配（literal-only），正则语法请安装 ripgrep');
+  if (truncatedOut) notes.push('输出超过收集上限已截断，total 可能偏小');
+  if (truncated) notes.push(`匹配 ${total} 条，超过 maxResults=${max}，只返回前 ${max} 条；请加 glob 或缩小 path 范围`);
+  return {
+    engine,
+    pattern,
+    path: target,
+    ...(glob ? { glob } : {}),
+    results: rows.slice(0, max),
+    total,
+    ...(truncated ? { truncated: true } : {}),
+    ...(truncatedOut ? { outputTruncated: true } : {}),
+    ...(notes.length ? { note: notes.join('；') } : {})
+  };
+}
+
+/**
+ * findstr 回退（仅 Windows）：/L /C: 字面量匹配（返回里注明 literal-only）。
+ * findstr 跟随系统代码页（不认 UTF-8），中文内容匹配不可靠 —— rg 缺失时才有此限制。
+ */
+async function grepCodeFindstr({ target, glob, pattern, max }) {
+  let st = null;
+  try { st = statSync(target); } catch { /* 目标不存在时让 findstr 自己报错 */ }
+  const isFile = !!st && st.isFile();
+  const cwd = isFile ? path.dirname(target) : target;
+  const spec = isFile ? path.basename(target) : (glob || '*');
+  const argv = ['/N', '/L', '/P'];
+  if (!isFile) argv.push('/S');
+  argv.push(`/C:${pattern}`, spec);
+  const r = await spawnCapture('findstr', argv, { cwd });
+  if (r.spawnFailed || (r.code !== 0 && r.code !== 1)) {
+    return {
+      error: `findstr 回退失败（退出码 ${r.code}）：${(r.stderr || '未知错误').slice(0, 500)}`,
+      engine: 'findstr (literal-only)',
+      pattern,
+      path: target
+    };
+  }
+  const rows = [];
+  for (const row of r.stdout.split(/\r?\n/).filter(Boolean)) {
+    // /S 多文件输出带路径（`path:line:text`）；单文件无路径（`line:text`，实测 findstr 行为）
+    const withFile = parseGrepRow(row);
+    if (withFile) rows.push({ ...withFile, file: path.resolve(target, withFile.file) });
+    else {
+      const onlyLine = /^(\d+):(.*)$/.exec(row);
+      if (onlyLine) rows.push({ file: path.resolve(target), line: Number(onlyLine[1]), text: onlyLine[2] });
+    }
+  }
+  return finishGrepResult(rows, { max, target, glob, pattern, engine: 'findstr (literal-only)', truncatedOut: !!r.outTruncated });
+}
+
+// 模型可见 schema 条目（SSOT 在 agent-service.mjs 的 TOOLS_SCHEMA；本文件导出待并轨条目，
+// 由主会话 append 进 SSOT —— 避免与其他 worker 对 agent-service.mjs 的并行改动冲突）。
+export const GREP_CODE_SCHEMA = {
+  type: 'function',
+  function: {
+    name: 'grep_code',
+    description: '在代码库里搜关键词/函数名/报错文本（专用搜索工具：自动优先 ripgrep，找不到才回退 findstr 字面量，比手写 findstr 可靠）。返回结构化匹配 [{file,line,text}]（file 绝对路径）+ total 计数，超过 maxResults 只返回前 N 条并提示缩小范围。pattern 必填（ripgrep 正则语法）；path 可选（绝对路径用正斜杠，默认应用根目录；搜用户项目请显式传项目路径）；glob 可选按文件名过滤（如 *.js）',
+    parameters: {
+      type: 'object',
+      properties: {
+        pattern: { type: 'string', description: '要搜的关键词/函数名/报错文本（必填）' },
+        path: { type: 'string', description: '可选：搜索目录或文件的绝对路径（用正斜杠），默认应用根目录' },
+        glob: { type: 'string', description: '可选：文件名过滤（ripgrep glob 语法，如 *.js、**/*.mjs）' },
+        maxResults: { type: 'number', description: '可选：最多返回多少条匹配（默认 50）' }
+      },
+      required: ['pattern']
+    }
+  }
+};
+
+// todo_write 的 CC 式三条规则（并轨时追加到 AGENT_ONLY_TOOLS_SCHEMA 里 todo_write 的 description 末尾）
+export const TODO_CC_RULES_TEXT = 'CC 式规则：① 同一时间恰好一个 in_progress（工具层会自动把多余的 running 降回 pending 并提示）；② 测试失败/实现不全/有未解决错误时禁止标 done——保持 running，并新建一条写清「需要解决什么」；③ 做完一条立刻调用 todo_write 更新状态，不要攒批';
 
 export function createAgentTools({ repoRoot, permissions, recordAudit = async () => {}, playbookRoot, runWorkflow = null, projectPath = null, policy = null, hooksConfig = null, hooksRunner = null, sessionId = null, cwd = null, signal = null, commandIdleMs = DEFAULT_COMMAND_IDLE_MS, askUser = null, todoWrite = null, onActivity = null, requireAuditIntent = null } = {}) {
   if (!repoRoot) throw new Error('createAgentTools 需要 repoRoot');
@@ -518,6 +671,43 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
       return readFileTool({ path: a?.path, offset: a?.offset, limit: a?.limit });
     },
 
+    // 专用代码搜索：只读工具，与 read_file 同级（不进 APPROVAL_TOOLS、不弹审批）。
+    // ripgrep 优先（捆绑路径 → PATH），找不到 rg 自动回退 findstr 字面量，不报错。
+    // 路径闸与 read_file 同一道 assertPathAllowed；默认 repoRoot（搜本应用源码），搜用户项目显式传 path。
+    grep_code: async (args) => {
+      const pattern = args?.pattern == null ? '' : String(args.pattern);
+      if (!pattern.trim()) return { error: 'pattern 必填：要搜的关键词/函数名/报错文本' };
+      const max = Math.max(1, Math.min(500, Math.floor(Number(args?.maxResults) || GREP_DEFAULT_MAX_RESULTS)));
+      const glob = String(args?.glob || '').trim();
+      let target = path.resolve(String(args?.path || '').trim() || repoRoot);
+      if (policy) {
+        const check = assertPathAllowed(policy, target, { write: false, tool: 'grep_code' });
+        if (!check.ok) return policyDenyResult(check);
+        target = check.path;
+      }
+      const rg = resolveRipgrepPath({ repoRoot });
+      if (rg) {
+        // 模式参数原样传 rg（-- 分隔符防 pattern 以 - 开头被当 flag）；argv 数组直传不经 shell
+        const argv = ['-n', '--no-heading', '--max-count', String(max)];
+        if (glob) argv.push('-g', glob);
+        argv.push('--', pattern, target);
+        const r = await spawnCapture(rg, argv);
+        if (r.spawnFailed) {
+          // 检测到的 rg 启动失败（坏二进制/权限）：按「找不到 rg」处理，回退 findstr 不报错
+          return grepCodeFindstr({ target, glob, pattern, max });
+        }
+        if (r.code !== 0 && r.code !== 1) {
+          // rg 退出码 2 = 用法/正则错误：语义不同，不静默降级成 findstr 字面量
+          return { error: `ripgrep 退出码 ${r.code}：${(r.stderr || '未知错误').slice(0, 500)}`, engine: 'ripgrep', pattern, path: target };
+        }
+        const rows = r.stdout.split(/\r?\n/).filter(Boolean).map(parseGrepRow).filter(Boolean)
+          .map((m) => ({ ...m, file: path.resolve(target, m.file) }));
+        return finishGrepResult(rows, { max, target, glob, pattern, engine: 'ripgrep', truncatedOut: !!r.outTruncated });
+      }
+      if (process.platform === 'win32') return grepCodeFindstr({ target, glob, pattern, max });
+      return { error: '未找到 ripgrep（rg）：当前平台没有 findstr 兜底，请安装 ripgrep 后重试', pattern, path: target };
+    },
+
     edit_file: async (args) => {
       let a = args || {};
       if (policy) {
@@ -732,8 +922,36 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
 
   // 验收单：同样只给主 agent（todoWrite 由 ipc-agent 注入，子代理 schema 不含该工具）。
   // 实现只做校验 + 记账；卡片由渲染层从 tool part 还原，报告闸在回合结束时读同一份台账。
+  // CC 式规则①（同一时间恰好一个 in_progress）：写台账前就归一 —— 多个 running 时保留第一个，
+  // 其余自动降回 pending；台账、返回清单、进度计数三处一致，并在返回里附提示让模型知道被降了哪些条。
+  // ②③（禁带病标 done / 不许攒批）是给模型的纪律，落在 TODO_CC_RULES_TEXT（并轨进 schema description）。
   if (typeof todoWrite === 'function') {
-    tools.todo_write = async (args) => todoWrite(args || {}, { sessionId });
+    tools.todo_write = async (args) => {
+      const a = args || {};
+      const items = Array.isArray(a.items) ? a.items : null;
+      if (items) {
+        let firstRunning = false;
+        const downgraded = [];
+        const normalized = items.map((it) => {
+          if (it && typeof it === 'object' && it.status === 'running') {
+            if (firstRunning) {
+              downgraded.push(String(it.id ?? ''));
+              return { ...it, status: 'pending' };
+            }
+            firstRunning = true;
+          }
+          return it;
+        });
+        if (downgraded.length) {
+          const r = await todoWrite({ ...a, items: normalized }, { sessionId });
+          if (r?.ok) {
+            return { ...r, note: `同一时间只保留一个进行中：${downgraded.filter(Boolean).join('、')} 已自动降回 pending（规则②：测试失败/实现不全时保持 running 并新建「需要解决什么」条目，禁止直接标 done）` };
+          }
+          return r;
+        }
+      }
+      return todoWrite(a, { sessionId });
+    };
   }
 
   if (!hooksOn) return tools;
