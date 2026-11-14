@@ -144,7 +144,7 @@ test('table.set(route.path 但无路由表 → S1 unavailable', async (t) => {
   assert.equal(s1.gapKind, 'unavailable');
 });
 
-test('FastAPI / Java 文件 → S1 unavailable 且 unsupportedFrameworks 含 FastAPI、Spring', async (t) => {
+test('FastAPI 路由已支持（S1 真跑）；Java Spring 仍 unsupported → S1 unavailable', async (t) => {
   const dir = await fixture(t, {
     'main.py': [
       'from fastapi import FastAPI',
@@ -162,12 +162,17 @@ test('FastAPI / Java 文件 → S1 unavailable 且 unsupportedFrameworks 含 Fas
     ].join('\n'),
   });
   const raw = await extractRoutes(dir);
-  assert.deepEqual(raw.unsupportedFrameworks.sort(), ['FastAPI', 'Spring']);
+  // FastAPI 路由已真提取（round4），不再标 unsupported
+  assert.ok(raw.routes.some((r) => r.path === '/items/{item_id}'), 'FastAPI 路由必须提取');
+  assert.ok(!raw.unsupportedFrameworks?.includes('FastAPI'), 'FastAPI 已支持');
+  assert.ok(raw.unsupportedFrameworks?.includes('Spring'), 'Spring 仍 unsupported');
   const s1 = await checkAuthCoverage(raw);
-  assert.equal(s1.gapKind, 'unavailable');
-  assert.match(String(s1.coverageGap), /FastAPI/);
+  // Spring 存在 → S1 仍记 unavailable（混合框架，路由表不完整）；但 FastAPI 路由本身已被提取。
+  // 注意：routes 非空时 checkAuthCoverage 只回 coverageGap，gapKind 由 audit 的 gapKind(r) 归一化。
+  assert.match(String(s1.coverageGap), /Spring/);
   const s7 = await checkAuthz(dir, { tier: 'L3', routeResult: raw });
-  assert.equal(s7.gapKind, 'unavailable');
+  // S7：路由文件（.py/.java）无法被 JS AST 解析 → 诚实记缺口（gapKind 或 coverageGap 形态均可）
+  assert.ok(s7.gapKind === 'unavailable' || (s7.coverageGap && s7.findings.length === 0), 'S7 必须诚实记缺口');
 });
 
 /* ---------- E. NodeGoat 形态：路由模块导出函数并嵌套挂载 ---------- */

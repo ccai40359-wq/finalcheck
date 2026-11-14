@@ -26,6 +26,7 @@ import { dedupeCrossCopies } from './dedupe.mjs';
 import { resolveReportCaps } from './report-caps.mjs';
 import { ACCEPT_FILE, applyAcceptances } from './accept.mjs';
 import { applyScopePolicy, detectLanguageGap } from './scope-policy.mjs';
+import { runPyBandit } from './checks/py-bandit.mjs';
 
 // 覆盖关（ACCEPTANCE §4 矩阵已实现子集）：S6/D/E/X 接线中
 // L2 = 安全/供应链/测试 + 交接(H1) + 可维护性(Q3)
@@ -132,8 +133,38 @@ export async function audit(projectDir, { tier = null, interactive = false, runT
     if (id === 'O1') results.push(await checkOps(projectDir, { tier: effective, excludes, includeFixtures }));
   }
 
+  // Python SAST（Bandit，round3 定案）：B608 SQLi / pickle / XXE / shell=True / 弱随机等
+  // 14 类是 FC 自研规则的空白面（pygoat 实测）。没装 → S2 语言缺口照旧 unavailable（fail-closed）；
+  // 跑成 → findings 按 checkId 并入（S2/S3/S8/O1），同位发现与 FC 自研规则去重。
+  const py = await runPyBandit(projectDir, { excludes, includeFixtures, tier: effective }).catch((e) => ({
+    ran: false, findings: [], warnings: [`Bandit 运行异常：${e.message}`],
+    coverageGap: 'Bandit 运行异常，Python SAST 未覆盖', pyCount: 0,
+  }));
+  const resultsByCheck = new Map(results.map((r) => [r.checkId, r]));
+  for (const f of py.findings) {
+    const entry = resultsByCheck.get(f.checkId);
+    if (entry) entry.findings.push(f);
+    else {
+      const created = { checkId: f.checkId, findings: [f], warnings: [], coverageGap: null };
+      results.push(created);
+      resultsByCheck.set(f.checkId, created);
+    }
+  }
+  if (py.coverageGap) {
+    const entry = resultsByCheck.get('S2');
+    if (entry) {
+      if (!entry.coverageGap) { entry.coverageGap = py.coverageGap; entry.gapKind = 'unavailable'; }
+    } else {
+      const created = { checkId: 'S2', findings: [], warnings: [], coverageGap: py.coverageGap, gapKind: 'unavailable' };
+      results.push(created);
+      resultsByCheck.set('S2', created);
+    }
+  }
+  const pyBanditRan = py.ran;
+
   let findings = results.flatMap((r) => r.findings);
   const warnings = [...reportCapWarnings, ...routeResult.warnings, ...results.flatMap((r) => r.warnings || [])];
+  warnings.push(...py.warnings); // Bandit 的警告在 results 合并后统一入账（上面对 results 的改动不携带 warnings）
   // 显式配置的上限真的截断时，检查已写 warning；这里汇总成结构化记录，供报告 ## Not covered 点名
   const reportTruncations = results.flatMap((r) => r.reportTruncations || []);
   // profile 文件里的解析/取值警告原样带进审计结果，不静默吞掉
@@ -187,7 +218,20 @@ export async function audit(projectDir, { tier = null, interactive = false, runT
     const reason = languageGap.jsCount > 0
       ? `仓库有 ${languageGap.nonJsCount} 个非 JS 源码（${languageGap.exts.join('/')}），该检查只解析 JS/TS，非 JS 部分未覆盖`
       : `仓库仅有 ${languageGap.exts.join('/')} 源码（${languageGap.nonJsCount} 个文件），该检查目前只解析 JS/TS，未覆盖`;
-    for (const checkId of languageGap.checkIds) {
+    // Bandit 已跑成时，S2（注入/反序列化/弱哈希）由它提供部分覆盖，语言缺口不再封顶 S2；
+    // 路由表里已有非 JS 路由（FastAPI/Flask 提取成功）时，S1 的路由/鉴权面也已真覆盖。
+    const nonJsRoutesCovered = (routeResult.routes || []).some((r) => !/\.[cm]?[jt]sx?$/i.test(String(r.file || '')));
+    const gapCheckIds = languageGap.checkIds.filter((id) => {
+      if (pyBanditRan && id === 'S2') return false;
+      if (nonJsRoutesCovered && id === 'S1') return false;
+      return true;
+    });
+    if (pyBanditRan && gapCheckIds.length !== languageGap.checkIds.length) {
+      warnings.push('S2 的语言缺口已由 Bandit 部分覆盖（Python SAST：注入/反序列化/弱哈希），框架路由与鉴权面由路由提取结果决定');
+    } else if (nonJsRoutesCovered && gapCheckIds.length !== languageGap.checkIds.length) {
+      warnings.push('S1 的语言缺口已解除：Python（FastAPI/Flask）路由提取成功，路由鉴权面已真覆盖');
+    }
+    for (const checkId of gapCheckIds) {
       const existing = gapItems.find((g) => g.checkId === checkId);
       // 已有 unavailable/unauthorized 的缺口保留原条目（不重复追加）；N/A 升级为能力缺失。
       if (!existing) gapItems.push({ checkId, kind: 'unavailable', reason });

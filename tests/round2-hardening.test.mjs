@@ -193,16 +193,21 @@ test('extract-routes：tests/ 里的 test server 不生成产品路由（openai-
   assert.deepEqual(raw.routes, []);
 });
 
-test('S4：requirements.txt/pyproject.toml 按 Python 生态记未接入', async (t) => {
+test('S4：pyproject.toml 仍记未接入；requirements.txt 由 pip-audit 审计（round4）', async (t) => {
   const dir = await fixture({
     'requirements.txt': 'Django==4.2\nPyYAML==5.1\n',
     'pyproject.toml': '[project]\nname = "x"\n',
   });
   cleanup(t, dir);
-  const r = await checkDeps(dir);
+  const r = await checkDeps(dir, {
+    // 注入空结果：单测不联网；真实 pip-audit 有漏洞时 exit 非 0 但 JSON 有效
+    pyAuditRunner: async () => ({ status: 0, stdout: JSON.stringify({ dependencies: [] }) }),
+  });
   assert.equal(r.findings.length, 0);
   assert.match(String(r.coverageGap), /Python/);
-  assert.ok(!/未发现任何可识别 lockfile/.test(String(r.coverageGap)));
+  assert.match(String(r.coverageGap), /pyproject\.toml/);
+  assert.ok(!/requirements\.txt/.test(String(r.coverageGap)), '已审计的 requirements 不进缺口');
+  assert.equal(r.pyAuditedCount, 1);
 });
 
 test('H1：npm i <pkg> / URL 下载不算缺失本地文件（ollama 场景）', async (t) => {

@@ -10,6 +10,7 @@ import { parse } from '@babel/parser';
 import { isPublicPath, isRelativeSource, joinPath, prefixMatches, staticPathValue, staticPathValues } from './route-path.mjs';
 import { sourceModel, walkSource, isFunction } from './source-analysis.mjs';
 import { isNonProductPath } from './scope-policy.mjs';
+import { extractPyRoutes } from './extract-py-routes.mjs';
 
 const ROUTE_METHODS = new Set(['get', 'post', 'put', 'delete', 'patch']);
 // Loose match over the spec'd guard names (auth/requireAuth/.../jwt/passport/session).
@@ -796,18 +797,12 @@ function scanHttpSurface(rootDir, maxFiles) {
 // not parsed for these frameworks.
 function detectUnsupportedFrameworks(rootDir, maxFiles) {
   const hits = [];
-  const seen = { fastapiImport: false, fastapiRoutes: false, flaskApp: false, flaskRoutes: false };
   for (const abs of collectProbeFiles(rootDir, NON_JS_EXTS, maxFiles)) {
     const text = readProbeText(abs);
     if (text == null) continue;
-    // FastAPI：`from fastapi import ... FastAPI` 与路由装饰器/APIRouter 常常分在不同文件，
-    // 不能要求同一个文件同时命中（autogen 的 app.py 只 include_router，路由在 routes/*.py）。
-    if (/from\s+fastapi\s+import[^\n]*FastAPI|\bFastAPI\s*\(/i.test(text)) seen.fastapiImport = true;
-    if (/@(?:app|router)\s*\.\s*(?:get|post|put|delete|patch|route|api_route)\s*\(/i.test(text)
-      || /\bAPIRouter\s*\(/i.test(text)) seen.fastapiRoutes = true;
-    if (/\bFlask\s*\(/i.test(text)) seen.flaskApp = true;
-    if (/@(?:app|bp|blueprint)\s*\.\s*route\s*\(/i.test(text) || /\bBlueprint\s*\(/i.test(text)) seen.flaskRoutes = true;
-    // Rails / Go / Rust：只用于「HTTP 面存在但解析不了」的诚实缺口，不解析路由表。
+    // FastAPI/Flask 已由 extract-py-routes 支持路由提取，不再标 unsupported；
+    // Django/Rails/Gin 等仍只用于「HTTP 面存在但解析不了」的诚实缺口，不解析路由表。
+    if (/\burlpatterns\s*=/i.test(text) && !hits.includes('Django')) hits.push('Django');
     if (/Rails\.application\.routes\.draw|ActionController::Base|config\/routes\.rb/i.test(text)
       && !hits.includes('Rails')) hits.push('Rails');
     if (/\bgin\.(?:Default|New)\s*\(|\bgin\.Context\b/i.test(text) && !hits.includes('Gin')) hits.push('Gin');
@@ -820,14 +815,11 @@ function detectUnsupportedFrameworks(rootDir, maxFiles) {
     if (/\baxum::Router\b|\baxum::serve\b/i.test(text) && !hits.includes('Axum')) hits.push('Axum');
     if (/\bwarp::serve\b/i.test(text) && !hits.includes('Warp')) hits.push('Warp');
     if (/\brocket::/i.test(text) && !hits.includes('Rocket')) hits.push('Rocket');
-    if (/\burlpatterns\s*=/i.test(text) && !hits.includes('Django')) hits.push('Django');
     if (/@(?:RestController|GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping|RequestMapping)\b/.test(text)
       && !hits.includes('Spring')) hits.push('Spring');
     // 已经找到两个非 JS 框架就够了；继续扫只会拖慢大仓。
     if (hits.length >= 2) break;
   }
-  if ((seen.fastapiImport || seen.fastapiRoutes) && !hits.includes('FastAPI')) hits.push('FastAPI');
-  if ((seen.flaskApp || seen.flaskRoutes) && !hits.includes('Flask')) hits.push('Flask');
   return hits;
 }
 
@@ -955,7 +947,15 @@ export async function extractRoutes(projectDir, options = {}) {
     // Guard verdict: auth-ish middleware anywhere in the chain, or an explicit
     // publicRoutes whitelist hit (S1 exemption, spec'd to count as guarded).
     for (const r of routes) {
-      r.hasGuard = r.hasInternalGuard || r.middlewares.some((m) => GUARD_RE.test(m) && !ineffectiveGuards.some((guard) => guard.file === r.file && guard.name === m)) || isPublicPath(r.path, publicRoutes);
+      r.hasGuard = r.hasGuard || r.hasInternalGuard || r.middlewares.some((m) => GUARD_RE.test(m) && !ineffectiveGuards.some((guard) => guard.file === r.file && guard.name === m)) || isPublicPath(r.path, publicRoutes);
+    }
+    // Python 面（round4 定案）：FastAPI/Flask 装饰器路由并入同一张路由表。
+    // Bandit 只查代码模式不做路由/鉴权，这一段必须自研；解析出的路由让 S1/S7 真正执行。
+    const py = await extractPyRoutes(rootDir, { warnings });
+    routes.push(...py.routes);
+    // FastAPI/Flask 现已支持：不再把它们标成 unsupported framework（Django/Rails/Gin 等仍不支持）
+    for (let i = unsupportedFrameworks.length - 1; i >= 0; i--) {
+      if (/^(?:FastAPI|Flask)/.test(unsupportedFrameworks[i])) unsupportedFrameworks.splice(i, 1);
     }
     routes.sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : a.line - b.line || (a.path < b.path ? -1 : a.path > b.path ? 1 : a.method < b.method ? -1 : 1)));
   } catch (e) {

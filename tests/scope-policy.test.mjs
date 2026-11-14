@@ -246,26 +246,34 @@ test('e2e：同一路由放 src/app.js 必须 high/card 且结论为拦', async 
 
 /* ---------- 4. 纯 Python 仓库：语言缺口 ---------- */
 
-test('e2e：仅 main.py 的 L2 audit 给 S1/S2/S7/Q3/Q4/Q5 记 unavailable，结论无法验收', async (t) => {
+test('e2e：仅 main.py 的 FastAPI 仓——S1/S7 真解析路由，Q3-Q5 仍 unavailable', async (t) => {
   const dir = await makeProject(t, { 'main.py': FASTAPI_APP });
   const res = await audit(dir, { tier: 'L2', interactive: true, runTests: false });
 
-  for (const checkId of ['S1', 'S2', 'S7', 'Q3', 'Q4', 'Q5']) {
+  // round4 起 FastAPI 路由提取已支持：S1 真执行并抓到无守卫路由，不再记 N/A 或 unavailable
+  const s1 = res.findings.find((f) => f.checkId === 'S1' && f.file === 'main.py');
+  assert.ok(s1, 'FastAPI 无守卫路由必须被 S1 抓到');
+  assert.ok(res.gates.executed.includes('S1'), 'S1 已真执行');
+  assert.equal(res.gates.gapItems.find((g) => g.checkId === 'S1'), undefined, 'S1 不再有语言缺口');
+
+  for (const checkId of ['Q3', 'Q4', 'Q5']) {
     const gap = res.gates.gapItems.find((g) => g.checkId === checkId);
-    assert.ok(gap, `${checkId} 必须有缺口`);
-    assert.equal(gap.kind, 'unavailable', `${checkId} 必须是能力缺失`);
-    // S1/S7 可能已有框架级 unavailable（保留原条目，不重复追加）；其余新增/升级条目写语言缺口文案。
-    if (checkId !== 'S1' && checkId !== 'S7') {
-      assert.match(gap.reason, /\.py/, `${checkId} 的 reason 必须写实际扩展名`);
-      assert.match(gap.reason, /1 个文件/, `${checkId} 的 reason 必须写文件数`);
-      assert.match(gap.reason, /只解析 JS\/TS/);
-    } else {
-      assert.ok(String(gap.reason || '').length > 0, `${checkId} 的缺口必须说明原因`);
-    }
+    assert.ok(gap && gap.kind === 'unavailable', `${checkId} 仍记 unavailable（JS-only 检查）`);
+    assert.match(gap.reason, /\.py/, `${checkId} 的 reason 必须写实际扩展名`);
     assert.ok(!res.gates.executed.includes(checkId), `${checkId} 不能出现在 executed`);
   }
+  // S2：装了 Bandit → 真执行（Python SAST）；没装 → 诚实 unavailable。两种都合格。
+  const s2Gap = res.gates.gapItems.find((g) => g.checkId === 'S2');
+  assert.ok(
+    res.gates.executed.includes('S2') || (s2Gap && s2Gap.kind === 'unavailable'),
+    'S2 必须要么真执行（Bandit）要么诚实 unavailable',
+  );
+  // S7：有路由 → 执行（Python handler 深度有限，check 级或缺口都是诚实态）
+  assert.ok(
+    res.gates.executed.includes('S7') || res.gates.gapItems.some((g) => g.checkId === 'S7'),
+    'S7 必须要么执行要么记缺口',
+  );
   assert.equal(res.conclusion.verdict, '无法验收');
-  assert.ok(!res.notApplicable.some((g) => ['S1', 'S7'].includes(g.checkId)), '语言缺口不能继续显示为不适用');
 });
 
 test('e2e：只有 JS 项目时 S1 的 not-applicable 不被语言缺口误升级', async (t) => {

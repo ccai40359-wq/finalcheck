@@ -141,7 +141,9 @@ function publicHit(routePath, publicRoutes) {
 // 有 middlewares 数组时以 isGuardName 重新判定；老调用方只给 hasGuard 布尔值时保留原语义。
 function routeHasGuard(route, publicRoutes, ineffectiveGuards = []) {
   if (route.hasInternalGuard) return true; // handler/factory 内部已校验登录
-  if (Array.isArray(route.middlewares)) {
+  // 有显式守卫标记（Python 提取器直接给出）优先；空 middlewares 不能吞掉它
+  if (route.hasGuard && !(Array.isArray(route.middlewares) && route.middlewares.length)) return true;
+  if (Array.isArray(route.middlewares) && route.middlewares.length) {
     return route.middlewares.some((m) => isGuardName(m) && !ineffectiveGuards.some((guard) => guard.file === route.file && guard.name === m));
   }
   return Boolean(route.hasGuard) || publicHit(route.path, publicRoutes);
