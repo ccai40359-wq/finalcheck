@@ -29,11 +29,11 @@ function fakePermissions({ allow = true } = {}) {
   };
 }
 
-test('agent-tools: list_playbooks 返回 40 类摘要', async () => {
+test('agent-tools: list_playbooks 返回 50 类摘要', async () => {
   const tools = createAgentTools({ repoRoot, permissions: fakePermissions() });
   const r = await tools.list_playbooks({});
-  assert.equal(r.total, 40);
-  assert.equal(r.categories.length, 40);
+  assert.equal(r.total, 50);
+  assert.equal(r.categories.length, 50);
   const ssrf = r.categories.find((c) => c.id === '11');
   assert.equal(ssrf.name, 'ssrf');
   assert.ok(ssrf.triggers.includes('URL'));
