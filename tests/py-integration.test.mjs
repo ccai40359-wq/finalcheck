@@ -10,6 +10,7 @@ import { mapBanditResults, runPyBandit } from '../src/checks/py-bandit.mjs';
 import { checkDeps, interpretPipAuditJson } from '../src/checks/deps.mjs';
 import { extractRoutes } from '../src/extract-routes.mjs';
 import { checkAuthCoverage } from '../src/checks/routes.mjs';
+import { dedupeCrossCopies } from '../src/dedupe.mjs';
 
 async function fixture(files) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'fc-py-'));
@@ -110,6 +111,34 @@ test('deps：pip-audit JSON 解析（dependencies[].vulns[]）', () => {
     dependencies: [{ name: 'django', version: '4.2', vulns: [{ id: 'GHSA-x', aliases: ['CVE-1'], description: 'd' }] }],
   }));
   assert.deepEqual(items, [{ name: 'django', version: '4.2', id: 'GHSA-x', description: 'd' }]);
+});
+
+// pygoat 实测回归：主 requirements 15 个漏洞包/299 条 advisory 曾被塌成 1 条——
+// 根因是 requirements.txt 行号全落 0，跨副本去重按「同文件同行」合并。修后必须逐包定位行号，
+// 且同包多条 advisory 合成一条（行号相同，但 id 全部保留在 snippet/message 里）。
+test('deps：pip-audit 同文件多包不塌缩（行号逐包定位）+ 同包多 advisory 合一条', async (t) => {
+  const dir = await fixture({
+    'requirements.txt': 'Django==4.2\n# pin comment\nPyYAML==5.1\nrequests[security]==2.19.0\n',
+  });
+  cleanup(t, dir);
+  const pipAuditJson = {
+    dependencies: [
+      { name: 'django', version: '4.2', vulns: [{ id: 'CVE-1' }, { id: 'CVE-2' }] },
+      { name: 'pyyaml', version: '5.1', vulns: [{ id: 'CVE-2019-20477' }] },
+      { name: 'requests', version: '2.19.0', vulns: [{ id: 'CVE-A' }, { id: 'CVE-B' }, { id: 'CVE-C' }, { id: 'CVE-D' }] },
+    ],
+  };
+  const r = await checkDeps(dir, { pyAuditRunner: async () => ({ status: 1, stdout: JSON.stringify(pipAuditJson) }) });
+  const pip = r.findings.filter((f) => f.rule === 'S4.pip-audit');
+  assert.equal(pip.length, 3, '三个漏洞包各一条，不再被去重塌缩');
+  const byLine = new Map(pip.map((f) => [`${f.file}:${f.line}`, f]));
+  assert.ok(byLine.has('requirements.txt:1'), 'django 在第 1 行');
+  assert.ok(byLine.has('requirements.txt:3'), 'pyyaml 第 3 行（大小写归一 + 跳过注释行）');
+  assert.ok(byLine.has('requirements.txt:4'), 'requests 第 4 行（extras 语法不影响定位）');
+  const req = byLine.get('requirements.txt:4');
+  assert.match(req.snippet, /等 4 条 advisory/, '同包 4 条 advisory 合成一条并标注总数');
+  const deduped = dedupeCrossCopies(r.findings);
+  assert.equal(deduped.removed, 0, '不同包的 pip-audit 发现不得被跨副本去重合并');
 });
 
 test('py 路由：FastAPI/Flask 装饰器提取 + 鉴权识别 + 不再标 unsupported', async (t) => {

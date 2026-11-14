@@ -232,13 +232,30 @@ function hasNoExternalDeps(absLock) {
 
 // 为每个漏洞定位 lockfile 里对应依赖的行号：同一 lockfile 的多条 S4 发现不能都落在 line 0，
 // 否则跨副本去重会按「同检查/同规则/同路径/同行号」把它们合并成一条（会丢掉 desktop 的 electron high）。
+// requirements.txt 同理：pip-audit 的每条发现都要落在对应包那一行，pygoat 实测 15 包/299 advisory 曾塌成 1 条。
 function dependencyLine(absLock, name) {
   const n = String(name || '');
-  if (!n || !/\.json$/i.test(absLock)) return 0;
+  if (!n) return 0;
   try {
     const lines = readFileSync(absLock, 'utf8').split('\n');
-    for (const key of [`"node_modules/${n}"`, `"${n}":`]) {
-      const idx = lines.findIndex((l) => l.includes(key));
+    if (/\.json$/i.test(absLock)) {
+      for (const key of [`"node_modules/${n}"`, `"${n}":`]) {
+        const idx = lines.findIndex((l) => l.includes(key));
+        if (idx >= 0) return idx + 1;
+      }
+      return 0;
+    }
+    // requirements.txt：包名按 PEP 503 归一（大小写不敏感、-_. 等价），匹配行首的 requirement 行；
+    // 跳过空行/注释/`-r`、`--hash` 等指令行。定位不到保持 0，不伪造行号。
+    if (/requirements[^\\/]*\.txt$/i.test(absLock)) {
+      const norm = (s) => String(s || '').toLowerCase().replace(/[-_.]+/g, '-');
+      const target = norm(n);
+      const idx = lines.findIndex((l) => {
+        const t = l.trim();
+        if (!t || t.startsWith('#') || t.startsWith('-')) return false;
+        const m = t.match(/^([A-Za-z0-9][A-Za-z0-9._-]*)/);
+        return !!m && norm(m[1]) === target;
+      });
       if (idx >= 0) return idx + 1;
     }
   } catch { /* 定位失败保持 0，不伪造行号 */ }
@@ -403,8 +420,21 @@ export async function checkDeps(projectDir, options = {}) {
           continue;
         }
         pyAuditedCount++;
+        // 同一包的多条 advisory 合成一条发现：行号按包定位（同包同行），不合并的话跨副本去重
+        // 会按「同文件同行」塌缩；合并后 snippet/message 带上全部 advisory id，信息不丢。
+        const byName = new Map();
         for (const v of items) {
-          findings.push({ checkId: 'S4', severity: 'high', force: 'card', file: entry.path, line: dependencyLine(abs, v.name), rule: 'S4.pip-audit', snippet: `${v.name}@${v.version}（${v.id}）`, message: `依赖存在已知漏洞（pip-audit ${v.id}）：${String(v.description || '').slice(0, 120)}`, source: 'program' });
+          const key = String(v.name || '').toLowerCase();
+          if (!byName.has(key)) byName.set(key, []);
+          byName.get(key).push(v);
+        }
+        for (const group of byName.values()) {
+          const first = group[0];
+          const ids = group.map((v) => v.id).filter(Boolean);
+          const idLabel = ids.length > 3
+            ? `${ids.slice(0, 3).join('、')} 等 ${ids.length} 条 advisory`
+            : (ids.join('、') || '未知 advisory');
+          findings.push({ checkId: 'S4', severity: 'high', force: 'card', file: entry.path, line: dependencyLine(abs, first.name), rule: 'S4.pip-audit', snippet: `${first.name}@${first.version}（${idLabel}）`, message: `依赖存在已知漏洞（pip-audit ${idLabel}）：${String(first.description || '').slice(0, 120)}`, source: 'program' });
         }
       }
       if (pyFailures.length) {
