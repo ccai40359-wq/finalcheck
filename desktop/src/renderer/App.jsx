@@ -1522,7 +1522,7 @@ export default function App() {
                 <span className="text-ink/60 shrink-0">{t('仍在后台运行（记录没丢）：')}</span>
                 <div className="flex flex-wrap gap-1.5 min-w-0">
                   {draftRunners.map((r) => (
-                    <button key={r.id}
+                    <button key={r.id} data-ui="draft-runner"
                       onClick={() => { r.session && r.project ? openProjectSession(r.project, r.session) : openSession(r.id); }}
                       className="px-2 py-0.5 rounded-md bg-white/[0.06] hover:bg-white/[0.12] text-goldSoft truncate max-w-[240px] transition-colors">
                       {r.label}

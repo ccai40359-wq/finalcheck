@@ -153,6 +153,14 @@ async function migrateGlobalToProject(p) {
 // 本机目标默认放行，其他 host 必须先经 confirm-host IPC 写入台账；renderer/agent 透传的
 // confirmedHosts 参数一律不再采信（fail-closed，主进程单一事实源）
 
+// UI 自动化自检模式（FINALCHECK_UI_SELFCHECK=1）：隔离 userData。必须在 requestSingleInstanceLock
+// 之前 setPath——单例锁按 userData 计算，隔离后才能与用户正开着的实例并行跑；专供截图/冒烟验收
+// （安装形态冒烟一直缺这条自动化通道），正常启动完全不进此分支。
+// 固定目录名（不带 pid）：自检脚本要在启动前预置 config.json/projects.json；自检串行跑，不冲突。
+if (process.env.FINALCHECK_UI_SELFCHECK === '1') {
+  app.setPath('userData', path.join(process.env.TEMP || process.env.TMP || '/tmp', 'fc-ui-selfcheck'));
+}
+
 // 单实例锁：二次启动聚焦已有窗口，不再堆僵尸进程（用户实测教训）
 const gotLock = app.requestSingleInstanceLock();
 // 任务栏图标：dev 模式 Windows 默认跟 electron.exe 的内嵌图标，设 AppUserModelID 让窗口图标生效（打包后由 exe 内嵌 logo 彻底接管）
@@ -207,6 +215,11 @@ app.whenReady().then(async () => {
     const legacyRoot = path.resolve(__dirname, '..', '..'); // resources/app（旧数据位置）
     DATA_ROOT = app.getPath('userData');
     await migrateLegacyData(legacyRoot, DATA_ROOT);
+  }
+  // 自检模式：数据根跟随隔离后的 userData——config.json（供应商）与 projects.json（指向独立测试项目）
+  // 由自检脚本预置，绝不读写用户的真实会话/项目数据。
+  if (process.env.FINALCHECK_UI_SELFCHECK === '1') {
+    DATA_ROOT = app.getPath('userData');
   }
   // 统一稳定数据目录：会话/配置/记忆/附件/溢出文件都不随安装包升级丢失
   process.env.FINALCHECK_CONFIG_FILE ||= path.join(DATA_ROOT, 'config.json');
