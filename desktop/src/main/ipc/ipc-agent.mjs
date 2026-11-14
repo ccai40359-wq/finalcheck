@@ -535,6 +535,7 @@ export function registerAgentIpc({
     const roleMode = AUDIT_INTENT_RE.test(String(userMsg || '')) ? 'audit' : 'dev';
     let turnSkillsBuiltin = 0;
     let turnSkillsExtra = [];
+    let turnTools = null; // 回合工具集（turn-context 快照列清单用；创建于下方 runAgentTurn 参数处）
     const out = await runAgentTurn({
       roleMode,
       // agent-service 入参形状不变：baseUrl / apiKey / model（取模型列表第一个）
@@ -619,7 +620,8 @@ export function registerAgentIpc({
           }).catch(() => { /* 落库失败不阻断对话 */ });
         }
       } : null,
-      tools: createAgentTools({
+      // 提到变量：回合结束的 turn-context 快照要列本次工具清单（tools 在此作用域才可见）
+      tools: (turnTools = createAgentTools({
         repoRoot,
         permissions,
         recordAudit,
@@ -748,7 +750,7 @@ export function registerAgentIpc({
             pruneRuns(workflowRunsDir(), 5).catch(() => {});
           }
         }
-      })
+      }))
     }).finally(() => { askUsers.endTurn(sessionId); });
     if (sessionId && state.activeChats.get(sessionId) === chatAbort) state.activeChats.delete(sessionId);
     state.steerBuffers.delete(sessionId); // 回合已收尾：没被 drain 的 Steer 不再漏到下一回合
@@ -796,7 +798,7 @@ export function registerAgentIpc({
             roleMode,
             provider: prov.id,
             model,
-            tools: Object.keys(tools || {}),
+            tools: Object.keys(turnTools || {}),
             skillsBuiltin: turnSkillsBuiltin,
             skillsExtra: turnSkillsExtra,
             agentsMd: agentsMdLoaded,
@@ -804,7 +806,7 @@ export function registerAgentIpc({
             error: out.error || null,
             turns: out.trace?.length || 0
           });
-        } catch { /* 快照失败不影响回答 */ }
+        } catch (e) { console.warn('[turnctx] 快照失败：' + (e?.stack || e?.message || e)); } // 诊断保留：快照断供必须可见
       }
       // 首轮结束后用 AI 起标题（dsh 式）：后台跑，不拖慢回答；失败就保留「第一条消息」当标题
       if (!out.cancelled && !out.error) {
