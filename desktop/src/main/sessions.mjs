@@ -179,6 +179,7 @@ CREATE TABLE IF NOT EXISTS message (
   interrupted INTEGER,
   reasoning TEXT,
   worked_ms INTEGER,
+  model TEXT,
   created_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_message_session_seq ON message(session_id, seq);
@@ -201,11 +202,11 @@ const SQL = {
   upsertSession: 'INSERT INTO session(id, title, created_at, updated_at, pinned, archived, unread, model_config_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET title = excluded.title, created_at = excluded.created_at, updated_at = excluded.updated_at, pinned = excluded.pinned, archived = excluded.archived, unread = excluded.unread, model_config_json = excluded.model_config_json',
   sessionRow: 'SELECT * FROM session WHERE id = ?',
   sessionBrief: 'SELECT title FROM session WHERE id = ?',
-  insertMessage: 'INSERT INTO message(id, session_id, seq, role, content, error, interrupted, reasoning, worked_ms, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-  insertMessageOrReplace: 'INSERT OR REPLACE INTO message(id, session_id, seq, role, content, error, interrupted, reasoning, worked_ms, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+  insertMessage: 'INSERT INTO message(id, session_id, seq, role, content, error, interrupted, reasoning, worked_ms, model, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+  insertMessageOrReplace: 'INSERT OR REPLACE INTO message(id, session_id, seq, role, content, error, interrupted, reasoning, worked_ms, model, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
   insertPart: 'INSERT INTO part(id, message_id, seq, type, data_json) VALUES (?, ?, ?, ?, ?)',
   insertPartOrReplace: 'INSERT OR REPLACE INTO part(id, message_id, seq, type, data_json) VALUES (?, ?, ?, ?, ?)',
-  updateMessage: 'UPDATE message SET content = ?, error = ?, interrupted = ?, reasoning = ?, worked_ms = ? WHERE id = ?',
+  updateMessage: 'UPDATE message SET content = ?, error = ?, interrupted = ?, reasoning = ?, worked_ms = ?, model = COALESCE(?, model) WHERE id = ?',
   messageById: 'SELECT * FROM message WHERE id = ?',
   partsOfMessage: 'SELECT * FROM part WHERE message_id = ? ORDER BY seq ASC',
   nextToolPartSeq: "SELECT COALESCE(MAX(seq), 1) + 1 AS seq FROM part WHERE message_id = ? AND type = 'tool'",
@@ -325,6 +326,8 @@ async function createEntry(dbPath, sessionsDir) {
   db.pragma(SQL.sync);
   db.pragma(SQL.busy);
   db.exec(DDL);
+  // 轻量迁移：老库补 model 列（模型切换分隔线用）；SQLite 没有 ADD COLUMN IF NOT EXISTS，重复执行靠 catch
+  try { db.exec('ALTER TABLE message ADD COLUMN model TEXT'); } catch { /* 列已存在（新库由 DDL 建好） */ }
   db.prepare(SQL.sessionMetaOnce).run('schema_version', SCHEMA_VERSION);
   const entry = { db, dbPath, dir: path.resolve(sessionsDir), ready: null };
   dbs.set(dbPath, entry);
@@ -469,6 +472,7 @@ function sealPending(db, id) {
       1,
       row.reasoning ?? '',
       row.worked_ms ?? null,
+      row.model ?? null,
       pending.id
     );
     for (const part of db.prepare(SQL.partsOfMessage).all(pending.id)) {
@@ -552,7 +556,7 @@ function finalizePendingMessage(db, sessionId, pending, assistantMsg = {}) {
   const interrupted = assistantMsg.interrupted ? 1 : 0;
   const reasoning = assistantMsg.reasoning == null ? '' : String(assistantMsg.reasoning);
   const workedMs = assistantMsg.workedMs == null ? null : (Number.isFinite(Number(assistantMsg.workedMs)) ? Number(assistantMsg.workedMs) : null);
-  db.prepare(SQL.updateMessage).run(content, error, interrupted, reasoning, workedMs, pending.id);
+  db.prepare(SQL.updateMessage).run(content, error, interrupted, reasoning, workedMs, assistantMsg.model == null ? null : String(assistantMsg.model), pending.id);
   putPart(db, pending.id, 0, 'text', { text: content }, pending.id + ':text');
   putPart(db, pending.id, 1, 'reasoning', { text: reasoning }, pending.id + ':reasoning');
   reconcileToolParts(db, pending.id, assistantMsg.trace);
@@ -597,6 +601,7 @@ function insertMessageRow(db, sessionId, seq, msg, { orReplace = false } = {}) {
     interrupted,
     msg.reasoning == null ? '' : String(msg.reasoning),
     workedMs,
+    msg.model == null ? null : String(msg.model),
     Number.isFinite(Number(msg.at)) ? Number(msg.at) : Date.now()
   );
   for (const part of partsForMessage(role, msg)) {
@@ -609,7 +614,7 @@ function insertMessageRow(db, sessionId, seq, msg, { orReplace = false } = {}) {
 function insertRawMessageRow(db, row) {
   db.prepare(SQL.insertMessageOrReplace).run(
     row.id, row.session_id, row.seq, row.role, row.content, row.error, row.interrupted,
-    row.reasoning, row.worked_ms, row.created_at
+    row.reasoning, row.worked_ms, row.model ?? null, row.created_at
   );
 }
 
@@ -699,6 +704,7 @@ function buildMessage(row, parts) {
       reasoning: row.reasoning ?? '',
       trace,
       workedMs: row.worked_ms ?? null,
+      model: row.model ?? null, // "providerId/model"——渲染层据此画「模型切换」分隔线（round9）
       at,
     };
   }
@@ -839,7 +845,7 @@ async function sqliteAppendToolStart(id, tool = {}) {
       if (!pending) {
         const seq = nextSeq(db, id);
         const messageId = randomUUID();
-        db.prepare(SQL.insertMessage).run(messageId, id, seq, 'assistant', '', null, 0, '', null, now);
+        db.prepare(SQL.insertMessage).run(messageId, id, seq, 'assistant', '', null, 0, '', null, null, now);
         pending = { id: messageId, seq, startedAt: now };
         setMeta(db, pendingKeyOf(id), safeJson({ id: messageId, seq, startedAt: now }));
         refreshTurns(db, id);
@@ -1456,7 +1462,7 @@ async function jsonAppendTurn(id, userMsg, assistantMsg) {
   return withQueue(id, async () => {
     const s = await jsonLoadSession(id);
     s.messages.push({ role: 'user', content: userMsg, at: Date.now() });
-    s.messages.push({ role: 'assistant', content: assistantMsg.content ?? '', error: assistantMsg.error ?? null, interrupted: !!assistantMsg.interrupted, reasoning: assistantMsg.reasoning ?? '', trace: assistantMsg.trace ?? [], at: Date.now() });
+    s.messages.push({ role: 'assistant', content: assistantMsg.content ?? '', error: assistantMsg.error ?? null, interrupted: !!assistantMsg.interrupted, reasoning: assistantMsg.reasoning ?? '', trace: assistantMsg.trace ?? [], model: assistantMsg.model ?? null, at: Date.now() });
     const firstUser = s.messages.find((m) => m.role === 'user');
     if (s.messages.filter((m) => m.role === 'user').length === 1 && firstUser) {
       s.title = prettyTitle(firstUser.content) || t('新会话');
@@ -1492,6 +1498,7 @@ async function jsonAppendAssistantMessage(id, assistantMsg) {
       reasoning: assistantMsg.reasoning ?? '',
       trace: assistantMsg.trace ?? [],
       workedMs: assistantMsg.workedMs ?? null,
+      model: assistantMsg.model ?? null,
       at: Date.now()
     });
     s.updatedAt = Date.now();

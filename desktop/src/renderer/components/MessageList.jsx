@@ -7,6 +7,7 @@ import {
   splitAttachmentBlock, parseWorkflowPrompt, parseSkillSegments, baseName, IMG_EXT_RE, previewFromPath
 } from '../lib/app-helpers.mjs';
 import { latestTodoFromMessages } from '../lib/todo.mjs';
+import { withModelDividers } from '../lib/model-switch.mjs';
 import { ProcessTimeline, WorkingStatus } from '../chat/ProcessTimeline.jsx';
 import { TraceBlock, WorkflowLiveCard } from '../chat/TraceCards.jsx';
 import { ArtifactChips, collectArtifacts } from '../chat/ArtifactPanel.jsx';
@@ -91,6 +92,8 @@ export default function MessageList({
 }) {
   // 当前会话最新一份验收单：面板只显示这一份；消息流里同一份不再内联渲染（避免一屏两份）。
   const latestTodo = latestTodoFromMessages(messages);
+  // 模型切换分隔线（round9，对齐 ZCode）：相邻回合的模型/厂商不同 → 中间插一条居中分隔线
+  const shown = withModelDividers(messages, (from, to) => `⇄ ${t('模型切换')}：${from} → ${to}`);
 
   // 只有用户本来就在底部附近才自动跟随；往上看历史时保持不动（判定逻辑与拆分前一致）
   const handleScroll = (e) => {
@@ -117,7 +120,7 @@ export default function MessageList({
         onScroll={handleScroll}>
         {/* 全宽文档式排版：消息/输入区同宽（≥90% 容器宽） */}
         <div className="w-full max-w-[96%] mx-auto space-y-4">
-          {messages.map((m, i) => (
+          {shown.map((m, i) => (
           m.role === 'notice' ? (
             <div key={i} className="flex items-center gap-3 py-1 text-[11px] text-mute/60">
               <span className="h-px flex-1 bg-edge" />
@@ -135,7 +138,7 @@ export default function MessageList({
             const restoreText = m.pasted?.length
               ? [typedSk?.tokenText, ...(m.pasted || [])].filter((x) => String(x || '').trim()).join('\n\n')
               : (wf ? wfText : (sk.skills.length ? sk.tokenText : u.text));
-            const keepTurns = messages.slice(0, i).filter((x) => x.role === 'user' && !x.steer).length;
+            const keepTurns = shown.slice(0, i).filter((x) => x.role === 'user' && !x.steer).length;
             // Steer 气泡：不是会话历史，只展示「已注入当前回合」；不给编辑/回退入口
             if (m.steer) {
               return (

@@ -71,7 +71,7 @@ test('SQLite 往返：message/part 落库，trace 可原样还原，schema/WAL �
     assert.equal(raw.pragma('journal_mode', { simple: true }), 'wal');
     const cols = (table) => raw.pragma('table_info(' + table + ')').map((c) => c.name);
     assert.deepEqual(cols('session'), ['id', 'title', 'created_at', 'updated_at', 'pinned', 'archived', 'unread', 'model_config_json']);
-    assert.deepEqual(cols('message'), ['id', 'session_id', 'seq', 'role', 'content', 'error', 'interrupted', 'reasoning', 'worked_ms', 'created_at']);
+    assert.deepEqual(cols('message'), ['id', 'session_id', 'seq', 'role', 'content', 'error', 'interrupted', 'reasoning', 'worked_ms', 'model', 'created_at']);
     assert.deepEqual(cols('part'), ['id', 'message_id', 'seq', 'type', 'data_json']);
     assert.deepEqual(cols('session_meta'), ['key', 'value']);
     const schemaVersion = raw.prepare('SELECT value FROM session_meta WHERE key = ?').get('schema_version');

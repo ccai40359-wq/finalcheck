@@ -789,7 +789,10 @@ export function registerAgentIpc({
     }
     if (sessionId) {
       // dsh 语义：中断的输出也要落盘（content 已含已流出部分），会话历史不丢内容
-      try { out.persisted = await sessions.appendAssistantMessage(sessionId, { content: out.answer ?? '', error: out.cancelled ? null : (out.error ?? null), interrupted: !!out.interrupted, reasoning: out.reasoning ?? '', trace: out.trace ?? [], workedMs: out.workedMs ?? null }); } catch { /* 会话落盘失败不影响回答 */ }
+      // model 落库：回放时据此在消息流里画「模型切换」分隔线（round9，对齐 ZCode 的模型切换提示）
+      const turnModelLabel = `${prov?.id || prov?.name || '?'}/${model || '?'}`;
+      out.model = turnModelLabel;
+      try { out.persisted = await sessions.appendAssistantMessage(sessionId, { content: out.answer ?? '', error: out.cancelled ? null : (out.error ?? null), interrupted: !!out.interrupted, reasoning: out.reasoning ?? '', trace: out.trace ?? [], workedMs: out.workedMs ?? null, model: turnModelLabel }); } catch { /* 会话落盘失败不影响回答 */ }
       // 回合上下文快照（④，pi 显式会话口径）：当时的配置事实落成 JSONL——复盘「当时为什么这么判」有账可查
       if (turnProjectPath && sessionId) {
         try {

@@ -104,9 +104,9 @@ export default function Composer({
   };
   // 运行中改模型/供应商：立刻落盘（主进程每次请求/每步开始重读），并给一条轻提示。
   // 正在流式输出的那一条不中断，所以忙碌时文案要说清「下一条/后续步骤生效」。
-  const notifySwitch = (model) => {
+  const notifySwitch = (model, providerId = null) => {
     if (!activeId || typeof onNotice !== 'function') return; // 草稿态还没有会话，切换只记内存
-    const label = model || t('未配置模型');
+    const label = model ? (providerId ? `${providerId}/${model}` : model) : t('未配置模型');
     onNotice(busy
       ? t('已切换：后续步骤与下一条消息使用 {model}；本条正在输出的内容不中断', { model: label })
       : t('已切换：后续消息与步骤使用 {model}', { model: label }));
@@ -120,7 +120,7 @@ export default function Composer({
       try { await y.sessions.setModel(activeId, next); } catch { /* 保存失败仅影响下次打开（主进程仍用内存快照） */ }
     }
     const switchedModel = 'model' in patch || 'providerId' in patch;
-    if (notify && switchedModel) notifySwitch(next.model);
+    if (notify && switchedModel) notifySwitch(next.model, next.providerId || sessCfg.providerId || null);
   };
   const chooseModel = (providerId, model) => persistSessionCfg({ providerId, model });
   const chooseEffort = (thinkingEffort, opts) => persistSessionCfg({ effort: thinkingEffort }, { ...(opts || {}), notify: false });
