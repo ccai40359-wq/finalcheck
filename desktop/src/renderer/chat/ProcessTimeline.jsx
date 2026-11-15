@@ -423,7 +423,9 @@ function EntryList({ entries, cardInBody }) {
  *   状态按消息 id 持久化到 localStorage——切会话、重启都不重置用户的展开选择
  * - 历史恢复：无 events 时由 msg.trace + msg.reasoning 合成
  */
-const TL_OPEN_PREFIX = 'fc.timeline.open:';
+// 键前缀带版本号：round9 之前用户手动收起过的回合会在 localStorage 留下 "0"，
+// 升级后这些旧记录会让「默认展开」失效（用户看到「还是收起的」）。带版本 = 旧记录自动作废。
+const TL_OPEN_PREFIX = 'fc.timeline.open:v2:';
 // 键：磁盘消息带 id（sessions.mjs buildMessage），实时回合带 mid（App.jsx 生成）。
 // 两处都认——漏掉 id 会让「记住收起状态」静默失效（round9 自查发现的真字段错配）。
 const timelineKey = (msg) => (msg?.mid || msg?.id || null);

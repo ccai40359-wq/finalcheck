@@ -6,6 +6,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.16.10] - 2026-11-15
+
+### Fixed
+
+- Background long-running commands no longer leave permanent console windows: the detached spawn forced Windows to create a new console, so every long-lived service (node server.mjs etc.) left a black window behind. Now spawns without detached (stdio is already detached; children still survive parent exit) — measured delta: 0 visible windows.
+- Tool details now truly default to expanded: the expand/collapse memory is keyed with a version, so old collapsed records from previous builds no longer override the new expanded default.
+
 ## [0.16.9] - 2026-11-15
 
 ### Fixed

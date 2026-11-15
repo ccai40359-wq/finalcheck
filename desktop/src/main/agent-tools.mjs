@@ -202,8 +202,12 @@ export function runCommandWithSignal(command, {
         windowsHide: sandbox ? (forceVisibleConsole ? false : sandboxWindowMode !== 'visible') : isWin,
         ...(sandbox && sandboxWindowMode === 'detached' && !wantsBackground ? { detached: true } : {}),
         env,
-        // 后台启动：新进程组 + 不接管道，父进程退出也不连带结束
-        ...(wantsBackground ? { detached: true, stdio: 'ignore' } : {})
+        // 后台启动：不接管道、父进程退出不连带结束。
+        // ⚠️ 绝不能用 detached:true ——Windows 上 DETACHED_PROCESS 会强制新建一个控制台，
+        // 直接覆盖 windowsHide，结果是「每起一条长驻服务（node server.mjs 之类）就多一个永久黑窗」。
+        // round9 实测抓到：FC 起的两个 node server.mjs 各留了一个 PseudoConsoleWindow 在桌面上。
+        // 不 detached 也能达到目的：stdio 已 ignore，父进程退出不会带走子进程（Electron 不 job-object 绑定）。
+        ...(wantsBackground ? { stdio: 'ignore' } : {})
       };
       proc = sandbox
         ? spawn(sandbox.file, sandbox.args, { ...spawnOptions, shell: false })
