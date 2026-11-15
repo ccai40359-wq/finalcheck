@@ -120,9 +120,15 @@ export default function MessageList({
         onScroll={handleScroll}>
         {/* 全宽文档式排版：消息/输入区同宽（≥90% 容器宽） */}
         <div className="w-full max-w-[96%] mx-auto space-y-4">
-          {shown.map((m, i) => (
+          {shown.map((m, i) => {
+            // React 身份键：绝不能用数组下标——切会话时两条会话的消息数组重叠，
+            // 下标相同会让 React 复用组件实例，ProcessTimeline 的展开 state 就被跨会话继承，
+            // 表现为「切回来所有过程全收起」（round9 用户实测根因之②）。
+            // 优先消息自身 id/mid；无 id 的本地气泡用「角色+时间戳+内容指纹」兜底，仍保证跨会话唯一。
+            const mk = m.mid || m.id || `local-${m.role}-${m.startedAt || ''}-${String(m.content || '').slice(0, 24)}-${i}`;
+            return (
           m.role === 'notice' ? (
-            <div key={i} className="flex items-center gap-3 py-1 text-[11px] text-mute/60">
+            <div key={mk} className="flex items-center gap-3 py-1 text-[11px] text-mute/60">
               <span className="h-px flex-1 bg-edge" />
               <span className="max-w-[80%] text-center whitespace-pre-wrap">{m.content}</span>
               <span className="h-px flex-1 bg-edge" />
@@ -142,7 +148,7 @@ export default function MessageList({
             // Steer 气泡：不是会话历史，只展示「已注入当前回合」；不给编辑/回退入口
             if (m.steer) {
               return (
-                <div key={i} className="flex flex-col items-start gap-1 border-l-2 border-gold/70 pl-3" data-testid="steer-bubble">
+                <div key={mk} className="flex flex-col items-start gap-1 border-l-2 border-gold/70 pl-3" data-testid="steer-bubble">
                   <div className="inline-flex items-center gap-1.5">
                     <span className="badge bg-gold/20 text-goldSoft border border-gold/50">Steer</span>
                     <span className="text-[10px] text-mute/60">{t('已注入当前回合')}</span>
@@ -154,7 +160,7 @@ export default function MessageList({
               );
             }
             return (
-              <div key={i} className="group flex flex-col items-end">
+              <div key={mk} className="group flex flex-col items-end">
                 <div className={`glass-bubble max-w-[75%] rounded-2xl rounded-br-md px-3.5 py-2 text-sm break-words leading-relaxed ${wf || m.pasted?.length || hasSkills ? '' : 'whitespace-pre-wrap'}`}>
                   {m.pasted?.length ? (
                     <div className="min-w-0">
@@ -210,7 +216,7 @@ export default function MessageList({
             );
           })() : (
             /* AI 回答去气泡：无底色卡片，仅左侧金竖线（错误消息换红线）区分 */
-            <div key={i} className={`w-full border-l-2 pl-4 transition-all duration-200 ${m.error ? 'border-red-500/50' : m.interrupted ? 'border-gold/25' : 'border-gold/45'}`}>
+            <div key={mk} className={`w-full border-l-2 pl-4 transition-all duration-200 ${m.error ? 'border-red-500/50' : m.interrupted ? 'border-gold/25' : 'border-gold/45'}`}>
               <ProcessTimeline msg={m} />
               {/* 验收单：最新一份钉在右上角面板；这里只在旧回合留一行只读摘要（同一份不渲染两次） */}
               {latestTodo?.index === i ? null : <TodoHistoryRow msg={m} />}
@@ -246,8 +252,8 @@ export default function MessageList({
               {!m.streaming && m.trace?.length > 0 && <TraceBlock trace={m.trace} onRecover={(text) => onSendRecover(text)} onOpenStep={(s) => onOpenStep(s)} />}
               <ArtifactChips artifacts={collectArtifacts(m.trace)} activePath={artifactPath} onOpen={onOpenArtifact} />
             </div>
-          )
-        ))}
+          ));
+          })}
           {/* 回合中途提问卡（实时）：在消息流末尾；回答后本回合继续，历史卡由 assistant.trace 还原 */}
           {askCards.map((card) => (
             <AskUserCard key={card.callId} payload={card}

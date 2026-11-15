@@ -424,10 +424,14 @@ function EntryList({ entries, cardInBody }) {
  * - 历史恢复：无 events 时由 msg.trace + msg.reasoning 合成
  */
 const TL_OPEN_PREFIX = 'fc.timeline.open:';
+// 键：磁盘消息带 id（sessions.mjs buildMessage），实时回合带 mid（App.jsx 生成）。
+// 两处都认——漏掉 id 会让「记住收起状态」静默失效（round9 自查发现的真字段错配）。
+const timelineKey = (msg) => (msg?.mid || msg?.id || null);
 function readTimelineOpen(msg) {
   try {
-    if (msg?.mid) {
-      const v = localStorage.getItem(TL_OPEN_PREFIX + msg.mid);
+    const key = timelineKey(msg);
+    if (key) {
+      const v = localStorage.getItem(TL_OPEN_PREFIX + key);
       if (v === '0') return false;
       if (v === '1') return true;
     }
@@ -435,7 +439,8 @@ function readTimelineOpen(msg) {
   return true; // 默认展开：完成态也要看得到工具调用过程
 }
 function writeTimelineOpen(msg, open) {
-  try { if (msg?.mid) localStorage.setItem(TL_OPEN_PREFIX + msg.mid, open ? '1' : '0'); } catch { /* 忽略 */ }
+  const key = timelineKey(msg);
+  try { if (key) localStorage.setItem(TL_OPEN_PREFIX + key, open ? '1' : '0'); } catch { /* 忽略 */ }
 }
 
 export function ProcessTimeline({ msg }) {

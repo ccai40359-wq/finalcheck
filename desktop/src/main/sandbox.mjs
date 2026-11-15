@@ -98,16 +98,28 @@ export function createSandboxedRun({ workspaceRoot, policyMode, command, cwd = n
   const tempDir = tempDirFor(root);
   // cmd /c 对内联引号的处理不可靠（node -e "..." 会被吞掉）；把命令写成私有 temp 里的
   // .cmd 批处理再交给 cmd /c，引号/重定向/多行都按 cmd 的批处理语义解析。
+  //
+  // 闪黑窗真因（2026-11-15 实测定位，用户库里 29 条 fc-sandbox\run.cmd 的 conhost 为证）：
+  // runner 由 Electron 以 ELECTRON_RUN_AS_NODE 跑 = GUI 子系统、分不到控制台；
+  // 它用 CreateProcessAsUserW(dwCreationFlags=0) 拉起 cmd.exe（控制台程序）时，
+  // 因为没有可继承的控制台，Windows 只能给它新建一个 —— 那一下就是用户看到的闪黑窗。
+  // 修法：不再直接起 runner，而是起一个 windowsHide=true 的 cmd.exe 启动器
+  // （CREATE_NO_WINDOW → 拿到「不可见控制台」），runner 与其孙进程 cmd.exe 全部继承它，
+  // 整条链一次都不需要新建控制台。
   const scriptPath = path.join(tempDir, 'run.cmd');
   fs.writeFileSync(scriptPath, `@echo off\r\n${String(command)}\r\n`, 'utf8');
-  const runnerArgs = [
-    runnerPath,
-    '--workspace', root,
-    '--temp', tempDir,
-    '--mode', mode,
-    '--',
-    'cmd.exe', '/d', '/s', '/c', scriptPath
-  ];
+  const launcherPath = path.join(tempDir, 'launch.cmd');
+  const q = (s) => `"${String(s).replace(/"/g, '""')}"`;
+  fs.writeFileSync(
+    launcherPath,
+    [
+      '@echo off',
+      'set ELECTRON_RUN_AS_NODE=1',
+      [q(process.execPath), q(runnerPath), '--workspace', q(root), '--temp', q(tempDir), '--mode', mode, '--', 'cmd.exe', '/d', '/s', '/c', q(scriptPath)].join(' '),
+      'exit /b %ERRORLEVEL%',
+    ].join('\r\n') + '\r\n',
+    'utf8'
+  );
   let cleaned = false;
   const cleanup = () => {
     if (cleaned) return;
@@ -115,11 +127,12 @@ export function createSandboxedRun({ workspaceRoot, policyMode, command, cwd = n
     try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch { /* 后台进程可能仍占用 */ }
   };
   return {
-    file: process.execPath,
-    args: runnerArgs,
+    // 起「隐藏控制台」的 cmd.exe 启动器，而不是直接起 runner（见上方闪黑窗真因说明）
+    file: process.env.ComSpec || 'cmd.exe',
+    args: ['/d', '/s', '/c', launcherPath],
     cwd: cwd || root,
-    // Electron 的 execPath 默认是 GUI；ELECTRON_RUN_AS_NODE=1 让它按 Node 跑 runner
-    env: { ELECTRON_RUN_AS_NODE: '1' },
+    // 启动器内部给 runner 设了 ELECTRON_RUN_AS_NODE=1；env 这里再兜一层
+    env: {},
     tempDir,
     mode,
     workspaceRoot: root,

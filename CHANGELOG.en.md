@@ -6,6 +6,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.16.9] - 2026-11-15
+
+### Fixed
+
+- Console black-flash is gone: sandboxed commands used to be launched from console-less Electron into cmd.exe, which forced Windows to create a fresh console per command. Now a hidden-console launcher starts first and the whole chain inherits it — zero windows per command (verified in a GUI, no-console environment).
+- Tool details stay put when switching sessions or sending messages: the message list now uses stable element keys, so another session's expand state can no longer bleed in via index reuse.
+
 ## [0.16.8] - 2026-11-15
 
 ### Fixed
