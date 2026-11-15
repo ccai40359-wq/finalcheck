@@ -500,7 +500,7 @@ export default function App() {
         const trace = Array.isArray(m.trace) && hasLiveAsk
           ? m.trace.filter((x) => !(x?.tool === 'ask_user' && (x.status === 'running' || x.status == null)))
           : (m.trace || []);
-        return { role: m.role, content: m.content ?? '', error: legacyCancel ? null : (m.error ?? null), interrupted: !!m.interrupted || legacyCancel, reasoning: m.reasoning || '', trace, workedMs: m.workedMs ?? null, model: m.model ?? null, ...(m.kind ? { kind: m.kind } : {}) };
+        return { role: m.role, id: m.id ?? null, content: m.content ?? '', error: legacyCancel ? null : (m.error ?? null), interrupted: !!m.interrupted || legacyCancel, reasoning: m.reasoning || '', trace, workedMs: m.workedMs ?? null, model: m.model ?? null, ...(m.kind ? { kind: m.kind } : {}) };
       });
       // 后台还在跑的会话：把实时流叠加到磁盘历史后面（切回来能继续看到输出 + 工作流卡片）
       const run = runsRef.current.get(id);
@@ -1156,11 +1156,11 @@ export default function App() {
     turnOutcomeRef.current.delete(sid); // 新一轮开始：上一轮的 stopped/error 不再拦队列泵
     stoppingRef.current.delete(sid);
     setStoppingIds((prev) => { if (!prev[sid]) return prev; const n = { ...prev }; delete n[sid]; return n; });
-    runsRef.current.set(sid, { content: '', events: [], startedAt, userMessage: finalText });
+    runsRef.current.set(sid, { content: '', events: [], startedAt, userMessage: finalText, mid: 'live-' + sid + '-' + startedAt });
     setRunningIds((prev) => ({ ...prev, [sid]: true }));
     const isActive = () => activeIdRef.current === sid;
     if (isActive()) {
-      setMessages([...history, { role: 'assistant', content: '', streaming: true, events: [], startedAt }]);
+      setMessages([...history, { role: 'assistant', content: '', streaming: true, events: [], startedAt, mid: runsRef.current.get(sid).mid }]);
       scrollDown();
     }
 
@@ -1178,7 +1178,8 @@ export default function App() {
             startedAt: pm.startedAt,
             workedMs: r.workedMs ?? pm.workedMs ?? fallbackMs,
             reasoning: r.reasoning || undefined,
-            model: r.model || undefined // 本轮模型（providerId/model）：模型切换分隔线据此判断
+            model: r.model || undefined, // 本轮模型（providerId/model）：模型切换分隔线据此判断
+            mid: pm.mid || undefined // 稳定消息 id：时间线展开状态按它持久化
           };
           if (r.cancelled || r.error === '已取消') next[last] = { role: 'assistant', content: r.partialContent || pm.content || '', interrupted: true, trace: r.trace || [], ...timeline };
           else if (r.error) next[last] = { role: 'assistant', content: '', error: r.error, trace: r.trace || [], ...timeline };

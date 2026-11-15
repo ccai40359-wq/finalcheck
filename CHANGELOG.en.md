@@ -6,6 +6,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.16.8] - 2026-11-15
+
+### Fixed
+
+- Tool-call details no longer vanish when you switch sessions: completed turns stay expanded by default (every Thought/command/file-read step visible); click the header to collapse. Your expand/collapse choice is remembered per message across session switches and restarts.
+
 ## [0.16.7] - 2026-11-15
 
 ### Fixed
@@ -14,6 +20,7 @@ Keep each item to one sentence, describe what users actually notice, and avoid i
 
 ### Added
 
+- Model-switch trail: after switching provider or model, the message flow shows a "⇄ Model switched: old → new" divider (same style as ZCode), visible after restarts and replays.
 - A "stuck-loop" guard: when the AI fires byte-identical tool calls round after round, it gets a change-approach reminder at round 3 and is stopped at round 5 — argument-format jitter can't sneak past it, legitimate retries are unaffected.
 
 ## [0.16.6] - 2026-11-15

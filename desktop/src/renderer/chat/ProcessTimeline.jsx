@@ -419,11 +419,27 @@ function EntryList({ entries, cardInBody }) {
 /**
  * assistant 消息内附属块：
  * - streaming：Working Ns + 实时条目（Thought 自动展开 / 工具 running→完成）
- * - 完成：折叠成 Worked for Xm Ys ▾，点开看全部条目
+ * - 完成：默认展开（round9 用户实测：折叠后切会话回来「过程全看不到」）；点标题可收起/展开，
+ *   状态按消息 id 持久化到 localStorage——切会话、重启都不重置用户的展开选择
  * - 历史恢复：无 events 时由 msg.trace + msg.reasoning 合成
  */
+const TL_OPEN_PREFIX = 'fc.timeline.open:';
+function readTimelineOpen(msg) {
+  try {
+    if (msg?.mid) {
+      const v = localStorage.getItem(TL_OPEN_PREFIX + msg.mid);
+      if (v === '0') return false;
+      if (v === '1') return true;
+    }
+  } catch { /* localStorage 不可用（隐私模式等）→ 用默认值 */ }
+  return true; // 默认展开：完成态也要看得到工具调用过程
+}
+function writeTimelineOpen(msg, open) {
+  try { if (msg?.mid) localStorage.setItem(TL_OPEN_PREFIX + msg.mid, open ? '1' : '0'); } catch { /* 忽略 */ }
+}
+
 export function ProcessTimeline({ msg }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(() => readTimelineOpen(msg));
   if (!msg || msg.role !== 'assistant') return null;
 
   const live = !!msg.streaming;
@@ -476,7 +492,7 @@ export function ProcessTimeline({ msg }) {
   const cardInBody = !msg.error;
   return (
     <div className="mb-2.5">
-      <button onClick={() => expandable && setOpen(!open)} disabled={!expandable}
+      <button onClick={() => { if (!expandable) return; const v = !open; setOpen(v); writeTimelineOpen(msg, v); }} disabled={!expandable}
         className={`flex items-center gap-1.5 text-xs text-mute/70 transition-colors duration-150 ${expandable ? 'hover:text-goldSoft cursor-pointer' : 'cursor-default'}`}>
         <span className="font-mono tabular-nums">{label}</span>
         {expandable ? <Chevron open={open} /> : null}

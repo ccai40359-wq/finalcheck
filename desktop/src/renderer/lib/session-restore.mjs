@@ -15,6 +15,7 @@ export function mergeRunningRun(loaded, run, { stopped = false, now = Date.now()
     : null;
   const liveAssistant = {
     role: 'assistant',
+    mid: run.mid || null, // 稳定消息 id（时间线展开状态的持久化键）
     content: run.content || '',
     ...(stopped ? { streaming: false, interrupted: true } : { streaming: true }),
     events: run.events || [],

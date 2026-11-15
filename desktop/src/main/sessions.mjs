@@ -698,6 +698,7 @@ function buildMessage(row, parts) {
     const trace = parts.filter((p) => p.type === 'tool').map((p) => dataToTrace(parseJson(p.data_json, null)));
     return {
       role: 'assistant',
+      id: row.id, // 稳定消息 id：渲染层用它持久化「时间线展开/收起」状态（切会话/重启后不重置）
       content: row.content ?? '',
       error: row.error ?? null,
       interrupted: !!row.interrupted,
