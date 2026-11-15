@@ -1138,12 +1138,18 @@ export default function App() {
     // 这条路径若拿入队时的状态回写，反而会把运行中刚改的新模型覆盖回旧值。
     if (!queued && y.sessions?.setModel) { try { await y.sessions.setModel(sid, sessCfg); } catch { /* 落盘失败用全局默认 */ } }
 
+    // 本地显示历史：保留消息的完整显示字段（trace 工具明细 / reasoning / interrupted / workedMs / pasted）——
+    // round9 用户实测事故：发一条消息，之前回合的 154 步工具明细从界面整段消失（库里数据完好），
+    // 根因就是这里把历史重建成只剩 role+content。只剥掉流式瞬态字段（streaming/events/startedAt）。
     const baseList = baseMessages
       .filter((m) => !m.error && !m.local && !m.steer && (m.role === 'user' || m.role === 'assistant'))
-      .map((m) => ({ role: m.role, content: m.content }));
-    const wireHistory = [...baseList, { role: 'user', content: finalText }]; // 发给主进程：只有 role/content
+      .map((m) => {
+        const { streaming, events, startedAt, ...rest } = m;
+        return rest;
+      });
+    const wireHistory = [...baseList.map((m) => ({ role: m.role, content: m.content })), { role: 'user', content: finalText }]; // 发给主进程：只有 role/content
     const displayUser = { role: 'user', content: finalText, ...(pastedTexts.length ? { pasted: pastedTexts, typed: typedText } : {}) };
-    const history = [...baseList, displayUser]; // 本地渲染：多带粘贴块结构，气泡才能分段渲染
+    const history = [...baseList, displayUser]; // 本地渲染：带 trace 等显示字段，明细不丢
     const startedAt = Date.now();
     inflightRef.current.add(sid);
     stoppedRef.current.delete(sid); // 新一轮开始：解除上一轮手动停止的迟到事件屏蔽
