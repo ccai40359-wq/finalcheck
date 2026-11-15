@@ -6,6 +6,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.16.7] - 2026-11-15
+
+### Fixed
+
+- Sending a message no longer wipes earlier turn details: file-change chips and tool-call timelines of previous turns stay visible (the data was always in the database — the display layer was dropping it).
+
+### Added
+
+- A "stuck-loop" guard: when the AI fires byte-identical tool calls round after round, it gets a change-approach reminder at round 3 and is stopped at round 5 — argument-format jitter can't sneak past it, legitimate retries are unaffected.
+
 ## [0.16.6] - 2026-11-15
 
 ### Fixed
