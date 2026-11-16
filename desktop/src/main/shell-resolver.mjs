@@ -1,6 +1,6 @@
 // Shell 解析器（决策 1，2026-11-16）：
 //   ① 用户已装的 Git Bash（C:\Program Files\Git\bin\bash.exe）→ 用它
-//   ② 安装包内置的 12MB 子集（resources/gitbash）→ 用它（干净机器也能跑 bash）
+//   ② 安装包内置的完整 Git for Windows（resources/gitbash-full）→ 用它（干净机器也能跑 bash）
 //   ③ 回落 cmd.exe（都没有时；记 warning 并在 UI 提示）
 //
 // 为什么选 Git Bash：AI 在 bash 语法下出错率明显低于 cmd——
@@ -31,10 +31,21 @@ const USER_GITBASH_CANDIDATES = [
   'C:\\Program Files (x86)\\Git\\bin\\bash.exe'
 ];
 
-/** 内置 bash 相对 appRoot 的位置（当前发行不打包，仅为将来接口保留）。
+/** 内置 bash 相对 **app 根目录**的位置。
+ *
+ * ⚠️ 路径语义踩过一次坑（2026-11-16，0.19.0 已经带着这个 bug 出了包）：
+ * 调用方传进来的 `appRoot` 是 `process.resourcesPath`，它**已经**指向 `...\resources`；
+ * 而本常量又写死了一个 `resources\` 前缀 → 拼成 `resources\resources\gitbash-full\...`，
+ * 在打包后的机器上永远找不到内置 bash，干净机器直接回落 cmd（0.19.0 的核心卖点失效）。
+ * 本机测不出来是因为第一档「用户已装 Git」先命中；CI 也测不出来是因为
+ * verify-bundled-bash.mjs 直接 spawn 绝对路径，从不经过 resolveShell。
+ *
+ * 所以下面按「appRoot 是 resources 目录」来拼（与调用方保持一致），
+ * 并额外容忍 appRoot 是 resources 的**上级**（便于测试与其它入口）。
  * 若将来真要打包：用 usr/bin/bash.exe（真实二进制 2.5MB），不能只用 bin/bash.exe
- * ——后者是 47KB wrapper，会校验完整 Git 安装结构，在精简包里报 `Top-level not found`。 */
-export const BUNDLED_BASH_REL = path.join('resources', 'gitbash-full', 'bin', 'bash.exe');
+ * ——后者是 47KB wrapper，会校验完整 Git 安装结构，在精简包里报 `Top-level not found`。
+ */
+export const BUNDLED_GIT_DIR_REL = path.join('gitbash-full');
 
 /**
  * 解析可用的 shell。
@@ -80,14 +91,22 @@ export function resolveShell({ appRoot = null, platform = process.platform, exis
   //    为什么是完整版而不是裁剪版：裁剪版（12MB）两次踩坑都出在「漏了某个 DLL 就
   //    静默 exit 127 零输出」，而完整版自带全部依赖，不需要逐版本重新验证依赖闭包。
   //    CI workflow（verify-gitbash.yml）在干净 runner 上删掉 Git 注册表项后验证过。
+  //
+  //    appRoot 语义：优先当「resources 目录」（打包后 process.resourcesPath 就是这个），
+  //    若那里没有 gitbash-full，再试一层上级（resources 的父目录）。两种都试是为了
+  //    不再依赖调用方记住该传哪一层——0.19.0 就是传错层导致内置分支永不命中。
   if (appRoot) {
-    const bundled = path.join(appRoot, BUNDLED_BASH_REL);
-    let ok = false;
-    try { ok = exists(bundled); } catch { ok = false; }
-    if (ok) {
+    const candidates = [
+      path.join(appRoot, BUNDLED_GIT_DIR_REL),                                    // resources/gitbash-full
+      path.join(appRoot, 'resources', BUNDLED_GIT_DIR_REL)                        // <appRoot>/resources/gitbash-full
+    ];
+    const gitRoot = candidates.find((p) => {
+      try { return exists(path.join(p, 'bin', 'bash.exe')); } catch { return false; }
+    });
+    if (gitRoot) {
+      const bundled = path.join(gitRoot, 'bin', 'bash.exe');
       // 完整版的 bash 在 bin/bash.exe（wrapper），真正的二进制在 usr/bin/bash.exe；
       // 两者都随完整包一起提供，所以直接用 bin/ 这个标准入口即可。
-      const gitRoot = path.join(appRoot, 'resources', 'gitbash-full');
       const usrBin = path.join(gitRoot, 'usr', 'bin');
       // 原生侧目录名随发行变体而变（官方 x64 是 mingw64，GitHub runner 上是 ucrt64），
       // 不能写死；按候选顺序取第一个存在的。

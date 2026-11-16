@@ -4,10 +4,16 @@
 //
 // 与裁剪版的关键区别：完整 Git 自带全部依赖，不需要逐版本重算 DLL 闭包；
 // 而且**能直接用 git 命令**（裁剪版只有 bash，没有 git.exe）。
+//
+// 2026-11-16 追加：这里必须**通过 resolveShell 解析**，不能直接拼绝对路径。
+// 0.19.0 就带着一个 bug 出了包——resolver 拼出 resources\resources\gitbash-full，
+// 干净机器上永远找不到内置 bash，回落 cmd。因为本脚本当时直接 spawn 绝对路径，
+// 从没走过 resolver，所以 CI 全绿也没抓到。
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { resolveShell, shellSpawnSpec } from '../src/main/shell-resolver.mjs';
 
 const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z])/, '$1')), '..', '..');
 const gitRoot = path.join(repoRoot, 'desktop', 'resources', 'gitbash-full');
@@ -75,12 +81,33 @@ const env = {
   HOME: os.homedir(),
 };
 
-console.log('\n=== 内置 bash 执行（核心工具 + 真实读写）===');
+// === 关键回归：必须通过 resolveShell 解析，而不是自己拼绝对路径 ===
+// 0.19.0 的 bug 在这：resolver 拼出 resources\resources\gitbash-full → 干净机器回落 cmd。
+// 传 appRoot = gitRoot 的「resources 目录」（这是打包后 process.resourcesPath 的真实语义）。
+console.log('\n=== resolveShell 解析（干净机器必须命中 bundled）===');
+const resourcesDir = path.dirname(gitRoot);   // .../resources
+// 屏蔽「用户已装 Git」这一档，模拟干净机器
+const cleanExists = (p) => {
+  const s = String(p);
+  if (/Program Files[\\/]Git/i.test(s)) return false;
+  try { return fs.existsSync(s); } catch { return false; }
+};
+const resolved = resolveShell({ platform: 'win32', appRoot: resourcesDir, exists: cleanExists });
+check('resolveShell: 干净机器上解析到内置 bash（不是回落 cmd）', resolved.origin === 'bundled',
+  `origin=${resolved.origin} file=${resolved.file}`);
+check('resolveShell: 解析出的路径没有重复的 resources 段',
+  !String(resolved.file).includes(path.join('resources', 'resources')),
+  resolved.file);
+check('resolveShell: 解析出的文件真实存在', fs.existsSync(String(resolved.file || '')), resolved.file);
+check('resolveShell: 用 -c 不加载 profile（避免空闲看门狗误判）',
+  Array.isArray(resolved.args('ls')) && resolved.args('ls')[0] === '-c');
+
 const tmp = os.tmpdir();
 const script = [
   'echo "BASH_VERSION=$BASH_VERSION"',
   'echo "ROOT=$(cd / && pwd -W 2>/dev/null || pwd)"',
   'echo "CAT_PATH=$(command -v cat)"',
+  'echo "GIT_PATH=$(command -v git)"',
   'cat --version | head -1',
   'grep --version | head -1',
   'sed --version | head -1',
@@ -95,7 +122,20 @@ const script = [
   'echo TOOLS-END',
 ].join('\n').replace(/\\\$\$/g, '$$');
 
-const r = spawnSync(bashExe, ['-c', script], { encoding: 'utf8', env, timeout: 60000 });
+// 用 shellSpawnSpec 的产物来跑后续所有工具断言：这样测的就是 AI 真正拿到的那份 spec
+const spec = shellSpawnSpec(script, {
+  platform: 'win32',
+  appRoot: resourcesDir,
+  exists: cleanExists,
+  env: { ...env, PATH: env.PATH },
+  cwd: null
+});
+console.log('  spec.file =', spec.file);
+console.log('  spec.origin =', spec.origin);
+check('shellSpawnSpec: origin 是 bundled', spec.origin === 'bundled');
+
+console.log('\n=== 内置 bash 执行（核心工具 + 真实读写）===');
+const r = spawnSync(spec.file, spec.args, { encoding: 'utf8', env: spec.options.env, timeout: 60000 });
 console.log('exit  :', r.status);
 console.log('stdout:\n' + (r.stdout || '').trim());
 if (r.stderr) console.log('stderr:\n' + (r.stderr || '').trim());
