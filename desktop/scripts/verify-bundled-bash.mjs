@@ -33,18 +33,32 @@ console.log('gitRoot  :', gitRoot);
 console.log('bashExe  :', bashExe);
 
 console.log('\n=== 前置：这台机器真的干净吗（没有系统 Git/bash）===');
-const sysGit = spawnSync('where', ['git'], { encoding: 'utf8', shell: true });
-const sysBash = spawnSync('where', ['bash'], { encoding: 'utf8', shell: true });
-const hasSysGit = sysGit.status === 0 && String(sysGit.stdout || '').trim() !== '';
-const hasSysBash = sysBash.status === 0 && String(sysBash.stdout || '').trim() !== '';
-const isCleanMachine = !hasSysGit && !hasSysBash;
+// `where bash` 会把 Windows 自带的 WSL bash（C:\Windows\System32\bash.exe）算进来，
+// 那不是 Git Bash、也不会被我们用到（脚本用的是内置 bash 的绝对路径）。
+// 2026-11-16 修：原来把它当成「不干净」，导致这条前置断言在 CI 上永远走 SKIP 分支、
+// 从来没真正断言过。改成只认 Git 提供的 bash。
+const whereAll = (name) => {
+  const r = spawnSync('where', [name], { encoding: 'utf8', shell: true });
+  if (r.status !== 0) return [];
+  return String(r.stdout || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+};
+const sysGit = whereAll('git');
+const sysBash = whereAll('bash');
+const gitBashPaths = sysBash.filter((p) => /\\Git\\|\/Git\//i.test(p));
+const wslBashPaths = sysBash.filter((p) => /system32\\bash|System32\\bash/i.test(p));
+
+// 「干净」= 没有系统 git，且没有 Git 提供的 bash（WSL bash 不算）
+const isCleanMachine = sysGit.length === 0 && gitBashPaths.length === 0;
 if (isCleanMachine) {
   check('系统上没有 git（干净机器）', true);
-  check('系统上没有 bash（干净机器）', true);
+  check('系统上没有 Git 提供的 bash（干净机器）', true, '');
+  if (wslBashPaths.length) console.log(`  note: 有 WSL bash（${wslBashPaths[0]}），与 Git Bash 无关，不算不干净`);
 } else {
-  console.log('  SKIP  系统上没有 git/bash（本机装了，属预期；CI 上会断言）');
-  console.log(`        实际 git : ${String(sysGit.stdout || '').trim().split('\n')[0]}`);
-  console.log(`        实际 bash: ${String(sysBash.stdout || '').trim().split('\n')[0]}`);
+  // 本机装了 Git 属于预期（我们先测用户已装那一档），相关断言降级为 SKIP；
+  // 但必须打印出到底是哪个路径，避免「静默跳过」。
+  console.log('  SKIP  这台机器装了系统 Git，相关断言降级（CI 上会真断言）');
+  console.log(`        系统 git : ${sysGit[0] || '(none)'}`);
+  console.log(`        系统 bash: ${gitBashPaths[0] || '(no Git bash)'}`);
 }
 
 console.log('\n=== 内置包结构 ===');
@@ -157,18 +171,43 @@ check('awk 行号输出', /1: alpha|1:alpha/.test(out));
 check('脚本跑到底', /TOOLS-END/.test(out));
 check('进程正常退出', r.status === 0, `exit=${r.status}`);
 
-// 干净机器上才成立：根目录映射到内置包
+// 干净机器上才成立：根目录映射到内置包。
+// 这条是「没被系统 Git 劫持」最硬的证据：MSYS 读注册表 HKLM\SOFTWARE\GitForWindows
+// 决定 prefix；若劫持成立，ROOT 会指向 C:\Program Files\Git 而不是内置包。
 const rootLine = (out.split('\n').find((l) => l.startsWith('ROOT=')) || '').replace('ROOT=', '').trim();
-if (rootLine.toLowerCase().includes('gitbash-full')) {
-  check('root: 根目录映射到内置包（干净机器）', true);
+if (isCleanMachine) {
+  check('root: 根目录映射到内置包（干净机器，未被系统 Git 劫持）',
+    rootLine.toLowerCase().includes('gitbash-full'), `ROOT=${rootLine}`);
 } else {
   console.log(`  SKIP  root: 当前是 ${rootLine}（本机装了 Git，mount 表来自系统；CI 上会断言）`);
 }
 
-// 完整 Git 的额外能力：git 命令本身可用（裁剪版没有这个）
+// PATH 里的 git 必须解析到内置包的原生目录（ucrt64/mingw64），不能是系统 Git。
+// 这是「零依赖」的另一半证据：bash 里的 git 命令真的来自我们的包。
+const gitPathLine = (out.split('\n').find((l) => l.startsWith('GIT_PATH=')) || '').replace('GIT_PATH=', '').trim();
+if (isCleanMachine) {
+  const nativeDirRe = /\/(ucrt64|mingw64|clang64|mingw32)\//i;
+  check('path: 内置 PATH 里的 git 来自包内原生目录', nativeDirRe.test(gitPathLine),
+    `GIT_PATH=${gitPathLine}`);
+} else {
+  console.log(`  SKIP  path: 当前 GIT_PATH=${gitPathLine}（本机装了 Git，CI 上会断言）`);
+}
+
+// 完整 Git 的额外能力：git 命令本身可用（裁剪版没有这个）。
+// 这里用 spec.options.env 跑，即与前面 bash 完全相同的环境（含内置 PATH），
+// 但入口仍必须是内置包里的 git.exe。
 console.log('\n=== git 本体（完整版才有）===');
-const gitVer = spawnSync(gitExe, ['--version'], { encoding: 'utf8', env, timeout: 30000 });
+const gitVer = spawnSync(gitExe, ['--version'], { encoding: 'utf8', env: spec.options.env, timeout: 30000 });
 console.log('  ' + String(gitVer.stdout || gitVer.stderr || '').trim().split('\n')[0]);
 check('git --version 可用', gitVer.status === 0 && /git version/i.test(String(gitVer.stdout || '')));
+
+// 同一份 env 里，让 bash 自己解析 git（走 PATH，不走绝对路径）——这才是 AI 真正的用法
+const gitViaPath = spawnSync(spec.file, ['-c', 'git --version'], { encoding: 'utf8', env: spec.options.env, timeout: 30000 });
+console.log('  bash -c "git --version" → ' + String(gitViaPath.stdout || gitViaPath.stderr || '').trim().split('\n')[0]);
+check('git 在 bash 里走 PATH 可用（AI 真实用法，不是绝对路径）',
+  gitViaPath.status === 0 && /git version/i.test(String(gitViaPath.stdout || '')));
+check('git 走 PATH 时也来自包内（不回落系统 Git）',
+  isCleanMachine ? !/Program Files[\\/]Git/i.test(String(gitViaPath.stdout)) : true);
+
 console.log(`\n=== 结果：${pass} pass / ${fail} fail ===`);
 process.exit(fail === 0 ? 0 : 1);
