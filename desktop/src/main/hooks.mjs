@@ -8,6 +8,7 @@
 //  - 本模块不 import electron，可被 node:test 直测
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
+import { resolveShell } from './shell-resolver.mjs';
 import os from 'node:os';
 import path from 'node:path';
 import { t } from '../renderer/i18n/core.mjs';
@@ -272,22 +273,26 @@ function defaultRunner(command, { input, cwd, timeoutMs, maxOutputBytes } = {}) 
 
     const isWin = process.platform === 'win32';
     const env = { ...process.env };
-    if (isWin) {
+    // 决策 1（2026-11-16）：hook 命令也走同一个 shell 解析链（用户 Git Bash → 内置 → cmd）。
+    const shell = resolveShell({ appRoot: null });
+    if (shell.kind === 'cmd' && isWin) {
+      // 只在回落 cmd 时前置 System32，避免 Windows 的 find/sort 盖住 GNU 版
       const sys = 'C:\\Windows\\System32;C:\\Windows;';
       const old = env.PATH || env.Path || '';
       env.PATH = sys + old;
       env.Path = env.PATH;
     }
+    const hookEnv = { ...env, ...(shell.env || {}) };
 
     const outCap = createByteCapture(limit);
     const errCap = createByteCapture(limit);
     let proc;
     try {
-      proc = spawn(cmd, {
-        shell: true,
+      proc = spawn(shell.file, shell.args(cmd), {
+        // 不再 shell:true：shell 已由 resolver 显式给出，避免二次套壳吃掉引号
         cwd: cwd && existsSync(String(cwd)) ? String(cwd) : undefined,
         windowsHide: isWin,
-        env,
+        env: hookEnv,
         stdio: ['pipe', 'pipe', 'pipe']
       });
     } catch (e) {

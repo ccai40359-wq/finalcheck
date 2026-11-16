@@ -6,6 +6,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.18.0] - 2026-11-16
+
+### Fixed
+
+- Commands can no longer read files outside the project: previously only the working directory was checked and paths written inside the command were ignored entirely, so `type C:\Users\x\.ssh\id_rsa` or switching to another directory before reading a file went through. Now every literal path in a command passes two gates — sensitive paths are always rejected, and paths outside the project reject the whole command, with the reason returned to the AI.
+- Sensitive paths are permanently blocked: `~/.ssh`, `~/.aws`, `~/.gnupg`, `.git-credentials` and common private-key filenames (id_rsa, id_ed25519, *.pem, and others) are rejected regardless of whether the sandbox mode is workspace or off. Paths inside nested shells (`powershell -Command "..."`, `bash -c "..."`) are checked the same way.
+- The settings page now states the sandbox's real boundary: the three mode descriptions read "anything outside the workspace is unreadable" and a new notice makes clear the sandbox is "write protection + workspace boundary", NOT read isolation — paths assembled at runtime (env vars, ~, concatenation inside a script) cannot be intercepted, and sensitive code should run in a dedicated container or WSL.
+
+### Improved
+
+- Commands now run through Git Bash: machines with Git for Windows switch to bash automatically (no more cmd wrapper), so `cat`, `grep -rn`, `2>/dev/null` and `&&` work directly. Machines without Git fall back to cmd with a prompt to install it. On this machine, switching from cmd to bash stopped the model from mixing cmd and bash syntax.
+- Tool responsibilities are written into the prompts: reading goes only through read_file (line numbers, resumable on large files), searching goes only through grep_code (returns `file:line:text`), and run_command is only for builds/tests/git/processes/network — the three descriptions name each other's prohibitions, which cuts down detours like "use cat in shell to read a file" or "use findstr to search code".
+
 ## [0.17.1] - 2026-11-16
 
 ### Fixed

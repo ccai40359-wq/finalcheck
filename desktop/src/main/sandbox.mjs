@@ -97,9 +97,13 @@ export function createSandboxedRun({ workspaceRoot, policyMode, command, cwd = n
   if (!mode) return null;
   const root = path.resolve(String(workspaceRoot || cwd || '.'));
   const tempDir = tempDirFor(root);
-  // cmd /c 对内联引号的处理不可靠（node -e "..." 会被吞掉）；把命令写成私有 temp 里的
-  // .cmd 批处理再交给 cmd /c，引号/重定向/多行都按 cmd 的批处理语义解析。
-  //
+  // 沙箱路径**必须**继续用 cmd（2026-11-16 实测结论，与决策 1 的预期不同）：
+  // 受限令牌（restricted token + 低完整性）下 msys-2.0.dll 无法 CreateFileMapping，
+  // bash 一启动就 fatal：`bash.exe: *** fatal error - CreateFileMapping ..., Win32 error 5`
+  // （Git Bash 需要进程间共享内存来跑 fork/pipe，受限令牌没这个权限）。
+  // 所以分工是：宿主机命令走 Git Bash（决策 1），沙箱内命令走 cmd（这里保持原样）。
+  // 这不是妥协而是物理约束；想统一成 bash 得先换成支持读隔离的真容器（WSL/Docker）。
+  // 早期用 cmd /c 的理由是「cmd 对内联引号处理不可靠，写成 .cmd 批处理更稳」——对 cmd 成立。
   const scriptPath = path.join(tempDir, 'run.cmd');
   fs.writeFileSync(scriptPath, `@echo off\r\n${String(command)}\r\n`, 'utf8');
   // Source files are shipped under extraResources in packaged builds; import.meta
@@ -115,6 +119,8 @@ export function createSandboxedRun({ workspaceRoot, policyMode, command, cwd = n
   };
   return {
     file: process.execPath,
+    // `--` 之后是要交给受限子进程执行的「shell + 脚本路径」。
+    // 沙箱内固定 cmd（见上面注释：受限令牌下 bash 起不来）。
     args: [wrapper, runnerPath, '--workspace', root, '--temp', tempDir, '--mode', mode, '--', process.env.ComSpec || 'cmd.exe', '/d', '/s', '/c', scriptPath],
     cwd: cwd || root,
     env: { ELECTRON_RUN_AS_NODE: '1' },

@@ -304,7 +304,9 @@ app.whenReady().then(async () => {
     imageMime: IMAGE_MIME,
     sessionProjectPathOf,
     store: configStore,
-    state: sharedState
+    state: sharedState,
+    // 内置 Git Bash 的查找根：打包后 resources 目录的上级（resolveShell 会拼 resources/gitbash/...）
+    shellAppRoot: process.resourcesPath || null
   });
   registerDiagnosticsIpc({
     ipcMain,

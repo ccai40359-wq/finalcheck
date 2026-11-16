@@ -24,14 +24,18 @@ test('shell: 拦截命令返回 blocked 标记', async () => {
   assert.match(r.stderr, /安全策略/);
 });
 
-test('shell: Windows find 走 System32，不被 Git Bash 的 find 抢走', { skip: process.platform !== 'win32' }, async (t) => {
+test('shell: run_command 走 Git Bash（bash 语法可用，不再套 cmd）', { skip: process.platform !== 'win32' }, async (t) => {
+  // 契约变更（决策 1，2026-11-16）：命令统一由 Git Bash 执行。
+  // 早先这里测的是「cmd 的 find /c /v 要在 System32 下跑」——那是 cmd 时代的 PATH hack。
+  // 现在断言 bash 语法能正常工作（换 shell 的核心收益：AI 写 bash 的出错率最低）。
   const dir = await mkdtemp(path.join(os.tmpdir(), 'fc-shell-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const file = path.join(dir, 'three.txt');
   await writeFile(file, 'a\nb\nc\n');
-  const r = await runCommand(`find /c /v "" "${file}"`, { timeoutMs: 8000 });
-  assert.equal(r.code, 0);
-  assert.match(r.stdout, /THREE\.TXT/i);
+  const r = await runCommand(`wc -l "${file}" && cat "${file}"`, { timeoutMs: 15000 });
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /three\.txt/i, 'wc 应报告文件名');
+  assert.match(r.stdout, /3/, 'wc -l 应为 3 行');
 });
 
 test('shell: 超时会杀进程树并按时返回 124', async () => {

@@ -496,6 +496,80 @@ export function checkDestructiveTargets(policy, command, cwd) {
   return { ok: true };
 }
 
+// ---- 路径闸（决策 3，2026-11-16）----
+// 背景：run_command 早先只验 cwd 与灾难命令黑名单，命令**文本里**的路径完全不检查。
+// 于是 `type C:\Users\x\.ssh\id_rsa` 或 `cd /d D:\其他项目 && type config.json`
+// 都能绕过项目边界与敏感路径判定。这两条闸补上这个洞：
+//   第 1 层 敏感路径（~/.ssh、私钥名、*.pem…）——无条件拒绝，不看 mode、不看是否项目内
+//   第 2 层 项目边界——命令里出现的任何字面路径，只要不在项目内就整条拒绝
+// 已知上限（诚实记下，不假装能防）：运行时拼路径（$env:USERPROFILE、~、python open()）
+// 静态拦不住，唯一根治是 OS 级读隔离（当前 ACL 沙箱只做写保护）。
+
+/** 敏感路径判定（不依赖 assertPathAllowed 的模式分支）：命中即返回原因，否则 null。 */
+export function isSensitivePath(policy, absPath) {
+  if (!policy || typeof policy !== 'object') return null;
+  if (typeof absPath !== 'string' || !absPath.trim()) return null;
+  try {
+    const normalized = normalizeTarget(policy, absPath);
+    if (!normalized) return null;
+    return detectSensitive(policy, normalized);
+  } catch {
+    return null;
+  }
+}
+
+const BASH_C_INNER = /(?:-lc|-c)\s+"(.+)"$/i;
+
+/**
+ * 命令里字面路径的边界闸。mode==='off' 时仍检查敏感路径（那是无条件拒绝的）。
+ * @returns {{ok:boolean, reason?:string, matchedRule?:string}}
+ */
+export function checkCommandPaths(policy, command, cwd) {
+  if (typeof command !== 'string' || !command) return { ok: true };
+  if (!policy || typeof policy !== 'object' || !POLICY_MODES.includes(policy.mode)) return { ok: true };
+  const base = cwd || (Array.isArray(policy.roots) ? policy.roots[0] : null);
+  const strictBoundary = policy.mode !== 'off'; // off 只放边界，不放敏感路径
+
+  for (const seg of commandSegments(command)) {
+    // 剥一层嵌套壳（powershell -command "..." / bash -c "..."）：真正的路径在里面
+    const inner = POWERSHELL_INNER.exec(seg) || BASH_C_INNER.exec(seg);
+    const target = inner ? inner[1] : seg;
+    for (const raw of literalPathsIn(target)) {
+      // 跳过纯命令名/参数（不含分隔符也不是盘符开头，例如 `foo --bar`）
+      if (!/[\\/]/.test(raw) && !/^[A-Za-z]:/.test(raw)) continue;
+      // 跳过 URL：`http://127.0.0.1:8787/healthz` 这种带分隔符但不是文件路径，
+      // 早先被误判成「项目外路径」把整条 curl 拦掉（单测抓到的真 bug）。
+      // 也跳过带协议头的其他形态（ws://、file://）与单纯的斜杠参数（`/b`、`/s`）。
+      if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(raw) || /^\/[a-zA-Z]$/.test(raw)) continue;
+      const abs = path.isAbsolute(raw) ? raw : (base ? path.resolve(base, raw) : null);
+      if (!abs) continue;
+
+      // 第 1 层：敏感路径无条件拒绝（不看 mode）
+      const sens = isSensitivePath(policy, abs);
+      if (sens) {
+        return {
+          ok: false,
+          reason: t('敏感路径禁止访问（{item}）：{path}', { item: sens, path: raw.slice(0, 100) }),
+          matchedRule: 'sensitive-path'
+        };
+      }
+
+      // 第 2 层：项目边界（off 模式跳过）
+      if (strictBoundary) {
+        const verdict = assertPathAllowed(policy, abs, { write: false, tool: 'run_command' });
+        if (verdict && verdict.ok === false) {
+          return {
+            ok: false,
+            reason: t('命令引用了项目外的路径，已拒绝：{path}', { path: raw.slice(0, 120) }),
+            matchedRule: 'path-outside'
+          };
+        }
+      }
+    }
+  }
+  return { ok: true };
+}
+
 // ---- 环境变量 ----
 /** 名字是否属于“必须剥除”的变量（只判名字，不碰值）。 */
 export function checkEnvVarName(name) {

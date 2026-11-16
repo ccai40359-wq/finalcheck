@@ -81,7 +81,8 @@ export function registerAgentIpc({
   imageMime,
   sessionProjectPathOf,
   store,
-  state
+  state,
+  shellAppRoot = null
 }) {
   const workflowRunsDir = () => path.join(getDataRoot(), 'workflow-runs');
   // One snapshot per executing invocation only. Separate from activeChats because cancel removes
@@ -410,7 +411,8 @@ export function registerAgentIpc({
           policy,
           hooksConfig: hooksCfg,
           sessionId,
-          commandIdleMs: cfg.commandIdleMs
+          commandIdleMs: cfg.commandIdleMs,
+          shellAppRoot
         });
         const systemPrompt = `你是 FinalCheck 工作流中的子代理${role ? `（角色：${role}）` : ''}。你可以调用工具（读文件 / 跑命令 / 体检 / 下载闸 / 探测 / 压测 / 读方法论 / 改代码）：需要证据就自己去跑，不要凭空断言。规则：任务里提到工具或路径时，第一条回复必须是真的工具调用，禁止用「我现在开始…」「我将运行…」这类话代替调用；拿到结果后再给交付物（结论/清单/证据），不要寒暄、不要复述任务。改文件前先 read_file，改完在交付里说明改了哪些文件。\n\n${DELIVERY_DISCIPLINE}`;
         transcript = [{ role: 'system', content: systemPrompt }, { role: 'user', content: prompt }];
@@ -663,6 +665,7 @@ export function registerAgentIpc({
         hooksConfig: hooksCfg,
         sessionId,
         commandIdleMs: cfg.commandIdleMs,
+        shellAppRoot,
         onActivity: sendEvent,
         // 只有主 agent 有 ask_user；子代理/工作流 gate 不注册（避免并行弹多张卡）
         askUser: (args, ctx) => askUsers.ask({ ...(args || {}), sessionId, signal: ctx?.signal || chatAbort.signal }),
@@ -704,7 +707,8 @@ export function registerAgentIpc({
             policy,
             hooksConfig: hooksCfg,
             sessionId,
-            commandIdleMs: cfg.commandIdleMs
+            commandIdleMs: cfg.commandIdleMs,
+            shellAppRoot
           });
           const runGate = async (tool, gateArgs) => {
             const fn = gateTools[tool];

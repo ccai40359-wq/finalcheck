@@ -16,9 +16,9 @@ const API_FORMATS = [
 ];
 // 策略沙箱（与 permissionMode 审批模式独立，Full access 下也生效）
 const SANDBOX_MODES = [
-  { value: 'workspace', label: 'workspace', desc: '仅项目目录内可写（默认）' },
-  { value: 'readonly', label: 'readonly', desc: '全只读，拒绝写入' },
-  { value: 'off', label: 'off', desc: '放开项目边界，敏感路径仍拒绝' }
+  { value: 'workspace', label: 'workspace', desc: '项目目录内可读写；项目外一律不可读（含命令里的字面路径）；敏感路径永久拒绝' },
+  { value: 'readonly', label: 'readonly', desc: '全部只读，拒绝任何写入' },
+  { value: 'off', label: 'off', desc: '放开项目边界（但 ~/.ssh 等敏感路径仍拒绝）' }
 ];
 const DEFAULT_TOOL_CONCURRENCY = 8;
 // 界面语言：只有中文 / English 两态（不再有跟随系统）。旧配置的 auto 在读取时落成实际语言。
@@ -484,6 +484,12 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
               </button>
             );
           })}
+        </div>
+        {/* 诚实声明（决策 3.3）：讲清挡得住什么、挡不住什么，不给虚假安全感 */}
+        <div className="mt-2.5 rounded-lg border border-amber-500/25 bg-amber-500/[0.06] px-3 py-2 text-[10px] leading-relaxed text-amber-200/80">
+          {/* 文案刻意不含 Windows 反斜杠路径：JSX 字符串 / i18n 词典 / 正则闸门三层转义极易写错，
+              用「用户主目录下的 .ssh」这种自然语言描述同样清楚，且不会因转义层数不匹配而漏译。 */}
+          {t('⚠️ 沙箱是「写保护 + 项目边界」，不是「读隔离」。命令里写明的路径会被拦（如读取用户主目录下的 .ssh 私钥、或先切到别的盘再读文件），但运行时拼出来的路径（环境变量、~、脚本内部拼接）拦不住。处理敏感代码请在独立容器或 WSL 里跑。')}
         </div>
       </Field>
 

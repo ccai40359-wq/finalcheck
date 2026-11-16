@@ -114,7 +114,10 @@ test('sandbox: 删除/改名项目外一律被拒（应用层兜 DELETE）', { s
 });
 
 
-test('sandbox: 读项目外仍然允许（只限制写/删）', { skip: !available && 'dsh ACL 沙箱不可用' }, async (t) => {
+test('sandbox: 命令读项目外文件已被路径闸拒绝（决策 3，2026-11-16 收紧）', { skip: !available && 'dsh ACL 沙箱不可用' }, async (t) => {
+  // 契约变更：早先这里断言「读项目外仍然允许，只限制写/删」。
+  // 决策 3 把边界收紧为「项目外一律不可读」，所以本测试现在断言**必须被拒绝**。
+  // 注意：ACL 沙箱本身不做读隔离，拦住它的是应用层 checkCommandPaths。
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fc-sbx-'));
   const outRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'fc-sbx-out-'));
   const readable = path.join(outRoot, 'read.txt');
@@ -128,8 +131,8 @@ test('sandbox: 读项目外仍然允许（只限制写/删）', { skip: !availab
     permissions: permissionsFor()
   });
   const r = await tools.run_command({ command: `type "${readable}"` });
-  assert.equal(r.code, 0, r.stderr);
-  assert.match(r.stdout, /readable/);
+  assert.notEqual(r.code, 0, '项目外路径必须被拒绝');
+  assert.match(String(r.error || r.stderr || ''), /项目外/, '拒绝原因要说清是项目边界');
 });
 
 // 已知边界：Node 工具链不进沙箱（受限令牌下必然 EPERM），写项目外不会被 ACL 拦住，

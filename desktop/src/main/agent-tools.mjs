@@ -8,9 +8,10 @@ import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 import { loadSkills, readPlaybook, catalogSummary } from '../../../src/playbooks.mjs';
 import { readFileTool, editFileTool, writeFileTool } from '../../../src/fs-tools.mjs';
-import { assertPathAllowed, assertCwd, checkCommand, checkDestructiveTargets, scrubEnv } from './policy.mjs';
+import { assertPathAllowed, assertCwd, checkCommand, checkDestructiveTargets, checkCommandPaths, scrubEnv } from './policy.mjs';
 import { runHookEvent } from './hooks.mjs';
 import { isBlocked } from './shell.mjs';
+import { resolveShell } from './shell-resolver.mjs';
 import { dynamicRuntime, recordProbe, recordStress } from './dynamic-evidence.mjs';
 import { assertArtifactPath } from './artifact-gate.mjs';
 import { createSandboxedRun, sandboxAvailability, sandboxCompatible } from './sandbox.mjs';
@@ -93,7 +94,7 @@ export function planRunningPings(elapsedMs, startMs = RUNNING_PING_START_MS, eve
 
 export function runCommandWithSignal(command, {
   cwd, timeoutMs, idleMs = DEFAULT_COMMAND_IDLE_MS, background = false, env: envInput, signal = null,
-  sandbox = null,
+  sandbox = null, shellAppRoot = null,
   onActivity = null, pingStartMs = RUNNING_PING_START_MS, pingEveryMs = RUNNING_PING_EVERY_MS
 } = {}) {
   return new Promise((resolve) => {
@@ -206,9 +207,16 @@ export function runCommandWithSignal(command, {
         // stdio and unref the child instead of changing process creation modes.
         ...(wantsBackground ? { stdio: 'ignore' } : {})
       };
+      // 决策 1（2026-11-16）：非沙箱路径统一走 Git Bash（用户已装 → 内置 → cmd 回落）。
+      // shell:true 会让 Node 用 cmd.exe 套壳，模型写 bash 语法（cat/2>/dev/null/&& $?）就全错。
+      const shellSpec = sandbox ? null : resolveShell({ appRoot: shellAppRoot });
       proc = sandbox
         ? spawn(sandbox.file, sandbox.args, { ...spawnOptions, shell: false })
-        : spawn(cmd, { ...spawnOptions, shell: true });
+        : spawn(shellSpec.file, shellSpec.args(cmd), {
+            ...spawnOptions,
+            env: { ...spawnOptions.env, ...(shellSpec.env || {}) },
+            shell: false
+          });
     } catch (e) {
       return finish({ blocked: false, code: 1, stdout: '', stderr: e?.message || String(e) });
     }
@@ -376,7 +384,7 @@ export const GREP_CODE_SCHEMA = {
   type: 'function',
   function: {
     name: 'grep_code',
-    description: '在代码库里搜关键词/函数名/报错文本（专用搜索工具：自动优先 ripgrep，找不到才回退 findstr 字面量，比手写 findstr 可靠）。返回结构化匹配 [{file,line,text}]（file 绝对路径）+ total 计数，超过 maxResults 只返回前 N 条并提示缩小范围。pattern 必填（ripgrep 正则语法）；path 可选（绝对路径用正斜杠，默认应用根目录；搜用户项目请显式传项目路径）；glob 可选按文件名过滤（如 *.js）',
+    description: '跨文件搜索代码：内置 ripgrep（找不到才回退 findstr 字面量），返回结构化匹配 [{file,line,text}]（file 绝对路径）+ total 计数，性能远高于手写 findstr。⚠️ 找代码/找报错文本/找函数调用一律用它，不要用 run_command 的 grep/findstr 搜内容（那个会返回无行号的纯文本，且可能被沙箱拒绝）。pattern 必填（ripgrep 正则语法）；path 可选（绝对路径用正斜杠，默认应用根目录；搜用户项目请显式传项目路径）；glob 可选按文件名过滤（如 *.js）；maxResults 默认 50，超出只返回前 N 条并提示缩小范围',
     parameters: {
       type: 'object',
       properties: {
@@ -393,7 +401,7 @@ export const GREP_CODE_SCHEMA = {
 // todo_write 的 CC 式三条规则（并轨时追加到 AGENT_ONLY_TOOLS_SCHEMA 里 todo_write 的 description 末尾）
 export const TODO_CC_RULES_TEXT = 'CC 式规则：① 同一时间恰好一个 in_progress（工具层会自动把多余的 running 降回 pending 并提示）；② 测试失败/实现不全/有未解决错误时禁止标 done——保持 running，并新建一条写清「需要解决什么」；③ 做完一条立刻调用 todo_write 更新状态，不要攒批';
 
-export function createAgentTools({ repoRoot, permissions, recordAudit = async () => {}, playbookRoot, runWorkflow = null, projectPath = null, policy = null, hooksConfig = null, hooksRunner = null, sessionId = null, cwd = null, signal = null, commandIdleMs = DEFAULT_COMMAND_IDLE_MS, askUser = null, todoWrite = null, onActivity = null, requireAuditIntent = null } = {}) {
+export function createAgentTools({ repoRoot, permissions, recordAudit = async () => {}, playbookRoot, runWorkflow = null, projectPath = null, policy = null, hooksConfig = null, hooksRunner = null, sessionId = null, cwd = null, signal = null, commandIdleMs = DEFAULT_COMMAND_IDLE_MS, askUser = null, todoWrite = null, onActivity = null, requireAuditIntent = null, shellAppRoot = null } = {}) {
   if (!repoRoot) throw new Error('createAgentTools 需要 repoRoot');
   const engineUrl = (rel) => pathToFileURL(path.join(repoRoot, rel)).href;
   // 验收前置闸：只有「能向用户提问」的主 agent 才强制先问档位/维度。
@@ -537,7 +545,8 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
           workspaceRoot: projectDir,
           policyMode: policy?.mode || 'off',
           command,
-          cwd: projectDir
+          cwd: projectDir,
+          sandboxAppRoot: shellAppRoot
         });
         if (!sb && sbPref === 'required') {
           return { code: 1, ms: 0, out: '', err: '沙箱不可用；FINALCHECK_SANDBOX=required 已拒绝在宿主机执行', timedOut: false };
@@ -819,7 +828,12 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
       if (toolSignal?.aborted) return CANCELLED_RESULT();
       let runCwd = args?.cwd;
       if (policy) {
-        // cwd 走路径边界检查（未传时默认落到项目根）；命令文本只做黑名单，不从字符串里猜路径
+        // 第 1+2 层（决策 3，2026-11-16）：命令正文里的字面路径——敏感路径无条件拒绝，
+        // 项目外路径整条拒绝。必须在最前：早先只验 cwd，命令里写 `type C:\Users\x\.ssh\key`
+        // 或 `cd /d D:\other && type config.json` 都能过。
+        const pathsCheck = checkCommandPaths(policy, cmd, runCwd);
+        if (!pathsCheck.ok) return policyDenyResult(pathsCheck);
+        // 第 3 层：cwd 走路径边界检查（未传时默认落到项目根）
         const cwdCheck = assertCwd(policy, runCwd);
         if (!cwdCheck.ok) return policyDenyResult(cwdCheck);
         if (cwdCheck.path) runCwd = cwdCheck.path;
@@ -854,7 +868,8 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
         workspaceRoot: projectPath || runCwd,
         policyMode: sandboxMode,
         command: cmd,
-        cwd: runCwd
+        cwd: runCwd,
+        sandboxAppRoot: shellAppRoot
       });
       if (!sandbox && sandboxPref === 'required') {
         return {
@@ -872,6 +887,7 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
         env,
         signal: toolSignal,
         sandbox,
+        shellAppRoot,
         onActivity
       });
       // Do not retry with DETACHED_PROCESS or a visible console. A failed
