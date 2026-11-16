@@ -1435,10 +1435,10 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
         announced = true;
         onEvent?.({ kind: 'compact-start', scope: 'auto', before });
         if (tokens >= tokenBudget.fullThreshold) {
-          microcompact(convo); // 先清掉旧工具结果，降低正文压缩的切除量
+          microcompact(convo, { keepRecentTool: MICRO_KEEP_RECENT_IN_TURN }); // 先清掉旧工具结果，降低正文压缩的切除量
           fullCompact(convo);  // 再把最老的成对 user/assistant 正文换成 [历史摘要]
         } else {
-          microcompact(convo);
+          microcompact(convo, { keepRecentTool: MICRO_KEEP_RECENT_IN_TURN });
         }
       }
       compactFails = 0; // 成功一次即重置「连续失败」计数

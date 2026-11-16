@@ -188,9 +188,14 @@ test('agent: 真超预算时才折叠——阈值仍然硬，长回合不会无�
   const placeholders = sent.filter((m) => String(m.content).startsWith('[旧工具结果已清理：'));
   assert.ok(placeholders.length > 0,
     `超预算后必须出现占位符（证明阈值仍在起作用），实际 ${placeholders.length} / ${sent.length}`);
+  // 超预算时也必须保留 12 条原文（2026-11-17：原来 compactNow() 未传 keepRecentTool，
+  // 用到默认 5 条 —— 同一个「读完就忘」bug 的另一半。真超预算时只留 5 条照样会看不见。）
+  const originals = sent.filter((m) => String(m.content).includes('z'));
+  assert.ok(originals.length >= 12,
+    `超预算时至少要保留 12 条原文（跟回合内阈值同一口径），实际 ${originals.length}`);
   // 正在用的几条必须是原文
   const tail = sent.slice(-3);
-  assert.ok(tail.every((m) => String(m.content).includes('z') || String(m.content).startsWith('[旧工具结果已清理：')),
-    '最后几条要么是原文、要么是占位符（不能是空的）');
+  assert.ok(tail.every((m) => String(m.content).includes('z')),
+    '最后 3 条必须是原文（模型正在用）');
 });
 
