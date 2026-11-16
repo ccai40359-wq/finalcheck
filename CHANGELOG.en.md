@@ -6,6 +6,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.19.2] - 2026-11-16
+
+### Fixed
+
+- Long tasks no longer forget what they just read: every step used to replace earlier file contents with a one-line "cleared" note, so by the time the model needed the content it could no longer see it and re-read the same files over and over (measured: 808 tool calls across only 20 files, 97% of them redundant). It now decides by context budget - keep everything while there is plenty of room, clear only when genuinely close to full.
+- Small context windows no longer compact on every request: when the window was configured small, the thresholds came out negative, meaning "always over budget", so every request wiped the context and the model could see nothing. Thresholds can no longer go negative.
+- Real releases (0.16.1 and earlier) were never affected: this per-step clearing was added to main on 2026-11-14 and never reached any tagged release; the local 0.17-0.19 test builds were the ones hitting it.
+
 ## [0.19.1] - 2026-11-16
 
 ### Fixed
