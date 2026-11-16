@@ -86,7 +86,18 @@ jobs:
           if ($git) { Write-Host "git still on PATH: $($git.Source)"; exit 1 }
           Write-Host "git is not on PATH — clean-machine simulation OK"
 
-          Write-Host "--- bash 也不应在系统 PATH 上 ---"
-          $bash = Get-Command bash -ErrorAction SilentlyContinue
-          if ($bash) { Write-Host "system bash on PATH: $($bash.Source)"; exit 1 }
-          Write-Host "no system bash — the test really uses our bundled copy"
+          Write-Host "--- bash 也不应在（Git 提供的）系统 PATH 上 ---"
+          # 注意：Windows runner 自带 WSL 的 C:\Windows\system32\bash.exe，那不是 Git Bash，
+          # 也不会被我们的测试使用（脚本是直接 spawn 内置 bash.exe 的绝对路径）。
+          # 所以只拦「Git Bash」（路径含 Git 的），WSL bash 放行。
+          $bash = Get-Command bash -All -ErrorAction SilentlyContinue
+          $gitBash = @($bash) | Where-Object { $_.Source -match '\\Git\\' }
+          if ($gitBash.Count -gt 0) {
+            Write-Host "system Git bash on PATH: $($gitBash[0].Source)"
+            exit 1
+          }
+          $wsl = @($bash) | Where-Object { $_.Source -match 'system32\\bash' }
+          if ($wsl.Count -gt 0) {
+            Write-Host "  (WSL bash present at $($wsl[0].Source) — 与 Git Bash 无关，忽略)"
+          }
+          Write-Host "no system Git bash — the test really uses our bundled copy"
