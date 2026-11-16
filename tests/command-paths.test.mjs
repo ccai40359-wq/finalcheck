@@ -205,7 +205,31 @@ test('路径闸: 项目内相对路径与 URL 仍然放行（别误伤）', () =
 });
 
 test('路径闸: off 模式下家目录敏感路径仍拒绝（敏感不受 mode 影响）', () => {
-  const r = checkCommandPaths(offWin(), 'cat ~/.ssh/id_rsa', 'C:\proj');
+  const r = checkCommandPaths(offWin(), 'cat ~/.ssh/id_rsa', 'C:\\proj');
   assert.equal(r.ok, false);
   assert.equal(r.matchedRule, 'sensitive-path');
+});
+
+// ---- Windows 8.3 短名（只有 CI 才暴露的误伤）----
+// 2026-11-16 第一版家目录正则没有词边界，`C:\Users\RUNNER~1\...\v1.txt` 里那个 `~`
+// 被单独抽出来当成了家目录 → `del "项目内文件"` 被误判成「引用了项目外的路径：~」
+// 而拒绝，两条 sandbox 测试在 CI 上红。本机临时目录不含 `~`，本地全绿测不出来，
+// 只有 CI 的 runner 用户名（RUNNER~1）能触发。
+
+test('路径闸: Windows 8.3 短名里的 ~ 不算家目录（RUNNER~1）', () => {
+  const proj = 'C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\proj';
+  const p = createPolicy({
+    platform: 'win32',
+    projectPath: proj,
+    env: { APPDATA: 'C:\\Users\\RUNNER~1\\AppData\\Roaming', USERPROFILE: 'C:\\Users\\RUNNER~1' }
+  });
+  // 项目内删除必须放行（~1 在路径中间，不是参数开头）
+  const inside = 'del "C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\proj\\inside.txt"';
+  assert.equal(checkCommandPaths(p, inside, proj).ok, true, '8.3 短名不该被拆成家目录');
+  // 项目外仍拒绝，理由必须是项目边界（不是把 ~ 当路径）
+  const out = checkCommandPaths(p, 'del "C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\other\\v1.txt"', proj);
+  assert.equal(out.ok, false);
+  assert.equal(out.matchedRule, 'path-outside', `实际理由: ${out.reason}`);
+  // 作为参数出现的 ~1 后缀也不该被当成路径
+  assert.equal(checkCommandPaths(p, 'ls -la RUNNER~1', proj).ok, true);
 });

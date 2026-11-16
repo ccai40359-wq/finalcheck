@@ -474,11 +474,17 @@ const POWERSHELL_INNER = /(?:-command|-c)\s+"(.+)"$/i;
  */
 function literalPathsIn(text) {
   const found = [];
-  // ③ 家目录写法：~ 开头，或 $HOME / ${HOME} / %USERPROFILE% 开头
-  const homeRe = /(?:~|\$HOME|\$\{HOME\}|%USERPROFILE%)(?:[\\/][^\s"'|;&<>)]*)?/gi;
+  // ③ 家目录写法：必须是**词首**的 ~ / $HOME / ${HOME} / %USERPROFILE%。
+  //
+  // 边界很重要：2026-11-16 第一版用的是无边界正则 /~|.../，结果把 Windows 的
+  // 8.3 短名当成了家目录——CI 的临时目录是 `C:\Users\RUNNER~1\AppData\Local\Temp`，
+  // 里面那个 `~` 被单独抽出来展开成家目录，于是 `del "C:\Users\RUNNER~1\...\v1.txt"`
+  // 被误判成「引用了项目外的路径：~」而拒绝，两条沙箱测试直接红。
+  // 修法是要求前面是「文本开头 / 空白 / 引号 / 分隔符」，即 ~ 只能作为一个参数的第一个字符。
+  const homeRe = /(?:^|[\s"'(=;&|])((?:~|\$HOME|\$\{HOME\}|%USERPROFILE%)(?:[\\/][^\s"'|;&<>)]*)?)/gi;
   let hm;
   while ((hm = homeRe.exec(text)) !== null) {
-    const value = hm[0].trim();
+    const value = (hm[1] || '').trim();
     if (value) found.push(value);
   }
   const re = /"([^"]+)"|'([^']+)'|([A-Za-z]:[\\/][^\s"'|;&<>)]*)/g;
