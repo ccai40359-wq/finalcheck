@@ -146,6 +146,7 @@ export const EN_APP = {
   '排队发送（当前回合结束后自动发送）': 'Queue send (sends after this turn ends)',
   '已切换：后续消息与步骤使用 {model}': 'Switched: subsequent messages and steps will use {model}',
   '已切换：后续步骤与下一条消息使用 {model}；本条正在输出的内容不中断': 'Switched: subsequent steps and the next message will use {model}. The response currently streaming continues uninterrupted.',
+  '已从这一步起切换为 {model}': 'Switched to {model} from this step onward',
   '模型切换': 'Model switched',
   '正在中断，请稍候': 'Stopping — one moment',
   '停止本回合': 'Stop this turn',

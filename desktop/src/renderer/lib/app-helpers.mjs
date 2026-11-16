@@ -10,6 +10,29 @@ export const modelEntriesOf = (p) => (Array.isArray(p?.models) ? p.models : [])
   .map((m) => (typeof m === 'string' ? { id: m.trim() } : (m && typeof m === 'object' ? { ...m, id: modelId(m) } : { id: '' })))
   .filter((m) => m.id);
 
+/**
+ * 把落库的模型标识（"providerId/model"，providerId 常是 p-mw7gt125-xtbip 这类内部 id）
+ * 换成用户能看懂的名字，形如「openDesignM · deepseek-v4.1-flash-eco」。
+ *
+ * 为什么必须有这层：会话里存的是路由用的复合串，而界面上不该出现供应商内部 id
+ * （2026-11-16 用户反馈「切换提示显示 p-mw7gt125-xtbip，不是名字」）。
+ * 找不到供应商（配置被删/还没加载）时退回原始字符串，不做过度猜测。
+ *
+ * @param {string} raw  "providerId/model" 或裸 model
+ * @param {Array<{id:string,name?:string}>} providers 配置里的供应商列表
+ */
+export function modelDisplayLabel(raw, providers = []) {
+  const s = String(raw || '').trim();
+  if (!s) return '';
+  const slash = s.indexOf('/');
+  if (slash < 0) return s; // 裸模型名：直接显示
+  const providerId = s.slice(0, slash);
+  const model = s.slice(slash + 1);
+  const prov = (Array.isArray(providers) ? providers : []).find((p) => p && p.id === providerId);
+  const name = (prov && String(prov.name || '').trim()) || providerId;
+  return model ? `${name} · ${model}` : name;
+}
+
 // 队列 id / 粘贴块 id / 行数统计 / 长粘贴阈值（照 ZCode：≥8 行或 ≥1000 字符 → 收成「粘贴文本块」卡片）
 export const nextQueueId = () => `q-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 export const nextPasteId = () => `p-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;

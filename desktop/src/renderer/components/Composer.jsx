@@ -5,7 +5,7 @@ import { api } from '../lib/ui.jsx';
 import { t, getLanguage } from '../i18n/core.mjs';
 import {
   IMG_EXT_RE, previewFromPath, isLongPaste, countLines, fmtTokens, modelIdsOf, modelEntriesOf, EFFORTS, COMMANDS,
-  nextPasteId, baseName, readBase64, fileToDataUrl, shrinkImageDataUrl, skillDescription
+  nextPasteId, baseName, readBase64, fileToDataUrl, shrinkImageDataUrl, skillDescription, modelDisplayLabel
 } from '../lib/app-helpers.mjs';
 import { IconPlus, IconPaste, IconTrash, IconEdit, IconShield, IconSend, ContextRing } from './Icons.jsx';
 
@@ -104,9 +104,14 @@ export default function Composer({
   };
   // 运行中改模型/供应商：立刻落盘（主进程每次请求/每步开始重读），并给一条轻提示。
   // 正在流式输出的那一条不中断，所以忙碌时文案要说清「下一条/后续步骤生效」。
+  // 提示里显示供应商**名字**而不是内部 id（如 p-mw7gt125-xtbip）：id 对用户没有意义，
+  // 且名字拿不到时退回 id，至少不会是空的。
   const notifySwitch = (model, providerId = null) => {
     if (!activeId || typeof onNotice !== 'function') return; // 草稿态还没有会话，切换只记内存
-    const label = model ? (providerId ? `${providerId}/${model}` : model) : t('未配置模型');
+    // 显示供应商名字 + 模型名，绝不暴露内部 providerId（用户 2026-11-16 反馈：显示 p-mw7gt125-xtbip）
+    const label = model
+      ? modelDisplayLabel(providerId ? `${providerId}/${model}` : model, allProviders)
+      : t('未配置模型');
     onNotice(busy
       ? t('已切换：后续步骤与下一条消息使用 {model}；本条正在输出的内容不中断', { model: label })
       : t('已切换：后续消息与步骤使用 {model}', { model: label }));

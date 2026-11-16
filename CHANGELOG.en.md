@@ -6,6 +6,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.17.1] - 2026-11-16
+
+### Fixed
+
+- Model/provider switch notices now show names: they used to read "p-mw7gt125-xtbip/deepseek-v4.1-flash-eco" with the provider's internal id, which told users nothing. They now read "Legacy Default · deepseek-v4.1-flash" (provider name plus model), and the in-transcript model-switch divider was fixed the same way.
+- Switch notices no longer trail behind an error: they used to be appended to the end of the message list, so they appeared under the previous turn's error and looked like part of it. They now sit firmly between the end of one turn and the start of the next, while the error stays visible above.
+- Switching models mid-turn now says when it takes effect: the main process only actually swaps models at the next model request (by design, so already-streamed output is not interrupted). A new notice "Switched to X from this step onward" fires at that moment, so the switch no longer looks like it silently failed.
+
 ## [0.17.0] - 2026-11-16
 
 ### Fixed

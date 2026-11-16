@@ -5,7 +5,7 @@ import { api } from '../lib/ui.jsx';
 import { t } from '../i18n/core.mjs';
 import { useLanguage } from '../i18n/index.jsx';
 import {
-  splitAttachmentBlock, parseWorkflowPrompt, parseSkillSegments, baseName, IMG_EXT_RE, previewFromPath
+  splitAttachmentBlock, parseWorkflowPrompt, parseSkillSegments, baseName, IMG_EXT_RE, previewFromPath, modelDisplayLabel
 } from '../lib/app-helpers.mjs';
 import { latestTodoFromMessages } from '../lib/todo.mjs';
 import { withModelDividers } from '../lib/model-switch.mjs';
@@ -94,8 +94,15 @@ export default function MessageList({
   // 当前会话最新一份验收单：面板只显示这一份；消息流里同一份不再内联渲染（避免一屏两份）。
   const language = useLanguage();
   const latestTodo = useMemo(() => latestTodoFromMessages(messages), [messages]);
-  // 模型切换分隔线（round9，对齐 ZCode）：相邻回合的模型/厂商不同 → 中间插一条居中分隔线
-  const shown = useMemo(() => withModelDividers(messages, (from, to) => `⇄ ${t('模型切换')}：${from} → ${to}`), [messages, language]);
+  // 模型切换分隔线（round9，对齐 ZCode）：相邻回合的模型/厂商不同 → 中间插一条居中分隔线。
+  // 显示用 modelDisplayLabel 换成「供应商名 · 模型名」，不暴露内部 providerId（2026-11-16 用户反馈）。
+  const shown = useMemo(
+    () => withModelDividers(
+      messages,
+      (from, to) => `⇄ ${t('模型切换')}：${modelDisplayLabel(from, providers)} → ${modelDisplayLabel(to, providers)}`
+    ),
+    [messages, providers, language]
+  );
 
   // 只有用户本来就在底部附近才自动跟随；往上看历史时保持不动（判定逻辑与拆分前一致）
   const handleScroll = (e) => {

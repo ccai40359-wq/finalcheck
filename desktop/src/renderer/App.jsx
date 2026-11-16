@@ -15,7 +15,7 @@ import { shouldShowArtifactPanel, shouldShowStepPanel } from './lib/panel-visibi
 import { t, setLanguage, resolveLanguage } from './i18n/core.mjs';
 import { useLanguage } from './i18n/index.jsx';
 import {
-  modelIdsOf, nextQueueId, nextPasteId, countLines, needsFirstRunSetup, prettyTitle, baseName, expandSkill
+  modelIdsOf, nextQueueId, nextPasteId, countLines, needsFirstRunSetup, prettyTitle, baseName, expandSkill, modelDisplayLabel
 } from './lib/app-helpers.mjs';
 import TitleBar from './components/TitleBar.jsx';
 import Sidebar from './components/Sidebar.jsx';
@@ -180,6 +180,10 @@ export default function App() {
   const [menu, setMenu] = useState(null); // 'perm' | 'model' | 'context' | null
   const [providerMenu, setProviderMenu] = useState(false); // 模型面板右侧的供应商列表
   const [cfg, setCfg] = useState(null);
+  // 事件回调（onAgentEvent 等）注册时只捕获一次闭包：要读最新供应商名必须走 ref，
+  // 否则切了供应商之后回调里拿到的还是旧列表（模型名显示成内部 id 就是这样发生的）。
+  const providersRef = useRef([]);
+  useEffect(() => { providersRef.current = (cfg?.providers || []); }, [cfg]);
   const [cfgLoaded, setCfgLoaded] = useState(false);
   const [updateVersion, setUpdateVersion] = useState(''); // 有新版本时在 Settings 入口点红点
   // 首次使用向导：本会话内可「稍后配置」跳过（存 localStorage）
@@ -764,13 +768,20 @@ export default function App() {
   }, [messages, activeId, cfg]);
 
   // 全局提示气泡：主进程进程级异常（sessionId=null 的 notice）与回合 warning 都要看得见。
-  // 插在流式助手气泡之前，保持「最后一条是 assistant」的约定（token 归约依赖它）。
+  // 插入规则（2026-11-16 用户反馈「切换提示跑到了错误消息之后」）：
+  //   ① 末尾有流式 assistant → 插在它之前（token 归约依赖「最后一条是 assistant」）
+  //   ② 末尾是 error / notice 行 → 插在它们之后：那些行属于刚结束的这一轮，
+  //      提示属于「下一轮开始前的状态」，夹在轮与轮之间的分隔位置最合理，
+  //      也不会把报错顶到视野外、让用户以为错误消失了。
+  //   ③ 其他情况 → 追加到末尾
   const pushNotice = (content) => {
     const text = String(content || '').trim();
     if (!text) return;
     setMessages((prev) => {
       const last = prev[prev.length - 1];
-      if (last?.role === 'assistant' && last.streaming) return [...prev.slice(0, -1), { role: 'notice', content: text }, last];
+      if (last?.role === 'assistant' && last.streaming) {
+        return [...prev.slice(0, -1), { role: 'notice', content: text }, last];
+      }
       return [...prev, { role: 'notice', content: text }];
     });
   };
@@ -825,6 +836,16 @@ export default function App() {
       if (ev.kind === 'notice' || ev.kind === 'warning') {
         const message = String(ev.message || (ev.kind === 'warning' ? ev.text : '') || '').trim();
         if (message) pushNotice(sid && activeIdRef.current !== sid ? t('（后台会话）{msg}', { msg: message }) : message);
+        if (!sid) return;
+      }
+      // 运行中切换模型真正生效的那一刻（主进程在下一次模型请求前重解析后发出）。
+      // 界面必须说清「从这一步开始换成了哪个」——否则用户看到底部标签已经变了、
+      // 但当前回合的输出来自旧模型，会以为切换没生效（2026-11-16 用户反馈 A3）。
+      if (ev.kind === 'model-switch') {
+        if (sid && activeIdRef.current === sid) {
+          const label = modelDisplayLabel(ev.providerId ? `${ev.providerId}/${ev.model}` : ev.model, providersRef.current);
+          pushNotice(t('已从这一步起切换为 {model}', { model: label }));
+        }
         if (!sid) return;
       }
       if (!sid) return;
@@ -1634,7 +1655,7 @@ export default function App() {
               approval={approval} queueItems={queueItems} menu={menu} providerMenu={providerMenu}
               permMode={permMode} ctxStats={ctxStats} skills={skills} cfg={cfg} sessCfg={sessCfg}
               effortPos={effortPos} activeId={activeId} slashIndex={slashIndex} setSlashIndex={setSlashIndex}
-              onNotice={(content) => setMessages((prev) => [...prev, { role: 'notice', content }])}
+              onNotice={pushNotice}
               inputRef={inputRef} modelMenuRef={modelMenuRef}
               setDragging={setDragging} setMenu={setMenu} setProviderMenu={setProviderMenu} setEffortPos={setEffortPos}
               setSessCfg={setSessCfg} setCfg={setCfg} setPermMode={setPermMode}
