@@ -489,7 +489,7 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
         <div className="mt-2.5 rounded-lg border border-amber-500/25 bg-amber-500/[0.06] px-3 py-2 text-[10px] leading-relaxed text-amber-200/80">
           {/* 文案刻意不含 Windows 反斜杠路径：JSX 字符串 / i18n 词典 / 正则闸门三层转义极易写错，
               用「用户主目录下的 .ssh」这种自然语言描述同样清楚，且不会因转义层数不匹配而漏译。 */}
-          {t('⚠️ 沙箱是「写保护 + 项目边界」，不是「读隔离」。命令里写明的路径会被拦（如读取用户主目录下的 .ssh 私钥、或先切到别的盘再读文件），但运行时拼出来的路径（环境变量、~、脚本内部拼接）拦不住。处理敏感代码请在独立容器或 WSL 里跑。')}
+          {t('⚠️ 沙箱是「写保护 + 项目边界」，不是「读隔离」。命令里写明的路径会被拦（包括 ~、$HOME、%USERPROFILE% 这类家目录写法——它们会先展开再判定），但程序运行时自己拼出来的路径（脚本内部的字符串拼接、读到的配置里指定的路径）拦不住。处理敏感代码请在独立容器或 WSL 里跑。')}
         </div>
       </Field>
 

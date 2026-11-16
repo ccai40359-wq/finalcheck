@@ -456,8 +456,31 @@ export function checkCommand(policy, command) {
 const DESTRUCTIVE_HEAD = /^["']?(del|erase|rd|rmdir|remove-item|ri|move-item|mv|ren|rename)(?:\.exe)?["']?(?:\s|$)/i;
 const POWERSHELL_INNER = /(?:-command|-c)\s+"(.+)"$/i;
 
+/**
+ * 从命令文本里抽出「可能的文件路径」，用于过敏感/边界闸。
+ *
+ * 认三种写法：
+ *   ① 引号内的整段（`"C:\x\y"`、`'~/a'`）
+ *   ② Windows 盘符绝对路径（`C:\x`、`D:/y`）
+ *   ③ **波浪号与家目录变量**（`~/x`、`~/.ssh`、`$HOME/x`、`${HOME}/x`、`%USERPROFILE%\x`）
+ *
+ * ③ 是 2026-11-16 补的，直接原因是这一天宿主机 shell 从 cmd 换成了 Git Bash：
+ * cmd 里 `~` 不展开（无害），bash 里 `~` 会真展开成 `/c/Users/x`。于是
+ * `rm -rf ~/.ssh`、`cat ~/.ssh/id_rsa` 这类命令以前拦不住——实测全部放行。
+ * 这条闸必须先把 `~` 展开成绝对路径，才能命中 policy.sensitive.dirs。
+ *
+ * 仍然不猜：含通配符 `*` / `?`、以及无法静态展开的 `$VAR` 一律跳过，
+ * 留给黑名单与审批兜底（运行时拼路径静态拦不住，这条上限写在模块注释里）。
+ */
 function literalPathsIn(text) {
   const found = [];
+  // ③ 家目录写法：~ 开头，或 $HOME / ${HOME} / %USERPROFILE% 开头
+  const homeRe = /(?:~|\$HOME|\$\{HOME\}|%USERPROFILE%)(?:[\\/][^\s"'|;&<>)]*)?/gi;
+  let hm;
+  while ((hm = homeRe.exec(text)) !== null) {
+    const value = hm[0].trim();
+    if (value) found.push(value);
+  }
   const re = /"([^"]+)"|'([^']+)'|([A-Za-z]:[\\/][^\s"'|;&<>)]*)/g;
   let m;
   while ((m = re.exec(text)) !== null) {
@@ -466,6 +489,30 @@ function literalPathsIn(text) {
     if (value && !value.includes('%') && !value.includes('*') && !value.includes('?')) found.push(value);
   }
   return found;
+}
+
+/**
+ * 把命令里抽出的路径片段还原成绝对路径（用于过闸判定）。
+ *
+ * `~` / `$HOME` / `${HOME}` / `%USERPROFILE%` 用 policy.homeDir 展开；
+ * 其余按「绝对路径直接用，相对路径基于 cwd 解析」处理。
+ * 展开不了（没有 homeDir）就返回 null，由调用方决定怎么处理。
+ */
+function resolveCommandPath(policy, raw, base) {
+  if (typeof raw !== 'string' || !raw.trim()) return null;
+  const text = raw.trim().replace(/^["']|["']$/g, '');
+  const home = policy && typeof policy.homeDir === 'string' ? policy.homeDir : null;
+
+  // 家目录写法 → 绝对路径（统一成 Windows 风格，便于与 policy.sensitive.dirs 比对）
+  const homeMatch = /^(~|\$HOME|\$\{HOME\}|%USERPROFILE%)((?:[\\/].*)?)$/i.exec(text);
+  if (homeMatch) {
+    if (!home) return null;
+    const rest = String(homeMatch[2] || '').replace(/^[\\/]/, '');
+    return rest ? path.join(home, ...rest.split(/[\\/]+/).filter(Boolean)) : home;
+  }
+
+  if (path.isAbsolute(text)) return text;
+  return base ? path.resolve(base, text) : null;
 }
 
 /**
@@ -481,7 +528,7 @@ export function checkDestructiveTargets(policy, command, cwd) {
     const target = inner ? inner[1] : seg;
     if (!DESTRUCTIVE_HEAD.test(target)) continue;
     for (const raw of literalPathsIn(target)) {
-      const abs = path.isAbsolute(raw) ? raw : (base ? path.resolve(base, raw) : null);
+      const abs = resolveCommandPath(policy, raw, base);
       if (!abs) continue;
       const verdict = assertPathAllowed(policy, abs, { write: true, tool: 'run_command' });
       if (verdict && verdict.ok === false) {
@@ -536,12 +583,17 @@ export function checkCommandPaths(policy, command, cwd) {
     const target = inner ? inner[1] : seg;
     for (const raw of literalPathsIn(target)) {
       // 跳过纯命令名/参数（不含分隔符也不是盘符开头，例如 `foo --bar`）
-      if (!/[\\/]/.test(raw) && !/^[A-Za-z]:/.test(raw)) continue;
+      // 家目录写法（`~`、`$HOME`、`%USERPROFILE%`）没有分隔符也可能就是家目录本身，放行给下面解析
+      const isHomeForm = /^(~|\$HOME|\$\{HOME\}|%USERPROFILE%)$/i.test(raw)
+        || /^(~|\$HOME|\$\{HOME\}|%USERPROFILE%)[\\/]/i.test(raw);
+      if (!isHomeForm && !/[\\/]/.test(raw) && !/^[A-Za-z]:/.test(raw)) continue;
       // 跳过 URL：`http://127.0.0.1:8787/healthz` 这种带分隔符但不是文件路径，
       // 早先被误判成「项目外路径」把整条 curl 拦掉（单测抓到的真 bug）。
       // 也跳过带协议头的其他形态（ws://、file://）与单纯的斜杠参数（`/b`、`/s`）。
       if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(raw) || /^\/[a-zA-Z]$/.test(raw)) continue;
-      const abs = path.isAbsolute(raw) ? raw : (base ? path.resolve(base, raw) : null);
+      // ~ / $HOME / %USERPROFILE% 必须**先展开**再判定，否则 bash 下
+      // `rm -rf ~/.ssh` 会因为字面量不是绝对路径而被静默跳过（2026-11-16 实测漏洞）。
+      const abs = resolveCommandPath(policy, raw, base);
       if (!abs) continue;
 
       // 第 1 层：敏感路径无条件拒绝（不看 mode）

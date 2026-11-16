@@ -17,8 +17,8 @@ Keep each item to one sentence, describe what users actually notice, and avoid i
 ### Fixed
 
 - Commands can no longer read files outside the project: literal paths in a command now pass two gates - sensitive paths (`~/.ssh`, private-key filenames, `*.pem`, and others) are rejected unconditionally, and paths outside the project reject the whole command with the reason returned to the AI.
-- Sensitive paths are permanently blocked regardless of sandbox mode: both `workspace` and `off` reject them.
-- The settings page states the sandbox's real boundary: a new notice explains the sandbox is "write protection + workspace boundary", NOT read isolation, and that paths assembled at runtime (env vars, `~`, concatenation inside a script) cannot be intercepted.
+- Home-directory spellings can no longer bypass the check: `~`, `$HOME`, `${HOME}` and `%USERPROFILE%` are expanded to a real absolute path before judging. After the switch to bash, `rm -rf ~/.ssh` and `cat ~/.ssh/id_rsa` used to be allowed (cmd never expanded `~`, so this hole only became dangerous once bash took over).
+- The settings page states the sandbox's real boundary: a new notice explains the sandbox is "write protection + workspace boundary", NOT read isolation, and that paths assembled at runtime by a program (env-var concatenation, paths built inside a script) still cannot be intercepted - use a container or WSL for sensitive code.
 
 ## [0.18.0] - 2026-11-16
 

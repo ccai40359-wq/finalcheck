@@ -38,7 +38,7 @@ export const EN_SETTINGS = {
   '项目目录内可读写；项目外一律不可读（含命令里的字面路径）；敏感路径永久拒绝': 'Read/write inside the workspace; anything outside is unreadable (including literal paths in commands); sensitive paths always blocked',
   '全部只读，拒绝任何写入': 'Fully read-only; every write is rejected',
   '放开项目边界（但 ~/.ssh 等敏感路径仍拒绝）': 'Allows paths outside the workspace (but ~/.ssh and other sensitive paths stay blocked)',
-  '⚠️ 沙箱是「写保护 + 项目边界」，不是「读隔离」。命令里写明的路径会被拦（如读取用户主目录下的 .ssh 私钥、或先切到别的盘再读文件），但运行时拼出来的路径（环境变量、~、脚本内部拼接）拦不住。处理敏感代码请在独立容器或 WSL 里跑。': '⚠️ The sandbox is "write protection + workspace boundary", NOT read isolation. Literal paths in a command are blocked (e.g. reading the .ssh key under your home directory, or switching to another drive before reading a file), but paths assembled at runtime (env vars, ~, concatenation inside a script) cannot be intercepted. Run sensitive code in a dedicated container or WSL.',
+  '⚠️ 沙箱是「写保护 + 项目边界」，不是「读隔离」。命令里写明的路径会被拦（包括 ~、$HOME、%USERPROFILE% 这类家目录写法——它们会先展开再判定），但程序运行时自己拼出来的路径（脚本内部的字符串拼接、读到的配置里指定的路径）拦不住。处理敏感代码请在独立容器或 WSL 里跑。': '⚠️ The sandbox is "write protection + workspace boundary", NOT read isolation. Literal paths in a command are blocked (including home-directory spellings such as ~, $HOME and %USERPROFILE%, which are expanded before judging), but paths a program assembles itself at runtime (string concatenation inside a script, paths read from a config file) cannot be intercepted. Run sensitive code in a dedicated container or WSL.',
   '同时执行的工具调用数，1–16，默认 8': 'Tool calls running at once, 1–16, default 8',
   '已保存': 'Saved',
   '有未保存的修改': 'Unsaved changes',
