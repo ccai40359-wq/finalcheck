@@ -44,6 +44,15 @@
         "to": "rg/rg.exe"
       },
       {
+        "from": "resources/gitbash",
+        "to": "gitbash",
+        "filter": [
+          "**/*",
+          "!**/tmp/*",
+          "!**/.mimosa/**"
+        ]
+      },
+      {
         "from": "build/licenses",
         "to": "licenses",
         "filter": [

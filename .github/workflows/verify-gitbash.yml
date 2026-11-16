@@ -1,0 +1,89 @@
+name: Verify bundled Git Bash on a clean Windows machine
+
+# 目的：验证「安装包内置 Git Bash」在没有装 Git for Windows 的机器上真的能用。
+# 本机永远测不准——因为开发机上都装了 Git，MSYS 会读注册表
+# HKLM\SOFTWARE\GitForWindows InstallPath 并劫持根目录映射。
+#
+# 这个 workflow 做三件事：
+#   1. 确认 runner 上有没有 Git（有的话把它从 PATH 移除、并临时挪走注册表项）
+#   2. 用内置包跑核心工具（ls/cat/grep/sed/awk/wc/tr + 写临时文件）
+#   3. 逐项断言，失败就红
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'desktop/resources/gitbash/**'
+      - 'desktop/scripts/verify-bundled-bash.mjs'
+      - '.github/workflows/verify-gitbash.yml'
+
+jobs:
+  verify-bundled-bash:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: 记录 runner 上的 Git 状态（仅诊断，不改动）
+        shell: pwsh
+        run: |
+          Write-Host "--- which git ---"
+          Get-Command git -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
+          Write-Host "--- registry ---"
+          Get-ItemProperty -Path 'HKLM:\SOFTWARE\GitForWindows' -ErrorAction SilentlyContinue |
+            Select-Object InstallPath, CurrentVersion | Format-List
+          Write-Host "--- bundled bundle ---"
+          if (Test-Path 'desktop/resources/gitbash') {
+            Get-ChildItem 'desktop/resources/gitbash' -Recurse -File |
+              Measure-Object -Property Length -Sum |
+              Select-Object Count, @{n='MB';e={[math]::Round($_.Sum/1MB,2)}} | Format-List
+          } else {
+            Write-Host "bundled gitbash directory is MISSING"
+          }
+
+      - name: 模拟干净机器（移走 Git 的注册表项 + 从 PATH 剔除 Git）
+        shell: pwsh
+        run: |
+          # 1) 备份并移除注册表项（runner 上通常预装了 Git for Windows）
+          $key = 'HKLM:\SOFTWARE\GitForWindows'
+          if (Test-Path $key) {
+            $backup = Join-Path $env:RUNNER_TEMP 'gitforwindows-backup.json'
+            $props = Get-ItemProperty -Path $key
+            $props | ConvertTo-Json -Depth 4 | Set-Content $backup -Encoding UTF8
+            Write-Host "backed up registry to $backup"
+            Remove-Item -Path $key -Recurse -Force -ErrorAction SilentlyContinue
+            Write-Host "removed $key"
+          } else {
+            Write-Host "no GitForWindows key on this runner (already clean)"
+          }
+
+          # 2) 从 PATH 里剔除所有 Git 目录（GitHub runner 的 PATH 里有 Git\cmd 与 Git\mingw64\bin）
+          $clean = ($env:PATH -split ';') | Where-Object { $_ -notmatch '\\Git\\' } -join ';'
+          "PATH_CLEAN=$clean" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding UTF8
+          Write-Host "PATH entries after removing Git:"
+          ($clean -split ';') | ForEach-Object { Write-Host "  $_" }
+
+      - name: 跑内置 Git Bash 验收（核心工具 + 真实读写）
+        shell: pwsh
+        run: |
+          $env:PATH = $env:PATH_CLEAN
+          node desktop/scripts/verify-bundled-bash.mjs
+
+      - name: 证明没有退回系统 Git（负向断言）
+        shell: pwsh
+        run: |
+          $env:PATH = $env:PATH_CLEAN
+          Write-Host "--- git 应当不可用（否则说明没真正模拟干净机器）---"
+          $git = Get-Command git -ErrorAction SilentlyContinue
+          if ($git) { Write-Host "git still on PATH: $($git.Source)"; exit 1 }
+          Write-Host "git is not on PATH — clean-machine simulation OK"
+
+          Write-Host "--- bash 也不应在系统 PATH 上 ---"
+          $bash = Get-Command bash -ErrorAction SilentlyContinue
+          if ($bash) { Write-Host "system bash on PATH: $($bash.Source)"; exit 1 }
+          Write-Host "no system bash — the test really uses our bundled copy"

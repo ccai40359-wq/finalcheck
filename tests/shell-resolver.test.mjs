@@ -17,14 +17,18 @@ test('shell: 用户已装 Git Bash 优先（-c 参数，不加载 profile）', (
   assert.equal(r.warning, undefined);
 });
 
-test('shell: 没有用户版时用内置版（若将来打包了完整结构）', () => {
-  // 当前发行不打包内置 bash（实测最小子集跑不起来，见 shell-resolver 注释）。
-  // 这里只钉住「检测到就选它」的接口契约。
+test('shell: 没有用户版时用内置版（8.4MB 子集，含 MSYSTEM 与 Windows 格式 PATH）', () => {
+  // 内置包已实测可用（见 shell-resolver 头注释的三条关键配置）。
   const bundled = 'D:\\app\\' + BUNDLED_BASH_REL;
   const r = resolveShell({ platform: 'win32', appRoot: 'D:\\app', exists: mkExists([bundled]) });
   assert.equal(r.kind, 'bash');
   assert.equal(r.origin, 'bundled');
   assert.deepEqual(r.args('ls'), ['-c', 'ls']);
+  // 关键：PATH 必须是 Windows 格式（内置 bin 打头），不能是纯 MSYS 格式
+  assert.ok(r.env.PATH.startsWith('D:\\app\\resources\\gitbash\\usr\\bin'),
+    `内置版 PATH 必须以 Windows 格式的内置 bin 开头，实际: ${r.env.PATH}`);
+  assert.equal(r.env.MSYSTEM, 'MINGW64');
+  assert.equal(r.env.MSYS2_ARG_CONV_EXCL, '*');
 });
 
 test('shell: 两者都没有 → 回落 cmd 且带 warning', () => {
@@ -67,9 +71,12 @@ test('shellSpawnSpec: 内置版也保留调用方 env 与 windowsHide', () => {
     platform: 'win32',
     appRoot: 'D:\\app',
     exists: mkExists([bundled]),
-    env: { PATH: 'x' }
+    env: { PATH: 'x', FOO: 'bar' }
   });
-  assert.equal(spec.options.env.PATH, 'x', '调用方 env 不能被覆盖掉');
+  // PATH 是唯一允许被内置版改写的一键（必须前置内置 bin，否则 exe 解析不到），
+  // 其余调用方 env 原样保留。
+  assert.ok(spec.options.env.PATH.includes('gitbash'), '内置版会前置自己的 bin 目录');
+  assert.equal(spec.options.env.FOO, 'bar', '其它 env 不能被丢掉');
   assert.equal(spec.options.windowsHide, true);
   assert.equal(spec.origin, 'bundled');
 });

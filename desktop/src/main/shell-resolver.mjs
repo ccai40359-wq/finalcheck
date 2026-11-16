@@ -1,23 +1,26 @@
 // Shell 解析器（决策 1，2026-11-16）：
 //   ① 用户已装的 Git Bash（C:\Program Files\Git\bin\bash.exe）→ 用它
-//   ② 安装包内置（已实测不可行，当前不打包，仅为将来留接口）
+//   ② 安装包内置的 8.4MB 子集（resources/gitbash）→ 用它（干净机器也能跑 bash）
 //   ③ 回落 cmd.exe（都没有时；记 warning 并在 UI 提示）
 //
 // 为什么选 Git Bash：AI 在 bash 语法下出错率明显低于 cmd——
 // cmd 与 PowerShell 的引号/转义/管道规则各不相同，模型经常混用（`cat` 写成 `type`、
 // `2>/dev/null` 写成 `2>nul`）；bash 是训练语料里最常见、模型最熟的一种。
 //
-// 为什么没打包内置 bash（2026-11-16 实测，与方案预期不同）：
-//   「bash.exe + msys-2.0.dll + 十几个 coreutils」这个 5-7MB 最小子集在干净机器上
-//   起不来：bash 能启动、内建命令（echo/pwd/BASH_VERSION）正常，但 `ls`、`cat`、`grep`
-//   全部 command not found，`ls /` 也是空输出。根因是 MSYS 运行时依赖完整安装树的
-//   路径映射与 mount 机制（usr/lib、/etc/fstab 等约 24MB+）。为「干净机器也能用 bash」
-//   付这个体积与逐版本验证成本不划算 —— 绝大多数开发机已装 Git for Windows。
+// 内置包为什么能只用 8.4MB（踩了三轮才定案，别轻易删这几个文件）：
+//   · 必需：bash.exe(2.5M) + msys-2.0.dll(3.3M) + 22 个 coreutils(2.8M) + etc/fstab&msystem(1K)
+//   · **不需要** usr/lib（24MB 里 20MB 是 perl，与 bash 无关）—— 最初误判就是这里
+//   · 缺 etc/fstab+msystem → cygwin 没有挂载表，`ls /` 空、重定向失败
+//   · PATH 必须保持 Windows 格式（内置 bin 前置）；换成纯 MSYS 格式会让所有 exe
+//     exit 127（它们依赖 Windows 的 DLL 解析）
+//   · 验证方式：`.github/workflows/verify-gitbash.yml` 在干净 runner 上删掉注册表项
+//     HKLM\SOFTWARE\GitForWindows 后跑 `desktop/scripts/verify-bundled-bash.mjs`。
+//     本地跑会因为已装 Git 劫持 mount 表，脚本会自动把相关断言降级为 SKIP。
 //
 // 注意：这里只负责「用哪个 shell 起子进程」。窗口隐藏策略（sandboxWindowMode 的三段重试）
 // 不在本模块，保持原样不动。
 
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 
 /** 用户已装 Git for Windows 的官方安装路径（含 x64/x86 两种可能的 Program Files）。 */
@@ -77,20 +80,29 @@ export function resolveShell({ appRoot = null, platform = process.platform, exis
     let ok = false;
     try { ok = exists(bundled); } catch { ok = false; }
     if (ok) {
-      // 只有在确实打包了完整 Git Bash 结构时才走到这里。当前发行版**不打包**：
-      // 2026-11-16 实测结论——「bash.exe + msys-2.0.dll + 十几个 exe」这个最小子集
-      // 在干净机器上跑不起来：bash 能启动、内建命令能用（echo/pwd/BASH_VERSION 正常），
-      // 但 ls/cat/grep 全部 command not found，连 `ls /` 都是空输出。
-      // 根因是 MSYS 运行时依赖完整安装树的路径映射与 mount 机制（/etc/fstab 等），
-      // 缺了之后 cygwin 层无法把 Windows 路径映射成 /c/、/cygdrive/c/ 两种形式，
-      // 重定向写文件也会失败。要打包就得带上 usr/lib 等约 24MB+ 的额外文件，
-      // 且要逐版本验证——不值得为「干净机器也能用 bash」付这个复杂度。
-      // 取舍：检测用户已装的 Git for Windows（绝大多数开发机都有），没有就回落 cmd 并提示。
+      // 内置版可用配置（2026-11-16 CI 验证过的三点，缺一不可）：
+      //  ① etc/fstab + etc/msystem 必须一起打包（共 1KB）。缺了它们 cygwin 层
+      //     就没有挂载表，`ls /`、重定向、路径映射全部失效。
+      //  ② PATH 必须保持 **Windows 格式**（把内置 usr/bin 前置），不能换成
+      //     纯 MSYS 格式（`/d/xxx:/usr/bin`）——那样 cat/grep 全部 exit 127 零输出，
+      //     因为 exe 依赖的 DLL 要经 Windows 的 CreateProcess 解析。
+      //  ③ MSYSTEM=MINGW64 + MSYS2_ARG_CONV_EXCL='*'，否则 /d /s 这类参数被当路径改写。
+      const binDir = path.join(appRoot, 'resources', 'gitbash', 'usr', 'bin');
+      const tmpDir = path.join(appRoot, 'resources', 'gitbash', 'tmp');
+      try { mkdirSync(tmpDir, { recursive: true }); } catch { /* 只读安装位置 */ }
       return {
         kind: 'bash',
         file: bundled,
+        // -c 而非 -lc：-lc 要加载 profile，实测 ~1s 会让空闲看门狗误判「卡住」
         args: (cmd) => ['-c', cmd],
-        origin: 'bundled'
+        origin: 'bundled',
+        env: {
+          MSYSTEM: 'MINGW64',
+          MSYS2_ARG_CONV_EXCL: '*',
+          TMPDIR: tmpDir,
+          // 内置 bin 前置到 Windows 格式 PATH（调用方的 PATH 由 shellSpawnSpec 合并）
+          PATH: `${binDir};${process.env.PATH || ''}`
+        }
       };
     }
   }
