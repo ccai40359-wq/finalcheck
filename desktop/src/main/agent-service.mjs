@@ -190,6 +190,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MAX_INLINE_RESULT = 20000; // 对齐 dsh 工具结果策略：超长不整块喂模型
 const CONVO_BUDGET = 120000; // 旧字符口径预算：仅在没有 contextWindow 配置时作为 pruneConvo 的兜底
 const TOOL_KEEP_RECENT = 4; // 旧 pruneConvo 口径：最近 4 条工具结果始终原文保留（新逻辑用 5，见 microcompact）
+// 回合内 microcompact 的保留条数（2026-11-16）：原先固定 5 条，实测导致「读完就忘」——
+// 同一文件两次读的步距中位数 9 > 5，所以每次想引用上次读的内容时它都已被清成占位符，
+// 模型只能反复重读（一个回合 808 次调用、594 次读 20 个文件）。放宽到 12 条，
+// 覆盖真实会话的步距分布；同时保留「只有踩到 token 阈值才折叠」的硬约束，不会无限膨胀。
+const MICRO_KEEP_RECENT_IN_TURN = 12;
 const STREAM_USAGE = process.env.FINALCHECK_STREAM_USAGE !== '0'; // 请求流式 usage；个别网关不认该字段时按 4xx 降级
 const spillDir = () => process.env.FINALCHECK_SPILL_DIR || path.resolve(__dirname, '..', '..', 'spill');
 
@@ -1787,14 +1792,28 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
       trace.push(r.trace);
       convo.push({ role: 'tool', tool_call_id: r.id, content: r.modelContent });
     });
-    // 回合内折叠（microcompact）：每步工具结果落地后、下一次模型请求前立即清旧——不等 token 阈值，
-    // convo 始终保持「最近 5 条工具结果原文 + 更早的占位符」，几百步的长回合不再无限膨胀。
-    // 只改 role==='tool' 的 content：system/assistant 原样、tool_call_id 配对不破，且幂等（已清理的跳过）。
-    const cleanedNow = countToolsToClean(convo, { keepRecentTool: 5 });
-    if (cleanedNow > 0 && microcompact(convo, { keepRecentTool: 5 })) {
-      if (!microNoticeSent) {
-        microNoticeSent = true; // 同一回合只提示一次
-        onEvent?.({ kind: 'notice', message: t('上下文折叠：已清理 {n} 条旧工具结果（原文可重跑获取）', { n: cleanedNow }) });
+    // 回合内折叠（microcompact）：**按 token 阈值触发**，不再每步无条件清。
+    //
+    // 2026-11-16 修复（真实事故）：623ab65 引入的是「每步工具结果落地就清掉最近 5 条
+    // 以外的一切」，与 token 预算完全无关。后果是模型**读完就忘**：
+    //   实测读完 lib/auth/session.ts 后，再走 5 步该内容就变成
+    //   `[旧工具结果已清理：read_file；…]`；而真实会话里同一文件两次读的步距中位数是 9，
+    //   → 想用它的时候它已经不在上下文里 → 只能再读 → 一个回合 808 次调用、594 次读 20 个文件，
+    //   同一个文件读 107 次且内容字节级完全相同。这不是模型笨，是 harness 擦了它的记忆。
+    //
+    // 现在只有估算 token 真的踩到 microThreshold 才折叠（与 compactNow 同一口径），
+    // 且保留条数放宽；长回合仍受阈值硬约束，不会回到「无限膨胀」。
+    {
+      const tokensNow = estimateMessagesTokens(convo);
+      if (tokensNow >= tokenBudget.microThreshold) {
+        const keepNow = MICRO_KEEP_RECENT_IN_TURN;
+        const cleanedNow = countToolsToClean(convo, { keepRecentTool: keepNow });
+        if (cleanedNow > 0 && microcompact(convo, { keepRecentTool: keepNow })) {
+          if (!microNoticeSent) {
+            microNoticeSent = true; // 同一回合只提示一次
+            onEvent?.({ kind: 'notice', message: t('上下文折叠：已清理 {n} 条旧工具结果（原文可重跑获取）', { n: cleanedNow }) });
+          }
+        }
       }
     }
     if (inspected.invalid.length) {

@@ -141,6 +141,14 @@ export function estimateMessagesTokens(list) {
 //   effective     = contextWindow - min(maxOutputTokens, 21000)
 //   fullThreshold = effective - 13000
 //   microThreshold= min(0.9 * effective, effective - 2000)
+//
+// 2026-11-16 修复：小窗口下这两个阈值会算成**负数**。
+//   contextWindow=1000 → effective=999 → microThreshold=-1001、fullThreshold=-12001
+//   负阈值 = 「永远超预算」→ 每一次请求都强制压缩 → 上下文被清空 → 模型什么都看不见
+//   （实测：把窗口设成 1000 后，5 个请求里每个都只剩 2 条消息、0 条工具结果）。
+// 真实用户不会把窗口设成 1000，但「窗口配置写错/网关返回 0/小模型 4k」都会命中这条，
+// 而且症状是「模型莫名失忆」，很难归因。所以这里给阈值设下限：
+//   阈值不得低于 effective 的一个小比例，且不得为负。
 export function contextBudget(config = {}) {
   const num = (v, d) => {
     const n = Number(v);
@@ -148,13 +156,25 @@ export function contextBudget(config = {}) {
   };
   const contextWindow = num(config?.contextWindow, 200000);
   const maxOutputTokens = num(config?.maxOutputTokens, 32000);
-  const effective = contextWindow - Math.min(maxOutputTokens, 21000);
+  const effective = Math.max(1, contextWindow - Math.min(maxOutputTokens, 21000));
+
+  // 正常情况完全沿用原公式（大窗口行为一字不改）；只有算出负数时才兜底。
+  // 注意：原公式在超大窗口下 full 会略高于 micro（如 20 万窗口：full 166000 > micro 161100）。
+  // 这是既有行为、且被现有测试锁住，本次**不动它**——只修「负数」这个会让模型彻底失忆的真 bug。
+  const rawMicro = Math.min(0.9 * effective, effective - 2000);
+  const rawFull = effective - 13000;
+  const microThreshold = rawMicro > 0
+    ? rawMicro
+    : Math.max(256, Math.floor(effective * 0.05)); // 小窗口兜底：至少给 256 token 的余量
+  // full 为负 = 一进来就判「该做正文压缩」，等于清空上下文。兜底成 micro 的 80%（比 micro 更早触发一次，但不是每次）。
+  const fullThreshold = rawFull >= 0 ? rawFull : Math.floor(microThreshold * 0.8);
+
   return {
     contextWindow,
     maxOutputTokens,
     effective,
-    fullThreshold: effective - 13000,
-    microThreshold: Math.min(0.9 * effective, effective - 2000)
+    fullThreshold,
+    microThreshold
   };
 }
 
