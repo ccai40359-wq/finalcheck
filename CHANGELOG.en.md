@@ -6,6 +6,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.19.1] - 2026-11-16
+
+### Fixed
+
+- The bundled Git was never actually used: the packaged lookup path had an extra `resources` segment, so a machine without Git always fell back to cmd (0.19.0's headline feature did nothing in practice). Fixed - a clean machine now really runs on the bundled Git.
+- Home-directory paths can no longer bypass the check: `~`, `$HOME`, `${HOME}` and `%USERPROFILE%` are expanded to a real path before judging. After the switch to Git Bash, `rm -rf ~/.ssh` and `cat ~/.ssh/id_rsa` used to be allowed (cmd never expanded `~`, so this hole only became dangerous once bash took over).
+- Fixed the collateral damage of the fix above: the `~` inside Windows 8.3 short names (e.g. `RUNNER~1`) was treated as a home directory, which rejected deleting files inside the project.
+
 ## [0.19.0] - 2026-11-16
 
 ### Improved
