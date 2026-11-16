@@ -89,7 +89,11 @@ export function resolveShell({ appRoot = null, platform = process.platform, exis
       // 两者都随完整包一起提供，所以直接用 bin/ 这个标准入口即可。
       const gitRoot = path.join(appRoot, 'resources', 'gitbash-full');
       const usrBin = path.join(gitRoot, 'usr', 'bin');
-      const mingwBin = path.join(gitRoot, 'mingw64', 'bin');
+      // 原生侧目录名随发行变体而变（官方 x64 是 mingw64，GitHub runner 上是 ucrt64），
+      // 不能写死；按候选顺序取第一个存在的。
+      const nativeBin = ['mingw64', 'ucrt64', 'clang64', 'mingw32']
+        .map((n) => path.join(gitRoot, n, 'bin'))
+        .find((p) => { try { return existsSync(p); } catch { return false; } }) || path.join(gitRoot, 'mingw64', 'bin');
       const tmpDir = path.join(gitRoot, 'tmp');
       try { mkdirSync(tmpDir, { recursive: true }); } catch { /* 只读安装位置 */ }
       return {
@@ -105,8 +109,8 @@ export function resolveShell({ appRoot = null, platform = process.platform, exis
           // PATH 用 **Windows 格式**并把内置目录前置（调用方的 PATH 由 shellSpawnSpec 合并）。
           // 换成纯 MSYS 格式（/d/xxx:/usr/bin）会让 cat/grep 全部 exit 127 零输出，
           // 因为 exe 依赖的 DLL 要经 Windows 的 CreateProcess 解析。
-          // usr/bin 提供 coreutils；mingw64/bin 提供 python/node/git 等原生依赖。
-          PATH: `${usrBin};${mingwBin};${process.env.PATH || ''}`
+          // usr/bin 提供 coreutils；原生 bin（mingw64/ucrt64）提供 git 等原生程序。
+          PATH: `${usrBin};${nativeBin};${process.env.PATH || ''}`
         }
       };
     }

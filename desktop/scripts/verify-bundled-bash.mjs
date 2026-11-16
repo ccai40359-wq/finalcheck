@@ -45,7 +45,11 @@ console.log('\n=== 内置包结构 ===');
 check('ps: bin/bash.exe 存在', fs.existsSync(bashExe));
 check('ps: usr/bin/bash.exe 存在（真实二进制）', fs.existsSync(usrBash));
 check('ps: cmd/git.exe 存在', fs.existsSync(gitExe));
-check('ps: mingw64/bin/git.exe 存在', fs.existsSync(path.join(gitRoot, 'mingw64', 'bin', 'git.exe')));
+// 原生侧目录名随发行变体而变（官方 x64 = mingw64，GitHub runner = ucrt64）
+const NATIVE = ['mingw64', 'ucrt64', 'clang64', 'mingw32']
+  .map((n) => path.join(gitRoot, n, 'bin', 'git.exe'))
+  .find((p) => fs.existsSync(p));
+check('ps: 原生 git.exe 存在（mingw64/ucrt64/clang64 之一）', !!NATIVE, NATIVE || '都没找到');
 check('ps: usr/bin/cat.exe 存在', fs.existsSync(path.join(gitRoot, 'usr', 'bin', 'cat.exe')));
 check('ps: usr/bin/msys-2.0.dll 存在', fs.existsSync(path.join(gitRoot, 'usr', 'bin', 'msys-2.0.dll')));
 check('ps: etc/fstab 存在', fs.existsSync(path.join(gitRoot, 'etc', 'fstab')));
@@ -63,7 +67,7 @@ const env = {
   ...process.env,
   PATH: [
     path.join(gitRoot, 'usr', 'bin'),
-    path.join(gitRoot, 'mingw64', 'bin'),
+    (NATIVE ? path.dirname(NATIVE) : path.join(gitRoot, 'mingw64', 'bin')),
     stripGit(process.env.PATH)
   ].filter(Boolean).join(';'),
   MSYSTEM: 'MINGW64',

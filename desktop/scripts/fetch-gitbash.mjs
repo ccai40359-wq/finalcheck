@@ -20,21 +20,36 @@ import { execFileSync } from 'node:child_process';
 // import.meta.url 指向 desktop/scripts/ 下，'../..' 才是仓库根
 const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z])/, '$1')), '..', '..');
 const dest = path.join(repoRoot, 'desktop', 'resources', 'gitbash-full');
-const KEEP = ['bin', 'usr', 'mingw64', 'cmd', 'etc', 'dev', 'lib', 'libexec', 'share'];
+// 不写死目录白名单（Git for Windows 有 mingw64 / ucrt64 / clang64 多种变体，
+// GitHub runner 上就是 ucrt64）。改为黑名单：只排除明确不需要的大件。
+const SKIP_DIRS = ['doc', 'tmp', 'unins000.exe', 'unins000.dat', 'unins000.msg'];
+const SKIP_TOP_FILES = ['ReleaseNotes.html', 'unins000.exe', 'unins000.dat', 'unins000.msg'];
 
 const args = process.argv.slice(2);
 const force = args.includes('--force');
 const checkOnly = args.includes('--check');
 
 /** 判断目标目录是否已经是一个可用的 Git 安装。 */
+// Git for Windows 的「原生侧」目录名随发行变体而变：官方安装器 x64 用 mingw64，
+// GitHub runner 上是 ucrt64，还有 clang64。所以不能写死，按候选列表探测。
+const NATIVE_DIRS = ['mingw64', 'ucrt64', 'clang64', 'mingw32'];
+
+function nativeBin(dir) {
+  for (const name of NATIVE_DIRS) {
+    const p = path.join(dir, name, 'bin', 'git.exe');
+    if (fs.existsSync(p)) return p;
+  }
+  return null;
+}
+
 function isReady(dir) {
   const must = [
     path.join(dir, 'bin', 'bash.exe'),
     path.join(dir, 'usr', 'bin', 'bash.exe'),
-    path.join(dir, 'cmd', 'git.exe'),
-    path.join(dir, 'mingw64', 'bin', 'git.exe')
+    path.join(dir, 'cmd', 'git.exe')
   ];
-  return must.every((p) => fs.existsSync(p));
+  if (!must.every((p) => fs.existsSync(p))) return false;
+  return !!nativeBin(dir); // 原生 git.exe 在 mingw64 / ucrt64 / clang64 之一
 }
 
 function probeVersion(dir) {
@@ -94,7 +109,7 @@ console.log('开始复制（约 390MB / 9000+ 文件，需要一两分钟）…'
 fs.rmSync(dest, { recursive: true, force: true });
 fs.mkdirSync(dest, { recursive: true });
 
-// 只拷运行时需要的顶层目录；跳过 unins*（卸载程序）与文档
+// 拷运行时需要的全部顶层目录；跳过明确不需要的（卸载程序 / 文档 / tmp）
 const skipped = [];
 for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
   if (!entry.isDirectory()) {
@@ -106,7 +121,7 @@ for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
     }
     continue;
   }
-  if (!KEEP.includes(entry.name)) { skipped.push(entry.name + '/'); continue; }
+  if (SKIP_DIRS.includes(entry.name)) { skipped.push(entry.name + '/'); continue; }
   fs.cpSync(path.join(src, entry.name), path.join(dest, entry.name), { recursive: true });
 }
 
