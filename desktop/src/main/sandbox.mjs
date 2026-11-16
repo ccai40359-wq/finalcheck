@@ -49,7 +49,14 @@ const INCOMPATIBLE_HEADS = new Set([
   'bash', 'sh', 'dash', 'zsh', 'fish', 'busybox',
   'grep', 'egrep', 'fgrep', 'rg', 'sed', 'awk', 'gawk', 'head', 'tail', 'cat', 'less',
   'wc', 'cut', 'tr', 'tee', 'xargs', 'uniq', 'diff', 'patch', 'tar', 'gzip',
-  'rm', 'mv', 'cp', 'ln', 'ls', 'mkdir', 'rmdir', 'chmod', 'chown', 'touch', 'stat'
+  'rm', 'mv', 'cp', 'ln', 'ls', 'mkdir', 'rmdir', 'chmod', 'chown', 'touch', 'stat',
+  // 2026-11-17 追加：这几个在 cmd 里**存在但语义完全不同**，比「不存在」更危险——
+  // 模型写 GNU 语法会拿到静默错误的结果，而不是一个明显的报错（实测确实发生过）：
+  //   find  : cmd 的 find.exe 是文本查找（≈grep），不认 `find . -name x`
+  //   sort  : cmd 的 sort.exe 按字符排序单列文本，不认 `-n` / `-k` 等 GNU 选项
+  //   which / uname : cmd 里没有（cmd 只有 where），bash 里很常用
+  // 命中后改走宿主机 Git Bash，语义才对。
+  'find', 'sort', 'which', 'uname'
 ]);
 
 const SHELL_SPLIT = /\|\||&&|\||;|&|\r?\n/;

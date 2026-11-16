@@ -170,6 +170,26 @@ test('sandboxCompatible: 按管道段判断兼容性', () => {
   assert.equal(sandboxCompatible('cmd /c "node -v"').compatible, true, 'cmd 外壳本身兼容（内部 node 无法静态判断）');
 });
 
+// 2026-11-17：这些词在 cmd 里**存在但语义不同**，进去会得到静默错误的结果，
+// 比「命令不存在」更危险（实测 FastAPI 会话里模型就写了 find/sort）。
+// 必须改走宿主机 Git Bash，语义才对。
+test('sandboxCompatible: cmd 里语义不同的 bash 工具必须走宿主机', () => {
+  for (const cmd of [
+    'find . -name "*.py"',
+    'find . -type f -newer x',
+    'sort -n x',
+    'which python',
+    'uname -a'
+  ]) {
+    assert.equal(sandboxCompatible(cmd).compatible, false,
+      `${cmd} 在 cmd 下语义不对（find.exe 是文本查找、sort.exe 按字符排），必须走 bash`);
+  }
+  // 对照：真正的 cmd 原生命令仍应进沙箱（有写保护）
+  assert.equal(sandboxCompatible('dir /b').compatible, true, 'dir 是 cmd 原生，仍进沙箱');
+  assert.equal(sandboxCompatible('type x.txt').compatible, true, 'type 是 cmd 原生');
+  assert.equal(sandboxCompatible('findstr /S x').compatible, true, 'findstr 是 cmd 原生（不是 find）');
+});
+
 test('sandbox: 不兼容命令改在宿主机执行并标注原因', { skip: !available && 'dsh ACL 沙箱不可用' }, async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fc-sbx-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
