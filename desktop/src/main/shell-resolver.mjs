@@ -1,15 +1,17 @@
 // Shell 解析器（决策 1，2026-11-16）：
 //   ① 用户已装的 Git Bash（C:\Program Files\Git\bin\bash.exe）→ 用它
-//   ② 安装包内置的 8.4MB 子集（resources/gitbash）→ 用它（干净机器也能跑 bash）
+//   ② 安装包内置的 12MB 子集（resources/gitbash）→ 用它（干净机器也能跑 bash）
 //   ③ 回落 cmd.exe（都没有时；记 warning 并在 UI 提示）
 //
 // 为什么选 Git Bash：AI 在 bash 语法下出错率明显低于 cmd——
 // cmd 与 PowerShell 的引号/转义/管道规则各不相同，模型经常混用（`cat` 写成 `type`、
 // `2>/dev/null` 写成 `2>nul`）；bash 是训练语料里最常见、模型最熟的一种。
 //
-// 内置包为什么能只用 8.4MB（踩了三轮才定案，别轻易删这几个文件）：
-//   · 必需：bash.exe(2.5M) + msys-2.0.dll(3.3M) + 22 个 coreutils(2.8M) + etc/fstab&msystem(1K)
-//   · **不需要** usr/lib（24MB 里 20MB 是 perl，与 bash 无关）—— 最初误判就是这里
+// 内置包为什么能只用 12MB（踩了四轮才定案，别轻易删这几个文件）：
+//   · 必需：bash.exe(2.5M) + 9 个 MSYS DLL(6.6M) + 27 个 coreutils(~3M) + etc/fstab&msystem(1K)
+//   · 9 个 DLL 是用粗依赖分析算出来的最小闭包（msys-2.0/intl/iconv/pcre/readline/ncursesw/gmp/mpfr/gcc_s-seh）
+//   · **不需要** usr/lib（24MB 里 20MB 是 perl）—— 两次误判都栽在这里
+//   · **不需要** terminfo / svn / ssl / gnupg 那 49 个 DLL（与 bash+coreutils 无关）
 //   · 缺 etc/fstab+msystem → cygwin 没有挂载表，`ls /` 空、重定向失败
 //   · PATH 必须保持 Windows 格式（内置 bin 前置）；换成纯 MSYS 格式会让所有 exe
 //     exit 127（它们依赖 Windows 的 DLL 解析）

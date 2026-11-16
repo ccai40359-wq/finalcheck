@@ -80,15 +80,31 @@ const tmpMsys = toMsys(tmpWin);
 //     MSYS 会把 Windows PATH 里的目录映射成 /usr/bin 之类，工具照样找得到，
 //     而且 Windows 侧的 DLL 解析也正常。
 //  ✅ 环境必须基于 process.env 展开（完全替换会丢掉 SystemRoot/TEMP 等，fork 起不来）。
+// 2026-11-16 第四轮实测（本地已复现、CI 已复现，这条才是真结论）：
+//
+//  ❌ 把 PATH 换成纯 MSYS 格式（/d/xxx:/usr/bin）→ 所有 exe exit 127 零输出。
+//     Windows 的 CreateProcess 只认 Windows 格式 PATH，找不到 exe 依赖的 DLL。
+//  ❌ PATH 里**保留系统 Git 的目录** → 看着能跑，其实是系统 Git 的 DLL 补齐了
+//     我们精简包缺的依赖。这是假阳性（第一次「8.4MB 可跑」就是这么来的）。
+//     真实缺件：msys-intl-8.dll（cat.exe 的硬依赖）+ iconv/crypto/unistring。
+//  ✅ 正确做法：PATH 用 Windows 格式，内置 bin 前置，**并且把系统 Git 的目录全部剔除**。
+//     这样本地和 CI 测的是同一个条件（真实干净机器）。
+const stripGit = (p) => (String(p || '').split(';')
+  .filter((seg) => seg && !/\\Git\\|\/Git\//i.test(seg))
+  .join(';'));
+
 const env = {
   ...process.env,
-  // Windows 格式：内置 bin 置顶（证明用的是我们打的那份），后面接系统目录
-  PATH: `${path.join(bundleRoot, 'usr', 'bin')};${process.env.PATH || ''}`,
+  // Windows 格式；内置 bin 置顶；剔除所有 Git 目录（否则测的是系统 Git 的 DLL）
+  PATH: `${path.join(bundleRoot, 'usr', 'bin')};${stripGit(process.env.PATH)}`,
   MSYSTEM: 'MINGW64',
   MSYS2_ARG_CONV_EXCL: '*',
   TMPDIR: tmpWin, // Windows 格式亦可；bash 会自行映射
   HOME: os.homedir(),
 };
+if (/\\Git\\|\/Git\//i.test(String(process.env.PATH || '')) && stripGit(process.env.PATH) === String(process.env.PATH || '').split(';').filter(Boolean).join(';')) {
+  console.log('  (注意：未能从 PATH 中移除 Git 目录)');
+}
 
 console.log('\n=== 内置 bash 实际执行 ===');
 // 关键设计：**不测 `ls /`**。
