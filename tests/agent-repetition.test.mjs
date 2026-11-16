@@ -14,10 +14,8 @@ const sse = (chunks) => new Response(
 
 // 先吐 firstChunk，abort 信号一响就把流打断（模拟真实 fetch 被熔断 abort 的路径）
 const sseAbortable = (chunks, signal) => {
-  let cRef = null;
   const stream = new ReadableStream({
     start(c) {
-      cRef = c;
       for (const ch of chunks) c.enqueue(new TextEncoder().encode('data: ' + JSON.stringify(ch) + '\n\n'));
       signal?.addEventListener('abort', () => c.error(new DOMException('Aborted', 'AbortError')));
     }

@@ -1,6 +1,6 @@
 // round9 完全体：对每个仓的发现做 AI 分诊（用 opendesignM）
 // 复用 scripts/ai-triage-bench.mjs 的逻辑，但 provider 从用户真实配置读 opendesignM
-import { readFileSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { runAgentTurn } from '../desktop/src/main/agent-service.mjs';
 import { createAgentTools } from '../desktop/src/main/agent-tools.mjs';
