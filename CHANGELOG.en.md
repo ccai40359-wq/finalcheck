@@ -12,7 +12,7 @@ Keep each item to one sentence, describe what users actually notice, and avoid i
 
 - The installer now ships a complete Git, so `git` and `bash` work right after install: previously we only detected a user-installed Git and fell back to cmd when it was missing (which made bash-style commands fail). The installer now bundles the full Git for Windows (~400MB), so machines without Git can still use `git clone`, `git status`, `cat`, `grep -rn` and `2>/dev/null`.
 - Priority is unchanged: a user-installed Git wins; the bundled one is only a fallback.
-- Installer size grows from 112MB to roughly 165-175MB (about +55MB compressed) in exchange for zero-dependency, out-of-the-box behavior.
+- Installer size grows from 112MB to roughly 235MB (about 824MB on disk after install, of which 410MB is Git itself) in exchange for zero-dependency, out-of-the-box behavior.
 
 ### Fixed
 

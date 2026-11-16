@@ -50,14 +50,19 @@ test('run_command: 连续 idleMs 无输出 → 转后台返回 pid，且不杀�
 });
 
 test('run_command: 持续有输出的长命令正常完成，不误判为卡住', async () => {
-  const cmd = 'node -e "let i=0;const t=setInterval(()=>{console.log(i++); if(i>=5){clearInterval(t)}},300)"';
+  // 先吐一行再进 setInterval：整套测试并行跑时 node 自身启动可能就超过 1s，
+  // 而看门狗计的是「距上一行输出的时间」。不先吐一行，慢启动会被误判成卡住
+  // （2026-11-16 全量跑过一次假红，单独跑 3/3 全过）。idleMs 也放宽到 1200ms，
+  // 仍然远小于真实默认值（120s），不影响这条断言的意图。
+  const cmd = 'node -e "console.log(-1);let i=0;const t=setInterval(()=>{console.log(i++); if(i>=5){clearInterval(t)}},300)"';
   const t0 = Date.now();
-  const r = await runCommandWithSignal(cmd, { idleMs: 800 });
+  const r = await runCommandWithSignal(cmd, { idleMs: 1200 });
   const elapsed = Date.now() - t0;
 
   assert.equal(r.background, undefined, '有输出就不该转后台');
   assert.equal(r.code, 0, '命令应正常结束');
   assert.ok(elapsed >= 1200, `应真的跑了约 1.5s，实际 ${elapsed}ms`);
+  assert.match(String(r.stdout), /-1\n/, '启动后立即可见输出');
   for (const n of ['0', '1', '2', '3', '4']) assert.match(String(r.stdout), new RegExp(`${n}\\n`));
 });
 
