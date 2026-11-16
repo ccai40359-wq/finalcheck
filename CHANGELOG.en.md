@@ -6,6 +6,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.19.3] - 2026-11-17
+
+### Fixed
+
+- Commands now actually use Git Bash: measuring a real session's 14 commands found 0 bash-only and 9 cmd-only, so the "install it and bash works" headline had never actually fired. The model didn't know there are two paths - bash tools (`ls`/`grep`/`cat`/`find`/`rm`) run on Git Bash, cmd tools (`dir`/`type`/`findstr`) go into the ACL sandbox where the shell can only be cmd. The tool description now spells out both, with valid syntax for each.
+- Fixed three commands that exist in cmd but mean something different: `find`/`sort`/`which`/`uname` used to be routed into cmd, where `find.exe` is a text search and `sort.exe` sorts characters - producing results that look fine but are wrong. They now go to Git Bash.
+- Corrected a misleading message: when S7 cannot parse any route it used to say "target route files are all unreadable", but the real meaning is "no route definitions were parsed" (e.g. a Python project's `@app.get` is not recognised). It is not a permissions problem - don't go chasing paths.
+
 ## [0.19.2] - 2026-11-16
 
 ### Fixed

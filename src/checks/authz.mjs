@@ -139,7 +139,16 @@ export async function checkAuthz(projectDir, { tier, excludes = [], routeResult 
     }
   }
   if (!analyzedRoutes) {
-    return { checkId: 'S7', findings, coverageGap: '目标路由文件均不可读，未验证', warnings };
+    // 2026-11-17 修文案：条件其实是「一条路由都没解析出来」，旧文案写成「文件均不可读」，
+    // 让人以为是权限/路径问题去查错方向。真实常见原因有两个：
+    //   ① 不是 JS/TS 项目（Python 的 @app.get / Go 的 mux.HandleFunc 它不认识）
+    //   ② 是 JS/TS 但路由写法不在识别范围（自定义 wrapper、动态注册）
+    return {
+      checkId: 'S7',
+      findings,
+      coverageGap: '未解析到任何路由定义（越权检查未运行）。常见原因：项目不是 JS/TS 框架，或路由写法不在识别范围（不是文件不可读）',
+      warnings
+    };
   }
   const total = [...byFile.values()].reduce((n, rs) => n + rs.length, 0);
   return { checkId: 'S7', findings, coverageGap: analyzedRoutes < total ? `${total - analyzedRoutes} 条路由处理函数未能解析，越权检查未完全覆盖` : null, warnings };
