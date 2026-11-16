@@ -63,10 +63,13 @@ jobs:
           }
 
           # 2) 从 PATH 里剔除所有 Git 目录（GitHub runner 的 PATH 里有 Git\cmd 与 Git\mingw64\bin）
-          $clean = ($env:PATH -split ';') | Where-Object { $_ -notmatch '\\Git\\' } -join ';'
+          # PowerShell 的 -join 是运算符，不能接在管道尾部（会被当成 Where-Object 的参数）
+          $parts = $env:PATH -split ';'
+          $kept = $parts | Where-Object { $_ -notmatch '\\Git\\' }
+          $clean = (@($kept) -join ';')
           "PATH_CLEAN=$clean" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding UTF8
           Write-Host "PATH entries after removing Git:"
-          ($clean -split ';') | ForEach-Object { Write-Host "  $_" }
+          @($kept) | ForEach-Object { Write-Host "  $_" }
 
       - name: 跑内置 Git Bash 验收（核心工具 + 真实读写）
         shell: pwsh
