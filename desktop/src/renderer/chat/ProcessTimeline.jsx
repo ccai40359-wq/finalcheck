@@ -1,12 +1,15 @@
 // coding agent 式「过程时间线」：Working 计时 + Thought 闪出 + 具体工具条目 + 完成折叠（墨黑鎏金主题）
 // 数据来源：实时 = window.finalcheck.onAgentEvent 事件流（applyAgentEvent 归约到流式消息上）；
 //          历史 = msg.trace / msg.reasoning（落盘无耗时，合成条目）。
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { CommandDetail, GenericToolDetail, BODY_CARD_TOOLS } from './TraceCards.jsx';
 import { humanizeToolError, summarizeToolArgs } from '../lib/humanize.js';
 import { iconFor, IconBrain } from './ToolIcons.jsx';
-import { DEFAULT_WORKING_LABEL, retryLabel } from './activity.mjs';
+import { DEFAULT_WORKING_LABEL } from './activity.mjs';
 import { t } from '../i18n/core.mjs';
+import { timelineEntries } from '../lib/process-events.mjs';
+import { planTimelineWindow } from '../lib/timeline-window.mjs';
+import { useLanguage } from '../i18n/index.jsx';
 
 // 时长进位：60s → 1m，60m → 1h（不再出现 Working 152s / 3900s）
 const fmtDur = (ms) => {
@@ -41,126 +44,7 @@ const oneLine = (s, max = 220) => {
 };
 
 /* ---------- 事件归约 ---------- */
-function finalizeThought(events, at = Date.now()) {
-  for (let i = events.length - 1; i >= 0; i--) {
-    const e = events[i];
-    if (e.type !== 'thought' || !e.live) continue;
-    const ms = e.startedAt ? Math.max(0, at - e.startedAt) : 0;
-    if (!String(e.text || '').trim() && ms < 400) events.splice(i, 1);
-    else events[i] = { ...e, live: false, ms };
-  }
-}
-
-/** agent 事件 → 流式 assistant 消息 reducer（App 的 onAgentEvent 回调里调用） */
-export function applyAgentEvent(msg, ev) {
-  if (!msg || !ev?.kind) return msg;
-  const events = [...(msg.events || [])];
-  switch (ev.kind) {
-    case 'turn-start':
-      return { ...msg, startedAt: ev.at || Date.now() };
-    case 'phase': {
-      if (ev.name === 'thinking' && !events.some((e) => e.type === 'thought' && e.live)) {
-        events.push({ type: 'thought', text: '', startedAt: Date.now(), live: true });
-      }
-      return { ...msg, events };
-    }
-    case 'reasoning': {
-      let idx = -1;
-      for (let i = events.length - 1; i >= 0; i--) {
-        if (events[i].type === 'thought' && events[i].live) { idx = i; break; }
-      }
-      if (idx >= 0) events[idx] = { ...events[idx], text: (events[idx].text || '') + (ev.text || '') };
-      else events.push({ type: 'thought', text: ev.text || '', startedAt: Date.now(), live: true });
-      return { ...msg, events };
-    }
-    case 'activity': {
-      // 主进程真实活动提示：Writing… / Writing <tool>… / Calling <tool>… / Thinking…
-      const label = typeof ev.label === 'string' ? ev.label.trim() : '';
-      if (!label) return msg;
-      return { ...msg, activityLabel: label, activityTone: 'activity', activity: { label, tone: 'activity', tool: ev.tool || null, chars: ev.chars ?? null, at: Date.now() } };
-    }
-    case 'tool-start':
-      finalizeThought(events);
-      // at：真实开始时刻（主进程带上）；卡片用它显示「已耗时 Ns」，而不是只显示静态 running
-      events.push({ type: 'tool', name: ev.name || 'tool', args: String(ev.args || ''), status: 'running', at: Number(ev.at) || Date.now() });
-      // 兜底：即使 activity 事件迟到/缺失，工具开始也会把底部文案切到 Calling <tool>…
-      return { ...msg, events, activityLabel: `Calling ${ev.name || 'tool'}…`, activityTone: 'activity' };
-    case 'tool-end': {
-      for (let i = events.length - 1; i >= 0; i--) {
-        const e = events[i];
-        if (e.type === 'tool' && e.name === ev.name && e.status === 'running') {
-          events[i] = { ...e, status: ev.ok ? 'ok' : 'fail', ms: ev.ms, result: ev.result !== undefined ? ev.result : e.result };
-          break;
-        }
-      }
-      return { ...msg, events };
-    }
-    case 'retry': {
-      // 网关抖动自动重试：事件进时间线，同时把 WorkingStatus 切成琥珀色「重试 2/5 · 网关无响应」
-      const r = { type: 'retry', attempt: ev.attempt, max: ev.max, reason: ev.reason || '' };
-      events.push(r);
-      return { ...msg, events, activityLabel: retryLabel(r), activityTone: 'retry', activity: { ...r, kind: 'retry', label: retryLabel(r), tone: 'retry', at: Date.now() } };
-    }
-    case 'workflow-start':
-      // 工作流工具开始执行：先放一个空骨架（App 的实时卡在首个快照到达后被替换）
-      return {
-        ...msg,
-        workflowStarting: true,
-        workflow: {
-          ...(msg.workflow || {}),
-          running: true,
-          starting: true,
-          startedAt: msg.workflow?.startedAt || ev.at || Date.now(),
-          steps: Array.isArray(msg.workflow?.steps) ? msg.workflow.steps : [],
-          phases: Array.isArray(msg.workflow?.phases) ? msg.workflow.phases : [],
-          concurrency: msg.workflow?.concurrency ?? 14,
-          goal: msg.workflow?.goal || ''
-        }
-      };
-    case 'workflow':
-      // 工作流实时快照（多 agent 运行状态）：只更新消息上的 workflow 字段，不进普通事件列表
-      return { ...msg, workflowStarting: false, workflow: { ...ev, updatedAt: Date.now() } };
-    case 'turn-end':
-      finalizeThought(events);
-      return { ...msg, workedMs: ev.ms ?? msg.workedMs, turnError: !!ev.error, activityLabel: null, activityTone: null, workflowStarting: false };
-    default:
-      return msg;
-  }
-}
-
-/**
- * 一轮结束：把 agentChat 返回的 trace（全量 args + result）按「顺序 + 同名」合并回事件条目。
- * tool-start 事件里的 args 可能被主进程截断，这里用 trace 原文补全；展开面板因此可见完整命令与 diff。
- */
-export function mergeTraceIntoEvents(events, trace, workedMs = null) {
-  const out = (events || []).map((e) => ({ ...e }));
-  if (!trace?.length) return out;
-  const toStr = (v) => (typeof v === 'string' ? v : v != null ? JSON.stringify(v) : '');
-  let ti = 0;
-  for (let i = 0; i < out.length; i++) {
-    const e = out[i];
-    if (e.type !== 'tool') continue;
-    let j = ti;
-    while (j < trace.length && (trace[j].tool || 'tool') !== e.name) j++;
-    if (j >= trace.length) continue;
-    const hit = trace[j];
-    ti = j + 1;
-    if (hit.args != null) e.args = toStr(hit.args);
-    if (hit.result !== undefined) e.result = hit.result;
-    if (e.status === 'running') e.status = 'ok';
-  }
-  // 完成时兜底：turn-end 事件可能晚于结果到达，残留的 live 思考用「到现在」的耗时收尾，
-  // 且不超过整轮 workedMs（避免出现 Thought · 511s 这种跨轮残留）
-  for (const e of out) {
-    if (e.type === 'thought' && e.live) {
-      const raw = e.startedAt ? Math.max(0, Date.now() - e.startedAt) : null;
-      const cap = Number.isFinite(workedMs) && workedMs > 0 ? workedMs : 120000;
-      e.live = false;
-      e.ms = raw == null ? null : Math.min(raw, cap);
-    }
-  }
-  return out;
-}
+export { applyAgentEvent, mergeTraceIntoEvents } from '../lib/process-events.mjs';
 
 function Chevron({ open }) {
   return (
@@ -358,7 +242,7 @@ function ToolEntry({ e, cardInBody }) {
   const label = running && e.name === 'read_file' ? 'Reading' : meta.label;
 
   return (
-    <div className="min-w-0">
+    <div className="min-w-0 fc-tool-entry">
       <button onClick={() => expandable && setOpen(!open)}
         className={`group w-full flex items-center gap-2 text-left text-xs text-mute/70 min-w-0 font-mono transition-colors duration-150
           ${running ? 'animate-pulse' : ''} ${expandable ? 'hover:text-goldSoft cursor-pointer' : 'cursor-default'}`}>
@@ -401,20 +285,21 @@ function ToolEntry({ e, cardInBody }) {
 }
 
 /* 条目列：Thought / 工具 / 重试，左侧细线纵轴 */
-function EntryList({ entries, cardInBody }) {
+const EntryList = React.memo(function EntryList({ entries, cardInBody, offset, language }) {
   if (!entries.length) return null;
   return (
     <div className="ml-0.5 border-l border-edge/80 pl-3 space-y-1.5">
       {entries.map((e, i) => {
-        if (e.type === 'thought') return <ThoughtEntry key={i} e={e} />;
+        const key = e.type === 'tool' && (e.id != null || e.callId != null) ? `tool-${e.id ?? e.callId}` : `${e.type}-${offset + i}`;
+        if (e.type === 'thought') return <ThoughtEntry key={key} e={e} />;
         if (e.type === 'retry') {
-          return <div key={i} className="text-[11px] text-goldSoft/80 font-mono">↻ {t('重试 {attempt}/{max}', { attempt: e.attempt, max: e.max })}{e.reason ? ` · ${humanizeToolError(e.reason)}` : ''}</div>;
+          return <div key={key} className="text-[11px] text-goldSoft/80 font-mono">↻ {t('重试 {attempt}/{max}', { attempt: e.attempt, max: e.max })}{e.reason ? ` · ${humanizeToolError(e.reason)}` : ''}</div>;
         }
-        return <ToolEntry key={i} e={e} cardInBody={cardInBody} />;
+        return <ToolEntry key={key} e={e} cardInBody={cardInBody} />;
       })}
     </div>
   );
-}
+});
 
 /**
  * assistant 消息内附属块：
@@ -445,17 +330,34 @@ function writeTimelineOpen(msg, open) {
   try { if (key) localStorage.setItem(TL_OPEN_PREFIX + key, open ? '1' : '0'); } catch { /* 忽略 */ }
 }
 
-export function ProcessTimeline({ msg }) {
+export const ProcessTimeline = React.memo(function ProcessTimeline({ msg }) {
+  const language = useLanguage();
   const [open, setOpen] = useState(() => readTimelineOpen(msg));
+  const [page, setPage] = useState(null);
+  const { events, trace, reasoning, streaming, interrupted, workedMs } = msg || {};
+  // A typed character or streamed answer token does not change the tool timeline.
+  // Keep the derived entries and visible segment stable until their actual inputs change.
+  const liveEntries = useMemo(() => timelineEntries({ events, trace, reasoning, streaming, interrupted, workedMs }),
+    [events, trace, reasoning, streaming, interrupted, workedMs]);
+  const window = planTimelineWindow(liveEntries.length, page);
+  const visibleEntries = useMemo(() => liveEntries.slice(window.start, window.end), [liveEntries, window.start, window.end]);
   if (!msg || msg.role !== 'assistant') return null;
 
-  const live = !!msg.streaming;
-  const events = msg.events || [];
-  // ask_user 有专门的提问卡（实时卡 / TraceBlock 历史卡），时间线里不再重复一行；
-  // todo_write 同理：验收单由消息区右上角的常驻面板单独渲染（MessageList / TodoPanel），时间线里不重复
-  const isAskUser = (e) => e?.type === 'tool' && e?.name === 'ask_user';
-  const isCardTool = (e) => isAskUser(e) || (e?.type === 'tool' && e?.name === 'todo_write');
-  const liveEntries = events.filter((e) => e.type === 'tool' || e.type === 'retry' || e.type === 'thought').filter((e) => !isCardTool(e));
+  const live = !!streaming;
+  const entryList = (
+    <div data-testid="timeline-segment">
+      {window.pages > 1 ? (
+        <nav aria-label={t('过程记录分页')} className="mb-2 flex flex-wrap items-center gap-2 text-[11px] text-mute/70">
+          <span className="font-mono tabular-nums">{t('过程 {from}–{to} / 共 {total} 条', { from: window.start + 1, to: window.end, total: window.total })}</span>
+          <button type="button" disabled={!window.hasEarlier} onClick={() => setPage(0)} className="hover:text-goldSoft disabled:opacity-35">{t('最早记录')}</button>
+          <button type="button" disabled={!window.hasEarlier} onClick={() => setPage(window.page - 1)} className="hover:text-goldSoft disabled:opacity-35">{t('更早记录')}</button>
+          <button type="button" disabled={!window.hasLater} onClick={() => setPage(window.page + 1 === window.lastPage ? null : window.page + 1)} className="hover:text-goldSoft disabled:opacity-35">{t('更后记录')}</button>
+          <button type="button" disabled={!window.hasLater} onClick={() => setPage(null)} className="hover:text-goldSoft disabled:opacity-35">{t('最新记录')}</button>
+        </nav>
+      ) : null}
+      <EntryList entries={visibleEntries} offset={window.start} cardInBody={!live && !msg.error} language={language} />
+    </div>
+  );
 
   if (live) {
     // 进行中的 Working 计时不再放在这里（消息变长会滚出视野），由消息底部/子代理面板底部渲染 WorkingStatus
@@ -463,7 +365,7 @@ export function ProcessTimeline({ msg }) {
     if (!liveEntries.length && !wfStarting) return null;
     return (
       <div className="mb-2.5">
-        {liveEntries.length ? <EntryList entries={liveEntries} cardInBody={false} /> : null}
+        {liveEntries.length ? entryList : null}
         {wfStarting ? (
           <div className="flex items-center gap-2 text-[11px] text-goldSoft/70">
             <span className="w-1.5 h-1.5 shrink-0 bg-goldSoft/70 animate-pulse" />
@@ -474,29 +376,13 @@ export function ProcessTimeline({ msg }) {
     );
   }
 
-  // 历史恢复：trace 提供全量 args/result；reasoning 补一条 Thought
-  let entries = events.length ? [...liveEntries] : [];
-  if (!events.length) {
-    entries = (msg.trace || []).map((entry) => ({
-      type: 'tool',
-      name: entry.tool || 'tool',
-      args: typeof entry.args === 'string' ? entry.args : entry.args != null ? JSON.stringify(entry.args) : '',
-      result: entry.result,
-      status: 'ok'
-    })).filter((e) => !isCardTool(e));
-  }
-  // 完成态绝不显示还在增长的思考计时（历史 trace 没有耗时，统一显示 Thought 不带秒数）
-  entries = entries.map((e) => (e.type === 'thought' && e.live ? { ...e, live: false, ms: null } : e));
-  if (msg.reasoning && !entries.some((e) => e.type === 'thought')) {
-    entries = [{ type: 'thought', text: msg.reasoning, ms: null, live: false }, ...entries];
-  }
+  const entries = liveEntries;
   const expandable = entries.length > 0;
   if (!expandable && msg.workedMs == null) return null;
 
   const label = msg.workedMs != null
     ? `Worked for ${fmtDur(msg.workedMs)}`
     : t('Worked for {n} 步', { n: entries.filter((e) => e.type === 'tool').length || 1 });
-  const cardInBody = !msg.error;
   return (
     <div className="mb-2.5">
       <button onClick={() => { if (!expandable) return; const v = !open; setOpen(v); writeTimelineOpen(msg, v); }} disabled={!expandable}
@@ -506,9 +392,9 @@ export function ProcessTimeline({ msg }) {
       </button>
       {expandable && open && (
         <div className="mt-2 animate-[fadeIn_.2s_ease]">
-          <EntryList entries={entries} cardInBody={cardInBody} />
+          {entryList}
         </div>
       )}
     </div>
   );
-}
+});

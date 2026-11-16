@@ -11,6 +11,7 @@ import { buildContinueText } from '../lib/continue-prompt.mjs';
 import { t } from '../i18n/core.mjs';
 import AskUserCard from '../components/AskUserCard.jsx';
 import { askUserCardFromTrace } from '../lib/ask-user.mjs';
+import { collapseResultCards } from '../lib/trace-cards.mjs';
 
 /** 四色结论横幅（与 AuditPage 一致）；卡片内只留底色 + 左侧细强调条，不再叠边框 */
 const VERDICT_STYLE = {
@@ -42,11 +43,12 @@ function Chevron({ open }) {
   );
 }
 
-function ToolHeader({ icon, title, subtitle }) {
+function ToolHeader({ icon, title, subtitle, repeatLabel = null }) {
   return (
     <div className="flex items-center gap-2.5 min-w-0">
       <span className="badge shrink-0 bg-gold/12 text-goldSoft text-[11px]">{icon} {title}</span>
       {subtitle ? <span className="text-xs text-mute font-mono truncate min-w-0">{subtitle}</span> : null}
+      {repeatLabel ? <span className="shrink-0 badge bg-white/[0.06] text-mute/80 text-[10px]">{repeatLabel}</span> : null}
     </div>
   );
 }
@@ -108,7 +110,7 @@ function ReportFindings({ findings }) {
 }
 
 /* ---------- 报告卡（audit_project / get_report） ---------- */
-export function ReportCard({ args, result }) {
+export function ReportCard({ args, result, repeatLabel = null }) {
   const [rawOpen, setRawOpen] = useState(false);
   const [open, setOpen] = useState(false); // 默认折叠：只看结论，点开才铺发现列表
   const a = asObj(parseMaybe(args)) || {};
@@ -136,6 +138,7 @@ export function ReportCard({ args, result }) {
         <span className="badge shrink-0 bg-gold/12 text-goldSoft text-[11px]">{t('🩺 体检报告')}</span>
         <span className="text-xs font-mono text-mute/80 truncate min-w-0">{a.dir || ''}</span>
         {vs && <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] ${vs.cls}`}>{t(verdict)}</span>}
+        {repeatLabel ? <span className="shrink-0 badge bg-white/[0.06] text-mute/80 text-[10px]">{repeatLabel}</span> : null}
         {counts ? <span className="shrink-0 text-[10px] text-mute/45">{counts}</span> : null}
         <span className="ml-auto shrink-0"><Chevron open={open} /></span>
       </button>
@@ -178,7 +181,7 @@ export function ReportCard({ args, result }) {
 }
 
 /* ---------- 探测表（probe_target） ---------- */
-export function ProbeCard({ args, result }) {
+export function ProbeCard({ args, result, repeatLabel = null }) {
   const a = asObj(parseMaybe(args)) || {};
   const r = asObj(parseMaybe(result));
   const rows = (r?.results || []).filter((x) => x.kind === 'unauth-access');
@@ -187,7 +190,7 @@ export function ProbeCard({ args, result }) {
   return (
     <ToolShell>
       <div className="px-4 pt-3">
-        <ToolHeader icon="🛡️" title={t('渗透探测')} subtitle={r?.target || a.url || ''} />
+        <ToolHeader icon="🛡️" title={t('渗透探测')} subtitle={r?.target || a.url || ''} repeatLabel={repeatLabel} />
       </div>
       <div className="px-4 py-3 space-y-2.5">
         <div className="rounded-lg bg-white/[0.022] overflow-hidden">
@@ -258,14 +261,14 @@ function StressStat({ label, value, unit, tone = 'text-ink' }) {
   );
 }
 
-export function StressCard({ args, result }) {
+export function StressCard({ args, result, repeatLabel = null }) {
   const a = asObj(parseMaybe(args)) || {};
   const r = asObj(parseMaybe(result));
   if (!r) return null;
   return (
     <ToolShell>
       <div className="px-4 pt-3">
-        <ToolHeader icon="⚡" title={t('压力测试')} subtitle={r.url || a.url || ''} />
+        <ToolHeader icon="⚡" title={t('压力测试')} subtitle={r.url || a.url || ''} repeatLabel={repeatLabel} />
       </div>
       <div className="px-4 py-3">
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
@@ -1044,19 +1047,22 @@ export function GenericToolDetail({ name = '', args, result, running }) {
 }
 
 /** trace 数组 → 正文交付物卡序列：只渲染白名单工具的结果卡（报告/探测表/压测统计），
- *  run_command 等过程类工具一律不出正文卡——其过程细节只在消息顶部 ProcessTimeline 时间线里。 */
+ *  run_command 等过程类工具一律不出正文卡——其过程细节只在消息顶部 ProcessTimeline 时间线里。
+ *  同一工具 + 同一参数只出一张卡（重复次数标在卡头），见 lib/trace-cards.mjs。 */
 export function TraceBlock({ trace, onOpenStep = null, onRecover = null }) {
   if (!trace?.length) return null;
   // ask_user 的问答卡也放在这里：历史加载后从 tool part 还原（answered/cancelled/expired 只读态）
   const cards = trace.filter((entry) => BODY_CARD_TOOLS.has(entry.tool) || entry.tool === 'ask_user');
   if (!cards.length) return null;
+  const slots = collapseResultCards(cards);
   return (
     <div>
-      {cards.map((entry, i) => {
+      {slots.map(({ entry, count }, i) => {
+        const repeatLabel = count > 1 ? t('重复执行 {n} 次', { n: count }) : null;
         if (entry.tool === 'ask_user') return <AskUserCard key={i} payload={askUserCardFromTrace(entry)} />;
-        if (entry.tool === 'audit_project' || entry.tool === 'get_report') return <ReportCard key={i} args={entry.args} result={entry.result} />;
-        if (entry.tool === 'probe_target') return <ProbeCard key={i} args={entry.args} result={entry.result} />;
-        if (entry.tool === 'stress_target') return <StressCard key={i} args={entry.args} result={entry.result} />;
+        if (entry.tool === 'audit_project' || entry.tool === 'get_report') return <ReportCard key={i} args={entry.args} result={entry.result} repeatLabel={repeatLabel} />;
+        if (entry.tool === 'probe_target') return <ProbeCard key={i} args={entry.args} result={entry.result} repeatLabel={repeatLabel} />;
+        if (entry.tool === 'stress_target') return <StressCard key={i} args={entry.args} result={entry.result} repeatLabel={repeatLabel} />;
         if (entry.tool === 'run_workflow') return <WorkflowCard key={i} args={entry.args} result={entry.result} onOpenStep={onOpenStep} onRecover={onRecover} />;
         return null;
       })}

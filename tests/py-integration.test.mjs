@@ -232,3 +232,51 @@ test('py 路由提取：docstring 示例路由与 tests/docs 目录不计入产�
   assert.ok(!paths.includes('/in-docs'), 'docs_src 目录路由不计入产品面');
   assert.ok(raw.warnings.some((w) => w.includes('非产品目录')), '跳过数写进 warnings 保持透明');
 });
+
+test('py 路由守卫：FastAPI Depends() 写在多行函数签名里必须识别（round11 实测 9/12 误报的根因）', async (t) => {
+  const dir = await fixture({
+    'routers/a.py': [
+      'from fastapi import APIRouter, Depends',
+      'router = APIRouter()',
+      '',
+      '# 典型 FastAPI 写法：守卫在函数签名的参数里，跨多行',
+      '@router.post("/generate", response_model=Resp)',
+      'async def generate_image(',
+      '    payload: ImageGenerateRequest,',
+      '    user: User = Depends(current_verified_user),',
+      '    session: AsyncSession = Depends(get_async_session),',
+      ') -> Resp:',
+      '    return await run(payload)',
+      '',
+      '# 单行签名',
+      '@router.get("/account")',
+      'async def account(_: None = Depends(require_api_key)):',
+      '    return 1',
+      '',
+      '# 真的无守卫',
+      '@router.get("/public")',
+      'async def public():',
+      '    return 2',
+      '',
+      '# 依赖名不带 auth/user/token，但有 Depends 关键词',
+      '@router.get("/admin")',
+      'async def admin(',
+      '    u: User = Depends(current_superuser),',
+      '):',
+      '    return 3',
+      '',
+    ].join('\n'),
+  });
+  cleanup(t, dir);
+  const raw = await extractRoutes(dir);
+  const by = new Map(raw.routes.map((r) => [`${r.method} ${r.path}`, r]));
+  assert.equal(by.get('post /generate')?.hasGuard, true, '多行签名里的 Depends(current_verified_user) 必须算守卫');
+  assert.equal(by.get('get /account')?.hasGuard, true, '单行签名里的 Depends(require_api_key) 必须算守卫');
+  assert.equal(by.get('get /admin')?.hasGuard, true, 'Depends(current_superuser) 必须算守卫');
+  assert.equal(by.get('get /public')?.hasGuard, false, '真无守卫的路由仍要报');
+
+  const s1 = await checkAuthCoverage(raw);
+  assert.ok(!s1.findings.some((f) => f.snippet === 'POST /generate'), '有 Depends 守卫的不许报');
+  assert.ok(!s1.findings.some((f) => f.snippet === 'GET /account'), '单行 Depends 不报');
+  assert.ok(s1.findings.some((f) => f.snippet === 'GET /public'), '真裸奔的必须报');
+});

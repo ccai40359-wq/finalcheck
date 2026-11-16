@@ -1,3 +1,5 @@
+import { mergeTraceIntoEvents } from './process-events.mjs';
+
 // 切回一个「后台还在跑」的会话时，把内存里的实时回合叠回磁盘历史。
 // 这里单独抽出来是因为之前踩过一个真 bug：只恢复了 content/events，没恢复 workflow 快照，
 // 结果用户切走再切回来，正在跑的工作流卡片整块消失（工作流其实还在跑）。
@@ -18,9 +20,12 @@ export function mergeRunningRun(loaded, run, { stopped = false, now = Date.now()
     mid: run.mid || null, // 稳定消息 id（时间线展开状态的持久化键）
     content: run.content || '',
     ...(stopped ? { streaming: false, interrupted: true } : { streaming: true }),
-    events: run.events || [],
+    events: mergeTraceIntoEvents(run.events, run.trace, run.workedMs, { completed: stopped, interrupted: stopped, now }),
     startedAt: run.startedAt,
-    trace: [],
+    trace: Array.isArray(run.trace) ? run.trace : [],
+    workedMs: run.workedMs,
+    activityLabel: run.activityLabel,
+    activityTone: run.activityTone,
     // 关键：把工作流实时快照一起恢复，卡片才不会在切会话后消失
     ...(workflow ? { workflow } : {}),
     ...(run.workflowStarting ? { workflowStarting: true } : {})
@@ -31,19 +36,24 @@ export function mergeRunningRun(loaded, run, { stopped = false, now = Date.now()
   const last = messages[messages.length - 1];
   let lastUserIndex = -1;
   for (let i = messages.length - 2; i >= 0; i -= 1) {
-    if (messages[i]?.role === 'user') { lastUserIndex = i; break; }
+    if (messages[i]?.role === 'user' && !messages[i].steer) { lastUserIndex = i; break; }
   }
-  const isPendingTail = userMessage != null
-    && last?.role === 'assistant'
+  // Stable identity wins over nearby user bubbles: Steer inserts a local user before
+  // this same assistant, and repeated prompt text must not replace a different run.
+  const sameRun = run.mid && last?.mid
+    ? run.mid === last.mid
+    : userMessage != null && lastUserIndex >= 0
+      && String(messages[lastUserIndex].content ?? '') === userMessage;
+  const isPendingTail = last?.role === 'assistant'
     && (last.interrupted === true || last.streaming === true)
-    && lastUserIndex >= 0
-    && String(messages[lastUserIndex].content ?? '') === userMessage;
+    && sameRun;
   if (isPendingTail) {
     // 保留磁盘里已落盘的本回合 trace（已完成的 ask 卡等），实时流负责刷新 content/events
     messages[messages.length - 1] = {
       ...liveAssistant,
       content: run.content || last.content || '',
-      trace: Array.isArray(last.trace) ? last.trace : []
+      trace: Array.isArray(last.trace) ? last.trace : liveAssistant.trace,
+      events: mergeTraceIntoEvents(liveAssistant.events, last.trace, run.workedMs, { completed: stopped, interrupted: stopped, now })
     };
   } else {
     messages.push(liveAssistant);

@@ -6,6 +6,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.17.0] - 2026-11-16
+
+### Fixed
+
+- The app no longer keeps your whole machine busy for an invisible animation: the full-screen ambient glow carried a never-ending 32-second drift animation underneath the glass panels, forcing the entire blur to be recomputed every frame. The GPU process measured a steady 11% CPU, dropping to 0.00% when disabled and back to 10.8% when re-enabled. It is now a static glow with almost no visible difference, so nothing redraws in the background.
+- The same probe result no longer floods the transcript: the model treats a penetration probe as a "is the service still up?" heartbeat and probes the same address 6 to 9 times in one turn, producing that many identical tables. Now identical visible content renders as a single card, with the same address and conclusion merged and labelled "Ran N times".
+- Checker detection no longer flashes a window: the main process runs a child process to ask a local checker (rg, osv-scanner) for its version, which used to spawn a visible console. It now runs with a hidden window and a timeout, so audits no longer flash a console.
+- Python projects are no longer reported as unauthenticated by mistake: FastAPI guards live almost entirely in the function signature's `Depends(...)`, and the old scanner stopped at `def`, marking protected routes as having no auth (9 of 12 such S1 findings were false positives on a real business project). It now reads the whole multi-line signature and recognises common guard names (require_api_key, verify_api_key, current_superuser, and others).
+
+### Improved
+
+- Switching back to a very large session no longer takes over ten seconds: the process timeline is now paginated (40 entries per page, with "Entries 161–167 / 167 total" and first/earlier/later/latest buttons). On the same 1044-tool-call test session, session switching dropped from 11.7s to 0.44s and DOM nodes from 14,430 to 3,703.
+- Off-screen content no longer participates in rendering: every message and every tool row in a long session now skips layout and paint while off-screen. The scroll area's total height dropped from 5015px to 4183px with zero dropped frames measured.
+- Glass surfaces cost less: the sidebar and composer blur radii dropped from 32px/28px to 12px/10px, which is visually almost identical while reducing per-frame compositing cost to roughly one seventh.
+- Follows the system "reduce motion" setting: when the OS asks for reduced motion, interface animations and transitions are turned off automatically.
+
 ## [0.16.10] - 2026-11-15
 
 ### Fixed

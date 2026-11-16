@@ -5,8 +5,9 @@ import React, { useEffect, useRef, useState } from 'react';
 import SettingsPage from './pages/SettingsPage.jsx';
 import { api } from './lib/ui.jsx';
 import { mergeRunningRun, shouldReloadSessionFromDisk } from './lib/session-restore.mjs';
+import { acceptRunPacket, reattachedRun } from './lib/agent-resume.mjs';
 import { filterAskCardsByTrace, hideAskTracesForCards } from './lib/ask-cards.mjs';
-import { applyAgentEvent, mergeTraceIntoEvents } from './chat/ProcessTimeline.jsx';
+import { applyAgentEvent, mergeTraceIntoEvents } from './lib/process-events.mjs';
 import { ArtifactPanel } from './chat/ArtifactPanel.jsx';
 import { SubagentPanel } from './chat/SubagentPanel.jsx';
 import { shouldShowArtifactPanel, shouldShowStepPanel } from './lib/panel-visibility.mjs';
@@ -484,7 +485,23 @@ export default function App() {
       inflight: inflightRef.current.has(id)
     })) return;
     try {
-      const s = unwrapIpc(await y.sessions.open(id));
+      let queriedRun = null;
+      if (!runsRef.current.has(id) && y.agentRunState) {
+        queriedRun = reattachedRun(unwrapIpc(await y.agentRunState(id)));
+        if (queriedRun) {
+          runsRef.current.set(id, queriedRun);
+          inflightRef.current.add(id);
+          setRunningIds((prev) => ({ ...prev, [id]: true }));
+          if (queriedRun.stopping) {
+            stoppedRef.current.add(id);
+            stoppingRef.current.add(id);
+            setStoppingIds((prev) => ({ ...prev, [id]: Date.now() }));
+          }
+        }
+      }
+      let s = unwrapIpc(await y.sessions.open(id));
+      // A very short run can settle between the snapshot query and disk read.
+      if (queriedRun && !runsRef.current.has(id)) s = unwrapIpc(await y.sessions.open(id));
       // 归属：调用方传入的项目 → 会话缓存里的目录登记 → 当前项目（老会话/未登记时兜底）
       rememberSessionProject(projectId || projectIdOfSession(s.id) || activeProjectIdRef.current);
       setActiveId(s.id);
@@ -531,6 +548,51 @@ export default function App() {
       refreshSessions(projectId || activeProjectIdRef.current);
     }
   };
+
+  const settleReattachedRun = async (sid, runId, outcome = 'error') => {
+    const run = runsRef.current.get(sid);
+    if (!run?.reattached || run.runId !== runId || run.settling) return;
+    run.settling = true;
+    // Keep busy until disk has been reread; a queued/new turn must not race this reload.
+    runsRef.current.delete(sid);
+    inflightRef.current.delete(sid);
+    turnOutcomeRef.current.set(sid, outcome);
+    try {
+      if (activeIdRef.current === sid) await openSession(sid);
+    } finally {
+      setRunningIds((prev) => { const next = { ...prev }; delete next[sid]; return next; });
+      stoppingRef.current.delete(sid);
+      stoppedRef.current.delete(sid);
+      setStoppingIds((prev) => { const next = { ...prev }; delete next[sid]; return next; });
+      askCardsRef.current = askCardsRef.current.filter((c) => c.sessionId !== sid);
+      setAskCards(askCardsRef.current);
+    }
+  };
+
+  // The query also covers a lost completion notification during reload/reattach. Only
+  // reattached runs poll; normal agentChat Promise finalization remains unchanged.
+  useEffect(() => {
+    if (!y?.agentRunState) return undefined;
+    let cancelled = false;
+    const timer = setInterval(async () => {
+      for (const [sid, run] of runsRef.current) {
+        if (!run.reattached || run.settling) continue;
+        try {
+          const snapshot = unwrapIpc(await y.agentRunState(sid));
+          if (cancelled || runsRef.current.get(sid) !== run) continue;
+          if (!snapshot || snapshot.runId !== run.runId) {
+            await settleReattachedRun(sid, run.runId, 'error');
+          } else if (snapshot.seq >= run.seq) {
+            // Equal seq can still fill a packet lost before the initial query reply was
+            // installed locally. A snapshot older than a received delta must never win.
+            Object.assign(run, snapshot);
+            if (activeIdRef.current === sid) setMessages((prev) => mergeRunningRun(prev, run, { stopped: stoppedRef.current.has(sid) }).messages);
+          }
+        } catch { /* transient query failure is retried; never invent a completed state */ }
+      }
+    }, 1000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [y]);
 
   // 点某个 Workspace 下的会话：不属于当前项目 → 先切到它所属项目（模型/权限/New Session 跟着走），再打开
   const openProjectSession = async (p, s) => {
@@ -722,6 +784,7 @@ export default function App() {
         const txt = p && typeof p === 'object' ? p.text : '';
         if (!sid || typeof txt !== 'string' || !txt) return;
         const run = runsRef.current.get(sid);
+        if (p.runId && !acceptRunPacket(run, p)) return;
         if (run) run.content += txt;
         if (activeIdRef.current !== sid) return;
         setMessages((prev) => {
@@ -744,6 +807,11 @@ export default function App() {
       const sid = p && typeof p === 'object' ? p.sessionId : null;
       const ev = p && typeof p === 'object' ? p.ev : p;
       if (!ev) return;
+      if (ev.kind === 'run-settled') {
+        if (sid) void settleReattachedRun(sid, p.runId, ev.outcome);
+        return;
+      }
+      if (sid && p.runId && !acceptRunPacket(runsRef.current.get(sid), p)) return;
       // 上下文压缩：只更新「当前会话」的活动行状态，不并进过程时间线（它不是一个工具步骤）
       if (ev.kind === 'compact-start' || ev.kind === 'compact-end') {
         if (!sid || activeIdRef.current !== sid) return; // 后台会话的压缩不打扰当前对话
@@ -763,12 +831,10 @@ export default function App() {
       try {
         const run = runsRef.current.get(sid);
         if (run) {
-          run.events = [...(run.events || []), ev];
-          // 工作流快照单独存一份：切走再切回来时卡片要能原样恢复（只存 events 会丢卡片）
-          if (ev.kind === 'workflow') run.workflow = ev;
-          if (ev.kind === 'workflow-start') run.workflowStarting = true;
+          // 前台和后台缓存使用同一个 reducer；切回时不再把 raw kind 事件当成 type 条目。
+          Object.assign(run, applyAgentEvent(run, ev));
         }
-        if (ev.kind === 'turn-end') {
+        if (ev.kind === 'turn-end' && !run?.reattached) {
           setStoppingIds((prev) => { if (!prev[sid]) return prev; const n = { ...prev }; delete n[sid]; return n; });
           stoppingRef.current.delete(sid);
           // 兜底：回合已收尾但压缩的 end 事件丢了（极端情况）→ 不能留一个永远转的圈
@@ -1174,7 +1240,7 @@ export default function App() {
           const pm = next[last] || {};
           const fallbackMs = pm.startedAt ? Date.now() - pm.startedAt : undefined;
           const timeline = { // 过程时间线数据随消息固化（完成态折叠展示）；trace 全量 args/result 合并回条目供展开查看
-            events: mergeTraceIntoEvents(pm.events || [], r.trace || [], r.workedMs),
+            events: mergeTraceIntoEvents(pm.events || [], r.trace || [], r.workedMs, { interrupted: !!(r.cancelled || r.error) }),
             startedAt: pm.startedAt,
             workedMs: r.workedMs ?? pm.workedMs ?? fallbackMs,
             reasoning: r.reasoning || undefined,
@@ -1201,7 +1267,7 @@ export default function App() {
           const pm = next[next.length - 1] || {};
           next[next.length - 1] = {
             role: 'assistant', content: '', error: t('Agent 调用失败：{msg}', { msg: e.message }), trace: [],
-            events: pm.events || [], startedAt: pm.startedAt,
+            events: mergeTraceIntoEvents(pm.events, pm.trace, pm.workedMs, { interrupted: true }), startedAt: pm.startedAt,
             workedMs: pm.workedMs ?? (pm.startedAt ? Date.now() - pm.startedAt : undefined)
           };
           return next;

@@ -1,4 +1,6 @@
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { applyAgentEvent } from '../../renderer/lib/process-events.mjs';
 import { readFile } from 'node:fs/promises';
 import * as sessions from '../sessions.mjs';
 import * as permissions from '../permissions.mjs';
@@ -82,6 +84,13 @@ export function registerAgentIpc({
   state
 }) {
   const workflowRunsDir = () => path.join(getDataRoot(), 'workflow-runs');
+  // One snapshot per executing invocation only. Separate from activeChats because cancel removes
+  // its controller before persistence/cleanup finishes; a reattached renderer must await settlement.
+  const liveRuns = new Map();
+  ipcMain.handle('finalcheck:agent-run-state', (_e, sessionId) => {
+    const run = liveRuns.get(sessionId);
+    return run ? structuredClone({ ...run.snapshot, stopping: run.signal.aborted }) : null;
+  });
 
   // 回合中途提问：pending 只活在内存里；问题/回答由 ask_user 的 tool part 落库
   // （args 在 tool-start 写入，{answer} 在 tool-end 写入），重开会话从 trace 还原卡片。
@@ -164,9 +173,18 @@ export function registerAgentIpc({
 
   ipcMain.handle('finalcheck:agent-chat', async (_e, messages, _legacyConfirmedHosts = [], sessionId = null) => {
     const chatAbort = new AbortController();
+    chatAbort.snapshot = {
+      runId: randomUUID(), seq: 0, startedAt: Date.now(), events: [], content: '',
+      userMessage: [...(messages || [])].reverse().find((m) => m?.role === 'user')?.content || ''
+    };
+    chatAbort.snapshot.mid = 'run-' + chatAbort.snapshot.runId;
+    if (sessionId) liveRuns.set(sessionId, chatAbort);
     if (sessionId) state.activeChats.set(sessionId, chatAbort);
+    let outcome = 'error';
     try {
-      return await runAgentChat({ messages, sessionId, chatAbort });
+      const result = await runAgentChat({ messages, sessionId, chatAbort });
+      outcome = result?.cancelled || result?.interrupted ? 'stopped' : result?.error ? 'error' : 'ok';
+      return result;
     } catch (e) {
       // 回合级异常（配置读失败 / 引擎模块导入失败 / 初始化顺序错误…）：
       // 必须清掉运行态，否则下一回合会被判「仍在运行」→ 发送被入队、Steer 被拒，界面像卡死。
@@ -175,11 +193,26 @@ export function registerAgentIpc({
       state.steerBuffers.delete(sessionId);
       try { console.warn('[agent-chat] 回合异常终止（已清理运行态）：' + (e?.stack || e)); } catch { /* 忽略 */ }
       throw e;
+    } finally {
+      if (sessionId && state.activeChats.get(sessionId) === chatAbort) state.activeChats.delete(sessionId);
+      if (sessionId && liveRuns.get(sessionId) === chatAbort) liveRuns.delete(sessionId);
+      // runAgentChat returns after its assistant has been persisted. The old invoke Promise
+      // disappears on renderer reload; this independent notification closes reattached runs.
+      try { getWin()?.webContents.send('finalcheck:agent-event', { sessionId, runId: chatAbort.snapshot.runId, seq: ++chatAbort.snapshot.seq, ev: { kind: 'run-settled', outcome } }); } catch { /* renderer may be reloading */ }
     }
   });
 
   // agent-chat 的实现：注册在上面（异常清理包在外层），这里只负责一个回合的正文
   const runAgentChat = async ({ messages, sessionId, chatAbort }) => {
+    const sendToken = (text) => {
+      chatAbort.snapshot.content += text;
+      const seq = ++chatAbort.snapshot.seq;
+      getWin()?.webContents.send('finalcheck:agent-token', { sessionId, text, runId: chatAbort.snapshot.runId, seq });
+    };
+    const sendEvent = (ev) => {
+      chatAbort.snapshot = { ...applyAgentEvent(chatAbort.snapshot, ev), seq: chatAbort.snapshot.seq + 1 };
+      getWin()?.webContents.send('finalcheck:agent-event', { sessionId, ev, runId: chatAbort.snapshot.runId, seq: chatAbort.snapshot.seq });
+    };
     const { runAgentTurn, injectSessionHookContext, resolveWorkflowStepModel, computeCrossFamilyWarnings } = await import(engineUrl('desktop/src/main/agent-service.mjs'));
     // 本回合的项目上下文快照：按「会话所属项目」，之后无论 UI 切到哪个项目都不再重读全局
     const turnProjectPath = sessionProjectPathOf(sessionId);
@@ -586,8 +619,8 @@ export function registerAgentIpc({
         return list.slice();
       },
       cwd: turnProjectPath,
-      onToken: (text) => getWin()?.webContents.send('finalcheck:agent-token', { sessionId, text }),
-      onEvent: (ev) => getWin()?.webContents.send('finalcheck:agent-event', { sessionId, ev }),
+      onToken: sendToken,
+      onEvent: sendEvent,
       // 按请求记账：主 agent 每完成一次模型请求就追加一条账本（跑长任务时数字会持续上涨）。
       // 回合结束不再用 out.usage 补记，避免同一请求被记两次。
       onUsage: (u) => {
@@ -602,7 +635,7 @@ export function registerAgentIpc({
       },
       // 工具层的「长命令仍在跑」提示（F7）：run_command 超过 60s 每 30s 推一条，只带耗时；
       // 不设硬超时（尊重「不要默认墙钟超时」），只把「还在动」变成可见。
-      onActivity: (ev) => getWin()?.webContents.send('finalcheck:agent-event', { sessionId, ev }),
+      onActivity: sendEvent,
       // 工具调用级落库（SQLite 后端）：开始写 running part、结束补 status/result/error/ms；
       // 不 await（落库慢不拖工具执行），withQueue 按会话串行保证 start→end→回合收尾的顺序。
       onToolLifecycle: sessionId ? (ev) => {
@@ -630,7 +663,7 @@ export function registerAgentIpc({
         hooksConfig: hooksCfg,
         sessionId,
         commandIdleMs: cfg.commandIdleMs,
-        onActivity: (ev) => getWin()?.webContents.send('finalcheck:agent-event', { sessionId, ev }),
+        onActivity: sendEvent,
         // 只有主 agent 有 ask_user；子代理/工作流 gate 不注册（避免并行弹多张卡）
         askUser: (args, ctx) => askUsers.ask({ ...(args || {}), sessionId, signal: ctx?.signal || chatAbort.signal }),
         // 验收单同理：todo_write 只在主 agent 工具表；台账按会话存，回合末跑报告闸
@@ -729,7 +762,7 @@ export function registerAgentIpc({
                   : stepOut;
               },
               // 实时快照 → 渲染层（多 agent 流程状态卡）
-              onUpdate: (snap) => { if (sessionId) getWin()?.webContents.send('finalcheck:agent-event', { sessionId, ev: snap }); }
+              onUpdate: (snap) => { if (sessionId) sendEvent(snap); }
             });
             if (r && !r.error) {
               // 跨家族复核：只告警不失败（verify/arbitrate 与 find 同一家族 = 复核独立性不足）

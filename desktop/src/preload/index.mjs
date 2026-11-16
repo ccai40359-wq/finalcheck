@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld('finalcheck', {
   probe: (url, opts) => ipcRenderer.invoke('finalcheck:probe', url, opts),
   stress: (url, opts) => ipcRenderer.invoke('finalcheck:stress', url, opts),
   agentChat: (messages, confirmedHosts, sessionId) => ipcRenderer.invoke('finalcheck:agent-chat', messages, confirmedHosts, sessionId),
+  agentRunState: (sessionId) => ipcRenderer.invoke('finalcheck:agent-run-state', sessionId),
   agentSteer: (sessionId, text) => ipcRenderer.invoke('finalcheck:agent-steer', sessionId, text),
   cancelChat: (sessionId) => ipcRenderer.invoke('finalcheck:agent-cancel', sessionId),
   workflowControl: (sessionId, payload) => ipcRenderer.invoke('finalcheck:workflow-control', sessionId, payload),

@@ -396,20 +396,21 @@ function refreshTurns(db, id, knownCount = null) {
 function traceToData(tr) {
   const obj = tr && typeof tr === 'object' ? tr : { tool: String(tr ?? '') };
   return {
-    status: typeof obj.status === 'string' ? obj.status : (obj.error ? 'error' : 'success'),
+    status: typeof obj.status === 'string' ? obj.status : (obj.error || obj.result?.error ? 'error' : 'success'),
     name: String(obj.tool ?? obj.name ?? ''),
     args: obj.args === undefined ? null : obj.args,
     result: obj.result === undefined ? null : obj.result,
     error: obj.error === undefined ? null : obj.error,
     ms: obj.ms === undefined ? null : obj.ms,
+    ...(obj.callId != null ? { callId: String(obj.callId) } : {}),
   };
 }
 
 function dataToTrace(data) {
   if (!data || typeof data !== 'object') return { tool: '', args: null, result: null };
   const base = { tool: data.name ?? '', args: data.args ?? null, result: data.result ?? null };
-  // ask_user 的卡片需要区分「等待中 / 已回答 / 已取消」：只对这个工具额外带 status/error/callId，
-  // 其余工具的 trace 形状保持不变（既有断言与渲染都不受影响）。
+  // 老 history 的无元数据 success trace 保持原形状；真实生命周期字段必须传回渲染层，
+  // 否则重载后 running/失败工具会被一律画成成功，也无法按调用 id 去重。
   if (String(data.name ?? '') === 'ask_user') {
     return {
       ...base,
@@ -418,7 +419,13 @@ function dataToTrace(data) {
       callId: data.callId == null ? null : String(data.callId)
     };
   }
-  return base;
+  return {
+    ...base,
+    ...(typeof data.status === 'string' && data.status !== 'success' ? { status: data.status } : {}),
+    ...(data.error != null ? { error: String(data.error) } : {}),
+    ...(data.callId != null ? { callId: String(data.callId) } : {}),
+    ...(data.ms != null ? { ms: data.ms } : {})
+  };
 }
 
 /* ---------- 工具调用级落库（第 2 步）：running → ok/fail，崩溃后仍可见 ----------

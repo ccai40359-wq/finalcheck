@@ -1,8 +1,9 @@
 // 消息区：滚动容器 + 用户/助手/Notice 气泡 + 回到底部按钮 + 右上角常驻验收单面板。
 // 纯展示：消息、会话与滚动状态都在 App，这里只读 props 并按原有内联 JSX 渲染。
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../lib/ui.jsx';
 import { t } from '../i18n/core.mjs';
+import { useLanguage } from '../i18n/index.jsx';
 import {
   splitAttachmentBlock, parseWorkflowPrompt, parseSkillSegments, baseName, IMG_EXT_RE, previewFromPath
 } from '../lib/app-helpers.mjs';
@@ -91,9 +92,10 @@ export default function MessageList({
   askCards = [], onAskUserAnswer = null
 }) {
   // 当前会话最新一份验收单：面板只显示这一份；消息流里同一份不再内联渲染（避免一屏两份）。
-  const latestTodo = latestTodoFromMessages(messages);
+  const language = useLanguage();
+  const latestTodo = useMemo(() => latestTodoFromMessages(messages), [messages]);
   // 模型切换分隔线（round9，对齐 ZCode）：相邻回合的模型/厂商不同 → 中间插一条居中分隔线
-  const shown = withModelDividers(messages, (from, to) => `⇄ ${t('模型切换')}：${from} → ${to}`);
+  const shown = useMemo(() => withModelDividers(messages, (from, to) => `⇄ ${t('模型切换')}：${from} → ${to}`), [messages, language]);
 
   // 只有用户本来就在底部附近才自动跟随；往上看历史时保持不动（判定逻辑与拆分前一致）
   const handleScroll = (e) => {
@@ -124,8 +126,9 @@ export default function MessageList({
             // React 身份键：绝不能用数组下标——切会话时两条会话的消息数组重叠，
             // 下标相同会让 React 复用组件实例，ProcessTimeline 的展开 state 就被跨会话继承，
             // 表现为「切回来所有过程全收起」（round9 用户实测根因之②）。
-            // 优先消息自身 id/mid；无 id 的本地气泡用「角色+时间戳+内容指纹」兜底，仍保证跨会话唯一。
-            const mk = m.mid || m.id || `local-${m.role}-${m.startedAt || ''}-${String(m.content || '').slice(0, 24)}-${i}`;
+            // 会话 id 始终参与身份：旧 JSON 可能没有 id，且不同会话可能有相同开头。
+            // 整条消息及其 Timeline/TodoHistoryRow 等子树均随会话切换重建，避免继承展开/分页状态。
+            const mk = JSON.stringify([activeId ?? null, m.mid || m.id || `local-${m.role}-${m.startedAt || ''}-${String(m.content || '').slice(0, 24)}-${i}`]);
             return (
           m.role === 'notice' ? (
             <div key={mk} className="flex items-center gap-3 py-1 text-[11px] text-mute/60">
@@ -216,7 +219,7 @@ export default function MessageList({
             );
           })() : (
             /* AI 回答去气泡：无底色卡片，仅左侧金竖线（错误消息换红线）区分 */
-            <div key={mk} className={`w-full border-l-2 pl-4 transition-all duration-200 ${m.error ? 'border-red-500/50' : m.interrupted ? 'border-gold/25' : 'border-gold/45'}`}>
+            <div key={mk} className={`w-full border-l-2 pl-4 transition-all duration-200 cv-auto ${m.error ? 'border-red-500/50' : m.interrupted ? 'border-gold/25' : 'border-gold/45'}`}>
               <ProcessTimeline msg={m} />
               {/* 验收单：最新一份钉在右上角面板；这里只在旧回合留一行只读摘要（同一份不渲染两次） */}
               {latestTodo?.index === i ? null : <TodoHistoryRow msg={m} />}

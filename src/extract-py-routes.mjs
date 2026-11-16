@@ -13,7 +13,12 @@ const ROUTE_METHODS = new Set(['get', 'post', 'put', 'delete', 'patch']);
 // 文件级跳过 + 跳过数进 warnings（fail-open 为「路由表更小」，覆盖缺口仍由 httpSignal 兜底，不冒充已解析）。
 const NON_PRODUCT_DIRS = new Set(['tests', 'test', 'docs', 'docs_src', 'examples', 'example', 'demos', 'demo', 'tutorials', 'tutorial', 'benchmarks']);
 // 鉴权装饰器/依赖：命中即算有守卫（与 TS 侧 GUARD_RE 同思路，词边界防 user_id 误判）
-const AUTH_PY_RE = /login_required|jwt_required|jwt_protected|get_current_user|current_user|requires_auth|auth_required|AuthenticatedUser|Depends\s*\(\s*\w*(?:auth|Auth|user|User|token|Token)/;
+// 守卫识别（round11 实测扩充）：
+// 常见 FastAPI 鉴权依赖命名远超「带 auth/user/token」的正则，实际项目里高频出现的是：
+//   require_api_key / api_key_required / require_auth / current_superuser / current_verified_user /
+//   get_current_active_user / verify_api_key / Security(...) / depends(..., scopes=[...])
+// 漏掉这些名字 = 把受保护路由误报成裸奔（Hetzner 业务项目实测 9/12 条 S1 误报）。
+const AUTH_PY_RE = /login_required|jwt_required|jwt_protected|get_current_user|current_user|requires_auth|auth_required|AuthenticatedUser|require_api_key|api_key_required|require_auth|require_login|require_user|require_admin|require_superuser|current_superuser|current_verified_user|get_current_active_user|get_current_superuser|verify_api_key|verify_token|check_api_key|Depends\s*\(\s*\w*(?:auth|Auth|user|User|token|Token|key|Key|perm|Perm|role|Role|scope|Scope|guard|Guard|login|Login|session|Session)|Security\s*\(/;
 const HTTP_VERBS_RE = /methods\s*=\s*\[([^\]]*)\]/i;
 
 // 从第 i 行的装饰器开始，收集到配对右括号（跨行，粗略跳过字符串字面量），
@@ -127,7 +132,30 @@ export async function extractPyRoutes(projectDir, { excludes = [], includeFixtur
         for (let k = i + 1; k < lines.length; k++) {
           const t = lines[k];
           if (/^\s*@\w/.test(t)) { if (AUTH_PY_RE.test(t)) guard = true; continue; }
-          if (/^\s*(?:async\s+)?def\s/.test(t)) break;
+          if (/^\s*(?:async\s+)?def\s/.test(t)) {
+            // ⚠️ FastAPI 的鉴权几乎全写在**函数签名的参数**里（通常跨多行）：
+            //   async def handler(
+            //       payload: X,
+            //       user: User = Depends(current_verified_user),   ← 守卫在这
+            //   ):
+            // 旧逻辑遇到 def 就 break，导致所有用 Depends(...) 鉴权的 FastAPI 路由被判「无守卫」
+            // （round11 实测：Hetzner 业务项目 9/12 条 S1 是这类误报）。
+            // 现在改为：从 def 行起扫到签名右括号为止，整段签名参与守卫匹配。
+            let depth = 0;
+            let sigLines = [];
+            for (let m = k; m < lines.length && m - k <= 20; m++) {
+              const ln = lines[m];
+              sigLines.push(ln);
+              for (const ch of ln) {
+                if (ch === '(') depth++;
+                else if (ch === ')') depth--;
+              }
+              if (depth <= 0 && m > k) break;   // 签名闭合
+              if (depth <= 0 && m === k && ln.includes(')')) break; // 单行签名
+            }
+            if (AUTH_PY_RE.test(sigLines.join('\n'))) guard = true;
+            break; // 签名是静态守卫的唯一来源，扫完即止
+          }
           if (/^\s*\S/.test(t) && !/^\s*@/.test(t)) break; // 不是装饰器也不是 def：装饰器链断了
         }
       }

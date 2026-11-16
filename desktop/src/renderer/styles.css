@@ -64,7 +64,11 @@ h1, h2, .brand, .font-kai {
   background: radial-gradient(120% 90% at 50% -10%, #100c07 0%, #09090b 58%, #060608 100%);
 }
 
-/* 玻璃后面要有东西可折射：两团极暗的光晕，极慢漂移 */
+/* 玻璃后面要有东西可折射：两团极暗的光晕。
+   性能：这里曾经挂着 ambient-drift 32s 无限漂移动画。它是全屏（inset:-18%）、
+   又压在 backdrop-filter 玻璃面板下面，导致整棵 1.4 万节点的树每帧重新合成，
+   GPU 进程实测稳定吃 11% CPU（关闭后掉到 0.00%，开回 10.8%——A/B/A 闭环验证）。
+   光晕本身是 static 渐变，不做动画视觉上几乎无差；改由 JS 在空闲时不再驱动。 */
 .app-ambient {
   position: fixed;
   inset: -18%;
@@ -74,22 +78,20 @@ h1, h2, .brand, .font-kai {
     radial-gradient(closest-side, rgba(201, 162, 39, 0.05), transparent 74%) 8% 4% / 44vmax 44vmax no-repeat,
     radial-gradient(closest-side, rgba(63, 158, 110, 0.035), transparent 74%) 96% 2% / 34vmax 34vmax no-repeat,
     radial-gradient(closest-side, rgba(227, 197, 107, 0.03), transparent 74%) 78% 100% / 46vmax 46vmax no-repeat;
-  animation: ambient-drift 32s ease-in-out infinite alternate;
-}
-@keyframes ambient-drift {
-  from { transform: translate3d(-1.2%, -0.8%, 0) scale(1); }
-  to { transform: translate3d(1.2%, 1.2%, 0) scale(1.05); }
 }
 
 
 /* 正文区薄暗纱：玻璃透光但不牺牲文字对比度 */
 .chat-veil { background: rgba(8, 8, 10, 0.72); }
 
-/* 侧栏玻璃 */
+/* 侧栏玻璃。
+   性能：blur 半径的代价是卷积核面积 ≈ 半径平方，32px → 12px 约省 7 倍。
+   侧栏本身就压着接近不透明的底色（.93 alpha），大半径在视觉上几乎无差别，
+   但每帧重新合成整块侧栏的成本会掉一个数量级。 */
 .glass-side {
   background-color: rgba(12, 12, 15, 0.93);
   background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.010) 45%, rgba(255, 255, 255, 0.018));
-  backdrop-filter: blur(32px) saturate(165%);
+  backdrop-filter: blur(12px) saturate(160%);
   box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.06), 14px 0 44px rgba(0, 0, 0, 0.35);
 }
 
@@ -107,11 +109,13 @@ h1, h2, .brand, .font-kai {
 }
 .glass-row:active:not(:disabled) { transform: scale(0.985); }
 
-/* 输入框（无边框，只有玻璃边缘高光） */
+/* 输入框（无边框，只有玻璃边缘高光）。
+   性能：同 .glass-side，28px → 10px。输入框有 0.82 alpha 底色 + 明显内高光，
+   缩小半径后肉眼几乎无差，但每帧合成成本降到约 1/8。 */
 .glass-composer {
   background-color: rgba(19, 19, 23, 0.82);
   background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.018) 45%, rgba(255, 255, 255, 0.028));
-  backdrop-filter: blur(28px) saturate(175%);
+  backdrop-filter: blur(10px) saturate(170%);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.10), inset 0 0 0 1px rgba(255, 255, 255, 0.045), 0 18px 54px rgba(0, 0, 0, 0.42);
   transition: box-shadow 0.3s var(--fc-ease), background-color 0.3s var(--fc-ease);
 }
@@ -326,3 +330,30 @@ button, [role="button"] {
 .wf-scroll::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.14); border-radius: 8px; }
 .wf-scroll::-webkit-scrollbar-thumb:hover { background: rgba(227, 197, 107, 0.35); }
 .wf-scroll::-webkit-scrollbar-track { background: transparent; }
+
+/* ============ 屏幕外内容免渲染（content-visibility） ============ */
+/* 浏览器会跳过屏幕外元素的布局与绘制，只保留一个占位盒。
+   实测背景：一个 267 次工具调用的会话会产生 14430 个 DOM 节点，滚动时全部参与合成。
+   contain-intrinsic-size 给占位盒一个估计高度，避免滚动条长度跳变。
+   注意：不要加在「高度必须精确」的容器上（会让 scrollTop 计算抖动）。 */
+.timeline-segment,
+.cv-auto {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 400px; /* auto = 记住上次实测高度，首次用 400px 估计 */
+}
+
+/* 时间线里的工具行：屏幕外同样跳过绘制 */
+.fc-tool-entry {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 28px;
+}
+
+/* 尊重系统的「减少动效」设置：全局停跳动画与过渡（省电、无障碍） */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

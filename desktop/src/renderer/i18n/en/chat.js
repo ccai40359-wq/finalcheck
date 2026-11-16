@@ -1,6 +1,13 @@
 // 对话区（TraceCards / ProcessTimeline / SubagentPanel / SwarmResult / humanize 等）的英文词典
 // 约定见 core.mjs：key 是界面上的中文原文，value 是英文译文；{name} 为占位符。
 export const EN_CHAT = {
+  '过程记录分页': 'Process history pages',
+  '过程 {from}–{to} / 共 {total} 条': 'Entries {from}–{to} / {total} total',
+  '最早记录': 'First entries',
+  '更早记录': 'Earlier entries',
+  '更后记录': 'Later entries',
+  '最新记录': 'Latest entries',
+  '重复执行 {n} 次': 'Ran {n} times',
   '待确认': 'Needs confirmation',
   // 基础状态（与 common 重复的几条保持原样，历史原因）
   '运行中': 'Running',

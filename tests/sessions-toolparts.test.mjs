@@ -9,6 +9,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { timelineEntries } from '../desktop/src/renderer/lib/process-events.mjs';
 import { createRequire } from 'node:module';
 
 const require = createRequire(new URL('../desktop/package.json', import.meta.url));
@@ -49,11 +50,11 @@ test('工具开始落 running；结束时同一 part 更新为 ok，result/error
   const started = await sessions.appendToolStart(s.id, { callId: 'call-1', name: 'run_command', args });
   assert.ok(started && started.partId && started.messageId, '开始执行必须返回进行中的 message/part');
 
-  // 进行中：消息已可见（assistant 行懒建），trace 形状保持 {tool,args,result}
+  // 进行中：消息已可见；trace 保留真实状态与调用 id 供重载恢复
   const mid = await sessions.loadSession(s.id);
   assert.equal(mid.messages.length, 2);
   assert.equal(mid.messages[1].role, 'assistant');
-  assert.deepEqual(mid.messages[1].trace, [{ tool: 'run_command', args, result: null }]);
+  assert.deepEqual(mid.messages[1].trace, [{ tool: 'run_command', args, result: null, status: 'running', callId: 'call-1' }]);
 
   const raw0 = openRaw(dir);
   try {
@@ -99,7 +100,7 @@ test('工具开始落 running；结束时同一 part 更新为 ok，result/error
   assert.equal(loaded.messages[1].reasoning, '先跑命令看输出。');
   assert.equal(loaded.messages[1].workedMs, 99);
   assert.equal(loaded.messages[1].interrupted, false);
-  assert.deepEqual(loaded.messages[1].trace, [{ tool: 'run_command', args, result: { stdout: 'a.txt' } }], 'trace 形状不变');
+  assert.deepEqual(loaded.messages[1].trace, [{ tool: 'run_command', args, result: { stdout: 'a.txt' }, status: 'ok', callId: 'call-1', ms: 42 }], '完整结果和调用元数据都保留');
 
   const raw2 = openRaw(dir);
   try {
@@ -149,7 +150,8 @@ test('崩溃语义：只写 running 就被杀，重开库 loadSession 仍能看�
   assert.equal(reopened.messages.length, 2, '进行中的 assistant 行不能消失');
   assert.equal(reopened.messages[1].role, 'assistant');
   assert.equal(reopened.messages[1].interrupted, true, '等价「未完成」标记：已中断');
-  assert.deepEqual(reopened.messages[1].trace, [{ tool: 'run_command', args, result: null }], 'trace 形状仍是原样数组');
+  assert.deepEqual(reopened.messages[1].trace, [{ tool: 'run_command', args, result: null, status: 'running', callId: 'call-crash' }], '重载保留磁盘未完成证据');
+  assert.equal(timelineEntries(reopened.messages[1])[0].status, 'fail', '没有活跃回合的历史不能假装工具仍在运行');
 
   const raw1 = openRaw(dir);
   try {
@@ -202,7 +204,7 @@ test('参数绑定：工具名/参数/结果里的引号、--、DROP 不注入�
   const loaded = await sessions.loadSession(s.id);
   assert.equal(loaded.title, "'; DELETE FROM message; --", '首条用户消息成为标题，原样保存');
   assert.equal(loaded.messages[1].content, "回答 'quoted' -- ;DROP");
-  assert.deepEqual(loaded.messages[1].trace, [{ tool: name, args, result }]);
+  assert.deepEqual(loaded.messages[1].trace, [{ tool: name, args, result, status: 'ok', callId: "c'); --", ms: 5 }]);
 });
 
 test('写入频率：一次长工具全程只写 2 次 part（开始 INSERT + 结束 UPDATE）', async (t) => {
@@ -280,7 +282,10 @@ test('端到端（模拟 index 接线）：工具事件按队列落库，回合�
   });
   const loaded = await sessions.loadSession(s.id);
   assert.equal(loaded.messages.length, 2, '端到端只产生 user + assistant 两条消息');
-  assert.deepEqual(loaded.messages[1].trace, out.trace, 'trace 与实际工具结果一致');
+  assert.deepEqual(loaded.messages[1].trace.map(({ tool, args, result }) => ({ tool, args, result })), out.trace, 'trace 与实际工具结果一致');
+  assert.equal(loaded.messages[1].trace[0].callId, 'e2e-1');
+  assert.equal(loaded.messages[1].trace[0].status, 'ok');
+  assert.ok(Number.isFinite(loaded.messages[1].trace[0].ms));
   const raw = openRaw(dir);
   try {
     const assistant = raw.prepare('SELECT id FROM message WHERE session_id = ? AND role = ?').get(s.id, 'assistant');
@@ -429,4 +434,23 @@ test('启动收尾：项目根下没有 .finalcheck 库时不建库（不污染�
   assert.equal(await sessions.markInterruptedRunningParts(proj), 0);
   assert.equal(existsSync(path.join(proj, 'finalcheck.db')), false, '不能在项目根建库');
   assert.equal(existsSync(path.join(proj, '.finalcheck', 'finalcheck.db')), false, '没跑过会话就不该建库');
+});
+
+
+test('reload and database reopen retain same-name call identity, failure details, order and real completion', async (t) => {
+  await freshDir(t, 'fc-toolparts-reload-');
+  const s = await sessions.newSession('reload timeline');
+  await sessions.appendUserMessage(s.id, 'read two files');
+  await sessions.appendToolStart(s.id, { callId: 'first', name: 'read_file', args: '{"path":"one"}' });
+  await sessions.appendToolStart(s.id, { callId: 'second', name: 'read_file', args: '{"path":"two"}' });
+  await sessions.appendToolEnd(s.id, { callId: 'second', name: 'read_file', status: 'fail', error: 'permission denied', result: null, ms: 8 });
+  await sessions.appendToolEnd(s.id, { callId: 'first', name: 'read_file', status: 'ok', result: { content: 'one' }, ms: 12 });
+  for (let i = 0; i < 2; i++) {
+    if (i) sessions.closeAllSessionDatabases();
+    const loaded = (await sessions.loadSession(s.id)).messages.at(-1);
+    const entries = timelineEntries(loaded);
+    assert.deepEqual(entries.map((e) => [e.id, e.status, e.ms]), [['first', 'ok', 12], ['second', 'fail', 8]]);
+    assert.equal(entries[0].result.content, 'one');
+    assert.equal(entries[1].result.error, 'permission denied');
+  }
 });

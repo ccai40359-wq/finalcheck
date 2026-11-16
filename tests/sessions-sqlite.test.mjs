@@ -316,3 +316,14 @@ test('跨项目发现：findSessionDir 能按 DB 查到没有 JSON 文件的会�
   assert.equal(await reg.findSessionDir(s.id, [sessionsDir]), path.resolve(sessionsDir));
   assert.equal(await reg.findSessionDir(randomUUID(), [sessionsDir]), null);
 });
+
+
+test('SQLite optional trace metadata survives roundtrip without changing old history shape or schema', async (t) => {
+  await freshDir(t, 'fc-sqlite-trace-metadata-');
+  const s = await sessions.newSession('trace metadata');
+  await sessions.appendUserMessage(s.id, 'read');
+  const trace = [{ tool: 'read_file', args: '{"path":"a"}', result: null, callId: 'failed-id', status: 'fail', error: 'denied', ms: 7 }];
+  await sessions.appendAssistantMessage(s.id, { content: 'failed', trace });
+  sessions.closeAllSessionDatabases();
+  assert.deepEqual((await sessions.loadSession(s.id)).messages.at(-1).trace, trace);
+});

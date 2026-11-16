@@ -40,6 +40,10 @@ desktop/workflow-runs/
 !/.finalcheck/accept.json
 e2e-artifacts/
 .fc-probe-walk*/
+.fc-selfaudit/
 .scratch-robust/
 .tmp-*/
+.tmp-*
+desktop/.pt-built.mjs
 *.log
+nul-*.json

@@ -37,7 +37,7 @@ function policyDenyResult(check) {
 const CANCELLED_RESULT = () => ({ error: '已中断', cancelled: true, code: null, stdout: '', stderr: '' });
 
 // STATUS_DLL_INIT_FAILED（0xC0000142）：进程在初始化阶段就死了，命令本身一行都没执行。
-// Node 在所有 Windows 版本上按 32 位有符号数报退出码，两种写法都收。
+// Accept both signed and unsigned representations of the 32-bit exit code.
 const DLL_INIT_FAILED_CODES = new Set([3221225794, -1073741502]);
 function isDllInitFailure(result) {
   if (!result || result.blocked || result.error) return false;
@@ -93,7 +93,7 @@ export function planRunningPings(elapsedMs, startMs = RUNNING_PING_START_MS, eve
 
 export function runCommandWithSignal(command, {
   cwd, timeoutMs, idleMs = DEFAULT_COMMAND_IDLE_MS, background = false, env: envInput, signal = null,
-  sandbox = null, forceVisibleConsole = false, sandboxWindowMode = 'hide',
+  sandbox = null,
   onActivity = null, pingStartMs = RUNNING_PING_START_MS, pingEveryMs = RUNNING_PING_EVERY_MS
 } = {}) {
   return new Promise((resolve) => {
@@ -175,6 +175,7 @@ export function runCommandWithSignal(command, {
         proc.removeAllListeners('exit');
         proc.removeAllListeners('error');
         proc.on('error', () => {}); // 保留吞错监听，避免后台进程的迟到 error 冒成未捕获事件
+        if (sandbox) proc.once('close', () => sandbox.cleanup?.());
         proc.unref?.();
       } catch { /* 忽略 */ }
     };
@@ -196,17 +197,13 @@ export function runCommandWithSignal(command, {
     try {
       const spawnOptions = {
         cwd: (sandbox ? sandbox.cwd : cwd) && existsSync(String(sandbox ? sandbox.cwd : cwd)) ? String(sandbox ? sandbox.cwd : cwd) : undefined,
-        // 屏显三形态（弹窗治理）：默认 hide（CREATE_NO_WINDOW，不弹窗）；DLL 初始化失败（0xC0000142）
-        // 时先试 detached（DETACHED_PROCESS，同为隐藏窗口但创建标志不同，多数能避开该失败）；
-        // 两段隐藏都救不回才用 visible（弹窗兜底）。沙箱受限令牌与窗口标志无关，三种形态保护相同。
-        windowsHide: sandbox ? (forceVisibleConsole ? false : sandboxWindowMode !== 'visible') : isWin,
-        ...(sandbox && sandboxWindowMode === 'detached' && !wantsBackground ? { detached: true } : {}),
+        // Every launcher stays hidden. The sandbox wrapper creates its console
+        // with SW_HIDE before the restricted child starts; never use detached or
+        // visible-window fallbacks, including after DLL initialization failures.
+        windowsHide: isWin,
         env,
-        // 后台启动：不接管道、父进程退出不连带结束。
-        // ⚠️ 绝不能用 detached:true ——Windows 上 DETACHED_PROCESS 会强制新建一个控制台，
-        // 直接覆盖 windowsHide，结果是「每起一条长驻服务（node server.mjs 之类）就多一个永久黑窗」。
-        // round9 实测抓到：FC 起的两个 node server.mjs 各留了一个 PseudoConsoleWindow 在桌面上。
-        // 不 detached 也能达到目的：stdio 已 ignore，父进程退出不会带走子进程（Electron 不 job-object 绑定）。
+        // Background commands inherit the same hidden-console setup. Ignore
+        // stdio and unref the child instead of changing process creation modes.
         ...(wantsBackground ? { stdio: 'ignore' } : {})
       };
       proc = sandbox
@@ -542,6 +539,9 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
           command,
           cwd: projectDir
         });
+        if (!sb && sbPref === 'required') {
+          return { code: 1, ms: 0, out: '', err: '沙箱不可用；FINALCHECK_SANDBOX=required 已拒绝在宿主机执行', timedOut: false };
+        }
         const t0 = Date.now();
         const run = await runCommandWithSignal(String(command), {
           cwd: projectDir,
@@ -856,7 +856,15 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
         command: cmd,
         cwd: runCwd
       });
-      let result = await runCommandWithSignal(cmd, {
+      if (!sandbox && sandboxPref === 'required') {
+        return {
+          error: !compat.compatible
+            ? `沙箱不支持这条命令（${compat.reason}）；FINALCHECK_SANDBOX=required 已拒绝在宿主机执行`
+            : `沙箱不可用（${sandboxAvailability().error || '平台不支持'}），FINALCHECK_SANDBOX=required 已拒绝在宿主机执行`,
+          deniedBy: 'policy'
+        };
+      }
+      const result = await runCommandWithSignal(cmd, {
         cwd: runCwd,
         timeoutMs: args?.timeout_ms,
         idleMs,
@@ -866,74 +874,16 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
         sandbox,
         onActivity
       });
-      // 隐藏控制台下受限子进程初始化失败（命令未执行）→ 两段重试：
-      // ① detached（DETACHED_PROCESS，同为隐藏窗口，创建标志不同——多数机器能避开 0xC0000142）；
-      // ② 可见控制台（弹窗兜底）。把弹窗压到「两段隐藏都救不回」才发生。
+      // Do not retry with DETACHED_PROCESS or a visible console. A failed
+      // restricted child stays a failure instead of opening a window or rerunning
+      // a command after cancellation/timeout.
       if (sandbox && isDllInitFailure(result)) {
-        // 重试用新的沙箱实例：上一次的私有 temp（含 run.cmd）已经在收尾时被清理。
-        const retrySandbox = createSandboxedRun({
-          workspaceRoot: projectPath || runCwd,
-          policyMode: sandboxMode,
-          command: cmd,
-          cwd: runCwd
-        });
-        if (retrySandbox) {
-          // ① detached 隐藏重试
-          const retriedDetached = await runCommandWithSignal(cmd, {
-            cwd: runCwd,
-            timeoutMs: args?.timeout_ms,
-            idleMs,
-            background: args?.background === true,
-            env,
-            signal: toolSignal,
-            sandbox: retrySandbox,
-            sandboxWindowMode: 'detached',
-            onActivity
-          });
-          if (!isDllInitFailure(retriedDetached)) {
-            retriedDetached.sandboxConsole = 'detached';
-            retriedDetached.stderr = `[控制台隔离形态已切换：DETACHED 隐藏窗口重试成功，未弹窗]\n${retriedDetached.stderr || ''}`;
-            result = retriedDetached;
-          } else {
-            // ② 可见控制台兜底（唯一会弹窗的路径）
-            const retriedVisible = await runCommandWithSignal(cmd, {
-              cwd: runCwd,
-              timeoutMs: args?.timeout_ms,
-              idleMs,
-              background: args?.background === true,
-              env,
-              signal: toolSignal,
-              sandbox: retrySandbox,
-              forceVisibleConsole: true,
-              onActivity
-            });
-            retriedVisible.sandboxConsole = 'visible';
-            retriedVisible.stderr = `[控制台隔离不可用：隐藏两形态下受限子进程均初始化失败，已改用可见控制台重试]\n${retriedVisible.stderr || ''}`;
-            result = retriedVisible;
-          }
-        }
+        result.sandboxFailure = 'dll-init';
+        result.stderr = `[沙箱受限进程初始化失败；已停止，未切换到可见控制台]\n${result.stderr || ''}`;
       }
       if (sandboxMode !== 'off' && !sandbox && sandboxPref !== 'off') {
-        if (!compat.compatible) {
-          // 刻意跳过沙箱：受限令牌下这条命令必然失败，宿主机执行 + 如实标注。
-          // required 模式下仍然 fail-closed：宁可不跑，也不在宿主机跑。
-          if (sandboxPref === 'required') {
-            return {
-              error: `沙箱不支持这条命令（${compat.reason}）；FINALCHECK_SANDBOX=required 已拒绝在宿主机执行`,
-              deniedBy: 'policy'
-            };
-          }
-          result.sandboxSkip = compat.reason;
-        } else {
-          const required = sandboxPref === 'required';
-          if (required) {
-            return {
-              error: `沙箱不可用（${sandboxAvailability().error || '平台不支持'}），FINALCHECK_SANDBOX=required 已拒绝在宿主机执行`,
-              deniedBy: 'policy'
-            };
-          }
-          result.sandboxWarning = `写/删沙箱不可用（${sandboxAvailability().error || '平台不支持'}）；本条命令在宿主机执行`;
-        }
+        if (!compat.compatible) result.sandboxSkip = compat.reason;
+        else result.sandboxWarning = `写/删沙箱不可用（${sandboxAvailability().error || '平台不支持'}）；本条命令在宿主机执行`;
       }
       return result;
     }
