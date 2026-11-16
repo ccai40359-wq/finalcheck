@@ -17,16 +17,20 @@ test('shell: 用户已装 Git Bash 优先（-c 参数，不加载 profile）', (
   assert.equal(r.warning, undefined);
 });
 
-test('shell: 没有用户版时用内置版（8.4MB 子集，含 MSYSTEM 与 Windows 格式 PATH）', () => {
-  // 内置包已实测可用（见 shell-resolver 头注释的三条关键配置）。
+test('shell: 没有用户版时用内置完整 Git（Windows 格式 PATH 前置）', () => {
+  // 内置包现在是**完整 Git for Windows**（resources/gitbash-full，约 400MB）：
+  // 裁剪版两次踩「漏 DLL → 静默 exit 127」，完整版自带全部依赖，不用逐版本验证闭包。
   const bundled = 'D:\\app\\' + BUNDLED_BASH_REL;
   const r = resolveShell({ platform: 'win32', appRoot: 'D:\\app', exists: mkExists([bundled]) });
   assert.equal(r.kind, 'bash');
   assert.equal(r.origin, 'bundled');
   assert.deepEqual(r.args('ls'), ['-c', 'ls']);
-  // 关键：PATH 必须是 Windows 格式（内置 bin 打头），不能是纯 MSYS 格式
-  assert.ok(r.env.PATH.startsWith('D:\\app\\resources\\gitbash\\usr\\bin'),
-    `内置版 PATH 必须以 Windows 格式的内置 bin 开头，实际: ${r.env.PATH}`);
+  // PATH 必须是 Windows 格式、且前置内置的 usr/bin（coreutils 在这）与 mingw64/bin（原生程序在这）。
+  // 换成纯 MSYS 格式会让所有 exe exit 127（依赖 Windows 的 DLL 解析路径）。
+  assert.ok(r.env.PATH.startsWith('D:\\app\\resources\\gitbash-full\\usr\\bin'),
+    `内置版 PATH 必须以 Windows 格式的 usr/bin 开头，实际: ${r.env.PATH}`);
+  assert.ok(r.env.PATH.includes('gitbash-full\\mingw64\\bin'),
+    'PATH 里要包含 mingw64/bin（git 本体在这里）');
   assert.equal(r.env.MSYSTEM, 'MINGW64');
   assert.equal(r.env.MSYS2_ARG_CONV_EXCL, '*');
 });

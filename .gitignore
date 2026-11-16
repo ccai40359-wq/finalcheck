@@ -47,3 +47,7 @@ e2e-artifacts/
 desktop/.pt-built.mjs
 *.log
 nul-*.json
+
+# 完整 Git for Windows 运行时（392MB / 9296 文件，不能进版本库）
+# 由 scripts/fetch-gitbash.mjs 在打包前从本机或官方安装包准备
+desktop/resources/gitbash-full/

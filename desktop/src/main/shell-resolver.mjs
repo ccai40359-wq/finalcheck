@@ -34,7 +34,7 @@ const USER_GITBASH_CANDIDATES = [
 /** 内置 bash 相对 appRoot 的位置（当前发行不打包，仅为将来接口保留）。
  * 若将来真要打包：用 usr/bin/bash.exe（真实二进制 2.5MB），不能只用 bin/bash.exe
  * ——后者是 47KB wrapper，会校验完整 Git 安装结构，在精简包里报 `Top-level not found`。 */
-export const BUNDLED_BASH_REL = path.join('resources', 'gitbash', 'usr', 'bin', 'bash.exe');
+export const BUNDLED_BASH_REL = path.join('resources', 'gitbash-full', 'bin', 'bash.exe');
 
 /**
  * 解析可用的 shell。
@@ -76,21 +76,21 @@ export function resolveShell({ appRoot = null, platform = process.platform, exis
     }
   }
 
-  // ② 安装包内置：已实测不可行，保留检测代码但不再打包（见下方说明）
+  // ② 安装包内置的**完整 Git for Windows**（resources/gitbash-full，约 400MB）。
+  //    为什么是完整版而不是裁剪版：裁剪版（12MB）两次踩坑都出在「漏了某个 DLL 就
+  //    静默 exit 127 零输出」，而完整版自带全部依赖，不需要逐版本重新验证依赖闭包。
+  //    CI workflow（verify-gitbash.yml）在干净 runner 上删掉 Git 注册表项后验证过。
   if (appRoot) {
     const bundled = path.join(appRoot, BUNDLED_BASH_REL);
     let ok = false;
     try { ok = exists(bundled); } catch { ok = false; }
     if (ok) {
-      // 内置版可用配置（2026-11-16 CI 验证过的三点，缺一不可）：
-      //  ① etc/fstab + etc/msystem 必须一起打包（共 1KB）。缺了它们 cygwin 层
-      //     就没有挂载表，`ls /`、重定向、路径映射全部失效。
-      //  ② PATH 必须保持 **Windows 格式**（把内置 usr/bin 前置），不能换成
-      //     纯 MSYS 格式（`/d/xxx:/usr/bin`）——那样 cat/grep 全部 exit 127 零输出，
-      //     因为 exe 依赖的 DLL 要经 Windows 的 CreateProcess 解析。
-      //  ③ MSYSTEM=MINGW64 + MSYS2_ARG_CONV_EXCL='*'，否则 /d /s 这类参数被当路径改写。
-      const binDir = path.join(appRoot, 'resources', 'gitbash', 'usr', 'bin');
-      const tmpDir = path.join(appRoot, 'resources', 'gitbash', 'tmp');
+      // 完整版的 bash 在 bin/bash.exe（wrapper），真正的二进制在 usr/bin/bash.exe；
+      // 两者都随完整包一起提供，所以直接用 bin/ 这个标准入口即可。
+      const gitRoot = path.join(appRoot, 'resources', 'gitbash-full');
+      const usrBin = path.join(gitRoot, 'usr', 'bin');
+      const mingwBin = path.join(gitRoot, 'mingw64', 'bin');
+      const tmpDir = path.join(gitRoot, 'tmp');
       try { mkdirSync(tmpDir, { recursive: true }); } catch { /* 只读安装位置 */ }
       return {
         kind: 'bash',
@@ -102,8 +102,11 @@ export function resolveShell({ appRoot = null, platform = process.platform, exis
           MSYSTEM: 'MINGW64',
           MSYS2_ARG_CONV_EXCL: '*',
           TMPDIR: tmpDir,
-          // 内置 bin 前置到 Windows 格式 PATH（调用方的 PATH 由 shellSpawnSpec 合并）
-          PATH: `${binDir};${process.env.PATH || ''}`
+          // PATH 用 **Windows 格式**并把内置目录前置（调用方的 PATH 由 shellSpawnSpec 合并）。
+          // 换成纯 MSYS 格式（/d/xxx:/usr/bin）会让 cat/grep 全部 exit 127 零输出，
+          // 因为 exe 依赖的 DLL 要经 Windows 的 CreateProcess 解析。
+          // usr/bin 提供 coreutils；mingw64/bin 提供 python/node/git 等原生依赖。
+          PATH: `${usrBin};${mingwBin};${process.env.PATH || ''}`
         }
       };
     }

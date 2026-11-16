@@ -6,6 +6,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.19.0] - 2026-11-16
+
+### Improved
+
+- The installer now ships a complete Git, so `git` and `bash` work right after install: previously we only detected a user-installed Git and fell back to cmd when it was missing (which made bash-style commands fail). The installer now bundles the full Git for Windows (~400MB), so machines without Git can still use `git clone`, `git status`, `cat`, `grep -rn` and `2>/dev/null`.
+- Priority is unchanged: a user-installed Git wins; the bundled one is only a fallback.
+- Installer size grows from 112MB to roughly 165-175MB (about +55MB compressed) in exchange for zero-dependency, out-of-the-box behavior.
+
+### Fixed
+
+- Commands can no longer read files outside the project: literal paths in a command now pass two gates - sensitive paths (`~/.ssh`, private-key filenames, `*.pem`, and others) are rejected unconditionally, and paths outside the project reject the whole command with the reason returned to the AI.
+- Sensitive paths are permanently blocked regardless of sandbox mode: both `workspace` and `off` reject them.
+- The settings page states the sandbox's real boundary: a new notice explains the sandbox is "write protection + workspace boundary", NOT read isolation, and that paths assembled at runtime (env vars, `~`, concatenation inside a script) cannot be intercepted.
+
 ## [0.18.0] - 2026-11-16
 
 ### Fixed

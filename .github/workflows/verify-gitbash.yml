@@ -14,7 +14,7 @@ on:
   push:
     branches: [main]
     paths:
-      - 'desktop/resources/gitbash/**'
+      - 'desktop/resources/gitbash-full/**'
       - 'desktop/scripts/verify-bundled-bash.mjs'
       - '.github/workflows/verify-gitbash.yml'
 
@@ -38,13 +38,22 @@ jobs:
           Get-ItemProperty -Path 'HKLM:\SOFTWARE\GitForWindows' -ErrorAction SilentlyContinue |
             Select-Object InstallPath, CurrentVersion | Format-List
           Write-Host "--- bundled bundle ---"
-          if (Test-Path 'desktop/resources/gitbash') {
-            Get-ChildItem 'desktop/resources/gitbash' -Recurse -File |
+          if (Test-Path 'desktop/resources/gitbash-full') {
+            Get-ChildItem 'desktop/resources/gitbash-full' -Recurse -File |
               Measure-Object -Property Length -Sum |
               Select-Object Count, @{n='MB';e={[math]::Round($_.Sum/1MB,2)}} | Format-List
           } else {
             Write-Host "bundled gitbash directory is MISSING"
           }
+
+      - name: 准备内置 Git（从 runner 预装的 Git for Windows 复制）
+        shell: pwsh
+        run: |
+          # gitbash-full 约 400MB，不能进版本库（GitHub 单文件限制 + 仓库历史膨胀），
+          # 所以和 node_modules 一样：打包/验证前在本机准备。
+          # runner 自带 Git for Windows，正好当源。
+          node desktop/scripts/fetch-gitbash.mjs
+          node desktop/scripts/fetch-gitbash.mjs --check
 
       - name: 模拟干净机器（移走 Git 的注册表项 + 从 PATH 剔除 Git）
         shell: pwsh

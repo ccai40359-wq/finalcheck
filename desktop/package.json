@@ -1,7 +1,7 @@
 {
   "name": "finalcheck-desktop",
   "productName": "FinalCheck",
-  "version": "0.18.0",
+  "version": "0.19.0",
   "author": "Sean (https://github.com/ccai40359-wq)",
   "description": "FinalCheck 终检台桌面端：全方位代码体检 + 渗透/压测 + AI Agent",
   "private": true,
@@ -44,12 +44,13 @@
         "to": "rg/rg.exe"
       },
       {
-        "from": "resources/gitbash",
-        "to": "gitbash",
+        "from": "resources/gitbash-full",
+        "to": "gitbash-full",
         "filter": [
           "**/*",
-          "!**/tmp/*",
-          "!**/.mimosa/**"
+          "!**/tmp/**",
+          "!**/.mimosa/**",
+          "!unins*"
         ]
       },
       {
