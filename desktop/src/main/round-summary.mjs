@@ -138,6 +138,60 @@ export function checkSummaryLength(text) {
   return { ok: true, tokens };
 }
 
+/**
+ * 超上限时的截断：**保头保尾，优先砍中间段**。
+ *
+ * 为什么不能 `slice(0, N)`（2026-11-17 缺陷）：6 段模板里「当前正在做什么 / 待办」
+ * 在**末尾**，`slice(0, ...)` 每次都先砍掉它——而这个会话下一轮最需要的恰好就是它。
+ * 旧实现还能把「用户本轮想要什么」留下来，等于把「下一步」换成「更早的背景」，方向反了。
+ *
+ * 规则：
+ *   · 能按 `## ` 分段时：第 1 段（用户原话）与最后一段（下一步）**全额保留**，
+ *     中间各段按可用预算均分截断，每段带 `…（本节过长已截断）` 标记。
+ *   · 分不出段时：保头 60% + 保尾 40%。
+ *   · 预算按当前文本的「字符/token」实测比例反推，不用固定系数（CJK 与英文差 4 倍）。
+ * @returns {string}
+ */
+export function truncateSummaryText(text, { maxTokens = SUMMARY_MAX_TOKENS } = {}) {
+	const s = String(text ?? '');
+	if (!s) return s;
+	const tokens = estimateSummaryTokens(s);
+	if (tokens <= maxTokens) return s;
+	// 字符预算：留 5% 给截断标记，避免加了标记又超限
+	const charsPerToken = s.length / Math.max(1, tokens);
+	const budget = Math.max(400, Math.floor(maxTokens * charsPerToken * 0.95));
+
+	const heads = [...s.matchAll(/^##\s+/gm)].map((m) => m.index);
+	if (heads.length >= 3) {
+		const sections = [];
+		for (let k = 0; k < heads.length; k++) {
+			const start = heads[k];
+			const end = k + 1 < heads.length ? heads[k + 1] : s.length;
+			sections.push(s.slice(start, end).replace(/\s+$/, ''));
+		}
+		// 首段与末段全额保留；中间段均分剩余预算
+		const firstSec = sections[0];
+		const lastSec = sections[sections.length - 1];
+		const middleSec = sections.slice(1, -1);
+		const reserved = firstSec.length + lastSec.length;
+		const remaining = Math.max(0, budget - reserved);
+		const perMiddle = middleSec.length ? Math.floor(remaining / middleSec.length) : 0;
+		const out = [firstSec];
+		for (const sec of middleSec) {
+			if (sec.length <= perMiddle) { out.push(sec); continue; }
+			if (perMiddle < 40) { out.push(sec.slice(0, 20) + '…（本节过长已截断）'); continue; }
+			out.push(sec.slice(0, perMiddle - 20) + '\n…（本节过长已截断）');
+		}
+		out.push(lastSec);
+		return out.join('\n\n');
+	}
+	// 无段结构：保头保尾
+	const headLen = Math.floor(budget * 0.6);
+	const tailLen = Math.floor(budget * 0.4) - 30;
+	if (s.length <= headLen + tailLen) return s;
+	return s.slice(0, headLen) + '\n…（中间已截断）\n' + s.slice(-Math.max(120, tailLen));
+}
+
 /** 导出提示词，供调用方（IPC 层）直接喂给 summarizeWithProvider 之外的路径 */
 export function summaryPromptFor(userMessage, toolDigest = '') {
   const parts = [SUMMARY_PROMPT];

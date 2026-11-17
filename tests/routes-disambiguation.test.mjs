@@ -171,8 +171,14 @@ test('FastAPI 路由已支持（S1 真跑）；Java Spring 仍 unsupported → S
   // 注意：routes 非空时 checkAuthCoverage 只回 coverageGap，gapKind 由 audit 的 gapKind(r) 归一化。
   assert.match(String(s1.coverageGap), /Spring/);
   const s7 = await checkAuthz(dir, { tier: 'L3', routeResult: raw });
-  // S7：路由文件（.py/.java）无法被 JS AST 解析 → 诚实记缺口（gapKind 或 coverageGap 形态均可）
-  assert.ok(s7.gapKind === 'unavailable' || (s7.coverageGap && s7.findings.length === 0), 'S7 必须诚实记缺口');
+  // 2026-11-17：S7 补了 Python 分支 → FastAPI 的 .py 处理函数会被逐条分析（不再整文件跳过）。
+  // Java 仍解析不了，所以「必须诚实」的口径不变：缺口或 findings 都得有解释，
+ //  绝不允许 analyze 了 0 条却给「通过」。
+  const s7AnalyzedPy = Boolean(s7.pythonCoverage && s7.pythonCoverage.files > 0);
+  assert.ok(
+    s7AnalyzedPy || s7.gapKind === 'unavailable' || (s7.coverageGap && s7.findings.length === 0),
+    'S7 必须诚实：要么真分析了 Python 路由（pythonCoverage>0），要么记缺口',
+  );
 });
 
 /* ---------- E. NodeGoat 形态：路由模块导出函数并嵌套挂载 ---------- */

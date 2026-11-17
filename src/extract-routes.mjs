@@ -817,6 +817,14 @@ function detectUnsupportedFrameworks(rootDir, maxFiles) {
     if (/\brocket::/i.test(text) && !hits.includes('Rocket')) hits.push('Rocket');
     if (/@(?:RestController|GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping|RequestMapping)\b/.test(text)
       && !hits.includes('Spring')) hits.push('Spring');
+    // 2026-11-17（tradingagents 实测）：Python 标准库自建 Web 服务。
+    // 旧实现完全不认 http.server / BaseHTTPRequestHandler → httpSurface.exists=false
+    // → S7 判「未发现 HTTP 路由或 IPC 权限面，不适用」，把一个**真在公网服务的入口**
+    // 说成「没有 HTTP 面」。这比「解析不了」更糟：它把「没查」写成「不适用」。
+    if (/\b(?:ThreadingHTTPServer|HTTPServer|BaseHTTPRequestHandler|SimpleHTTPRequestHandler)\b/.test(text)
+      && !hits.includes('Python http.server（自建 HTTP 服务，无路由表）')) {
+      hits.push('Python http.server（自建 HTTP 服务，无路由表）');
+    }
     // 已经找到两个非 JS 框架就够了；继续扫只会拖慢大仓。
     if (hits.length >= 2) break;
   }

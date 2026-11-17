@@ -307,11 +307,13 @@ export function registerAgentIpc({
     // 那 6 条永远到不了压缩阈值，层级 2/3/4 全部失效（规格缺陷 D2）。
     // 现在用 summaryAt（写摘要的时间戳）切：只裁掉「摘要已覆盖的那部分」，
     // summaryAt 之后新增的消息全部保留，历史能正常累积。
+    let sessionSummaryAt = 0; // 会话级 /compact 摘要的切分点，下面轮摘要注入要用同一个口径
     if (sessionId) {
       try {
         const s = await sessions.loadSession(sessionId);
         if (s.summary) {
           const cutAt = Number(s.summaryAt) || 0;
+          sessionSummaryAt = cutAt;
           // 保留 summaryAt 之后的消息（含边界：at >= cutAt）。没有 summaryAt 时退回只带最近 6 条，
           // 避免把已经写进摘要的老消息重复喂一遍。
           const after = cutAt > 0
@@ -331,8 +333,10 @@ export function registerAgentIpc({
       try {
         const list = await sessions.loadRoundSummaries(sessionId).catch(() => []);
         if (Array.isArray(list) && list.length) {
-          const { renderRoundSummaries } = await import(engineUrl('desktop/src/main/round-summary-wire.mjs'));
-          const rendered = renderRoundSummaries(list);
+          const { renderRoundSummaries, dropRoundSummariesCoveredBy } = await import(engineUrl('desktop/src/main/round-summary-wire.mjs'));
+          // 2026-11-17 P1：已经被会话级摘要覆盖的那几轮别再进一次（同一段历史双份 = 白占预算）
+          const kept = dropRoundSummariesCoveredBy(list, sessionSummaryAt);
+          const rendered = renderRoundSummaries(kept);
           if (rendered) {
             contextMessages = [
               ...contextMessages,

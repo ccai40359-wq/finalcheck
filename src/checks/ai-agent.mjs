@@ -109,9 +109,13 @@ async function findAgentConfigFiles(projectDir, excludes) {
   return out;
 }
 
-// 逐行剥离注释（跟踪块注释状态）；返回 [{rel, code:[…]}]
+// 逐行剥离注释（跟踪块注释状态）；返回 [{rel, lines:[…]}]
+// 2026-11-17：同时收 .py（languages:'all'）——纯 Python 仓的 A2/A3/A4 原本完全采不到证据，
+// 审计层只能说「只解析 JS/TS」，整份结论卡在「无法验收」。Python 的 # 注释在这里只做最保守
+// 的处理（`#` 之后丢掉），块状 docstring 不剥——A 系列判的是「拼接/执行形状是否出现」，
+// 多留一点原文只会多报、不会漏报（漏报才是危险方向）。
 async function loadJsSources(projectDir, { excludes, includeFixtures }) {
-  const { files, skipped } = await listTextFiles(projectDir, excludes, { codeOnly: true, includeFixtures });
+  const { files, skipped } = await listTextFiles(projectDir, excludes, { codeOnly: true, languages: 'all', includeFixtures });
   const out = [];
   for (const abs of files) {
     const rel = path.relative(projectDir, abs).replace(/\\/g, '/');
@@ -119,16 +123,22 @@ async function loadJsSources(projectDir, { excludes, includeFixtures }) {
     if (/\.d\.ts$/i.test(rel)) continue; // 类型声明文件：形状全是签名/示例，A 系列不扫（round6 ≥16 条声明 FP）
     const { text } = await readRel(projectDir, abs);
     if (!text) continue;
+    const isPy = /\.py$/i.test(rel);
     const lines = [];
     let inBlock = false;
     for (const raw of String(text).split('\n')) {
+      if (isPy) {
+        const hash = raw.indexOf('#');
+        lines.push(hash >= 0 ? raw.slice(0, hash) : raw);
+        continue;
+      }
       const { code, inBlockComment } = stripComments(raw, inBlock);
       lines.push(code);
       inBlock = inBlockComment;
     }
-    out.push({ rel, lines });
+    out.push({ rel, lines, isPy });
   }
-  return { sources: out, scannedJs: out.length, skippedCount: skipped.length };
+  return { sources: out, scannedJs: out.length, pySources: out.filter((s) => s.isPy).length, skippedCount: skipped.length };
 }
 
 async function loadSdkDeps(projectDir, excludes, includeFixtures) {
@@ -141,8 +151,28 @@ async function loadSdkDeps(projectDir, excludes, includeFixtures) {
       if (LLM_SDK_EXACT.has(key) || LLM_SDK_SCOPE_RE.test(key)) found.add(key);
     }
   }
+  // 2026-11-17：Python 侧同样要判「有没有 LLM SDK」——否则纯 Python 的 AI 项目会被
+  // flowGap 判成 not-applicable（把「没查」当成「不适用」，这是最危险的方向）。
+  // 口径：requirements*.txt / pyproject.toml 里出现已知 LLM SDK 名（包名形态，非前缀匹配全文）。
+  const pyFiles = files.filter((f) => /^(?:requirements[^\\/]*\.txt|pyproject\.toml|Pipfile)$/i.test(path.basename(f)));
+  for (const abs of pyFiles) {
+    let text = '';
+    try { text = await readFile(abs, 'utf8'); } catch { continue; }
+    for (const m of text.matchAll(/^[^\S\n]*["']?([A-Za-z0-9_.-]+)(?:[<>=!~\[][^\S\n]*|[^\S\n]*["']?)?/gm)) {
+      const name = m[1].toLowerCase().replace(/[_.]+/g, '-');
+      if (PY_LLM_SDKS.has(name)) found.add(name);
+    }
+  }
   return [...found].sort();
 }
+
+// Python 侧 AI SDK 白名单（与 JS 的 LLM_SDK_EXACT 同义，包名已经 PEP 503 归一成 `-`）
+const PY_LLM_SDKS = new Set([
+  'openai', 'anthropic', 'cohere', 'ollama', 'groq', 'mistralai', 'google-genai', 'google-generativeai',
+  'langchain', 'langchain-core', 'langchain-openai', 'langchain-anthropic', 'langchain-community',
+  'llama-index', 'llama-index-core', 'litellm', 'transformers', 'vllm', 'huggingface-hub', 'openai-agents',
+  'pydantic-ai', 'dspy', 'smolagents', 'tiktoken', 'instructor'
+]);
 
 // 通用上下文：JS 源、SDK 依赖、agent 配置文件。四个检查共用（fail-closed 的三信号）。
 async function loadContext(projectDir, { excludes = [], includeFixtures = false } = {}) {
@@ -172,6 +202,13 @@ function flowGap(ctx, checkId) {
 function passWarning(ctx, checkId) {
   if (!ctx.sdkDeps.length) return null;
   return `${checkId}：检测到 LLM SDK 依赖（${ctx.sdkDeps.join('、')}），零命中基于静态扫描（不运行、不验证注入是否实际成功）`;
+}
+
+// 2026-11-17：A2/A3/A4 的 Python 覆盖声明。审计层据此解除「只解析 JS/TS」的语言缺口——
+// 没有这个字段时，哪怕 Python 分支真的扫了 .py，结论仍是「无法验收」。
+function pyCoverageOf(ctx, supported, unsupported = []) {
+  if (!ctx?.pySources) return null;
+  return { files: ctx.pySources, supported, unsupported, note: 'Python 侧按行模式匹配（无 AST），不运行代码' };
 }
 
 // ── A1 tool 权限 ─────────────────────────────────────────────────────────
@@ -321,7 +358,7 @@ export async function checkAiPromptInjection(projectDir, { excludes = [], includ
   }
   const w = !findings.length ? passWarning(ctx, 'A2') : null;
   const warnings = w ? [w] : [];
-  return { checkId: 'A2', findings, warnings, coverageGap: null };
+  return { checkId: 'A2', findings, warnings, coverageGap: null, ...(pyCoverageOf(ctx, ['A2.prompt-external', 'A2.prompt-external-sanitized']) ? { pythonCoverage: pyCoverageOf(ctx, ['A2.prompt-external', 'A2.prompt-external-sanitized']) } : {}) };
 }
 
 // prompt 行必须是「真的在喂 LLM」：messages 数组 / prompt 字段 / content 进 SDK 调用。
@@ -362,7 +399,7 @@ export async function checkAiSandbox(projectDir, { excludes = [], includeFixture
   }
   const w = !findings.length ? passWarning(ctx, 'A3') : null;
   const warnings = w ? [w] : [];
-  return { checkId: 'A3', findings, warnings, coverageGap: null };
+  return { checkId: 'A3', findings, warnings, coverageGap: null, ...(pyCoverageOf(ctx, ['A3.shell-llm-cmd', 'A3.unbounded-spawn']) ? { pythonCoverage: pyCoverageOf(ctx, ['A3.shell-llm-cmd', 'A3.unbounded-spawn']) } : {}) };
 }
 
 // ── A4 数据边界 ───────────────────────────────────────────────────────────
@@ -402,5 +439,5 @@ export async function checkAiDataBoundary(projectDir, { excludes = [], includeFi
   }
   const w = !findings.length ? passWarning(ctx, 'A4') : null;
   const warnings = w ? [w] : [];
-  return { checkId: 'A4', findings, warnings, coverageGap: null };
+  return { checkId: 'A4', findings, warnings, coverageGap: null, ...(pyCoverageOf(ctx, ['A4.secret-in-prompt', 'A4.conversation-log', 'A4.debug-log']) ? { pythonCoverage: pyCoverageOf(ctx, ['A4.secret-in-prompt', 'A4.conversation-log', 'A4.debug-log']) } : {}) };
 }

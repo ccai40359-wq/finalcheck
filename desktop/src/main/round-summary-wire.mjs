@@ -7,7 +7,7 @@
 //
 // 为什么工具摘要要单独拼：规格 §3.4 要求「行号必须逐字抄自工具结果，不许估算」。
 // 所以不能让 LLM 凭记忆写文件行号，得把真实的 path/command/结果摘要摆给它看。
-import { SUMMARY_FIELDS, KEEP_RECENT_ROUNDS, planRollup, summaryPromptFor, mergePromptFor, checkSummaryLength } from './round-summary.mjs';
+import { SUMMARY_FIELDS, SUMMARY_MAX_TOKENS, KEEP_RECENT_ROUNDS, planRollup, summaryPromptFor, mergePromptFor, checkSummaryLength, buildMergeInput, truncateSummaryText } from './round-summary.mjs';
 
 /** 把一轮的 trace 压成「工具调用清单」（含路径与关键结果，供摘要抄行号）。 */
 export function toolDigestOf(trace, { maxChars = 20000 } = {}) {
@@ -58,27 +58,41 @@ export async function writeRoundSummary({ sessionId, userMessage, trace, answer,
 		return { ok: false, error: '摘要生成失败：' + (e?.message || String(e)) };
 	}
 	if (!text) return { ok: false, error: '摘要为空' };
-	// 超上限时截断（保留头部，头部是「用户想要什么」等最关键字段）
+	// 超上限时截断：保头保尾（2026-11-17 修复：旧实现 slice(0, ...) 每次都先砍掉
+	// 末尾的「待办 / 当前正在做什么」，而下一轮最需要的恰好是它）
 	const len = checkSummaryLength(text);
-	if (!len.ok) {
-		const budgetChars = Math.floor(text.length * (5120 / len.tokens));
-		text = text.slice(0, Math.max(200, budgetChars)) + '\n…（摘要过长已截断）';
-	}
+	if (!len.ok) text = truncateSummaryText(text, { maxTokens: SUMMARY_MAX_TOKENS });
 
 	const entry = { id: 'r' + Date.now(), text, at: Date.now() };
 	const next = [...prev, entry];
 	const plan = planRollup(next, { keepRecent: KEEP_RECENT_ROUNDS });
 
-	// ② 需要合并时：把溢出的部分合成一份「古老摘要」
+	// ② 需要合并时：把「已有古老摘要 + 溢出的轮摘要」合成一份新的「古老摘要」
 	let merged = false;
 	let finalList = next;
 	if (plan.needsMerge) {
 		try {
-			const mergeInput = plan.toMerge.map((s, i) => `### 第 ${i + 1} 份\n${s.text}`).join('\n\n');
-			const mergedText = String(await summarize(mergePromptFor() + '\n\n' + mergeInput.slice(0, 30000)) || '').trim();
+			// 2026-11-17 P0 修复：旧实现只喂 plan.toMerge，**把已有的古老摘要整份丢掉**——
+			// 第 11 轮合并出 ancient#1（覆盖 1-1 轮），第 21 轮合并时 ancient#1 不在输入里，
+			// 新 ancient#2 只覆盖 2-11 轮，第 1 轮的历史就**永久消失**（20 轮模拟已复现）。
+			// 现在把 ancient 作为「第 0 份」放在最前面一起喂给合并模型，并显式要求它保留。
+			const ancientPrev = plan.ancient[plan.ancient.length - 1] || null;
+			const mergeItems = [
+				...(ancientPrev ? [ancientPrev] : []),
+				...plan.toMerge
+			];
+			const mergeInput = buildMergeInput(mergeItems, 30000);
+			const mergedText = String(await summarize(mergePromptFor() + '\n\n' + mergeInput) || '').trim();
 			if (mergedText) {
+				// coversUntil = 这份古老摘要「最晚覆盖到哪一轮结束」。createdAt（at）只是写入时间，
+				// 不能用来判断覆盖范围——注入侧要靠 coversUntil 精确剔除已被会话级摘要覆盖的部分
+				// （2026-11-17 P1：手动 /compact 摘要 + 轮摘要双重注入，同一段历史进两次）。
+				const coversUntil = Math.max(
+					Number(ancientPrev?.coversUntil) || 0,
+					...mergeItems.map((s) => Number(s?.at) || 0)
+				);
 				finalList = [
-					{ id: 'ancient', text: mergedText, at: Date.now(), ancient: true },
+					{ id: 'ancient', text: mergedText, at: Date.now(), ancient: true, coversUntil },
 					...plan.recent
 				];
 				merged = true;
@@ -107,6 +121,32 @@ export function renderRoundSummaries(list) {
 		for (const s of recent) parts.push(String(s.text || ''));
 	}
 	return parts.join('\n\n');
+}
+
+/**
+ * 剔除「已经被会话级摘要（手动 /compact）覆盖」的轮摘要（2026-11-17 缺陷 P1）。
+ *
+ * 双重注入的实际后果：同一段历史既在 `[此前对话摘要]` 里、又在轮摘要里进一次，
+ * 上下文被无谓撑大一倍 → 更早触发下一轮压缩 → 越快越丢东西。
+ *
+ * **只丢「整份都落在摘要覆盖范围之内」的条目**，宁可重复也不丢内容：
+ *   · 普通轮摘要：`at`（该轮结束时间）<= summaryAt → 已被覆盖 → 丢
+ *   · 古老摘要：看它自己声明的 `coversUntil`；只有「覆盖到的时间点也 <= summaryAt」才丢。
+ *     没有 coversUntil 的老数据回落用 `at`（写入时间），此时它通常 > summaryAt → 保留（只会重复，不会丢）。
+ * @param {Array} list 轮摘要列表
+ * @param {number} summaryAt 会话级摘要的切分时间戳（sessions.loadSession 的 s.summaryAt）
+ */
+export function dropRoundSummariesCoveredBy(list, summaryAt) {
+	const arr = Array.isArray(list) ? list : [];
+	const cut = Number(summaryAt) || 0;
+	if (!(cut > 0)) return arr;
+	const kept = arr.filter((s) => {
+		if (!s) return false;
+		const at = Number(s.at) || 0;
+		const until = s.ancient ? (Number(s.coversUntil) || at) : at;
+		return until > cut;
+	});
+	return kept;
 }
 
 export { SUMMARY_FIELDS, KEEP_RECENT_ROUNDS };

@@ -246,7 +246,7 @@ test('e2e：同一路由放 src/app.js 必须 high/card 且结论为拦', async 
 
 /* ---------- 4. 纯 Python 仓库：语言缺口 ---------- */
 
-test('e2e：仅 main.py 的 FastAPI 仓——S1/S7 真解析路由，Q3-Q5 仍 unavailable', async (t) => {
+test('e2e：仅 main.py 的 FastAPI 仓——S1/S7/Q3/Q4/Q5 全部真执行（2026-11-17 补 Python 分支）', async (t) => {
   const dir = await makeProject(t, { 'main.py': FASTAPI_APP });
   const res = await audit(dir, { tier: 'L2', interactive: true, runTests: false });
 
@@ -256,11 +256,13 @@ test('e2e：仅 main.py 的 FastAPI 仓——S1/S7 真解析路由，Q3-Q5 仍 u
   assert.ok(res.gates.executed.includes('S1'), 'S1 已真执行');
   assert.equal(res.gates.gapItems.find((g) => g.checkId === 'S1'), undefined, 'S1 不再有语言缺口');
 
+  // 2026-11-17：Q3/Q4/Q5 各自补了 Python 分支（pythonCoverage 声明）→ 语言缺口解除。
+  // 这里断言的是**新契约**：它们必须真执行，而不是继续记 unavailable。
+  // 同时要求 pythonCoverage 声明存在（没有声明就不该被算成已覆盖——防止「假解除」）。
   for (const checkId of ['Q3', 'Q4', 'Q5']) {
-    const gap = res.gates.gapItems.find((g) => g.checkId === checkId);
-    assert.ok(gap && gap.kind === 'unavailable', `${checkId} 仍记 unavailable（JS-only 检查）`);
-    assert.match(gap.reason, /\.py/, `${checkId} 的 reason 必须写实际扩展名`);
-    assert.ok(!res.gates.executed.includes(checkId), `${checkId} 不能出现在 executed`);
+    assert.equal(res.gates.gapItems.find((g) => g.checkId === checkId), undefined,
+      `${checkId} 不应再有 Python 语言缺口（已补 Python 分支）`);
+    assert.ok(res.gates.executed.includes(checkId), `${checkId} 必须出现在 executed`);
   }
   // S2：装了 Bandit → 真执行（Python SAST）；没装 → 诚实 unavailable。两种都合格。
   const s2Gap = res.gates.gapItems.find((g) => g.checkId === 'S2');

@@ -3,6 +3,7 @@ import path from 'node:path';
 import { parse } from '@babel/parser';
 import { t } from '../../desktop/src/renderer/i18n/core.mjs';
 import { listTextFiles, prunedWarning, fixturesWarning } from '../walk.mjs';
+import { analyzePyPerf, isPySource } from './perf-static-py.mjs';
 import {
   DEFAULT_NOISE_HINTS, noiseWarning, reportCap, truncationRecord, truncationWarning,
 } from '../report-caps.mjs';
@@ -363,7 +364,8 @@ export async function checkPerfStatic(dir, opts = {}) {
   const {
     files, skipped, pruned, fixtures, overLimit,
   } = await listTextFiles(dir, excludes, {
-    codeOnly: true, maxBytes: MAX_BYTES, maxFiles: MAX_FILES, maxDepth: WALK_DEPTH_LIMIT, includeFixtures,
+    // 2026-11-17：Q5 补 Python 支持 → 必须收 .py（默认 'js' 是语言缺口的根因之一）
+    codeOnly: true, languages: 'all', maxBytes: MAX_BYTES, maxFiles: MAX_FILES, maxDepth: WALK_DEPTH_LIMIT, includeFixtures,
   });
   if (overLimit) warnings.push(t('Q5：文件数超限，只扫描前 {n} 个代码文件', { n: MAX_FILES }));
   const pword = prunedWarning(pruned);
@@ -378,11 +380,12 @@ export async function checkPerfStatic(dir, opts = {}) {
     }));
   }
   if (!files.length) {
-    warnings.push(t('Q5：未找到可扫描的代码文件（ts/js/mjs/cjs/jsx/tsx）'));
+    warnings.push(t('Q5：未找到可扫描的代码文件（ts/js/mjs/cjs/jsx/tsx/py）'));
     return { checkId: CHECK_ID, findings, coverageGap: null, warnings };
   }
 
   let parsedFiles = 0;
+  let pyFileCount = 0;
   for (const abs of files) {
     const rel = path.relative(dir, abs).replace(/\\/g, '/');
     let text;
@@ -391,6 +394,18 @@ export async function checkPerfStatic(dir, opts = {}) {
       continue;
     }
     text = text.replace(/\r\n?/g, '\n');
+
+    // 2026-11-17：Python 走独立的缩进扫描（无 AST），不经过 Babel —— .py 喂给 @babel/parser 必报解析失败
+    if (isPySource(path.extname(abs))) {
+      pyFileCount++;
+      analyzePyPerf({
+        file: rel,
+        text,
+        // Python 侧一律只提示不卡（启发式，无 AST 精度不足）
+        push: (rule, sev, f, line, snippet, msg) => push(rule, sev, f, line, snippet, msg, true),
+      });
+      continue;
+    }
 
     let ast;
     try {
@@ -494,7 +509,8 @@ export async function checkPerfStatic(dir, opts = {}) {
     });
   }
 
-  if (parsedFiles === 0) {
+  // Python 侧不走 Babel，所以「parsedFiles === 0」只有在既没有 JS 解析成功、也没有 Python 文件时才算失败
+  if (parsedFiles === 0 && pyFileCount === 0) {
     return {
       checkId: CHECK_ID,
       findings,
@@ -553,6 +569,15 @@ export async function checkPerfStatic(dir, opts = {}) {
   }
 
   const out = { checkId: CHECK_ID, findings: kept, coverageGap: null, warnings };
+  // 2026-11-17：Python 覆盖声明（审计层据此解除 Q5 的语言缺口）
+  if (pyFileCount > 0) {
+    out.pythonCoverage = {
+      files: pyFileCount,
+      supported: ['Q5.sync-io-hotpath', 'Q5.await-in-loop', 'Q5.n-plus-one', 'Q5.unbounded-query', 'Q5.select-star'],
+      unsupported: ['Q5.json-deep-clone', 'Q5.sync-crypto'],
+      note: 'Python 侧按缩进扫描（无 AST）；deepcopy/同步加密语义不适用',
+    };
+  }
   // 只有真的发生截断才加字段：未配置时返回形状与旧版一致
   if (reportTruncations.length) out.reportTruncations = reportTruncations;
   return out;

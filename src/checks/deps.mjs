@@ -402,9 +402,14 @@ export async function checkDeps(projectDir, options = {}) {
       const pyFailures = [];
       for (const entry of pyEntries) {
         const abs = path.join(projectDir, entry.path);
+        // 2026-11-17 修复（round12 tradingagents 实测）：旧实现没传 cwd，子进程继承审计进程 cwd。
+        // requirements.txt 里写 `.`（引用本地自身项目）时 pip 会把 `.` 解析成**当前工作目录**
+        // → `Directory '.' is not installable` → pip-audit 整体失败 → S4 记缺口
+        // → 整份结论被压成「无法验收」。现在 cwd 固定到 requirements 所在目录。
+        const lockDir = path.dirname(abs);
         const run = options.pyAuditRunner
           ? await options.pyAuditRunner(abs)
-          : await runProcess(tool.cmd, [...tool.prefix, '-r', abs, '-f', 'json'], { timeoutMs: 180000, maxOut: 64 * 1024 * 1024 });
+          : await runProcess(tool.cmd, [...tool.prefix, '-r', abs, '-f', 'json'], { cwd: lockDir, timeoutMs: 180000, maxOut: 64 * 1024 * 1024 });
         const hasJson = run.stdout && run.stdout.trim().startsWith('{');
         if (!hasJson) {
           const reason = run.status === 124 ? '超时' : (String(run.stderr || '').trim().slice(0, 160) || '输出为空');

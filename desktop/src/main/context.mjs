@@ -268,6 +268,17 @@ function estimateTok(text) {
   return Math.max(1, Math.round(String(text ?? '').length / 4));
 }
 
+/**
+ * 索引行数量上限（2026-11-17 P1）。索引行本身很短，但**没有上限**时极端长回合会
+ * 堆出几千条——实测每条 ~120 字符，300 条 ≈ 37k token 纯索引，比原文还贵。
+ *
+ * 超过上限时：把最老的部分合并成 1 行计数行（`[索引] ⋯ 其余 N 次调用已折叠`），
+ * 保留最近的 INDEX_MAX_LINES 条明细。计数行不从任何 tool 消息里"假装"是结果，
+ * 而是挤进**最早那条**索引行的位置（保持 tool_call_id 对齐，不会产生悬空调用）。
+ */
+export const INDEX_MAX_LINES = 300;
+const INDEX_COLLAPSED_MARK = `${INDEX_MARK} ⋯`;
+
 export function microcompact(list, { keepRecentTool = 5 } = {}) {
   if (!Array.isArray(list)) return false;
   const toolIdx = [];
@@ -284,17 +295,60 @@ export function microcompact(list, { keepRecentTool = 5 } = {}) {
     }
   }
   let changed = false;
+  const detailIdx = []; // 真正的明细索引行
+  let counterIdx = -1; // 已存在的计数行（至多一条）
+  const blankIdx = []; // 纯占位行（`[索引] ⋯`，无计数），可复用为计数行落点
+  let prevCollapsed = 0; // 已有计数行累计的次数，必须接着累加
   for (const i of toolIdx) {
     if (keep.has(i)) continue;
     const old = contentText(list[i]?.content);
-    // 幂等：已经是索引行或旧占位符就跳过（旧占位符留着，不重复改写）
-    if (old.startsWith(INDEX_MARK) || old.startsWith(CLEANED_TOOL_PREFIX)) continue;
+    // 判定顺序很重要：`[索引] ⋯ 其余 N 次…` 与 `[索引] ⋯` 前缀相同，
+    // 先按「有没有 其余 N 次」区分计数行与纯占位行，否则两者会被认错（已踩过）。
+    if (old.startsWith(INDEX_MARK) && old.includes('⋯')) {
+      const m = old.match(/其余\s*(\d+)\s*次/);
+      if (m) {
+        if (counterIdx < 0) counterIdx = i;
+        prevCollapsed += Number(m[1]) || 0;
+      } else if (old.startsWith(INDEX_COLLAPSED_MARK)) {
+        blankIdx.push(i);
+      } else {
+        detailIdx.push(i); // 明细里带 ⋯ 的（正常不会有）
+      }
+      continue;
+    }
+    // 幂等：已是明细索引行 / 旧占位符 → 保留，明细索引行仍要计入上限
+    if (old.startsWith(INDEX_MARK) || old.startsWith(CLEANED_TOOL_PREFIX)) { detailIdx.push(i); continue; }
     const call = calls.get(list[i]?.tool_call_id) || { name: '工具', args: null };
     const icon = TOOL_ICON[call.name] || '·';
     const target = toolTargetOf(call.args, call.name);
     const tok = estimateTok(old);
     const line = `${INDEX_MARK} ${icon} ${call.name}${target ? ' ' + target : ''} (~${tok} tok)`;
     list[i] = { ...list[i], content: line };
+    detailIdx.push(i);
+    changed = true;
+  }
+  // 上限收口（2026-11-17 P1）：明细最多留 INDEX_MAX_LINES - 1 条，其余合并成 1 条计数行。
+  // 每条被折叠的 tool 消息仍在原位（正文换成极短占位），所以不会出现悬空的 tool_call_id。
+  if (detailIdx.length > INDEX_MAX_LINES - 1) {
+    const collapseCount = detailIdx.length - (INDEX_MAX_LINES - 1);
+    const toCollapse = detailIdx.slice(0, collapseCount);
+    // 落点优先级：已有计数行 → 已有占位行 → 最靠后的一条被折叠明细
+    const survival = counterIdx >= 0 ? counterIdx : (blankIdx.length ? blankIdx[0] : toCollapse[toCollapse.length - 1]);
+    for (const i of toCollapse) {
+      if (i === survival) continue;
+      list[i] = { ...list[i], content: `${INDEX_MARK} ⋯` };
+    }
+    // 已有计数行之外的占位行全部清成纯占位（保证全场只有一条计数行）
+    for (const i of blankIdx) {
+      if (i === survival) continue;
+      list[i] = { ...list[i], content: `${INDEX_MARK} ⋯` };
+    }
+    if (survival != null && survival >= 0) {
+      list[survival] = {
+        ...list[survival],
+        content: `${INDEX_COLLAPSED_MARK} 其余 ${prevCollapsed + collapseCount} 次调用已折叠（明细保留最近 ${INDEX_MAX_LINES - 1} 条，原文可重跑获取）`
+      };
+    }
     changed = true;
   }
   return changed;

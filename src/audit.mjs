@@ -247,19 +247,39 @@ export async function audit(projectDir, { tier = null, interactive = false, runT
     // 路由表里已有非 JS 路由（FastAPI/Flask 提取成功）时，S1 的路由/鉴权面也已真覆盖；
     // py 提取器真实扫过产品文件（即使 0 条路由）时同理——S1 的结论由路由提取自身给出，
     // 不再套「只解析 JS/TS」的帽子（fastapi 实测：库仓产品目录 0 条路由是真没有，不是没查）。
+    //
+    // 2026-11-17：Q3/Q4/Q5/A2-A4/Q1/S7 已各自补 Python 分支，语言缺口要按**检查自己声明的
+    // pythonCoverage** 解除，而不是继续在审计层统一封顶——否则「做了 Python 支持」等于没做：
+    // 检查跑出了真实 findings，结论却仍是「无法验收」。
     const nonJsRoutesCovered = (routeResult.routes || []).some((r) => !/\.[cm]?[jt]sx?$/i.test(String(r.file || '')));
     const pyRoutesScanned = Number(routeResult.pyScannedFiles || 0) > 0;
+    // 检查自己声明了 Python 覆盖（pythonCoverage 字段）→ 说明它真的扫了 .py，缺口对它不成立
+    const pyCoveredChecks = new Set(
+      results
+        .filter((r) => r?.pythonCoverage && Number(r.pythonCoverage.files || 0) > 0)
+        .map((r) => r.checkId)
+    );
     const gapCheckIds = languageGap.checkIds.filter((id) => {
       if (pyBanditRan && id === 'S2') return false;
       if ((nonJsRoutesCovered || pyRoutesScanned) && id === 'S1') return false;
+      // Q1：Python 仓有测试时 checkQ1 会真跑 pytest；没测试时它自己给 gap，不需要审计层再加一条
+      if (id === 'Q1') return false;
+      // Q3/Q4/Q5/A2-A4：这些检查补了 Python 分支后自己会写 pythonCoverage；没有该字段说明
+      // 它其实没跑（老版本/被禁用），这时缺口必须保留（fail-closed）
+      if (pyCoveredChecks.has(id)) return false;
       return true;
     });
-    if (pyBanditRan && gapCheckIds.length !== languageGap.checkIds.length) {
+    if (gapCheckIds.length !== languageGap.checkIds.length) {
+      const covered = languageGap.checkIds.filter((id) => !gapCheckIds.includes(id));
+      warnings.push(`语言缺口已按检查解除：${covered.join('/')} 已真实覆盖 .py（其余仍按未覆盖计）`);
+    }
+    if (pyBanditRan && gapCheckIds.includes('S2') === false && languageGap.checkIds.includes('S2')) {
       warnings.push('S2 的语言缺口已由 Bandit 部分覆盖（Python SAST：注入/反序列化/弱哈希），框架路由与鉴权面由路由提取结果决定');
-    } else if (nonJsRoutesCovered && gapCheckIds.length !== languageGap.checkIds.length) {
-      warnings.push('S1 的语言缺口已解除：Python（FastAPI/Flask）路由提取成功，路由鉴权面已真覆盖');
-    } else if (pyRoutesScanned && gapCheckIds.length !== languageGap.checkIds.length) {
-      warnings.push(`S1 的语言缺口已解除：Python 路由提取已真实扫描 ${routeResult.pyScannedFiles} 个产品文件（tests/docs 示例不计入），鉴权面由提取结果自身给出`);
+    }
+    if ((nonJsRoutesCovered || pyRoutesScanned) && !gapCheckIds.includes('S1') && languageGap.checkIds.includes('S1')) {
+      warnings.push(nonJsRoutesCovered
+        ? 'S1 的语言缺口已解除：Python（FastAPI/Flask）路由提取成功，路由鉴权面已真覆盖'
+        : `S1 的语言缺口已解除：Python 路由提取已真实扫描 ${routeResult.pyScannedFiles} 个产品文件（tests/docs 示例不计入），鉴权面由提取结果自身给出`);
     }
     for (const checkId of gapCheckIds) {
       const existing = gapItems.find((g) => g.checkId === checkId);
