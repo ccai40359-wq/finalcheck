@@ -15,10 +15,14 @@ const API_FORMATS = [
   { value: 'openai-responses', label: 'openai-responses（暂未支持对话）' }
 ];
 // 策略沙箱（与 permissionMode 审批模式独立，Full access 下也生效）
+//
+// 2026-11-17 说明变更（规格 §2 + §8）：ACL 写保护已拆成独立开关（默认关），
+// 所以这里的 mode 只控制「项目边界」这一层，不再等于「有沙箱」。
+// 下面三道闸随时生效，与 mode 无关：敏感路径 / 项目边界 / 删除目标。
 const SANDBOX_MODES = [
-  { value: 'workspace', label: 'workspace', desc: '项目目录内可读写；项目外一律不可读（含命令里的字面路径）；敏感路径永久拒绝' },
-  { value: 'readonly', label: 'readonly', desc: '全部只读，拒绝任何写入' },
-  { value: 'off', label: 'off', desc: '放开项目边界（但 ~/.ssh 等敏感路径仍拒绝）' }
+  { value: 'workspace', label: 'workspace（默认）', desc: '项目目录内可读写；命令里写明的项目外路径整条拒绝；跨目录需你在消息里点名该目录。敏感路径（~/.ssh、私钥等）与删除项目外文件永久拒绝' },
+  { value: 'readonly', label: 'readonly', desc: '全部只读：拒绝任何写入与命令执行（敏感路径与删除检查同样生效）' },
+  { value: 'off', label: 'off', desc: '放开项目边界（跨目录不必逐个授权）；但敏感路径与删除项目外文件仍然拒绝——这两道闸不看 mode' }
 ];
 const DEFAULT_TOOL_CONCURRENCY = 8;
 // 界面语言：只有中文 / English 两态（不再有跟随系统）。旧配置的 auto 在读取时落成实际语言。
@@ -489,7 +493,7 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
         <div className="mt-2.5 rounded-lg border border-amber-500/25 bg-amber-500/[0.06] px-3 py-2 text-[10px] leading-relaxed text-amber-200/80">
           {/* 文案刻意不含 Windows 反斜杠路径：JSX 字符串 / i18n 词典 / 正则闸门三层转义极易写错，
               用「用户主目录下的 .ssh」这种自然语言描述同样清楚，且不会因转义层数不匹配而漏译。 */}
-          {t('⚠️ 沙箱是「写保护 + 项目边界」，不是「读隔离」。命令里写明的路径会被拦（包括 ~、$HOME、%USERPROFILE% 这类家目录写法——它们会先展开再判定），但程序运行时自己拼出来的路径（脚本内部的字符串拼接、读到的配置里指定的路径）拦不住。处理敏感代码请在独立容器或 WSL 里跑。')}
+          {t('这不是真沙箱，是「应用层规则 + 审批」。命令统一走 Git Bash（一条命令一种语法）；能拦的是：敏感路径（含 ~、$HOME 这类会先展开再判定的写法）、命令里写明的项目外路径、删除项目外文件、灾难性命令（格式化磁盘 / dd 写设备 / rm -rf 绝对路径）。拦不住的是：程序运行时自己拼出来的路径（脚本内部字符串拼接、读取到的配置里指定的路径、$HOME 之外的变量展开）。要真正的隔离，请在独立容器或 WSL 里跑。')}
         </div>
       </Field>
 
