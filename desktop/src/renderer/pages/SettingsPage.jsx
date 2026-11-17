@@ -20,7 +20,7 @@ const API_FORMATS = [
 // 所以这里的 mode 只控制「项目边界」这一层，不再等于「有沙箱」。
 // 下面三道闸随时生效，与 mode 无关：敏感路径 / 项目边界 / 删除目标。
 const SANDBOX_MODES = [
-  { value: 'workspace', label: 'workspace（默认）', desc: '项目目录内可读写；命令里写明的项目外路径整条拒绝；跨目录需你在消息里点名该目录。敏感路径（~/.ssh、私钥等）与删除项目外文件永久拒绝' },
+  { value: 'workspace', label: 'workspace', desc: '项目目录内可读写；命令里写明的项目外路径整条拒绝；跨目录需你在消息里点名该目录。敏感路径（~/.ssh、私钥等）与删除项目外文件永久拒绝' },
   { value: 'readonly', label: 'readonly', desc: '全部只读：拒绝任何写入与命令执行（敏感路径与删除检查同样生效）' },
   { value: 'off', label: 'off', desc: '放开项目边界（跨目录不必逐个授权）；但敏感路径与删除项目外文件仍然拒绝——这两道闸不看 mode' }
 ];
@@ -477,14 +477,17 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
       </div>
 
       <Field label={t('沙箱模式')} hint={t('默认 workspace；Full access 下也生效')}>
-        <div className="grid grid-cols-3 gap-2">
+        {/* 2026-11-17：从 grid-cols-3 改成单列纵向排列。
+            原因：三列时每列只有约 220px，新写的说明文字（尤其是「哪些拦得住/拦不住」）
+            会挤成 9 行小字，可读性很差；单列每档一行、文字能横向铺开。 */}
+        <div className="flex flex-col gap-2">
           {SANDBOX_MODES.map((m) => {
             const on = sandboxMode === m.value;
             return (
               <button key={m.value} type="button" onClick={() => { setSandboxMode(m.value); touch(); }} disabled={!y}
-                className={`rounded-lg border px-3 py-2 text-left transition-colors disabled:opacity-50 ${on ? 'border-gold/45 bg-gold/10' : 'border-edge bg-[#15151a] hover:bg-cardHover'}`}>
+                className={`rounded-lg border px-3 py-2.5 text-left transition-colors disabled:opacity-50 ${on ? 'border-gold/45 bg-gold/10' : 'border-edge bg-[#15151a] hover:bg-cardHover'}`}>
                 <div className={`text-xs font-mono ${on ? 'text-goldSoft' : 'text-ink/85'}`}>{m.label}</div>
-                <div className="text-[10px] text-mute/70 mt-0.5 leading-snug">{t(m.desc)}</div>
+                <div className="text-[11px] text-mute/80 mt-1 leading-relaxed">{t(m.desc)}</div>
               </button>
             );
           })}
