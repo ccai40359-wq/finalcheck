@@ -6,6 +6,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.20.0] - 2026-11-17
+
+### Improved
+
+- Context compaction rebuilt: it used to replace a file's contents with a one-line "cleared" note after only 5 further steps, so the model forgot what it had just read and re-read the same 20 files 808 times in one turn. It now triggers on the context budget (979k of a 1M window instead of cutting at 40%), and cleared results become index lines such as `[index] read_file src/audit.mjs (~1500 tok)`, so the model still knows which files it looked at.
+- Added the cross-turn memory that simply did not exist: after a turn ended the model had no idea what the previous turn had read, because tool results never enter history. Now every turn writes a six-section summary (verbatim user request / technical decisions / files and line numbers / errors and fixes / todos / next step) which is injected at the start of the next turn. At most the last 10 rounds are kept verbatim plus one merged "earlier" summary, so the library stays a constant size no matter how many times you compact.
+- Program ledger, not model recall: file reads/writes and command failures are recorded deterministically in `<project>/.finalcheck/ledger.md` with line numbers taken from real tool output, so they cannot drift. Only the last few round headers are injected; the full text is read on demand.
+- The user's final request is never lost: it always survives compaction, and a "[current task]" line restating it verbatim is appended last so it cannot be buried by summaries or tool output.
+- `/compact` no longer latches: one manual compaction used to pin the session to "summary + last 6 messages" forever, with history never growing again. Messages added after a compaction now accumulate normally.
+
+### Fixed
+
+- The ACL sandbox is now off by default and everything runs on Git Bash (one shell, one syntax). Measured reason: the sandbox restricts writes only and does not block reads at all (`type` on a file outside the workspace returned its contents), and it only covered the cmd half of the command set - the commands that actually write (`ls`/`rm`/`node`/`npm`) always ran on the host unprotected.
+- Turning the sandbox off must not take two other guards with it: setting the mode to `off` used to disable the project boundary AND the delete-target check. They are now independent switches and all three guards (sensitive paths / project boundary / delete targets) apply unconditionally.
+- Real delete gaps closed: `rm`/`unlink`/`shred` were never recognised as delete commands (and after the sandbox goes away they are the primary way to delete), and `dd`/`mkfs`/block-device writes had no rules at all. Also fixed a false positive: `rm -rf ./node_modules` used to be blocked; relative targets are now allowed and absolute ones rejected.
+- Cross-directory work now works, but only when you say so: only directories you literally name in this turn's message are authorised (plus projects already in your project list); the model may not decide a directory is "related". Memory (AGENTS.md) goes into the project being edited, and so does the ledger, with a cross-reference line left in the current project.
+- Fixed the root cause of `D:\finalcheck` turning into a dumping ground: passing a code fragment as a filename really created files named `ids.indexOf(v)!`. Filenames are now validated before writing (illegal characters / Windows reserved names / length / code-fragment patterns).
+
 ## [0.19.3] - 2026-11-17
 
 ### Fixed
