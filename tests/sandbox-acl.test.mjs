@@ -1,12 +1,24 @@
-// Windows ACL 沙箱接线：workspace-write 下能跑命令/写项目，写项目外被拒。
+// Windows ACL 沙箱接线。
+//
+// 2026-11-17 决策变更：**沙箱默认关闭**（统一走宿主机 Git Bash）。
+// 理由与证据见 agent-tools.mjs 的 sandboxEnabled 注释：ACL 只防写不防读、
+// 受限令牌下 Git Bash 起不来、且只覆盖 cmd 那一半命令。
+//
+// 所以本文件改成显式开启才测沙箱行为：在文件顶部设 FINALCHECK_ACL_SANDBOX=required。
+// 沙箱能力本身仍然保留（给需要写保护的高保证场景），不该被删掉测试。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createAgentTools } from '../desktop/src/main/agent-tools.mjs';
-import { createPolicy } from '../desktop/src/main/policy.mjs';
-import { sandboxAvailability, sandboxCompatible } from '../desktop/src/main/sandbox.mjs';
+
+// 必须在 import agent-tools 之前设置：模块内的 sandboxEnabled() 每次调用都读 env，
+// 但测试用具也要保证整个文件都在「显式开启」语义下，避免顺序依赖。
+process.env.FINALCHECK_ACL_SANDBOX = 'on';
+
+const { createAgentTools } = await import('../desktop/src/main/agent-tools.mjs');
+const { createPolicy } = await import('../desktop/src/main/policy.mjs');
+const { sandboxAvailability, sandboxCompatible } = await import('../desktop/src/main/sandbox.mjs');
 
 const repoRoot = path.resolve(import.meta.dirname, '..');
 const available = sandboxAvailability().available;
@@ -137,24 +149,31 @@ test('sandbox: 命令读项目外文件已被路径闸拒绝（决策 3，2026-1
 
 // 已知边界：Node 工具链不进沙箱（受限令牌下必然 EPERM），写项目外不会被 ACL 拦住，
 // 只有应用层路径策略/审批兜底 —— 这条测试把边界钉住，避免文档说满。
-test('sandbox BOUNDARY: node 命令在宿主机执行，ACL 拦不住它的写入', { skip: !available && 'dsh ACL 沙箱不可用' }, async (t) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fc-sbx-'));
-  const outRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'fc-sbx-out-'));
-  const outside = path.join(outRoot, 'node-escape.txt');
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  t.after(() => fs.rmSync(outRoot, { recursive: true, force: true }));
-  const tools = createAgentTools({
-    repoRoot,
-    projectPath: root,
-    policy: createPolicy({ projectPath: root, mode: 'workspace' }),
-    permissions: permissionsFor()
-  });
-  const escape = path.join(root, 'escape.mjs');
-  fs.writeFileSync(escape, `import fs from 'node:fs';\nfs.writeFileSync(${JSON.stringify(outside)}, 'x');\n`, 'utf8');
-  const r = await tools.run_command({ command: 'node escape.mjs' });
-  assert.equal(r.code, 0, r.stderr);
-  assert.equal(r.sandbox, 'none');
-  assert.equal(fs.existsSync(outside), true, '这是已知边界，不是 bug：node 在宿主机跑');
+test('沙箱默认关闭时 node 能正常跑（走宿主机 Git Bash）', async (t) => {
+  // 2026-11-17 决策：沙箱默认关闭。原来的「sandbox BOUNDARY」测试证明了
+  // node 在宿主机执行时 ACL 拦不住它的写入 —— 那正是关掉沙箱的依据之一
+  // （沙箱只覆盖 cmd 那一半命令，真正能写盘的 node/npm/rm 本来就拦不住）。
+  // 现在改成验证默认行为：node 能跑，且没有 sandbox 标记。
+  // 注意：本文件顶部设了 FINALCHECK_ACL_SANDBOX=required，这里临时清掉以测默认态。
+  const saved = process.env.FINALCHECK_ACL_SANDBOX;
+  process.env.FINALCHECK_ACL_SANDBOX = '';
+  try {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fc-nosbx-'));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const tools = createAgentTools({
+      repoRoot,
+      projectPath: root,
+      policy: createPolicy({ projectPath: root, mode: 'workspace' }),
+      permissions: permissionsFor()
+    });
+    fs.writeFileSync(path.join(root, 'ok.mjs'), "console.log('NODE_OK');\n", 'utf8');
+    const r = await tools.run_command({ command: 'node ok.mjs' });
+    assert.equal(r.code, 0, r.stderr || r.error);
+    assert.match(String(r.stdout || ''), /NODE_OK/, '默认态下 node 应能跑');
+    assert.equal(r.sandbox ?? 'none', 'none', '默认不该有沙箱标记');
+  } finally {
+    process.env.FINALCHECK_ACL_SANDBOX = saved;
+  }
 });
 
 // 受限令牌跑不了「会捕获孙进程输出」的命令：实测 node --test / npm test 静默 EPERM，
@@ -190,7 +209,9 @@ test('sandboxCompatible: cmd 里语义不同的 bash 工具必须走宿主机', 
   assert.equal(sandboxCompatible('findstr /S x').compatible, true, 'findstr 是 cmd 原生（不是 find）');
 });
 
-test('sandbox: 不兼容命令改在宿主机执行并标注原因', { skip: !available && 'dsh ACL 沙箱不可用' }, async (t) => {
+test('sandbox(required): 不兼容命令直接拒绝，不改走宿主机（沙箱不能被绕过）', { skip: !available && 'dsh ACL 沙箱不可用' }, async (t) => {
+  // 2026-11-17 契约变更：显式 required 时，不兼容命令**不许**静默改走宿主机——
+  // 那等于用户要求了沙箱却被绕开。必须拒绝并说明原因。
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fc-sbx-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const tools = createAgentTools({
@@ -200,8 +221,8 @@ test('sandbox: 不兼容命令改在宿主机执行并标注原因', { skip: !av
     permissions: permissionsFor()
   });
   const r = await tools.run_command({ command: 'node -v' });
-  assert.equal(r.code, 0, r.stderr);
-  assert.equal(r.sandbox, 'none', 'node 不进沙箱');
-  assert.match(String(r.sandboxSkip), /node/, '必须写明为什么没进沙箱');
+  assert.notEqual(r.code, 0, 'required 模式下 node 不应被放行到宿主机');
+  assert.match(String(r.error || ''), /沙箱不支持|FINALCHECK_ACL_SANDBOX=required/,
+    '必须明确说明「沙箱不支持这条命令，已拒绝在宿主机执行」');
 });
 

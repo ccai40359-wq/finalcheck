@@ -642,9 +642,12 @@ test('agent: config 透传的跨轮 token 预算生效（摘要 + 最近 4 条�
   const sent = bodies[0].messages;
   assert.equal(sent[0].role, 'system');
   assert.deepEqual(sent[1], { role: 'user', content: '[历史摘要]\n跨轮摘要' });
-  assert.equal(sent.length, 6); // system + 摘要 + 最近 4 条
+  // 2026-11-17 步 9：多一条【当前任务】包（规格 §3.3 硬规则）
+  assert.equal(sent.length, 7, 'system + 摘要 + 最近 4 条 + 任务包');
   assert.equal(sent[2].content, messages[2].content);
   assert.equal(sent[5].content, messages[5].content);
+  assert.equal(sent[6].role, 'system', '末尾是任务包');
+  assert.match(sent[6].content, /m4-/, '任务包引用最后一条 user');
 });
 
 test('agent: HTTP 402 给账单说明，不再让人去查 Base URL', async () => {

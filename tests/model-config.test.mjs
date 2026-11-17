@@ -92,23 +92,29 @@ test('model-config: effectiveMaxOutputTokens 优先级 model > provider > 32k', 
   assert.equal(effectiveMaxOutputTokens(null, null), DEFAULT_MAX_OUTPUT_TOKENS);
 });
 
-test('model-config: crossTurnBudgetTokens 1M 窗口封顶 400k', () => {
-  assert.equal(crossTurnBudgetTokens(1000000, 32000), 400000);
-  assert.equal(crossTurnBudgetTokens(1000000, 21000), 400000);
+// 2026-11-17 重构（规格 §4 步 1）：删掉 0.6 与 400000 两个常数。
+// 旧行为「1M 只在 40% 就压、压缩后只剩 15%」是 P0 缺陷，不是特性，所以断言随之更新。
+test('model-config: crossTurnBudgetTokens 1M 窗口 → 979k（不再封顶 400k）', () => {
+  assert.equal(crossTurnBudgetTokens(1000000, 32000), 979000);
+  assert.equal(crossTurnBudgetTokens(1000000, 21000), 979000);
 });
 
-test('model-config: crossTurnBudgetTokens 200k 窗口约 107k', () => {
-  assert.equal(crossTurnBudgetTokens(200000, 32000), Math.floor(0.6 * (200000 - 21000))); // 107400
+test('model-config: crossTurnBudgetTokens 200k 窗口 → 179k（约 89.5%）', () => {
+  assert.equal(crossTurnBudgetTokens(200000, 32000), 179000);
 });
 
-test('model-config: crossTurnBudgetTokens 最小 30k、输出预留封顶 21k 且取整', () => {
-  assert.equal(crossTurnBudgetTokens(60000, 32000), 30000); // 0.6*(60000-21000)=23400 → 30k
-  assert.equal(crossTurnBudgetTokens(1000000, 500000), 400000); // 只扣 21k
-  assert.ok(Number.isInteger(crossTurnBudgetTokens(250000, 12000))); // 0.6*238000=142800
-  assert.equal(crossTurnBudgetTokens(250000, 12000), 142800);
+test('model-config: crossTurnBudgetTokens 小窗口保底 30k、输出预留封顶 21k', () => {
+  // 64k - 21k = 43k（不是旧的 0.6*(64k-21k)=25.8k→30k）
+  assert.equal(crossTurnBudgetTokens(64000, 32000), 43000);
+  // 32k 窗口：算出来是 11k，低于下限 → 兜底 30k（避免每轮都压）
+  assert.equal(crossTurnBudgetTokens(32000, 32000), 30000);
+  // 输出预留封顶 21k：传 500000 也只扣 21k
+  assert.equal(crossTurnBudgetTokens(1000000, 500000), 979000);
+  assert.ok(Number.isInteger(crossTurnBudgetTokens(250000, 12000))); // 250000-12000
+  assert.equal(crossTurnBudgetTokens(250000, 12000), 238000);
 });
 
 test('model-config: crossTurnBudgetTokens 非法入参回落默认窗口/输出', () => {
-  assert.equal(crossTurnBudgetTokens(undefined, undefined), 400000); // 1M/32k
-  assert.equal(crossTurnBudgetTokens(-5, -5), 400000); // 回落到 1M + 32k
+  assert.equal(crossTurnBudgetTokens(undefined, undefined), 979000); // 1M/32k → 1M-21k
+  assert.equal(crossTurnBudgetTokens(-5, -5), 979000); // 回落到 1M + 32k
 });

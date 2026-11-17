@@ -1,15 +1,21 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { listTextFiles, prunedWarning, fixturesWarning } from '../walk.mjs';
+import { parsePyStructure, importEdges } from '../py-structure.mjs';
 import {
   DEFAULT_NOISE_HINTS, noiseWarning, reportCap, truncateList, truncationRecord, truncationWarning,
 } from '../report-caps.mjs';
 
 // Q3 可维护性度量（L2/L3 静态闸）：纯静态、不执行命令、不装第三方依赖。
 // 指标：超大文件 / 跨文件重复块 / 相对导入环 / 未使用导出。
-// 边界：只扫代码文件（ts/js/mjs/cjs/jsx/tsx），≤500 个文件、单文件 ≤1MB，超限写 warning。
+// 边界：只扫代码文件（ts/js/mjs/cjs/jsx/tsx + py），≤500 个文件、单文件 ≤1MB，超限写 warning。
 // 文件收集统一走 walk.mjs：构建产物（release*/out/dist/build/*-unpacked）、依赖元数据、
 // 夹具默认豁免、用户 exclude 全部由同一处规则决定，不在本检查里各写一份。
+//
+// Python 支持（2026-11-17）：大文件与重复块是**纯文本规则**，对 .py 直接生效；
+// 导入环与导出声明需要语言分支——JS 走原来的正则，Python 走 py-structure 的结构解析。
+// 「未使用导出」对 Python **不实现**：Python 的"导出"由是否被 import 决定，
+// 静态猜不准（动态 import / __init__ 重导出都会误判），宁可标 unsupported 也不冒充。
 const MAX_FILES = 500;
 const MAX_BYTES = 1024 * 1024;
 const DEFAULT_MAX_LARGE_FILES = Infinity; // 默认不截断；显式 reportCaps["Q3.largeFile"] 才截断（不改 800/1500 行阈值）
@@ -184,7 +190,7 @@ export async function checkMetrics(projectDir, { tier, excludes = [], includeFix
   const {
     files, skipped, pruned, fixtures, overLimit,
   } = await listTextFiles(projectDir, excludes, {
-    codeOnly: true, maxBytes: MAX_BYTES, maxFiles: MAX_FILES, maxDepth: 12, includeFixtures,
+    codeOnly: true, languages: 'all', maxBytes: MAX_BYTES, maxFiles: MAX_FILES, maxDepth: 12, includeFixtures,
   });
   if (overLimit) warnings.push('Q3：文件数超限，只扫前 500 个');
   const pword = prunedWarning(pruned);
@@ -193,8 +199,16 @@ export async function checkMetrics(projectDir, { tier, excludes = [], includeFix
   if (fword) warnings.push(`Q3：${fword}`);
   if (skipped.length) warnings.push(`Q3：跳过超过 1MB 的文件 ${skipped.length} 个：${skipped.slice(0, 3).join('、')}${skipped.length > 3 ? '…' : ''}`);
   if (!files.length) {
-    warnings.push('Q3：未找到可扫描的代码文件（ts/js/mjs/cjs/jsx/tsx）');
-    return { checkId: 'Q3', findings, coverageGap: null, warnings };
+    // 区分两种「没文件可扫」，它们的含义完全不同（QA 清单 P0：不许假通过）：
+    //   a) 真的一个代码文件都没有 → 缺口：未执行
+    //   b) 有文件但全被单文件体积上限挡掉 → 仍算「扫过了」，只是没内容可查；
+    //      旧测试明确要求这种情况 coverageGap 为 null（什么也没读到，不构成「未覆盖」）。
+    if (skipped.length) {
+      warnings.push('Q3：所有代码文件都超过 1MB 被跳过，未产生结论（想看结果请提高单文件上限或排除大文件）');
+      return { checkId: 'Q3', findings, coverageGap: null, warnings };
+    }
+    warnings.push('Q3：未找到可扫描的代码文件（ts/js/mjs/cjs/jsx/tsx/py）');
+    return { checkId: 'Q3', findings, coverageGap: '未找到可扫描的代码文件，可维护性度量未执行', warnings };
   }
 
   const relOf = (abs) => path.relative(projectDir, abs).replace(/\\/g, '/');
@@ -204,6 +218,8 @@ export async function checkMetrics(projectDir, { tier, excludes = [], includeFix
   const exportDecls = [];
   const filesWithIdent = new Map(); // ident -> Set(files)
   const largeFiles = []; // 先全部收集，再按显式配置截断；默认不截断
+  const pyUnsupported = []; // Python 侧明确没解析的东西（写成 warning，不冒充已查）
+  let pyFileCount = 0;
 
   for (const abs of files) {
     const file = relOf(abs);
@@ -223,15 +239,27 @@ export async function checkMetrics(projectDir, { tier, excludes = [], includeFix
 
     const stripped = stripCommentLines(text);
 
-    // 2) 导入图（相对路径）
-    const edges = new Set();
-    for (const line of stripped) {
-      for (const m of line.matchAll(IMPORT_RE)) {
-        const target = resolveImport(file, m[1], fileSet);
-        if (target) edges.add(target);
+    // 2) 导入图（JS 走正则；Python 走结构解析，只把仓库内文件算边）
+    const isPython = file.toLowerCase().endsWith('.py');
+    if (isPython) {
+      const st = parsePyStructure(text);
+      const pyKnown = new Set([...fileSet].filter((f) => f.toLowerCase().endsWith('.py')));
+      const { edges: pyEdges, unsupported } = importEdges(st, file, pyKnown);
+      const edgeSet = new Set();
+      for (const e of pyEdges) if (fileSet.has(e.target)) edgeSet.add(e.target);
+      graph.set(file, edgeSet);
+      for (const u of unsupported) pyUnsupported.push({ file, line: u.line, reason: u.reason });
+      pyFileCount++;
+    } else {
+      const edges = new Set();
+      for (const line of stripped) {
+        for (const m of line.matchAll(IMPORT_RE)) {
+          const target = resolveImport(file, m[1], fileSet);
+          if (target) edges.add(target);
+        }
       }
+      graph.set(file, edges);
     }
-    graph.set(file, edges);
 
     // 3) 重复块：去空白、去空行后 6 行滑窗指纹
     const norm = [];
@@ -248,20 +276,23 @@ export async function checkMetrics(projectDir, { tier, excludes = [], includeFix
     }
 
     // 4) 导出声明 + 标识符索引（其它文件的“引用”判定用）
-    for (let i = 0; i < stripped.length; i++) {
-      const line = stripped[i];
-      for (const p of EXPORT_PATTERNS) {
-        const m = p.re.exec(line);
-        if (!m) continue;
-        const name = m[1];
-        if (RESERVED_EXPORT_NAMES.has(name)) continue;
-        exportDecls.push({ file, line: i + 1, kind: p.kind, name });
+    //    Python 不做导出扫描：它的"导出"由是否被 import 决定，静态猜不准（见文件头说明）。
+    if (!isPython) {
+      for (let i = 0; i < stripped.length; i++) {
+        const line = stripped[i];
+        for (const p of EXPORT_PATTERNS) {
+          const m = p.re.exec(line);
+          if (!m) continue;
+          const name = m[1];
+          if (RESERVED_EXPORT_NAMES.has(name)) continue;
+          exportDecls.push({ file, line: i + 1, kind: p.kind, name });
+        }
       }
-    }
-    const idents = new Set(stripped.join('\n').match(IDENT_RE) || []);
-    for (const id of idents) {
-      if (!filesWithIdent.has(id)) filesWithIdent.set(id, new Set());
-      filesWithIdent.get(id).add(file);
+      const idents = new Set(stripped.join('\n').match(IDENT_RE) || []);
+      for (const id of idents) {
+        if (!filesWithIdent.has(id)) filesWithIdent.set(id, new Set());
+        filesWithIdent.get(id).add(file);
+      }
     }
   }
 
@@ -382,7 +413,22 @@ export async function checkMetrics(projectDir, { tier, excludes = [], includeFix
     }));
   }
 
+  // Python 侧未解析的东西单独报（fail-closed：宁可说「这块没查」，也不冒充已查）
+  if (pyUnsupported.length) {
+    const first = pyUnsupported.slice(0, 3).map((u) => `${u.file}:${u.line}`).join('、');
+    warnings.push(`Q3：Python 部分导入未能静态解析 ${pyUnsupported.length} 处（${first}${pyUnsupported.length > 3 ? '…' : ''}），这些文件的依赖关系未纳入环检测`);
+  }
+
   const out = { checkId: 'Q3', findings, coverageGap: null, warnings };
+  // Python 侧「未使用导出」明确不实现 → 用 partial 说明，不许当作已查（QA 清单阶段 3）
+  if (pyFileCount > 0) {
+    out.pythonCoverage = {
+      files: pyFileCount,
+      rules: ['Q3.large-file', 'Q3.duplicate-block', 'Q3.import-cycle'],
+      unsupported: ['Q3.unused-export'],
+      note: 'Python 侧未使用导出不做静态判定（导出语义由 import 决定，猜不准会误报）'
+    };
+  }
   // 只有真的发生截断才加字段：未配置时返回形状与旧版一致
   if (reportTruncations.length) out.reportTruncations = reportTruncations;
   return out;

@@ -1844,6 +1844,62 @@ export async function saveSummary(id, summary) {
 }
 
 /**
+ * 每轮任务摘要的存取（2026-11-17 规格 §4 步 6-7）。
+ *
+ * 存在 session_meta 的 `roundSummaries:<id>` 里，格式是 JSON 数组：
+ *   [{ id, text, at, ancient?: true }]
+ * 为什么不开新表：这是会话元数据、量恒定为「最近 10 份 + 1 份古老」
+ * （规格 §3.3 的滚动合并保证上限），复用既有 meta 通道最省事，也不动 schema。
+ * @param {string} id
+ * @param {Array<{id?:string,text:string,at?:number,ancient?:boolean}>} summaries
+ */
+export async function saveRoundSummaries(id, summaries) {
+  if (!OK_ID.test(id)) throw new Error('非法会话 ID');
+  const list = Array.isArray(summaries) ? summaries : [];
+  const payload = JSON.stringify(list);
+  if (!useSqliteStore()) {
+    try {
+      const dir = dirFor(id);
+      const file = path.join(dir, 'meta.json');
+      let meta = {};
+      try { meta = JSON.parse(await readFile(file, 'utf8')) || {}; } catch { /* 首次 */ }
+      meta['roundSummaries:' + id] = payload;
+      meta['roundSummariesAt:' + id] = Date.now();
+      await writeFile(file, JSON.stringify(meta, null, 2), 'utf8');
+    } catch { /* 摘要落盘失败不阻断 */ }
+    return { ok: true, count: list.length };
+  }
+  return withQueue(id, async () => {
+    const { db } = await openDb(dirFor(id));
+    requireSession(db, id);
+    db.transaction(() => {
+      setMeta(db, 'roundSummaries:' + id, payload);
+      setMeta(db, 'roundSummariesAt:' + id, String(Date.now()));
+    })();
+    return { ok: true, count: list.length };
+  });
+}
+
+/** 读回每轮任务摘要；没有则空数组。 */
+export async function loadRoundSummaries(id) {
+  if (!OK_ID.test(id)) return [];
+  try {
+    if (!useSqliteStore()) {
+      const file = path.join(dirFor(id), 'meta.json');
+      const meta = JSON.parse(await readFile(file, 'utf8')) || {};
+      const raw = meta['roundSummaries:' + id];
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed : [];
+    }
+    const { db } = await openDb(dirFor(id));
+    const raw = getMeta(db, 'roundSummaries:' + id);
+    if (!raw) return [];
+    const parsed = parseJson(raw, []);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch { return []; }
+}
+
+/**
  * 追加一条 notice 消息（系统提示，不占用户回合）。
  * @param {string} id
  * @param {string} content

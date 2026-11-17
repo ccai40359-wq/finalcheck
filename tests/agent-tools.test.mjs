@@ -179,7 +179,7 @@ test('agent-tools: policy——项目外读取/只读写入/黑名单命令被�
   const tools = createAgentTools({ repoRoot, permissions: fakePermissions(), policy: workspace, projectPath: dir });
 
   const out = await tools.read_file({ path: outside });
-  assert.match(out.error, /被沙箱拒绝/);
+  assert.match(out.error, /被策略闸拒绝/);
   assert.equal(out.deniedBy, 'policy');
   assert.match(out.reason, /项目边界/);
 
@@ -197,7 +197,7 @@ test('agent-tools: policy——项目外读取/只读写入/黑名单命令被�
   assert.match(await readFile(inside, 'utf8'), /inside-content/, '只读模式不应改到磁盘');
 
   const deniedCmd = await tools.run_command({ command: 'shutdown /s /t 0' });
-  assert.match(deniedCmd.error, /被沙箱拒绝/);
+  assert.match(deniedCmd.error, /被策略闸拒绝/);
   assert.equal(deniedCmd.deniedBy, 'policy');
   assert.match(deniedCmd.reason, /黑名单/);
   assert.equal(deniedCmd.matchedRule, 'shutdown');

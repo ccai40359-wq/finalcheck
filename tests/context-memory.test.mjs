@@ -32,9 +32,14 @@ test('context: 超预算触发 LLM 摘要——replace 语义、尾部 4 条原�
     summarize: async (text) => { argsSeen.push(text); return 'SUM文本'; }
   });
   assert.equal(out.compacted, true);
-  assert.equal(out.messages.length, 5); // 摘要 1 条 + 保留 4 条
+  // 2026-11-17 步 9：末尾多一条【当前任务】system（规格 §3.3 硬规则：任务包置底）
+  assert.equal(out.messages.length, 6, '摘要 1 + 保留 4 + 任务包 1');
   assert.deepEqual(out.messages[0], { role: 'user', content: '[历史摘要]\nSUM文本' });
-  assert.deepEqual(out.messages.slice(1), messages.slice(2)); // 尾部 4 条原文保留
+  assert.deepEqual(out.messages.slice(1, -1), messages.slice(2), '尾部 4 条原文保留（去掉末尾任务包）');
+  const pack = out.messages[out.messages.length - 1];
+  assert.equal(pack.role, 'system', '任务包必须是 system');
+  assert.match(pack.content, /当前任务/);
+  assert.match(pack.content, /消息4-/, '任务包引用最后一条 user 原文');
   assert.equal(argsSeen.length, 1); // 只总结被压缩区
   assert.ok(argsSeen[0].includes('消息0-'));
   assert.ok(argsSeen[0].includes('消息1-'));
@@ -77,7 +82,10 @@ test('context: 保留区 role=tool 长消息截为头 1200 字 + 截断标注，
   assert.equal(long.content, 'T'.repeat(1200) + '…[截断 800 字符]');
   const short = out.messages.find((m) => m.role === 'tool' && m.tool_call_id === 't1');
   assert.equal(short.content, 'S'.repeat(100)); // ≤1500 不截
-  assert.equal(out.messages[out.messages.length - 1].content, '最新问题');
+  // 2026-11-17 步 9：末尾是【当前任务】system 包，原文在倒数第二条
+  assert.equal(out.messages[out.messages.length - 1].role, 'system');
+  assert.match(out.messages[out.messages.length - 1].content, /最新问题/, '任务包引用最后一条 user');
+  assert.equal(out.messages[out.messages.length - 2].content, '最新问题');
 });
 
 test('context: 不足 4 条也超预算——无压缩区，仅做保留区 tool 截断', async () => {
@@ -88,10 +96,12 @@ test('context: 不足 4 条也超预算——无压缩区，仅做保留区 tool
   ];
   const out = await assembleContext(messages, { budgetChars: 100 });
   assert.equal(out.compacted, true);
-  assert.equal(out.messages.length, 3); // 无摘要消息顶替（没有可压缩的历史）
+  // 2026-11-17 步 9：3 条原文 + 1 条任务包
+  assert.equal(out.messages.length, 4);
   assert.equal(out.messages[0], messages[0]);
   assert.equal(out.messages[1].content, 'Z'.repeat(1200) + '…[截断 800 字符]');
   assert.equal(out.messages[2], messages[2]);
+  assert.equal(out.messages[3].role, 'system');
 });
 
 test('context: token 预算模式——超预算走摘要、保留最近 4 条原文', async () => {
@@ -106,7 +116,8 @@ test('context: token 预算模式——超预算走摘要、保留最近 4 条�
   assert.equal(out.compacted, true);
   assert.equal(summarized, 1);
   assert.deepEqual(out.messages[0], { role: 'user', content: '[历史摘要]\nTOKSUM' });
-  assert.deepEqual(out.messages.slice(1), messages.slice(2)); // 最近 4 条原文保留
+  assert.deepEqual(out.messages.slice(1, -1), messages.slice(2), '最近 4 条原文保留（去掉末尾任务包）');
+  assert.equal(out.messages[out.messages.length - 1].role, 'system', '末尾是任务包');
   assert.equal(JSON.stringify(messages), snapshot); // 不改输入
 });
 
@@ -140,7 +151,7 @@ test('context: token 预算模式——summarize 失败退抽取式，保留区 
     summarize: async () => { throw new Error('网关挂了'); }
   });
   assert.equal(out.compacted, true);
-  assert.equal(out.messages.length, 5); // 摘要 + 4 条保留
+  assert.equal(out.messages.length, 6); // 2026-11-17 步 9：摘要 + 4 条保留 + 任务包
   assert.ok(out.messages[0].content.startsWith('[历史摘要]\n'));
   assert.ok(out.messages[0].content.includes('- 用户：' + 'Q'.repeat(60)));
   const tool = out.messages.find((m) => m.role === 'tool' && m.tool_call_id === 't1');
@@ -172,7 +183,9 @@ test('context: runAgentTurn 集成——发给网关的是压缩视图，存储�
   assert.equal(sent[0].role, 'system');
   assert.deepEqual(sent[1], { role: 'user', content: '[历史摘要]\n压缩摘要OK' });
   assert.equal(sent[2].content, 'B'.repeat(85000)); // 尾部 4 条原样进请求
-  assert.equal(sent.length, 6);
+  // 2026-11-17 步 9：system(1) + 摘要(1) + 保留 4 条 + 任务包(1) = 7
+  assert.equal(sent.length, 7);
+  assert.equal(sent[sent.length - 1].role, 'system', '末尾是【当前任务】包');
   assert.equal(JSON.stringify(messages), before); // 传入的历史数组不变
 });
 
@@ -275,14 +288,19 @@ test('context: estimateTokens——CJK 1 字符≈1 token，其他 4 字符≈1 
   assert.equal(estimateMessagesTokens([{ role: 'assistant', content: null, tool_calls: calls }]), estimateTokens(JSON.stringify(calls)));
 });
 
-test('context: contextBudget 公式——effective/fullThreshold/microThreshold', () => {
+test('context: contextBudget 公式——单阈值（2026-11-17 步 2 重构）', () => {
+  // 旧版是 effective/fullThreshold/microThreshold 三个值、两档压缩；
+  // 新口径只有一个 compactThreshold = effective（窗口减输出预留）。
+  // 兼容字段 micro/full 仍存在但同值，语义是「到线就压」，不再分两级。
   const b = contextBudget({ contextWindow: 200000, maxOutputTokens: 32000 });
   assert.equal(b.effective, 200000 - 21000);
-  assert.equal(b.fullThreshold, 179000 - 13000);
-  assert.equal(b.microThreshold, Math.min(0.9 * 179000, 179000 - 2000));
+  assert.equal(b.compactThreshold, b.effective, '唯一阈值 = effective');
+  assert.equal(b.microThreshold, b.compactThreshold, '兼容字段与主阈值同值');
+  assert.equal(b.fullThreshold, b.compactThreshold);
   const d = contextBudget({});
   assert.equal(d.contextWindow, 200000);
   assert.equal(d.maxOutputTokens, 32000);
+  assert.equal(d.compactThreshold, 179000);
 });
 
 test('context: microcompact——最近 5 条工具结果保留原文，旧的换占位且配对不破', () => {
@@ -299,10 +317,13 @@ test('context: microcompact——最近 5 条工具结果保留原文，旧的�
   assert.equal(tools.length, 8);
   // 最近 5 条（下标 3..7）保持原文
   assert.deepEqual(tools.slice(-5).map((m) => m.content), originals.slice(-5));
-  // 旧的 3 条被替换为固定占位，仍带 tool_call_id 与工具名
+  // 2026-11-17 步 3：旧的 3 条被压成**索引行**（不再是零信息量占位符）。
+  // 索引行必须保留「工具名 + 目标 + 结果大小」，让模型仍然知道读过什么。
   for (let i = 0; i < 3; i++) {
-    assert.equal(tools[i].tool_call_id, 'c' + i);
-    assert.match(tools[i].content, /^\[旧工具结果已清理：read_file；需要时用更小参数重跑或读 spill 文件\]$/);
+    assert.equal(tools[i].tool_call_id, 'c' + i, 'tool_call_id 必须保留（配对不能破）');
+    assert.match(tools[i].content, /^\[索引\] \S+ read_file/, '索引行必须点名工具');
+    assert.match(tools[i].content, /~\d+ tok/, '索引行必须带结果大小');
+    assert.doesNotMatch(tools[i].content, /旧工具结果已清理/, '不能再是旧占位符');
   }
   // assistant tool_calls 全部还在（配对没破）
   const callIds = convo.filter((m) => m.role === 'assistant').flatMap((m) => m.tool_calls.map((tc) => tc.id));

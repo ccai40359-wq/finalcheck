@@ -113,6 +113,12 @@ test('console: cancellation and timeout kill restricted tree without rerunning c
 });
 
 test('console: DLL-init failure is returned once without visible/detached retry', { skip }, async (t) => {
+  // 2026-11-17：沙箱默认关闭后，DLL 初始化失败这个场景只在显式 required 时存在
+  // （受限令牌 + cmd 才可能撞上）。测试保留，但要显式开启沙箱。
+  const previous = process.env.FINALCHECK_ACL_SANDBOX;
+  process.env.FINALCHECK_ACL_SANDBOX = 'on';
+  t.after(() => { if (previous == null) delete process.env.FINALCHECK_ACL_SANDBOX; else process.env.FINALCHECK_ACL_SANDBOX = previous; });
+
   const f = fixture(t);
   const marker = path.join(f.root, 'attempts.txt');
   const tools = createAgentTools({ repoRoot, projectPath: f.root,
@@ -128,9 +134,9 @@ test('console: DLL-init failure is returned once without visible/detached retry'
 test('console: required mode rejects incompatible command before any host execution', async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fc-required-test-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  const previous = process.env.FINALCHECK_SANDBOX;
-  process.env.FINALCHECK_SANDBOX = 'required';
-  t.after(() => previous == null ? delete process.env.FINALCHECK_SANDBOX : process.env.FINALCHECK_SANDBOX = previous);
+  const previous = process.env.FINALCHECK_ACL_SANDBOX;
+  process.env.FINALCHECK_ACL_SANDBOX = 'on';
+  t.after(() => previous == null ? delete process.env.FINALCHECK_ACL_SANDBOX : process.env.FINALCHECK_ACL_SANDBOX = previous);
   fs.writeFileSync(path.join(root, 'attempt.mjs'), "import fs from 'node:fs';fs.writeFileSync('must-not-exist.txt','bad');");
   for (const mode of ['workspace', 'off']) {
     const tools = createAgentTools({ repoRoot, projectPath: root,

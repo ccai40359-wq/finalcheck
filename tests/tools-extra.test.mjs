@@ -98,7 +98,7 @@ test('review_diff：policy 拒绝项目边界外的目录', async (t) => {
   const tools = createAgentTools({ repoRoot, permissions: fakePermissions(), policy, projectPath: inside });
   const out = await tools.review_diff({ dir: outside });
   assert.equal(out.deniedBy, 'policy');
-  assert.match(out.error, /被沙箱拒绝/);
+  assert.match(out.error, /被策略闸拒绝/);
 });
 
 test('probe 百分位：p50 ≤ p95，firstByteMs 有值；requests 被封顶', async (t) => {

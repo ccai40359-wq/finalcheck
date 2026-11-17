@@ -17,6 +17,12 @@ const TEXT_EXTS = new Set(['.js', '.mjs', '.cjs', '.ts', '.jsx', '.tsx', '.json'
   // 不扫 .key/.pem 会让工作树侧完全看不到它（2026-11-13 H 路回归发现）。
   '.key', '.pem', '.crt']);
 const CODE_EXTS = new Set(['.js', '.mjs', '.cjs', '.ts', '.jsx', '.tsx']);
+// Python 源码扩展名（2026-11-17）：Q3/Q4/Q5/A2-A4 补 Python 支持后，
+// codeOnly 扫描要能收 .py，否则检查器根本看不到 Python 文件（这是语言缺口的根因之一）。
+// 单独一个集合而不是直接并进 CODE_EXTS：调用方可以按 languages 选择，
+// JS-only 的老路径（如果有）仍能只收 JS/TS，避免误扫。
+const PY_EXTS = new Set(['.py']);
+const ALL_CODE_EXTS = new Set([...CODE_EXTS, ...PY_EXTS]);
 const MAX_BYTES = 512 * 1024;
 // 夹具判定的唯一口径：路径里任意一段叫 fixtures/__fixtures__（vitest/pytest 常用夹具目录），
 // src/fixtures、tests/fixtures、**/fixtures/**、**/__fixtures__/** 都算
@@ -46,6 +52,7 @@ export async function listTextFiles(root, excludes = [], opts = {}) {
     maxFiles = Infinity,
     maxDepth = 8,
     includeFixtures = false,
+    languages = 'js',
   } = opts || {};
   const out = [];
   const skipped = [];
@@ -74,7 +81,16 @@ export async function listTextFiles(root, excludes = [], opts = {}) {
       const isEnv = /^\.env($|\.)/i.test(e.name);
       if (e.name.startsWith('.') && !isEnv && e.name !== '.gitignore') continue;
       const ext = path.extname(e.name).toLowerCase();
-      if (codeOnly ? !CODE_EXTS.has(ext) : (!isEnv && !TEXT_EXTS.has(ext))) continue;
+      // languages（2026-11-17）：默认 'js' 保持既有行为不变（JS/TS 不回归是硬条件）；
+      // 传 'py' 只收 Python；传 'all' 两者都收（Q3/Q4/Q5 补 Python 后用这个）。
+      // 注意：这里算的是「**要**保留」的正向条件（原代码是算「要跳过」的反向条件，
+      // 我第一版忘了把 ! 一起去掉，导致非 codeOnly 路径全部被过滤掉——被 8 个测试抓到）。
+      const allowed = codeOnly
+        ? (languages === 'py' ? PY_EXTS.has(ext)
+          : languages === 'all' ? ALL_CODE_EXTS.has(ext)
+            : CODE_EXTS.has(ext))
+        : (!isEnv && TEXT_EXTS.has(ext));
+      if (!allowed) continue;
       if (excluded(rel)) continue;
       if (out.length >= maxFiles) { overLimit = true; return; }
       const st = await stat(p).catch(() => null);

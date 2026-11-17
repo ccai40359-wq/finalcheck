@@ -300,12 +300,69 @@ export function registerAgentIpc({
     // LLM 总结回调（超预算时由 agent-service 调用）：非流式，失败由 context.mjs 静默回退抽取式。
     // 用当前生效的供应商（运行中切换后别再拿旧 key 去请求）
     const summarize = (text) => store.summarizeWithProvider(liveModels.current()?.provider || prov, text);
-    // 手动 /compact 后：只带「摘要 + 最近 6 条」，UI 历史仍完整
+    // 手动 /compact 之后：带「摘要 + 摘要之后新增的全部消息」。
+    //
+    // 2026-11-17（规格 §4 步 4）：旧实现是 `...contextMessages.slice(-6)`，一旦执行过
+    // /compact，这个会话就**永远**只有「摘要 + 最近 6 条」——后面聊多少轮，历史都不再增长，
+    // 那 6 条永远到不了压缩阈值，层级 2/3/4 全部失效（规格缺陷 D2）。
+    // 现在用 summaryAt（写摘要的时间戳）切：只裁掉「摘要已覆盖的那部分」，
+    // summaryAt 之后新增的消息全部保留，历史能正常累积。
     if (sessionId) {
       try {
         const s = await sessions.loadSession(sessionId);
-        if (s.summary) contextMessages = [{ role: 'system', content: '[此前对话摘要]\n' + s.summary }, ...contextMessages.slice(-6)];
+        if (s.summary) {
+          const cutAt = Number(s.summaryAt) || 0;
+          // 保留 summaryAt 之后的消息（含边界：at >= cutAt）。没有 summaryAt 时退回只带最近 6 条，
+          // 避免把已经写进摘要的老消息重复喂一遍。
+          const after = cutAt > 0
+            ? contextMessages.filter((m) => {
+              const at = Number(m?.at);
+              return !Number.isFinite(at) || at >= cutAt;
+            })
+            : contextMessages.slice(-6);
+          contextMessages = [{ role: 'system', content: '[此前对话摘要]\n' + s.summary }, ...after];
+        }
       } catch { /* 无摘要时按原样 */ }
+    }
+    // 每轮任务摘要库（2026-11-17 规格 §4 步 6）：最近 10 轮原文 + 1 份古老合并摘要。
+    // 这是「跨轮记忆」的真正载体——工具结果不进历史，靠它把「读过什么/改过什么/报什么错」
+    // 带到下一轮。放在 compact 摘要之后、hook 之前，且不受 slice 裁剪影响。
+    if (sessionId) {
+      try {
+        const list = await sessions.loadRoundSummaries(sessionId).catch(() => []);
+        if (Array.isArray(list) && list.length) {
+          const { renderRoundSummaries } = await import(engineUrl('desktop/src/main/round-summary-wire.mjs'));
+          const rendered = renderRoundSummaries(list);
+          if (rendered) {
+            contextMessages = [
+              ...contextMessages,
+              { role: 'system', content: rendered }
+            ];
+          }
+        }
+      } catch { /* 摘要库读取失败不阻断 */ }
+    }
+    // 程序账本索引（规格 §3.2 载体②）：只注入最近几轮的标题行（约 50-150 token），
+    // 全文留在 .finalcheck/ledger.md 里让模型用 read_file 按需读——账本可能很长，不能全塞。
+    if (turnProjectPath) {
+      try {
+        const { readLedgerIndex } = await import(engineUrl('desktop/src/main/ledger.mjs'));
+        const idx = await readLedgerIndex(turnProjectPath, { maxRounds: 8 });
+        if (idx && idx.index) {
+          contextMessages = [
+            ...contextMessages,
+            {
+              role: 'system',
+              content: [
+                '【任务账本索引】以下是本项目最近几轮的文件改动/报错（确定性记录，不是模型回忆）：',
+                idx.index,
+                idx.note,
+                `需要细节时用 read_file 读 ${idx.file}（不要凭记忆断言行号）。`
+              ].filter(Boolean).join('\n')
+            }
+          ];
+        }
+      } catch { /* 账本索引读取失败不阻断 */ }
     }
     // SessionStart hook 的 context：作为 system 消息跟在项目记忆之后（仅内存，按会话）；
     // 放在 compact 之后注入，避免被「摘要 + 最近 6 条」裁掉
@@ -321,10 +378,39 @@ export function registerAgentIpc({
     const crossTurnBudget = crossTurnBudgetTokens(contextWindow, maxOutputTokens);
     const effort = mc.effort || cfg.thinkingEffort;
     // 策略沙箱快照：按会话所属项目创建；permissionMode=full 也照样受沙箱约束（两套闸互不替代）
+    //
+    // 跨项目授权（2026-11-17 规格 §4）：只有**用户本轮原话里明确写出**的其它目录才允许，
+    // 模型不能自己判断「这个目录相关」。用现有 allowPaths 通道接入——createPolicy 会把
+    // allowPaths 合并进 roots，assertPathAllowed / assertCwd / checkCommandPaths /
+    // checkDestructiveTargets 全部自动认这些目录，零新增路径逻辑。
+    let crossAllowed = [];
+    try {
+      const [{ resolveCrossProjects }, projectsMod] = await Promise.all([
+        import(engineUrl('desktop/src/main/cross-project.mjs')),
+        import('../projects.mjs')
+      ]);
+      const regs = await projectsMod.listProjects().catch(() => []);
+      const cross = resolveCrossProjects({
+        userMessage: userMsg,
+        currentRoot: turnProjectPath,
+        registeredProjects: regs,
+        home: process.env.USERPROFILE || process.env.HOME || null
+      });
+      crossAllowed = cross.allowed.map((x) => x.path);
+      if (crossAllowed.length) {
+        sendEvent({
+          kind: 'notice',
+          message: t('跨项目操作 {n} 个目录（仅因你本轮明确提到）：{list}', {
+            n: crossAllowed.length,
+            list: crossAllowed.slice(0, 3).join('、')
+          })
+        });
+      }
+    } catch { /* 授权解析失败不阻断本轮（路径闸按默认拒绝） */ }
     const policy = createPolicy({
       projectPath: turnProjectPath,
       mode: store.sandboxModeOf(cfg),
-      allowPaths: store.sandboxAllowPathsOf(cfg)
+      allowPaths: [...store.sandboxAllowPathsOf(cfg), ...crossAllowed]
     });
     const hooksCfg = getHooksConfig(); // 本轮固定快照，运行中切项目不影响已在跑的回合
     // 工作流子代理：与主 agent 同一套引擎（agent-service.runSubagentTurn → runAgentTurn：
@@ -666,6 +752,7 @@ export function registerAgentIpc({
         sessionId,
         commandIdleMs: cfg.commandIdleMs,
         shellAppRoot,
+        aclSandbox: typeof store.aclSandboxOf === 'function' ? store.aclSandboxOf(cfg) : undefined,
         onActivity: sendEvent,
         // 只有主 agent 有 ask_user；子代理/工作流 gate 不注册（避免并行弹多张卡）
         askUser: (args, ctx) => askUsers.ask({ ...(args || {}), sessionId, signal: ctx?.signal || chatAbort.signal }),
@@ -708,7 +795,8 @@ export function registerAgentIpc({
             hooksConfig: hooksCfg,
             sessionId,
             commandIdleMs: cfg.commandIdleMs,
-            shellAppRoot
+            shellAppRoot,
+            aclSandbox: typeof store.aclSandboxOf === 'function' ? store.aclSandboxOf(cfg) : undefined
           });
           const runGate = async (tool, gateArgs) => {
             const fn = gateTools[tool];
@@ -791,6 +879,49 @@ export function registerAgentIpc({
     }).finally(() => { askUsers.endTurn(sessionId); });
     if (sessionId && state.activeChats.get(sessionId) === chatAbort) state.activeChats.delete(sessionId);
     state.steerBuffers.delete(sessionId); // 回合已收尾：没被 drain 的 Steer 不再漏到下一回合
+    // 每轮任务摘要（2026-11-17 规格 §4 步 6-7）：
+    // 这是本次改造真正要补的那一层——跨轮重建历史时工具结果本来就不进上下文
+    // （part 表的 tool part 不会出现在 messages），所以第 2 轮模型完全不知道第 1 轮
+    // 读过什么。这里在回合结束后写一份 6 段摘要，下次回合开头注入。
+    // 不 await：摘要失败不该拖慢/影响用户看到回答；失败只记录不抛。
+    if (sessionId && !out.cancelled && !out.error && typeof out.answer === 'string' && out.answer.trim()) {
+      void (async () => {
+        try {
+          const { writeRoundSummary } = await import(engineUrl('desktop/src/main/round-summary-wire.mjs'));
+          const r = await writeRoundSummary({
+            sessionId,
+            userMessage: userMsg,
+            trace: out.trace || [],
+            answer: out.answer,
+            summarize: (prompt) => store.summarizeWithProvider(liveModels.current()?.provider || prov, prompt, { maxTokens: 5120 }),
+            sessions
+          });
+          if (!r.ok) console.warn('[round-summary] ' + (r.error || '未生成'));
+        } catch (e) {
+          console.warn('[round-summary] 写摘要失败（已忽略）：' + (e?.message || e));
+        }
+      })();
+    }
+    // 程序账本（2026-11-17 规格 §3.5 / §4 步 8）：确定性记账，零 LLM 调用。
+    // 只记 3 个收口点（read_file/grep_code、edit_file/write_file、run_command 失败），
+    // 数据全部来自工具结果的真实字段（行号也是），不靠模型回忆，所以不会漂。
+    if (sessionId && turnProjectPath && !out.cancelled && typeof out.answer === 'string') {
+      void (async () => {
+        try {
+          const { ledgerEntryOf, appendRoundToLedger, nowStamp } = await import(engineUrl('desktop/src/main/ledger.mjs'));
+          const entries = (out.trace || []).map(ledgerEntryOf).filter(Boolean);
+          if (out.answer.trim()) entries.push({ kind: 'conclusion', text: String(out.answer).replace(/\s+/g, ' ').slice(0, 160) });
+          if (!entries.length) return;
+          // 轮号由 appendRoundToLedger 自己数（避免两套计数器漂移）
+          await appendRoundToLedger({
+            projectRoot: turnProjectPath,
+            round: { at: nowStamp(), title: userMsg, lines: entries }
+          });
+        } catch (e) {
+          console.warn('[ledger] 写账本失败（已忽略）：' + (e?.message || e));
+        }
+      })();
+    }
     // 用量账本已在每次模型请求完成时逐条写入（主 agent 与子代理走同一个 onUsage 回调）；
     // 这里只维护「当前会话最后一次请求」的 sessionUsage（Context 指示器口径不变），不再补记账本。
     const usageRec = extractUsage(out.usage);

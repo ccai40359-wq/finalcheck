@@ -422,8 +422,57 @@ const COMMAND_RULES = Object.freeze([
   { name: 'takeown-force', test: (seg) => /\btakeown(?:\.exe)?\s+\/f(?:\s|$)/i.test(seg) },
   { name: 'icacls-grant', test: (seg) => /\bicacls(?:\.exe)?\b[^\n]*\/grant\b/i.test(seg) },
   {
+    // rm 递归+强制：拦「绝对路径目标」，放行「相对路径目标」。
+    // 2026-11-17 两次修正：
+    //   ① 原来只认小写 -rf，`rm -Rf /`、`rm -r -f /` 会漏网（-R 是 GNU rm 合法写法）；
+    //   ② 但原来拦所有 rm -rf 会误伤 `rm -rf ./node_modules`（正常开发操作）。
+    // 现在口径：递归 + 强制 **且** 目标是绝对路径（/、盘符、~、$HOME、%USERPROFILE%）→ 拦；
+    // 相对路径（./dist、node_modules、src/old）→ 放行。相对路径只能删项目内的东西，风险有限。
     name: 'rm-recursive',
-    test: (seg) => /\brm\s+(?:-[a-zA-Z]+\s+)*(?:-rf|-fr|-[rf]\s+-[rf])\b/i.test(seg)
+    test: (seg) => {
+      if (!/\brm\b/.test(seg)) return false;
+      // 拆出 rm 之后的所有 token，分清「选项」和「目标」
+      const parts = seg.slice(seg.search(/\brm\b/)).split(/\s+/).slice(1);
+      let recursive = false;
+      let force = false;
+      let target = '';
+      for (const raw of parts) {
+        const token = raw.replace(/^["']|["']$/g, '');
+        if (!token) continue;
+        if (token.startsWith('-')) {
+          if (token === '--recursive') recursive = true;
+          else if (token === '--force') force = true;
+          else {
+            // 短选项簇：-rf / -Rf / -fr / -r / -f
+            if (/^-[a-zA-Z]+$/.test(token)) {
+              if (token.includes('r') || token.includes('R')) recursive = true;
+              if (token.includes('f')) force = true;
+            }
+          }
+          continue;
+        }
+        if (!target) target = token; // 第一个非选项 = 目标
+      }
+      if (!recursive || !force || !target) return false;
+      return /^(?:\/|~|[A-Za-z]:[\\/]|%USERPROFILE%|\$HOME)/.test(target);
+    }
+  },
+  {
+    // dd 写设备/整盘：`dd if=... of=/dev/sda`、`of=\\.\PhysicalDrive0`
+    // 2026-11-17 补：之前完全没有 dd 规则，`dd if=/dev/zero of=/dev/sda` 被放行（实测漏网）。
+    name: 'dd-device',
+    test: (seg) => /\bdd\b[^\n]*\bof=(?:\/dev\/|\/proc\/|\\\\.\\|\/dev|sd[a-z]|hd[a-z]|nvme)/i.test(seg)
+      || /\bdd\b[^\n]*\bof=[^\s]*(?:PhysicalDrive|physicaldrive)/i.test(seg)
+  },
+  {
+    // 建文件系统：mkfs.* / mke2fs / mkdosfs / newfs
+    name: 'mkfs',
+    test: (seg) => /\b(?:mkfs(?:\.[a-z0-9]+)?|mke2fs|mkdosfs|newfs|mkswap)\b/i.test(seg)
+  },
+  {
+    // 直接写块设备（cat > /dev/sda、tee /dev/sda 这类）：只认字面设备路径
+    name: 'write-block-device',
+    test: (seg) => /(?:>|\btee\b)[^\n]*\/(?:dev\/sd[a-z]|dev\/hd[a-z]|dev\/nvme\d|dev\/disk)/i.test(seg)
   }
 ]);
 
@@ -453,7 +502,11 @@ export function checkCommand(policy, command) {
 // 为什么需要：WRITE_RESTRICTED 令牌只过滤写权限位，DELETE 不在其中——实测沙箱里
 // `del "项目外文件"` 能删成功（`del /f`、PowerShell Remove-Item 反而被拒），
 // 所以这条必须在应用层兜住：目标解析到项目外，整条命令拒绝。
-const DESTRUCTIVE_HEAD = /^["']?(del|erase|rd|rmdir|remove-item|ri|move-item|mv|ren|rename)(?:\.exe)?["']?(?:\s|$)/i;
+//
+// 2026-11-17（关沙箱后补）：head 里**加了 rm**。原来只认 cmd 的 del/erase/rd 与
+// PowerShell 的 remove-item，bash 的 `rm`、GNU 系的 `unlink` 完全不在检查范围——
+// 而沙箱默认关闭后 `rm` 就是主要删除手段。这是真缺口，不只是配置问题。
+const DESTRUCTIVE_HEAD = /^["']?(del|erase|rd|rmdir|remove-item|ri|move-item|mv|ren|rename|rm|unlink|shred)(?:\.exe)?["']?(?:\s|$)/i;
 const POWERSHELL_INNER = /(?:-command|-c)\s+"(.+)"$/i;
 
 /**
@@ -527,8 +580,16 @@ function resolveCommandPath(policy, raw, base) {
  */
 export function checkDestructiveTargets(policy, command, cwd) {
   if (typeof command !== 'string' || !command) return { ok: true };
-  if (!policy || policy.mode === 'off') return { ok: true };
+  if (!policy) return { ok: true };
+  // 2026-11-17（规格 §2.3 抓到的缺口）：删掉 `policy.mode === 'off'` 这个短路，
+  // 并且**不依赖 assertPathAllowed 的 mode 分支**——它在 mode='off' 时跳过边界，
+  // 会导致「关了写保护就顺手允许删项目外文件」。这条闸与敏感路径同口径：无条件生效。
+  // 背景：沙箱的 WRITE_RESTRICTED 令牌不过滤 DELETE（实测 `del "项目外文件"` 能删成功），
+  // 所以应用层这道检查是删除动作的最后一道闸。
   const base = cwd || (Array.isArray(policy.roots) ? policy.roots[0] : null);
+  const roots = Array.isArray(policy.roots) ? policy.roots : [];
+  const pathApi = pathApiFor(policy.platform);
+  const ci = isWinPlatform(policy.platform);
   for (const seg of commandSegments(command)) {
     const inner = POWERSHELL_INNER.exec(seg);
     const target = inner ? inner[1] : seg;
@@ -536,6 +597,27 @@ export function checkDestructiveTargets(policy, command, cwd) {
     for (const raw of literalPathsIn(target)) {
       const abs = resolveCommandPath(policy, raw, base);
       if (!abs) continue;
+      // ① 敏感路径无条件拒（不管 mode、不管在不在项目内）
+      const sens = isSensitivePath(policy, abs);
+      if (sens) {
+        return {
+          ok: false,
+          reason: t('删除/改名目标是敏感路径，已拒绝（{item}）：{path}', { item: sens, path: raw.slice(0, 100) }),
+          matchedRule: 'destructive-sensitive'
+        };
+      }
+      // ② 项目边界：无条件检查（不看 mode）
+      if (roots.length) {
+        const inside = roots.some((r) => typeof r === 'string' && isInside(pathApi, r, abs, ci));
+        if (!inside) {
+          return {
+            ok: false,
+            reason: t('删除/改名目标在项目外，已拒绝：{path}', { path: raw.slice(0, 120) }),
+            matchedRule: 'destructive-outside'
+          };
+        }
+      }
+      // ③ 仍走一遍完整策略（readonly 等模式在这里兜住）
       const verdict = assertPathAllowed(policy, abs, { write: true, tool: 'run_command' });
       if (verdict && verdict.ok === false) {
         return {
@@ -624,6 +706,44 @@ export function checkCommandPaths(policy, command, cwd) {
         }
       }
     }
+  }
+  return { ok: true };
+}
+
+// ---- 文件名合法性（2026-11-17 规格 §3.3）----
+// 背景：实测 D:\finalcheck 根目录里出现了名为 `ids.indexOf(v)!`、`x[1])` 的 0 字节文件——
+// 是模型把代码片段当 path 参数传进 write_file，真的在磁盘上创建出来了。
+// 根因：write_file / edit_file 只调 assertPathAllowed（边界 + 敏感），不校验文件名本身。
+//
+// 这是**启发式**，会误杀少数合法文件名（如 `a(1).txt`）。代价可接受：
+// 返回的是「拒绝原因」，模型看到会重试正确路径，不是静默失败。
+const WIN_ILLEGAL_NAME = /[<>:"|?*\x00-\x1f]/;
+// 代码片段特征：括号/分号/感叹号/反引号/成员访问/下标/方法调用
+const CODE_FRAGMENT_NAME = /[()[\]{};!$`]|\.\w+\(|indexOf|\.slice\(|\[[0-9]+\]/;
+const WIN_RESERVED_NAME = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?$/i;
+
+/**
+ * 校验文件名是否合法（只看 basename，不查路径边界——那是 assertPathAllowed 的事）。
+ * @returns {{ok:true}|{ok:false, reason:string, matchedRule:string}}
+ */
+export function checkFileName(absPath) {
+  const base = path.basename(String(absPath || ''));
+  if (!base) return { ok: false, reason: t('文件名为空'), matchedRule: 'filename-empty' };
+  if (WIN_ILLEGAL_NAME.test(base)) {
+    return { ok: false, reason: t('文件名含非法字符：{name}', { name: base.slice(0, 40) }), matchedRule: 'filename-illegal' };
+  }
+  if (WIN_RESERVED_NAME.test(base)) {
+    return { ok: false, reason: t('Windows 保留文件名：{name}', { name: base }), matchedRule: 'filename-reserved' };
+  }
+  if (base.length > 255) {
+    return { ok: false, reason: t('文件名过长（>255 字符）'), matchedRule: 'filename-too-long' };
+  }
+  if (CODE_FRAGMENT_NAME.test(base)) {
+    return {
+      ok: false,
+      reason: t('文件名看起来是代码片段而不是文件名：{name}。请检查 path 参数是否拼错（应该是一个真实的文件名，例如 src/foo.ts）', { name: base.slice(0, 40) }),
+      matchedRule: 'filename-code-fragment'
+    };
   }
   return { ok: true };
 }

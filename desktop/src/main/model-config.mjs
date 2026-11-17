@@ -114,13 +114,22 @@ export function effectiveMaxOutputTokens(modelEntry, provider) {
     ?? DEFAULT_MAX_OUTPUT_TOKENS;
 }
 
-// 跨轮历史预算（token 口径）：
-//   min(max(0.6 * (window - min(maxOutput, 21000)), 30000), 400000)
-// 1M 窗口 ≈ 400k token 上限；200k 窗口 ≈ 107k；再小的窗口兜底 30k。
+// 跨轮历史预算（token 口径）—— 2026-11-17 重构（规格 §4 步 1）。
+//
+// 旧公式 min(max(0.6*(window−min(maxOutput,21000)),30000),400000) 有 P0 缺陷：
+// 那个 400000 硬上限让 1M 窗口在 **40%** 就砍（400k/1000k），压缩后只剩 150k（15%）。
+// 200k 窗口也只在 54% 就砍。这不是"防爆"，是白白浪费一半以上的窗口。
+//
+// 新口径：**只在真正要顶到窗口上限时才压**。
+//   阈值 = contextWindow − min(maxOutputTokens, 21000)
+//   （必须给输出留位置，否则 API 直接 400；21000 是既有的输出预留上限，与
+//    context.mjs 的 contextBudget 同一口径，别改这个数，否则两处阈值会漂）
+//   1M → 979,000（97.9%）；200k → 179,000（89.5%）；64k → 32,000（下限，防小窗口算成负数）
+// 下限 30000 保留：极小窗口（如 32k）算出来可能很小甚至负数，兜底成 30k 以免每轮都压。
 export function crossTurnBudgetTokens(window, maxOutput) {
   const w = positiveInt(window) ?? DEFAULT_CONTEXT_WINDOW;
   const outRaw = Number(maxOutput);
   const out = Number.isFinite(outRaw) && outRaw >= 0 ? Math.trunc(outRaw) : DEFAULT_MAX_OUTPUT_TOKENS;
-  const raw = Math.floor(0.6 * (w - Math.min(out, 21000)));
-  return Math.trunc(Math.min(Math.max(raw, 30000), 400000));
+  const raw = w - Math.min(out, 21000);
+  return Math.trunc(Math.max(raw, 30000));
 }

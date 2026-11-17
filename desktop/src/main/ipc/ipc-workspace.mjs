@@ -70,10 +70,15 @@ export function registerWorkspaceIpc({ ipcMain, getWin, getDataRoot, imageMime, 
     const prov = store.pickActiveProvider(cfg);
     if (!prov) return { error: t('尚未配置模型供应商') };
     const s = await sessions.loadSession(sessionId);
+    // 2026-11-17（规格 §4 步 5）：这里不再截断。
+    // 旧代码 `.slice(-30000)` = 只保留最后 3 万字符（保尾丢头），
+    // 而跨轮摘要那边用的是 slice(0, maxChars)（保头丢尾）—— 同一上限、两个相反口径，
+    // 必有一个是错的。现在整段交给 summarizeWithProvider，超长时它会分块逐段摘要再合并，
+    // 头尾都覆盖。
     const text = (s.messages || [])
       .filter((m) => m.role === 'user' || m.role === 'assistant')
       .map((m) => `[${m.role}] ${String(m.content || '')}`)
-      .join('\n').slice(-30000);
+      .join('\n');
     if (!text.trim()) return { error: t('没有可压缩的对话') };
     const key = String(sessionId ?? '');
     const ctl = new AbortController();
@@ -82,7 +87,7 @@ export function registerWorkspaceIpc({ ipcMain, getWin, getDataRoot, imageMime, 
     try {
       const summary = await store.summarizeWithProvider(prov, text, { signal: ctl.signal });
       await sessions.saveSummary(sessionId, summary);
-      await sessions.appendNotice(sessionId, t('上下文已压缩：{before} 字符 → 摘要 {after} 字符；后续请求只带摘要 + 最近 6 条。', { before: text.length, after: summary.length }), 'compact');
+      await sessions.appendNotice(sessionId, t('上下文已压缩：{before} 字符 → 摘要 {after} 字符；后续请求带摘要 + 压缩之后新增的全部消息（历史继续正常累积）。', { before: text.length, after: summary.length }), 'compact');
       emitCompact(sessionId, { kind: 'compact-end', scope: 'manual', before: text.length, after: summary.length });
       return { ok: true, summary, before: text.length, after: summary.length };
     } catch (e) {

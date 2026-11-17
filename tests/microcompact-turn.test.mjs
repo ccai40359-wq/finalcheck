@@ -9,7 +9,8 @@ import assert from 'node:assert/strict';
 import { microcompact, countToolsToClean, contextBudget } from '../desktop/src/main/context.mjs';
 import { runAgentTurn } from '../desktop/src/main/agent-service.mjs';
 
-const PLACEHOLDER = (name) => `[旧工具结果已清理：${name}；需要时用更小参数重跑或读 spill 文件]`;
+// 2026-11-17 步 3：清理后是**索引行**（带工具名+目标+大小），不是零信息量占位符
+const isIndexLine = (text) => String(text).startsWith('[索引]');
 
 // 构造一条 system + user + 12 轮 (assistant tool_calls + tool 结果) 的对话
 function buildConvo() {
@@ -44,7 +45,7 @@ test('microcompact: 12 条 tool 消息——旧 7 条变占位符、最近 5 条
     convo.filter((m) => m.role === 'assistant').flatMap((m) => m.tool_calls.map((tc) => [tc.id, tc.function.name]))
   );
   tools.slice(0, 7).forEach((m, k) => {
-    assert.equal(m.content, PLACEHOLDER(callNames.get(m.tool_call_id)), `第 ${k} 条旧结果应为带工具名的占位符`);
+    assert.ok(isIndexLine(m.content), `第 ${k} 条旧结果应为索引行`);
   });
   // 配对完整：assistant tool_calls 与 tool 消息一一对应，无孤儿
   const callIds = convo.filter((m) => m.role === 'assistant').flatMap((m) => m.tool_calls.map((tc) => tc.id));
@@ -70,8 +71,8 @@ test('microcompact: 幂等——跑两次不重复改写', () => {
   assert.deepEqual(convo.map((m) => JSON.stringify(m)), snapshot, '第二次不得再改动任何消息');
   // 占位符不嵌套（没有「已清理：[旧工具结果已清理…」这类二次包装）
   for (const m of convo) {
-    if (m.role === 'tool' && String(m.content).startsWith('[旧工具结果已清理：')) {
-      assert.equal(String(m.content).split('旧工具结果已清理').length - 1, 1);
+    if (m.role === 'tool' && isIndexLine(m.content)) {
+      assert.equal(String(m.content).split('[索引]').length - 1, 1, '索引行不能嵌套');
     }
   }
 });
@@ -92,10 +93,14 @@ test('contextBudget: 小窗口不再算出负阈值（否则模型每次都失�
     assert.ok(b.microThreshold > 0, `window=${w} 的 microThreshold 必须 > 0，实际 ${b.microThreshold}`);
     assert.ok(b.fullThreshold >= 0, `window=${w} 的 fullThreshold 不能为负，实际 ${b.fullThreshold}`);
   }
-  // 正常窗口必须保持原值不动（回归：别顺手改了默认行为）
+  // 2026-11-17 步 2：双阈值合并成单阈值，所以「原公式值」的断言换成新口径。
   const big = contextBudget({ contextWindow: 200000, maxOutputTokens: 32000 });
-  assert.equal(Math.round(big.microThreshold), 161100, '20 万窗口的 micro 阈值应保持原公式值');
-  assert.equal(Math.round(big.fullThreshold), 166000, '20 万窗口的 full 阈值应保持原公式值');
+  assert.equal(Math.round(big.compactThreshold), 179000,
+    '20 万窗口的阈值 = 200000 - 21000（不再是 161100/166000 那对旧值）');
+  for (const w of [1000, 4000, 8000, 12000, 20000]) {
+    const b = contextBudget({ contextWindow: w, maxOutputTokens: 32000 });
+    assert.ok(b.compactThreshold > 0, `window=${w} 的阈值必须 > 0，实际 ${b.compactThreshold}`);
+  }
 });
 
 test('agent: 预算内的长回合不折叠——12 轮工具结果全部原文保留（读完就忘的回归）', async () => {
@@ -139,8 +144,8 @@ test('agent: 预算内的长回合不折叠——12 轮工具结果全部原文�
     assert.equal(sent[i].content, expectContent(i + 1),
       `c${i + 1} 必须原文保留（预算内不该折叠，否则模型读完就忘）`);
   }
-  assert.equal(sent.filter((m) => String(m.content).startsWith('[旧工具结果已清理：')).length, 0,
-    '预算内不应出现任何占位符');
+  assert.equal(sent.filter((m) => isIndexLine(m.content)).length, 0,
+    '预算内不应出现任何索引行');
 
   // 折叠没发生 → 不该发 notice
   assert.equal(events.filter((e) => e.kind === 'notice').length, 0, '预算内不该发「已清理」通知');
@@ -185,7 +190,7 @@ test('agent: 真超预算时才折叠——阈值仍然硬，长回合不会无�
 
   const sent = bodies[bodies.length - 1].messages.filter((m) => m.role === 'tool');
   assert.ok(sent.length > 0, '最后请求里应还有工具结果');
-  const placeholders = sent.filter((m) => String(m.content).startsWith('[旧工具结果已清理：'));
+  const placeholders = sent.filter((m) => isIndexLine(m.content));
   assert.ok(placeholders.length > 0,
     `超预算后必须出现占位符（证明阈值仍在起作用），实际 ${placeholders.length} / ${sent.length}`);
   // 超预算时也必须保留 12 条原文（2026-11-17：原来 compactNow() 未传 keepRecentTool，

@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 import { loadSkills, readPlaybook, catalogSummary } from '../../../src/playbooks.mjs';
 import { readFileTool, editFileTool, writeFileTool } from '../../../src/fs-tools.mjs';
-import { assertPathAllowed, assertCwd, checkCommand, checkDestructiveTargets, checkCommandPaths, scrubEnv } from './policy.mjs';
+import { assertPathAllowed, checkFileName, assertCwd, checkCommand, checkDestructiveTargets, checkCommandPaths, scrubEnv } from './policy.mjs';
 import { runHookEvent } from './hooks.mjs';
 import { isBlocked } from './shell.mjs';
 import { resolveShell } from './shell-resolver.mjs';
@@ -24,8 +24,10 @@ const PREVIEW_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', 
 const APPROVAL_TOOLS = new Set(['edit_file', 'write_file', 'run_command', 'quality_gate']);
 
 function policyDenyResult(check) {
+  // 2026-11-17：沙箱默认关闭后这层是**应用层策略闸**（正则/路径白名单/黑名单），
+  // 不是沙箱拒绝。旧文案写「被沙箱拒绝」会让人以为有 OS 级隔离，属误导，已改。
   return {
-    error: '被沙箱拒绝：' + check.reason,
+    error: '被策略闸拒绝：' + check.reason,
     deniedBy: 'policy',
     reason: check.reason,
     ...(check.matchedRule ? { matchedRule: check.matchedRule } : {})
@@ -43,6 +45,32 @@ const DLL_INIT_FAILED_CODES = new Set([3221225794, -1073741502]);
 function isDllInitFailure(result) {
   if (!result || result.blocked || result.error) return false;
   return DLL_INIT_FAILED_CODES.has(Number(result.code));
+}
+
+/**
+ * ACL 写保护开关（2026-11-17 用户决策：**默认关闭**，统一走宿主机 Git Bash）。
+ *
+ * ⚠️ 这是**独立开关**，不是 policy.mode（规格 §1.2 的教训）：
+ *   把 policy.mode 改 'off' 会同时关掉【项目边界闸】和【删除目标检查】——
+ *   因为 checkCommandPaths 里 `strictBoundary = mode !== 'off'`，
+ *   而 checkDestructiveTargets 里有 `mode === 'off'` 短路。
+ *   用户要关的只是「ACL 写保护」，不是「允许删项目外文件」。所以拆成两个维度。
+ *
+ * 决策依据（实测，不是推测）：
+ *   · ACL 受限令牌沙箱只拦写、不拦读（沙箱包 README 原文 "Writes are restricted;
+ *     reads, network, and process visibility are not"；实测 `type 项目外文件` 能读出内容）
+ *   · 它只覆盖 cmd 那一半命令；真正能写盘的 ls/rm/node/npm 一直走宿主机
+ *   · 受限令牌下 Git Bash 起不来（signal pipe / CreateFileMapping → Win32 error 5），
+ *     加回用户 SID 能让 bash 跑但沙箱被击穿；AppContainer 同样不行（微软 mxc#1061 open）
+ *   · Claude Code 原生 Windows 无沙箱；Codex 的选择是「保沙箱、砍 bash」（默认 PowerShell）
+ *     —— 我们反过来：保 bash、关 ACL 写保护，靠应用层三道闸。
+ *
+ * 优先级：显式传入的 opts.aclSandbox > 环境变量 FINALCHECK_ACL_SANDBOX=on > 默认 false。
+ * @param {{aclSandbox?: boolean}} [opts]
+ */
+export function sandboxEnabled(opts = {}) {
+  if (typeof opts?.aclSandbox === 'boolean') return opts.aclSandbox;
+  return String(process.env.FINALCHECK_ACL_SANDBOX || '').trim().toLowerCase() === 'on';
 }
 
 // 空闲输出看门狗：不设「工作时长上限」（长任务可以跑 1 小时），只在「连续 N 毫秒没有任何输出
@@ -111,11 +139,21 @@ export function runCommandWithSignal(command, {
     const isWin = process.platform === 'win32';
     const env = envInput && typeof envInput === 'object' ? { ...envInput } : { ...process.env };
     if (isWin) {
-      // 与 shell.mjs 相同：避免 Git Bash 的 find/sort/more 抢先命中 PATH
+      // 2026-11-17（规格 §1.3 点名的「最容易漏、后果最坏」一条）：
+      // 这段前置原本是为了让**沙箱里的 cmd.exe** 拿到 cmd 自带的 find/sort/more。
+      // 只在开 ACL 沙箱时（sandbox != null，此时 shell 必定是 cmd）才需要。
+      // 关沙箱后命令走 Git Bash，这个前置会把 Git Bash 的 find/sort 换成
+      // C:\Windows\System32\find.exe（Windows 的文本查找，语义完全不同）。
+      // 所以：沙箱在场才前置；走 Git Bash 时保留用户原 PATH（bash 自己排在最前）。
       const sys = 'C:\\Windows\\System32;C:\\Windows;';
       const old = env.PATH || env.Path || '';
-      env.PATH = sys + old;
-      env.Path = env.PATH;
+      if (sandbox) {
+        env.PATH = sys + old;
+        env.Path = env.PATH;
+      } else {
+        env.PATH = old;
+        env.Path = old;
+      }
     }
     if (sandbox?.env && typeof sandbox.env === 'object') Object.assign(env, sandbox.env);
     let out = '', err = '', settled = false, proc = null, timer = null, idleTimer = null, pingTimer = null;
@@ -401,7 +439,7 @@ export const GREP_CODE_SCHEMA = {
 // todo_write 的 CC 式三条规则（并轨时追加到 AGENT_ONLY_TOOLS_SCHEMA 里 todo_write 的 description 末尾）
 export const TODO_CC_RULES_TEXT = 'CC 式规则：① 同一时间恰好一个 in_progress（工具层会自动把多余的 running 降回 pending 并提示）；② 测试失败/实现不全/有未解决错误时禁止标 done——保持 running，并新建一条写清「需要解决什么」；③ 做完一条立刻调用 todo_write 更新状态，不要攒批';
 
-export function createAgentTools({ repoRoot, permissions, recordAudit = async () => {}, playbookRoot, runWorkflow = null, projectPath = null, policy = null, hooksConfig = null, hooksRunner = null, sessionId = null, cwd = null, signal = null, commandIdleMs = DEFAULT_COMMAND_IDLE_MS, askUser = null, todoWrite = null, onActivity = null, requireAuditIntent = null, shellAppRoot = null } = {}) {
+export function createAgentTools({ repoRoot, permissions, recordAudit = async () => {}, playbookRoot, runWorkflow = null, projectPath = null, policy = null, hooksConfig = null, hooksRunner = null, sessionId = null, cwd = null, signal = null, commandIdleMs = DEFAULT_COMMAND_IDLE_MS, askUser = null, todoWrite = null, onActivity = null, requireAuditIntent = null, shellAppRoot = null, aclSandbox = undefined } = {}) {
   if (!repoRoot) throw new Error('createAgentTools 需要 repoRoot');
   const engineUrl = (rel) => pathToFileURL(path.join(repoRoot, rel)).href;
   // 验收前置闸：只有「能向用户提问」的主 agent 才强制先问档位/维度。
@@ -534,22 +572,20 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
         if (decision !== 'allowed-once' && decision !== 'always-session') return { error: '用户拒绝了质量闸执行' };
       }
       const sandboxQualityRunner = async (command, projectDir, timeoutMs) => {
-        const sbPref = String(process.env.FINALCHECK_SANDBOX || '').trim().toLowerCase();
-        // 质量闸的命令基本是 npm/node/tsc/vitest：受限令牌下它们会 EPERM（捕获不了孙进程输出），
-        // 按兼容清单改在宿主机执行；路径策略、命令黑名单与审批照旧生效。
+        // 沙箱默认关闭（见 sandboxEnabled 的注释）；显式 required 时才启用。
         const compat = sandboxCompatible(command);
-        if (!compat.compatible && sbPref === 'required') {
-          return { code: 1, ms: 0, out: '', err: `沙箱不支持这条质量命令（${compat.reason}）；FINALCHECK_SANDBOX=required 已拒绝在宿主机执行`, timedOut: false };
+        if (!compat.compatible && sandboxEnabled({ aclSandbox })) {
+          return { code: 1, ms: 0, out: '', err: `沙箱不支持这条质量命令（${compat.reason}）；FINALCHECK_ACL_SANDBOX=on（或 config aclSandbox:true） 已拒绝在宿主机执行`, timedOut: false };
         }
-        const sb = sbPref === 'off' || !compat.compatible ? null : createSandboxedRun({
+        const sb = !sandboxEnabled({ aclSandbox }) || !compat.compatible ? null : createSandboxedRun({
           workspaceRoot: projectDir,
           policyMode: policy?.mode || 'off',
           command,
           cwd: projectDir,
           sandboxAppRoot: shellAppRoot
         });
-        if (!sb && sbPref === 'required') {
-          return { code: 1, ms: 0, out: '', err: '沙箱不可用；FINALCHECK_SANDBOX=required 已拒绝在宿主机执行', timedOut: false };
+        if (!sb && sandboxEnabled({ aclSandbox })) {
+          return { code: 1, ms: 0, out: '', err: '沙箱不可用；FINALCHECK_ACL_SANDBOX=on（或 config aclSandbox:true） 已拒绝在宿主机执行', timedOut: false };
         }
         const t0 = Date.now();
         const run = await runCommandWithSignal(String(command), {
@@ -728,6 +764,10 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
         const check = assertPathAllowed(policy, a.path, { write: true, tool: 'edit_file' });
         if (!check.ok) return policyDenyResult(check);
         a = { ...a, path: check.path };
+        // 2026-11-17（规格 §3.3）：文件名合法性。D:inalcheck 里出现过名叫
+        // `ids.indexOf(v)!` 的 0 字节文件——模型把代码片段当 path 传进来的结果。
+        const nameCheck = checkFileName(a.path);
+        if (!nameCheck.ok) return policyDenyResult(nameCheck);
       }
       const abs = path.resolve(String(a?.path || ''));
       if (!preApproved('edit_file', abs) && !permissions?.sessionAllowed?.('edit_file', abs, approvalScope)) {
@@ -743,6 +783,8 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
         const check = assertPathAllowed(policy, a.path, { write: true, tool: 'write_file' });
         if (!check.ok) return policyDenyResult(check);
         a = { ...a, path: check.path };
+        const nameCheck = checkFileName(a.path);
+        if (!nameCheck.ok) return policyDenyResult(nameCheck);
       }
       const abs = path.resolve(String(a?.path || ''));
       if (!preApproved('write_file', abs) && !permissions?.sessionAllowed?.('write_file', abs, approvalScope)) {
@@ -767,13 +809,21 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
     },
 
     remember_project: async (args) => {
+      // 2026-11-17 决策 2：记忆跟**目录**走，不跟会话走。
+      // 你在这个项目里顺手改了另一个项目的代码时，那条记忆应该写进**被改的那个项目**，
+      // 否则下次审那个项目时它看不到，而当前项目的记忆里多了一条无关内容。
+      // args.dir 可选：不传 = 当前会话绑定的项目（旧行为不变）。
+      const targetDir = String(args?.dir || '').trim() || projectPath || '';
+      if (!targetDir) return { error: '缺少目标目录：请传 dir（要记住的那个项目根）或先绑定项目' };
+      const resolvedDir = path.resolve(targetDir);
       if (policy) {
-        const check = assertPathAllowed(policy, path.join(projectPath || '', 'AGENTS.md'), { write: true, tool: 'remember_project' });
+        const check = assertPathAllowed(policy, path.join(resolvedDir, 'AGENTS.md'), { write: true, tool: 'remember_project' });
         if (!check.ok) return policyDenyResult(check);
       }
       const { rememberProject } = await import('./project-memory.mjs');
       try {
-        return await rememberProject(projectPath, args?.fact);
+        const r = await rememberProject(resolvedDir, args?.fact);
+        return { ...r, dir: resolvedDir };
       } catch (e) {
         return { error: e.message };
       }
@@ -862,20 +912,22 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
       // 其余命令走空闲输出看门狗：连续 idle 毫秒无输出才转后台，长任务只要还在输出就不设上限。
       const idleMs = args?.idle_ms ?? args?.idleMs ?? commandIdleMs ?? DEFAULT_COMMAND_IDLE_MS;
       const sandboxMode = policy?.mode || 'off';
-      const sandboxPref = String(process.env.FINALCHECK_SANDBOX || '').trim().toLowerCase();
+      // 沙箱默认关闭（2026-11-17 决策，理由见 sandboxEnabled 注释）：
+      // 命令统一走宿主机 Git Bash，一种 shell、一套语法。
+      const sandboxOn = sandboxEnabled({ aclSandbox });
       const compat = sandboxCompatible(cmd);
-      const sandbox = sandboxPref === 'off' || !compat.compatible ? null : createSandboxedRun({
+      const sandbox = !sandboxOn || !compat.compatible ? null : createSandboxedRun({
         workspaceRoot: projectPath || runCwd,
         policyMode: sandboxMode,
         command: cmd,
         cwd: runCwd,
         sandboxAppRoot: shellAppRoot
       });
-      if (!sandbox && sandboxPref === 'required') {
+      if (!sandbox && sandboxOn) {
         return {
           error: !compat.compatible
-            ? `沙箱不支持这条命令（${compat.reason}）；FINALCHECK_SANDBOX=required 已拒绝在宿主机执行`
-            : `沙箱不可用（${sandboxAvailability().error || '平台不支持'}），FINALCHECK_SANDBOX=required 已拒绝在宿主机执行`,
+            ? `沙箱不支持这条命令（${compat.reason}）；FINALCHECK_ACL_SANDBOX=on（或 config aclSandbox:true） 已拒绝在宿主机执行`
+            : `沙箱不可用（${sandboxAvailability().error || '平台不支持'}），FINALCHECK_ACL_SANDBOX=on（或 config aclSandbox:true） 已拒绝在宿主机执行`,
           deniedBy: 'policy'
         };
       }
@@ -897,7 +949,8 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
         result.sandboxFailure = 'dll-init';
         result.stderr = `[沙箱受限进程初始化失败；已停止，未切换到可见控制台]\n${result.stderr || ''}`;
       }
-      if (sandboxMode !== 'off' && !sandbox && sandboxPref !== 'off') {
+      // 只有「用户显式要求沙箱」时才提示跳过/不可用（默认关闭时不打扰，也不冒充有保护）
+      if (sandboxOn && sandboxMode !== 'off' && !sandbox) {
         if (!compat.compatible) result.sandboxSkip = compat.reason;
         else result.sandboxWarning = `写/删沙箱不可用（${sandboxAvailability().error || '平台不支持'}）；本条命令在宿主机执行`;
       }

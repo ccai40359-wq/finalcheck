@@ -285,8 +285,8 @@ export const TOOLS_SCHEMA = [
       }
     }
   },
-  { type: 'function', function: { name: 'remember_project', description: '把用户明确要求长期记住的项目事实写进项目根的 AGENTS.md（追加到「## 记忆」小节，自动去重）。只记稳定事实：项目用途、技术栈、目录约定、禁忌、验收口径；不要记一次性会话内容', parameters: { type: 'object', properties: { fact: { type: 'string', description: '一条事实，一句话，尽量带路径/命令等可核对信息' } }, required: ['fact'] } } },
-  { type: 'function', function: { name: 'run_command', description: '在本机执行 shell 命令。⚠️ 这里有两种 shell，按命令的第一个词自动分流（2026-11-17 实测：以前描述只说「Git Bash 语法」，模型一直写 cmd、一次 bash 都没用上）：\n【走宿主机 Git Bash】命令第一段以 bash/cygwin 工具开头 → ls / grep / cat / head / tail / wc / cut / tr / uniq / diff / sed / awk / rm / mv / cp / mkdir / stat / touch / tar / bash，以及 node / npm / npx / pnpm / yarn / tsc / jest / vitest。这些会**在沙箱外**执行（写/删仍受应用层路径策略限制，但没有 ACL 写保护）。bash 语法在这里可用：`ls -la`、`2>/dev/null`、`grep -rn`、`for f in ...`、`$(...)`。\n【进 ACL 沙箱，里面是 cmd】其余命令（dir / type / findstr / del / echo 重定向 / python / pip / git / curl / powershell 等）→ 沙箱内固定是 **cmd.exe**，因为受限令牌下 Git Bash 的 msys 共享内存起不来（物理约束）。所以这些只能用 cmd 语法：`dir /b`、`type`、`findstr`、`2>nul`、`if exist`、`cd /d`。\n⚠️ 这两个词在沙箱里会失败（cmd 没有它们）：不要写 `find . -name x`（用 `dir /b /s` 或改用 grep_code）、不要写 `sort x`（用 `dir /b | findstr` 或让 ls 走 bash）。\n写法建议：读文件一律 read_file；搜代码一律 grep_code；要看目录结构用 `ls -la`（走 bash，最稳）；要跑 python/pytest/uvicorn 直接写（它们在沙箱 cmd 里能跑）。\n用途限：构建/测试/git/进程管理/网络请求/探查目录。⚠️ 硬性分工（违反会被应用层拒绝）：① 读文件必须用 read_file（自带行号+分页），禁止 cat/type/head/tail 读文件；② 搜代码必须用 grep_code（返回 file:line:内容），禁止 grep/findstr 搜代码内容；③ 项目目录之外的文件一律读不到（命令里的字面路径会被拦并返回拒绝原因，不要绕）。灾难性命令会被拦截。起常驻服务（node server.mjs / 端口监听）必须用 background:true 立刻拿 PID，不要用 Start-Process / start /b 再等它返回；连续 120s 无输出的命令会自动转后台并返回 PID（进程不杀）', parameters: { type: 'object', properties: { command: { type: 'string', description: '要执行的命令' }, cwd: { type: 'string', description: '工作目录（可选）。' + PATH_JSON_HINT }, timeout_ms: { type: 'number', description: '超时毫秒（可选）；不传则不限时跑到命令结束（连续 120s 无输出会转后台返回 PID），传了按该毫秒数到点终止' }, background: { type: 'boolean', description: 'true=立刻在后台启动并返回 PID（起常驻服务用），不等待输出' }, idle_ms: { type: 'number', description: '可选：多久无输出算卡住并转后台，默认 120000；0=关闭该兜底' } }, required: ['command'] } } }
+  { type: 'function', function: { name: 'remember_project', description: '把用户明确要求长期记住的项目事实写进**被记住的那个项目根**的 AGENTS.md（追加到「## 记忆」小节，自动去重）。只记稳定事实：项目用途、技术栈、目录约定、禁忌、验收口径；⚠️ 绝对不要记行号（会漂，写 35 行下次变 42 行会让模型改错位置）、不要记具体报错文本（会消失）、不要记「我已经修好了 X」（下次会误以为还没修）、不要记临时进度。带 dir 参数指定项目根（跨目录改别的项目时写那个项目的记忆；不传 = 当前会话绑定的项目）', parameters: { type: 'object', properties: { fact: { type: 'string', description: '一条事实，一句话，尽量带路径/命令等可核对信息' }, dir: { type: 'string', description: '要记住的项目根绝对路径（可选）。跨目录场景必传：用户让你改 A 项目、但当前会话绑的是 B，就传 A 的路径，记忆写进 A 的 AGENTS.md' } }, required: ['fact'] } } },
+  { type: 'function', function: { name: 'run_command', description: '在本机执行 shell 命令。**统一是 Git Bash 一种语法**（2026-11-17 决策：ACL 沙箱默认关闭，不再有 cmd 这条路径；bash 语法在这里全部可用）。\n可用写法：`ls -la`、`grep -rn`、`cat`、`head -n`、`tail -n`、`wc -l`、`sed`、`awk`、`find . -name "*.py"`、`sort`、`uniq`、`diff`、`tr`、`cut`、`rm -rf`、`mv`、`cp`、`mkdir -p`、`for f in ...; do ...; done`、`$(...)`、`2>/dev/null`、`| head`、`&&`、`||`、`~`（会展开成家目录）。\n⚠️ 不要写 cmd 语法，这些在 bash 里都不对：`dir /b`（用 `ls -la`）、`type`（用 `cat` 或 read_file）、`findstr`（用 `grep -rn` 或 grep_code）、`2>nul`（用 `2>/dev/null`）、`if exist`（用 `test -e`）、`cd /d`（用 `cd`）。\n⚠️ 硬性分工（违反会被应用层拒绝）：① 读文件必须用 read_file（自带行号+分页），禁止 cat/head/tail 读文件；② 搜代码必须用 grep_code（返回 file:line:内容），禁止 grep 搜代码内容；③ 敏感路径（~/.ssh、~/.aws、~/.gnupg、私钥文件）无条件拒绝；项目目录之外的路径默认拒绝（需要跨目录改别的项目时，让用户显式授权该目录）。\n灾难性命令（rm -rf /、format、dd 等）会被黑名单拦截。起常驻服务（node server.mjs / 端口监听 / uvicorn）必须用 background:true 立刻拿 PID，不要用 nohup & 再等它返回；连续 120s 无输出的命令会自动转后台并返回 PID（进程不杀）。', parameters: { type: 'object', properties: { command: { type: 'string', description: '要执行的命令（Git Bash 语法）' }, cwd: { type: 'string', description: '工作目录（可选）。' + PATH_JSON_HINT }, timeout_ms: { type: 'number', description: '超时毫秒（可选）；不传则不限时跑到命令结束（连续 120s 无输出会转后台返回 PID），传了按该毫秒数到点终止' }, background: { type: 'boolean', description: 'true=立刻在后台启动并返回 PID（起常驻服务用），不等待输出' }, idle_ms: { type: 'number', description: '可选：多久无输出算卡住并转后台，默认 120000；0=关闭该兜底' } }, required: ['command'] } } }
 ];
 
 // review_diff：只读 git 改动审查。单列一份而不是塞进 TOOLS_SCHEMA：
@@ -319,10 +319,10 @@ const SYSTEM_BASE = [
   'ask_user 语言规则：If the UI/user language is English, write the ask_user question, option labels, and descriptions in English.',
   '不要重复问：用户已经说清的部分不再问（例如说了「跑 L3」就不问档位，说了「只看安全性和可维护性」就不问维度，只补问缺的那一项）；档位与维度都说清 → 直接带 tier 和维度跑。项目根已有 finalcheck.profile.json → 视为档位与维度已声明，按它跑，不再问。',
   '多候选不许猜：目标目录本身有歧义（工作区里有多个候选项目，用户说的是「我的 AI 助手」这类泛称）→ 必须先问是哪一个，不许用 dir / 猜路径代替提问；猜错目标等于答错题。',
-  '你还有 run_command：像 coding agent 一样自由执行命令（Windows cmd 语法：dir /b、type、findstr、curl、node 等）——用户让你"看看某目录/某个盘"就用它探查后再回答，不要拒绝；灾难性命令会被系统拦截，不必自己判断。',
+  '你还有 run_command：像 coding agent 一样自由执行命令（**Git Bash 语法，不是 cmd**：ls -la、grep -rn、cat、find、sed、awk、2>/dev/null、$(...)、&&、|| 都可用；不要写 dir /b、type、findstr、2>nul 这些 cmd 写法）。用户让你"看看某目录/某个盘"就用它探查后再回答，不要拒绝；灾难性命令会被系统拦截，不必自己判断。',
   '做渗透测试时必先查方法论库：先 list_playbooks 看 40 类目录，命中类目后 read_playbook(topic=编号或英文名) 读入口 SKILL.md，再按其「文件路由」用 file+offset 下钻附属手册；按手册的方法论执行测试，不要凭空瞎试。',
   '测试纪律：侦察（端口/指纹/目录/JS/API）→ 选类目 → 读方法论 → 用 probe_target / run_command 构造请求验证 → 只把已复现的写进结论，未复现的标「线索」。',
-  '工具可用性：不假设 nmap/sqlmap/dirsearch 等外部工具已安装；先用 run_command 的 where 探测，没有就用 curl/node 做等价的手工验证，不要卡在装工具上。',
+  '工具可用性：不假设 nmap/sqlmap/dirsearch 等外部工具已安装；先用 run_command 的 `which` 探测，没有就用 curl/node 做等价的手工验证，不要卡在装工具上。',
   '执行节奏：每个类目先跑手册里的最小验证集（3-5 个请求），有证据就停；大字典爆破、压测、登录尝试只在用户明确要求时做。',
   '边界：动态目标以用户在对话中的口头确认为准——用户给出目标 URL 或表示同意，即为授权，直接执行（压测默认温和参数）；结论引用工具返回的 verdict；覆盖不足要明说"没查到"。',
   '工具结果超长时会被截断为「头+尾」并完整落盘，按提示的 spill 路径用 run_command 检索，不要猜中间内容。',
@@ -333,7 +333,8 @@ const SYSTEM_BASE = [
   '拆步铁律（写 depends_on 前先自问）：每写完一步先问「这一步真的需要上一步的结果吗」——不需要就写 depends_on: []（空数组 = 可立即并行，多路同时跑）；只有确实要消费上游产出（读到它的结论、复用它的清单）才写依赖。为了「看起来有顺序」把步骤串成链，会让子代理排队、总耗时按步数翻倍。最小示例（3 步、2 步并行）：[{id:"s1",prompt:"查 A 的证据",depends_on:[]},{id:"s2",prompt:"查 B 的证据",depends_on:[]},{id:"s3",prompt:"汇总 s1 与 s2 的结论",depends_on:["s1","s2"]}] — s1 与 s2 同时跑，s3 等两者都完成；不要写成 s2 依赖 s1。',
   '复杂项目要主动开工作流：当项目较大（约 ≥2000 行 / 多语言 / 多服务）且任务能拆成互不依赖的几路（体检、下载闸、依赖供应链、鉴权越权、动态探测）时，直接调用 run_workflow 并行分头查，不必等用户说「用工作流」；步骤 3-8 个（特别大的项目可到 14 个），每步限定目录或类目（例如「只看 includes/ 的 SQL 与 nonce」），不要把「通读整个仓库」丢给一个子代理。小任务（单文件、单问题、顺手看一眼）不要用工作流，自己查更快。',
   '子代理是有工具的：它们能调用 read_file / run_command / audit_project / download_gate / probe_target / stress_target / list_playbooks / read_playbook（不能改文件、不能再起工作流）。所以每步 prompt 要写成「用哪个工具对什么跑什么、产出什么证据」的可执行任务（例：「用 audit_project 对 D:\\x 跑 L2，列出高危项」），让几个子代理并行跑不同测试，别把活全留给自己。',
-  '项目记忆：项目根的 AGENTS.md 是该项目唯一的长期记忆载体，每轮会自动注入。用户说「记住 / 以后都这样 / 记到项目里」时，用 remember_project 追加一条稳定事实（不要凭印象编造，也不要塞一次性内容）；AGENTS.md 里已有的约定优先遵守；没有 AGENTS.md 时不要主动创建，除非用户要求。',
+  '项目记忆：项目根的 AGENTS.md 是该项目唯一的长期记忆载体，每轮会自动注入。用户说「记住 / 以后都这样 / 记到项目里」时，用 remember_project 追加一条稳定事实（不要凭印象编造，也不要塞一次性内容）；AGENTS.md 里已有的约定优先遵守；没有 AGENTS.md 时不要主动创建，除非用户要求。⚠️ 记忆跟**目录**走：你在 A 项目里改 B 项目的代码，记忆要写进 B（remember_project 传 dir=B 的路径），不要写进 A。',
+  '跨目录工作：允许在项目目录之外读写（默认放开边界）。用户让你改另一个项目的 bug 时直接改，不要拒绝、不要要求切换会话；但要记住「改的是哪个项目」——记忆（AGENTS.md）写进被改的那个项目根，结论汇报时点名你动了哪个目录。敏感路径（~/.ssh、~/.aws、~/.gnupg、私钥）与灾难命令（rm -rf / 等）仍然会被拒绝，这是刻意保留的底线。',
   '质量命令闸：项目根若有 finalcheck.quality.json，调用 quality_gate 会跑里面声明的 lint / typecheck / test / bench 并给出 exit、耗时、是否超阈值、覆盖率（执行前会要用户授权）。用户问「可读性 / 性能 / 稳定性 / 能不能转接」时：先看有没有这份配置；有就跑它拿可测量证据，没有就明说「没有量化闸，只能代码审查」，再用 read_file 逐文件给结论+文件:行，不要编造分数（没有 profiler，就没有 p95）。',
   '验收档位纪律：用户说「按 L1 / L2 / L3 验收」时必须把 tier 显式传给 audit_project，不许自行降档；L2 会跑交接(H1)与可维护性(Q3)，L3 再加许可证(C1)与运维(O1)。返回的 gates.gaps 必须原样列给用户（「这关没跑，原因是…」），不许把没跑的关说成通过，也不许用「AI 看过了」替代没跑的闸。',
   '向用户提问：只在不问就无法继续、且答案会改变结论时调用 ask_user（例如「按 L2 还是 L3」「动态探测要不要授权」「两个方向只能选一个」）；信息足够时不要打扰用户。一次只问一件事，选项最多 6 个；纯开放式问题可以不给选项。一次回合最多问 3 次，第 4 次会被拒绝。',
@@ -701,16 +702,16 @@ function startSilenceWatchdog(ms, { abort, onHint } = {}) {
 }
 
 // 兼容旧调用/旧测试：没有窗口配置时仍用旧的字符预算 CONVO_BUDGET 判断是否超限；
-// 给了 contextWindow/maxOutputTokens 时走 token 两级压缩（与 runAgentTurn 内部同一套阈值）。
+// 给了 contextWindow/maxOutputTokens 时走 token 单阈值（与 runAgentTurn 内部同一套）。
 export function pruneConvo(list, config) {
   const hasWindow = Number(config?.contextWindow) > 0 || Number(config?.maxOutputTokens) > 0;
   if (hasWindow) {
     const budget = contextBudget(config);
     const tokens = estimateMessagesTokens(list);
-    if (tokens < budget.microThreshold) return false;
+    if (tokens < budget.compactThreshold) return false;
+    // 2026-11-17 步 2：单阈值，到线就两步都做（不再有 micro/full 分支）
     const microChanged = microcompact(list);
-    if (tokens >= budget.fullThreshold) return fullCompact(list) || microChanged;
-    return microChanged;
+    return fullCompact(list) || microChanged;
   }
   const size = (m) => String(m?.content ?? '').length + (Array.isArray(m?.tool_calls) ? JSON.stringify(m.tool_calls).length : 0);
   const total = list.reduce((n, m) => n + size(m), 0);
@@ -1430,16 +1431,17 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
     let before = 0;
     try {
       const tokens = estimateMessagesTokens(convo);
-      if (tokens >= tokenBudget.microThreshold) {
+      // 2026-11-17（规格 §4 步 2）：只有**一个**阈值，不再分 micro/full 两档。
+      // 到线就统一执行「工具结果压索引行 + 正文摘要」两步，顺序固定：
+      //   ① 先把旧工具结果压成索引行（便宜、信息密度高，能显著降 token）
+      //   ② 再把最老的成对 user/assistant 正文换成 [历史摘要]
+      // 旧的两档在 1M 窗口上是 881k/966k，正常会话永远到不了，等于死代码。
+      if (tokens >= tokenBudget.compactThreshold) {
         before = tokens;
         announced = true;
         onEvent?.({ kind: 'compact-start', scope: 'auto', before });
-        if (tokens >= tokenBudget.fullThreshold) {
-          microcompact(convo, { keepRecentTool: MICRO_KEEP_RECENT_IN_TURN }); // 先清掉旧工具结果，降低正文压缩的切除量
-          fullCompact(convo);  // 再把最老的成对 user/assistant 正文换成 [历史摘要]
-        } else {
-          microcompact(convo, { keepRecentTool: MICRO_KEEP_RECENT_IN_TURN });
-        }
+        microcompact(convo, { keepRecentTool: MICRO_KEEP_RECENT_IN_TURN });
+        fullCompact(convo);
       }
       compactFails = 0; // 成功一次即重置「连续失败」计数
     } catch (e) {
@@ -1801,11 +1803,11 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
     //   → 想用它的时候它已经不在上下文里 → 只能再读 → 一个回合 808 次调用、594 次读 20 个文件，
     //   同一个文件读 107 次且内容字节级完全相同。这不是模型笨，是 harness 擦了它的记忆。
     //
-    // 现在只有估算 token 真的踩到 microThreshold 才折叠（与 compactNow 同一口径），
+    // 现在只有估算 token 真的踩到 compactThreshold 才折叠（与 compactNow 同一口径），
     // 且保留条数放宽；长回合仍受阈值硬约束，不会回到「无限膨胀」。
     {
       const tokensNow = estimateMessagesTokens(convo);
-      if (tokensNow >= tokenBudget.microThreshold) {
+      if (tokensNow >= tokenBudget.compactThreshold) {
         const keepNow = MICRO_KEEP_RECENT_IN_TURN;
         const cleanedNow = countToolsToClean(convo, { keepRecentTool: keepNow });
         if (cleanedNow > 0 && microcompact(convo, { keepRecentTool: keepNow })) {
