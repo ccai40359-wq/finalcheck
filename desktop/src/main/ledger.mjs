@@ -14,7 +14,7 @@
 //   - 结论：语言能力来自源码常量表，与当前目录文件无关
 //
 // 跨项目时（规格 §4.2）：写进**被改文件所属项目**的账本，并在当前项目账本留一行交叉引用。
-import { mkdir, readFile, writeFile, appendFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 export const LEDGER_REL = path.join('.finalcheck', 'ledger.md');

@@ -6,13 +6,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  createPolicy, assertPathAllowed, checkCommandPaths, checkDestructiveTargets,
-  checkCommand, checkFileName
+  createPolicy, checkCommandPaths, checkDestructiveTargets, checkFileName
 } from '../desktop/src/main/policy.mjs';
 import { extractAbsolutePaths, resolveCrossProjects, ledgerFor } from '../desktop/src/main/cross-project.mjs';
 import { sandboxEnabled } from '../desktop/src/main/agent-tools.mjs';
 
-const perms = () => ({ requestApproval: async () => 'allowed-once', sessionAllowed: () => false });
 function tmp(t, p = 'fc-spec-') {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), p));
   t.after(() => fs.rmSync(d, { recursive: true, force: true }));

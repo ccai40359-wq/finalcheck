@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  maskStrings, indentOf, isCommentOrBlank, parsePyStructure, importEdges
+  maskStrings, indentOf, parsePyStructure, importEdges
 } from '../src/py-structure.mjs';
 
 const SAMPLE = `

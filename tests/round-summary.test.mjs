@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   planRollup, checkSummaryLength, estimateSummaryTokens, buildMergeInput,
-  SUMMARY_MIN_TOKENS, SUMMARY_MAX_TOKENS, KEEP_RECENT_ROUNDS, SUMMARY_FIELDS
+  SUMMARY_MAX_TOKENS, KEEP_RECENT_ROUNDS, SUMMARY_FIELDS
 } from '../desktop/src/main/round-summary.mjs';
 import { toolDigestOf, renderRoundSummaries } from '../desktop/src/main/round-summary-wire.mjs';
 

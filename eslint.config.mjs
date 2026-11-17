@@ -27,6 +27,10 @@ export default [
       'desktop/dist-staging/**',
       'desktop/_recon/**',
       'desktop/.tmp/**', // 临时构建/UI 自检产物（git 已忽略 .tmp/），不该进 lint
+      // 2026-11-17：完整 Git for Windows 运行时（~400MB / 9000+ 文件，git 已忽略），
+      // 里面 usr/share/terminfo 与 usr/lib/terminfo 有叫 *.js 的数据文件，
+      // 被 eslint 当 JS 解析会报 "Unexpected character"（二进制 BOM）。
+      'desktop/resources/gitbash-full/**',
       'playbooks/**',
       'src/fixtures/**',
       'tests/fixtures/**',

@@ -19,7 +19,7 @@ function extractiveSummary(zone) {
     } else if (m?.role === 'assistant') {
       const names = (Array.isArray(m.tool_calls) ? m.tool_calls : []).map((tc) => tc?.function?.name).filter(Boolean);
       if (names.length) lines.push('- 助手调用工具：' + names.join(', '));
-      else if (Array.isArray(m.trace) && m.trace.length) lines.push('- 助手调用工具：' + m.trace.map((t) => t?.tool).filter(Boolean).join(', '));
+      else if (Array.isArray(m.trace) && m.trace.length) lines.push('- 助手调用工具：' + m.trace.map((tr) => tr?.tool).filter(Boolean).join(', '));
       else if (text) lines.push('- 助手：' + text.slice(0, 60));
     } else if (m?.role === 'tool') {
       // 工具结果不进摘要（调用名已在 assistant 行列出），跳过正文
@@ -253,15 +253,15 @@ function toolTargetOf(argsRaw, toolName) {
   const pick = toolName === 'grep_code'
     ? (a.pattern || a.path || '')
     : (a.path || a.dir || a.target || a.file || a.url || a.pattern || a.command || '');
-  let t = String(pick || '').replace(/\s+/g, ' ').trim();
-  if (!t) return '';
+  let target = String(pick || '').replace(/\s+/g, ' ').trim();
+  if (!target) return '';
   // 路径太长时保留尾部（文件名比目录前缀有用）
-  if (t.length > 60) t = '…' + t.slice(-58);
+  if (target.length > 60) target = '…' + target.slice(-58);
   // 命令里的敏感值不落索引：只留命令名（参数可能含 token/key）
   if (toolName === 'run_command') {
-    return t.split(/\s+/)[0];
+    return target.split(/\s+/)[0];
   }
-  return t;
+  return target;
 }
 
 function estimateTok(text) {
@@ -321,13 +321,13 @@ function summarizeZone(zone) {
   const lines = [];
   for (const m of zone) {
     if (m?.role === 'user') {
-      const t = contentText(m.content).replace(/\s+/g, ' ').trim();
-      if (t) lines.push('- 用户：' + t.slice(0, 60));
+      const lineText = contentText(m.content).replace(/\s+/g, ' ').trim();
+      if (lineText) lines.push('- 用户：' + lineText.slice(0, 60));
     } else if (m?.role === 'assistant') {
       const names = (Array.isArray(m.tool_calls) ? m.tool_calls : []).map((tc) => tc?.function?.name).filter(Boolean);
       if (names.length) lines.push('- 助手调用工具：' + names.join(', '));
-      const t = contentText(m.content).replace(/\s+/g, ' ').trim();
-      if (t) lines.push('- 结论：' + t.slice(0, 80));
+      const lineText = contentText(m.content).replace(/\s+/g, ' ').trim();
+      if (lineText) lines.push('- 结论：' + lineText.slice(0, 80));
     }
   }
   return lines.join('\n') || '（较早对话无可用摘要）';

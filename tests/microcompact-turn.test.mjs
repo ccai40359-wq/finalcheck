@@ -41,9 +41,6 @@ test('microcompact: 12 条 tool 消息——旧 7 条变占位符、最近 5 条
   // 最近 5 条（c7..c11）保持原文
   assert.deepEqual(tools.slice(-5).map((m) => m.content), originals.slice(-5), '最近 5 条必须原文保留');
   // 更早的 7 条换成占位符，且占位符里点名对应工具（按 tool_call_id 回查 assistant 的调用名）
-  const callNames = new Map(
-    convo.filter((m) => m.role === 'assistant').flatMap((m) => m.tool_calls.map((tc) => [tc.id, tc.function.name]))
-  );
   tools.slice(0, 7).forEach((m, k) => {
     assert.ok(isIndexLine(m.content), `第 ${k} 条旧结果应为索引行`);
   });
