@@ -108,6 +108,14 @@ function fixPrompt(f) {
       const pkg = f.snippet.split(' ')[0];
       return `升级 ${pkg} 到已修复版本（npm audit fix 或手动调整版本号后重装）。`;
     }
+    case 'S4.osv': {
+      const pkg = f.snippet.split('（')[0];
+      return `升级 ${pkg} 到已修复版本（查 advisory 的 fixed 版本后改锁定文件并重新安装）。`;
+    }
+    case 'S4.pip-audit': {
+      const pkg = f.snippet.split('（')[0];
+      return `升级 ${pkg} 到已修复版本（改 requirements/锁定文件后重新 pip install）。`;
+    }
     default:
       return '按发现内容修复，并说明修复理由。';
   }

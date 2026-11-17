@@ -204,9 +204,9 @@ test('S4：pyproject.toml 仍记未接入；requirements.txt 由 pip-audit 审�
     pyAuditRunner: async () => ({ status: 0, stdout: JSON.stringify({ dependencies: [] }) }),
   });
   assert.equal(r.findings.length, 0);
-  assert.match(String(r.coverageGap), /Python/);
-  assert.match(String(r.coverageGap), /pyproject\.toml/);
-  assert.ok(!/requirements\.txt/.test(String(r.coverageGap)), '已审计的 requirements 不进缺口');
+  // 2026-11-17 新契约：pyproject 没有声明运行时依赖 → 不封顶结论，但留一条说明
+  assert.equal(r.coverageGap, null, 'requirements 已审计 + pyproject 无依赖声明 → 不该再有覆盖缺口');
+  assert.ok(r.warnings.some((w) => /pyproject\.toml 未声明运行时依赖/.test(w)), 'pyproject 必须留有说明');
   assert.equal(r.pyAuditedCount, 1);
 });
 

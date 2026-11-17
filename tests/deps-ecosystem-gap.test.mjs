@@ -63,18 +63,17 @@ test('S4：单独 go.sum → 发现条目 ecosystem=go/auditable=false，gap 声
   assert.equal(entry.auditable, false);
 });
 
-test('S4：Python/PHP/Java lockfile 按生态逐条声明（不伪装成 npm 审计）', async (t) => {
+test('S4：PHP/Java lockfile 按生态逐条声明（真·未接入的生态必须 fail-closed）', async (t) => {
+  // 2026-11-17：uv.lock / poetry.lock / Pipfile.lock 已接入审计（转 requirements → OSV 批量），
+  // 不再属于「未接入」；这里只剩 PHP/Java 这类真没接的生态要验证诚实缺口。
   const cases = [
-    { file: 'uv.lock', ecosystem: 'python', label: 'Python' },
-    { file: 'poetry.lock', ecosystem: 'python', label: 'Python' },
-    { file: 'Pipfile.lock', ecosystem: 'python', label: 'Python' },
     { file: 'composer.lock', ecosystem: 'php', label: 'PHP' },
     { file: 'pom.xml', ecosystem: 'java', label: 'Java' },
     { file: 'gradle.lockfile', ecosystem: 'java', label: 'Java' },
   ];
   for (const c of cases) {
     await t.test(c.file, async (t2) => {
-      const dir = await fixture(t2, { [c.file]: c.file.endsWith('.lock') ? '{}\n' : '<project/>\n' });
+      const dir = await fixture(t2, { [c.file]: c.file === 'pom.xml' ? '<project/>\n' : '{}\n' });
       let auditCalls = 0;
       const r = await checkDeps(dir, {
         tooling: TOOLING,
@@ -93,6 +92,31 @@ test('S4：Python/PHP/Java lockfile 按生态逐条声明（不伪装成 npm 审
       assert.equal(entry.auditable, false);
     });
   }
+});
+
+test('S4：uv.lock 已接入审计（转 requirements → OSV 批量），不再记「未接入」', async (t) => {
+  // 2026-11-17 新契约：锁文件里包名+版本都锁定 → 能查漏洞库。
+  // 注入假 OSV，验证：真调用、真出 finding、pyproject 的版本范围不再封顶结论。
+  const dir = await fixture(t, {
+    'uv.lock': ['[[package]]', 'name = "flask"', 'version = "0.5"'].join('\n'),
+    'pyproject.toml': '[project]\nname = "probe"\ndependencies = ["flask>=3.0"]\n',
+  });
+  let osvCalls = 0;
+  const r = await checkDeps(dir, {
+    tooling: TOOLING,
+    auditRunner: async () => { throw new Error('uv.lock 不该走 npm audit'); },
+    osvPath: null,
+    osvBatchRunner: async (deps) => {
+      osvCalls++;
+      assert.ok(deps.some((d) => d.name === 'flask'), '解析出的包必须传给 OSV');
+      return { ok: true, queried: deps.length, affected: [{ name: 'flask', version: '0.5', ids: ['PYSEC-2019-179'] }] };
+    },
+  });
+  assert.equal(osvCalls, 1, 'uv.lock 必须真走 OSV 批量');
+  assert.equal(r.findings.length, 1, 'OSV 的漏洞必须变成 finding');
+  assert.equal(r.findings[0].rule, 'S4.osv');
+  assert.equal(r.coverageGap, null, '锁定文件已审 → pyproject 的版本范围只写 note，不封顶结论');
+  assert.ok(r.warnings.some((w) => /pyproject\.toml 只声明版本范围/.test(w)), '要解释 pyproject 为什么不可审');
 });
 
 test('S4：混合仓 package-lock.json + go.sum → npm 照常审计，Go gap 保留且只数 npm', async (t) => {
@@ -217,7 +241,7 @@ test('S4：只发现非 npm lockfile 时，即使没有 Node/npm 也只声明生
   assert.doesNotMatch(String(r.coverageGap), /未找到 Node\.js\/npm/);
 });
 
-test('S4：多生态缺口逐条列出，文案含各生态名', async (t) => {
+test('S4：多生态缺口逐条列出，文案含各生态名（Python 已有路线时改记「未完成审计」）', async (t) => {
   const dir = await fixture(t, {
     'go.sum': 'example.com/mod v1.0.0 h1:abc=\n',
     'uv.lock': 'version = 1\n',
@@ -226,10 +250,13 @@ test('S4：多生态缺口逐条列出，文案含各生态名', async (t) => {
   });
   const r = await checkDeps(dir, { tooling: TOOLING, auditRunner: async () => ({ stdout: '{}' }), osvPath: null });
   const gap = String(r.coverageGap);
-  for (const label of ['Go', 'Python', 'PHP', 'Java']) {
+  // Python 已有审计路线（uv.lock 合法但 0 个包 → 计为已审计 0 漏洞），
+  // 所以它不再出现在「未接入」里；Go/PHP/Java 仍是真·未接入的生态。
+  for (const label of ['Go', 'PHP', 'Java']) {
     assert.match(gap, new RegExp(`\\b${label}\\b`));
   }
-  assert.equal((gap.match(/未接入审计/g) || []).length, 4, '按生态逐条说明，不合并成一句');
+  assert.equal((gap.match(/未接入审计/g) || []).length, 3, '按生态逐条说明，不合并成一句');
+  assert.equal(r.pyAuditedCount, 1, '合法但无第三方包的 uv.lock 按已审计计');
   assert.equal(r.auditedCount, 0);
 });
 
