@@ -5,8 +5,14 @@ import { dialog, shell, clipboard } from 'electron';
 import * as sessions from '../sessions.mjs';
 import { t } from '../../renderer/i18n/core.mjs';
 import { assertArtifactPath } from '../artifact-gate.mjs';
+import { OFFICE_EXTS, VIDEO_EXTS, officeToPdf } from '../preview-convert.mjs';
+import { allowPreviewFile, isPreviewAllowed } from '../preview-allow.mjs';
 
 // ---- 附件 / 产物预览（右侧面板） ----
+export function mediaUrl(abs) {
+  return `fc-media://local/${encodeURIComponent(path.resolve(abs))}`;
+}
+
 export function registerWorkspaceIpc({ ipcMain, getWin, getDataRoot, imageMime, store }) {
   const attachDir = () => path.join(getDataRoot(), 'attachments');
 
@@ -37,14 +43,40 @@ export function registerWorkspaceIpc({ ipcMain, getWin, getDataRoot, imageMime, 
       throw e;
     }
     if (!st.isFile()) return { kind: 'missing', path: abs, name: path.basename(abs), error: t('不是文件') };
-    if (st.size > 15 * 1024 * 1024) throw new Error(t('文件过大（上限 15MB）'));
     const ext = path.extname(abs).toLowerCase();
+    const base = { path: abs, name: path.basename(abs), size: st.size };
+    // 视频：走 fc-media:// 流式协议（支持拖进度条），不整份读进内存，也不受 15MB 上限
+    if (VIDEO_EXTS.has(ext)) return { ...base, kind: 'video', mime: VIDEO_EXTS.get(ext), url: mediaUrl(abs) };
+    // PDF：分页查看器按需取字节（artifact:bytes），上限放宽到 200MB
+    if (ext === '.pdf') {
+      if (st.size > 200 * 1024 * 1024) throw new Error(t('文件过大（上限 200MB）'));
+      return { ...base, kind: 'pdf', pdfPath: allowPreviewFile(abs) };
+    }
+    // PPT / Word：本机 LibreOffice 转成 PDF 后同样分页看；没装就明确说
+    if (OFFICE_EXTS.has(ext)) {
+      const r = await officeToPdf(abs, { cacheDir: path.join(getDataRoot(), 'preview-cache') });
+      if (!r.ok) {
+        const why = r.reason === 'no-libreoffice'
+          ? t('预览 PPT / Word 需要本机安装 LibreOffice（免费）：装好后点「刷新」即可分页预览；也可以先点「外部打开」')
+          : r.reason === 'timeout' ? t('转换超时（3 分钟），请点「外部打开」查看')
+            : t('转换失败：{detail}', { detail: r.reason });
+        return { ...base, kind: 'missing', error: why };
+      }
+      return { ...base, kind: 'pdf', converted: true, pdfPath: allowPreviewFile(r.pdfPath) };
+    }
+    if (st.size > 15 * 1024 * 1024) throw new Error(t('文件过大（上限 15MB）'));
     const mime = imageMime[ext];
     if (mime) return { kind: 'image', path: abs, name: path.basename(abs), size: st.size, dataUrl: `data:${mime};base64,${(await readFile(abs)).toString('base64')}` };
     if (ext === '.html' || ext === '.htm') return { kind: 'html', path: abs, name: path.basename(abs), size: st.size, content: await readFile(abs, 'utf8') };
-    if (ext === '.pdf') return { kind: 'pdf', path: abs, name: path.basename(abs), size: st.size, dataUrl: `data:application/pdf;base64,${(await readFile(abs)).toString('base64')}` };
     if (['.txt', '.md', '.json', '.js', '.mjs', '.css', '.csv', '.log', '.xml', '.yml', '.yaml'].includes(ext)) return { kind: 'text', path: abs, name: path.basename(abs), size: st.size, content: await readFile(abs, 'utf8') };
     throw new Error(t('不支持预览的类型：{ext}', { ext }));
+  });
+  // 分页查看器取 PDF 字节：只给 artifact:read 刚放行过的文件（转换缓存在 %APPDATA%\FinalCheck 下，
+  // 普通产物闸会拒绝它，所以用一次性放行表，而不是放宽产物闸）
+  ipcMain.handle('finalcheck:artifact:bytes', async (_e, p) => {
+    const abs = path.resolve(String(p || ''));
+    if (!isPreviewAllowed(abs)) throw new Error(t('该文件未经预览放行'));
+    return new Uint8Array(await readFile(abs));
   });
   ipcMain.handle('finalcheck:artifact:open', async (_e, p) => {
     const gate = assertArtifactPath(p);

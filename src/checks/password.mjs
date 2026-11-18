@@ -57,7 +57,12 @@ export async function checkPassword(projectDir, { tier, excludes = [], includeFi
       if (line.includes('finalcheck:allow')) continue;
       // usedforsecurity=False 是 Python 标准的「非安全用途」声明（ETag/缓存键/去重），Bandit B324 也认它；
       // 文件级口令上下文不能把同文件里算 ETag 的 md5 也打成口令哈希（基准实测误报）。
-      if (pwContext && (RE_CREATEHASH.test(line) || RE_WEAK_CALL.test(line)) && !/usedforsecurity\s*=\s*False/.test(line)) {
+      // 口令上下文要落在调用附近（±5 行），不是整个文件：login 里的 md5($password) 与同文件
+      // 末尾算静态资源 ETag 的 md5(file_get_contents(...)) 不能一起报（PHP 基准实测误报）
+      // 注释行与 YAML/JSON（如 Semgrep 规则文本 `- pattern: md5($P)`）不是在做哈希
+      const notCode = /^\s*(?:\/\/|#|\*|\/\*)/.test(line) || /\.(ya?ml|json)$/i.test(file);
+      const nearPw = !notCode && pwContext && RE_PW_CONTEXT.test(lines.slice(Math.max(0, i - 5), i + 6).join('\n'));
+      if (nearPw && (RE_CREATEHASH.test(line) || RE_WEAK_CALL.test(line)) && !/usedforsecurity\s*=\s*False/.test(line)) {
         push('S8.weak-hash', '使用黑名单哈希算法（MD5/SHA1）处理口令——改用 bcrypt/argon2 加盐哈希', i);
       }
       if (RE_PLAIN_CMP.test(line)) {

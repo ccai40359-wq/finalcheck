@@ -1,0 +1,231 @@
+# FinalCheck 自研 Semgrep 规则（Go）。不用 Semgrep Registry 规则（其许可限制竞品使用）。
+# metadata.fc_check → FC 检查项；metadata.fc_kind → 规则名后缀（S2.sg-go-<kind>）。
+# 污点模式只在单个函数内传播（Semgrep CE 限制），跨函数传递的输入不在覆盖范围内。
+rules:
+  - id: go-sqli
+    languages: [go]
+    severity: ERROR
+    message: SQL 语句由请求输入拼接而成——改用占位符参数（db.Query("... WHERE id = $1", id)）
+    metadata: { fc_check: S2, fc_kind: sqli }
+    mode: taint
+    # Go 的类型化元变量（($R *http.Request)）在 Semgrep CE 里匹配不上导入包的类型（实测），
+    # 改用「所在函数的参数类型」锚定接收者，同时覆盖具名函数与闭包（gin/echo 常用写法）
+    pattern-sources: &go-sources
+      - patterns:
+          - pattern-either:
+              - pattern-inside: 'func $F(..., $R *http.Request, ...) {...}'
+              - pattern-inside: 'func(..., $R *http.Request, ...) {...}'
+              - pattern-inside: 'func ($S $T) $F(..., $R *http.Request, ...) {...}'
+          - pattern-either:
+              - pattern: $R.URL.Query()
+              - pattern: $R.FormValue(...)
+              - pattern: $R.PostFormValue(...)
+              - pattern: $R.Form
+              - pattern: $R.PostForm
+              - pattern: $R.Header
+              - pattern: $R.Body
+              - pattern: $R.Cookie(...)
+              - pattern: $R.URL.Path
+              - pattern: $R.URL.RawQuery
+              - pattern: $R.PathValue(...)
+              - pattern: mux.Vars($R)
+              - pattern: chi.URLParam($R, ...)
+      - patterns:
+          - pattern-either:
+              - pattern-inside: 'func $F(..., $C *gin.Context, ...) {...}'
+              - pattern-inside: 'func(..., $C *gin.Context, ...) {...}'
+              - pattern-inside: 'func ($S $T) $F(..., $C *gin.Context, ...) {...}'
+          - pattern-either:
+              - pattern: $C.Query(...)
+              - pattern: $C.DefaultQuery(...)
+              - pattern: $C.QueryArray(...)
+              - pattern: $C.Param(...)
+              - pattern: $C.PostForm(...)
+              - pattern: $C.DefaultPostForm(...)
+              - pattern: $C.GetHeader(...)
+              - pattern: $C.Cookie(...)
+      - patterns:
+          - pattern-either:
+              - pattern-inside: 'func $F(..., $C echo.Context, ...) $RET {...}'
+              - pattern-inside: 'func(..., $C echo.Context, ...) $RET {...}'
+              - pattern-inside: 'func ($S $T) $F(..., $C echo.Context, ...) $RET {...}'
+          - pattern-either:
+              - pattern: $C.QueryParam(...)
+              - pattern: $C.Param(...)
+              - pattern: $C.FormValue(...)
+      - patterns:
+          - pattern-either:
+              - pattern-inside: 'func $F(..., $C *fiber.Ctx, ...) $RET {...}'
+              - pattern-inside: 'func(..., $C *fiber.Ctx, ...) $RET {...}'
+          - pattern-either:
+              - pattern: $C.Query(...)
+              - pattern: $C.Params(...)
+              - pattern: $C.FormValue(...)
+    pattern-sanitizers: &go-num-sanitizers
+      - pattern-either:
+          - pattern: strconv.Atoi(...)
+          - pattern: strconv.ParseInt(...)
+          - pattern: strconv.ParseUint(...)
+          - pattern: strconv.ParseFloat(...)
+          - pattern: strconv.ParseBool(...)
+          - pattern: uuid.Parse(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: $DB.Query($Q, ...)
+              - pattern: $DB.QueryRow($Q, ...)
+              - pattern: $DB.Exec($Q, ...)
+              - pattern: $DB.QueryContext($CTX, $Q, ...)
+              - pattern: $DB.QueryRowContext($CTX, $Q, ...)
+              - pattern: $DB.ExecContext($CTX, $Q, ...)
+              - pattern: $DB.Prepare($Q)
+              - pattern: $DB.PrepareContext($CTX, $Q)
+              - pattern: $DB.Raw($Q, ...)
+              - pattern: $DB.Select($DEST, $Q, ...)
+              - pattern: $DB.Get($DEST, $Q, ...)
+              - pattern: $DB.Queryx($Q, ...)
+              - pattern: $DB.QueryRowx($Q, ...)
+              - pattern: $DB.MustExec($Q, ...)
+          # gin/fiber 的 c.Query("x") 是取参不是执行 SQL（实测误报）
+          - metavariable-regex: { metavariable: $DB, regex: '^(?!(c|ctx|r|req|request|w|e)$)' }
+          - focus-metavariable: $Q
+
+  - id: go-cmdi
+    languages: [go]
+    severity: ERROR
+    message: 系统命令由请求输入拼接而成——不要经 shell 执行，参数逐个传给 exec.Command 并做白名单校验
+    metadata: { fc_check: S2, fc_kind: cmdi }
+    mode: taint
+    pattern-sources: *go-sources
+    pattern-sanitizers: *go-num-sanitizers
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: exec.Command($X, ...)
+              - pattern: exec.CommandContext($CTX, $X, ...)
+          - focus-metavariable: $X
+      - patterns:
+          - pattern-either:
+              - pattern: exec.Command("$SH", "-c", $X, ...)
+              - pattern: exec.CommandContext($CTX, "$SH", "-c", $X, ...)
+          - metavariable-regex: { metavariable: $SH, regex: '^(/bin/|/usr/bin/)?(sh|bash|zsh|cmd(\.exe)?|powershell(\.exe)?)$' }
+          - focus-metavariable: $X
+
+  - id: go-path-traversal
+    languages: [go]
+    severity: ERROR
+    message: 文件路径由请求输入拼接而成，可被 ../ 穿越——用 filepath.Base 取文件名，或 Clean 后校验仍在允许目录内
+    metadata: { fc_check: S2, fc_kind: path-traversal }
+    mode: taint
+    pattern-sources: *go-sources
+    pattern-sanitizers:
+      - pattern-either:
+          - pattern: filepath.Base(...)
+          - pattern: path.Base(...)
+          - pattern: strconv.Atoi(...)
+          - pattern: uuid.Parse(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: os.Open($P)
+              - pattern: os.OpenFile($P, ...)
+              - pattern: os.ReadFile($P)
+              - pattern: ioutil.ReadFile($P)
+              - pattern: os.Create($P)
+              - pattern: os.WriteFile($P, ...)
+              - pattern: ioutil.WriteFile($P, ...)
+              - pattern: os.Remove($P)
+              - pattern: os.RemoveAll($P)
+              - pattern: http.ServeFile($W, $REQ, $P)
+              - pattern: $C.File($P)
+              - pattern: $C.FileAttachment($P, ...)
+              - pattern: $C.File($P)
+              - pattern: $C.SendFile($P, ...)
+          - focus-metavariable: $P
+
+  - id: go-ssrf
+    languages: [go]
+    severity: ERROR
+    message: 服务端请求的目标 URL 完全由请求输入决定（SSRF）——只允许白名单域名，禁止内网地址
+    metadata: { fc_check: S2, fc_kind: ssrf }
+    mode: taint
+    pattern-sources: *go-sources
+    pattern-sanitizers:
+      # 固定 scheme://host/ 前缀之后再拼输入：目标主机不受控，不算 SSRF
+      - patterns:
+          - pattern-either:
+              - pattern: '"$PFX" + $X'
+              - pattern: fmt.Sprintf("$PFX", ...)
+          - metavariable-regex: { metavariable: $PFX, regex: '^https?://[^/%]+/' }
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: http.Get($U)
+              - pattern: http.Head($U)
+              - pattern: http.Post($U, ...)
+              - pattern: http.PostForm($U, ...)
+              - pattern: http.NewRequest($M, $U, ...)
+              - pattern: http.NewRequestWithContext($CTX, $M, $U, ...)
+              - pattern: $CL.Get($U)
+              - pattern: $CL.Post($U, ...)
+          - focus-metavariable: $U
+
+  - id: go-open-redirect
+    languages: [go]
+    severity: WARNING
+    message: 跳转地址直接取自请求输入（开放重定向）——只允许站内相对路径或白名单域名
+    metadata: { fc_check: S2, fc_kind: open-redirect }
+    mode: taint
+    pattern-sources: *go-sources
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: http.Redirect($W, $REQ, $U, ...)
+              - pattern: $C.Redirect($CODE, $U)
+              - pattern: $C.Redirect($CODE, $U)
+          - focus-metavariable: $U
+
+  - id: go-xss
+    languages: [go]
+    severity: ERROR
+    message: 请求输入未转义就写进 HTML 响应（反射型 XSS）——用 html/template 渲染，不要 template.HTML 包裹用户输入
+    metadata: { fc_check: S2, fc_kind: xss }
+    mode: taint
+    pattern-sources: *go-sources
+    pattern-sanitizers:
+      - pattern-either:
+          - pattern: html.EscapeString(...)
+          - pattern: template.HTMLEscapeString(...)
+          - pattern: strconv.Atoi(...)
+          - pattern: url.QueryEscape(...)
+    pattern-sinks:
+      - pattern: template.HTML(...)
+      - pattern: template.JS(...)
+      - patterns:
+          - pattern-inside: fmt.Fprintf($W, "$FMT", ...)
+          - metavariable-regex: { metavariable: $FMT, regex: '<[a-zA-Z/!]' }
+          - pattern: fmt.Fprintf($W, "$FMT", ..., $X, ...)
+          - focus-metavariable: $X
+      - patterns:
+          - pattern: io.WriteString($W, $X)
+          - focus-metavariable: $X
+
+  - id: go-weak-password-hash
+    languages: [go]
+    severity: ERROR
+    message: 密码用 MD5/SHA1 摘要——改用 bcrypt / argon2id（golang.org/x/crypto）
+    metadata: { fc_check: S8, fc_kind: weak-password-hash }
+    patterns:
+      - pattern-either:
+          - pattern: md5.Sum([]byte($P))
+          - pattern: sha1.Sum([]byte($P))
+          - pattern: md5.Sum($P)
+          - pattern: sha1.Sum($P)
+      - metavariable-regex: { metavariable: $P, regex: '(?i).*(pass|pwd|secret)' }
+
+  - id: go-tls-insecure
+    languages: [go]
+    severity: WARNING
+    message: TLS 证书校验被关闭（InsecureSkipVerify）——生产环境会被中间人攻击
+    metadata: { fc_check: S5, fc_kind: tls-insecure }
+    pattern: 'tls.Config{..., InsecureSkipVerify: true, ...}'

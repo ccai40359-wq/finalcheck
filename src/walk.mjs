@@ -53,6 +53,7 @@ export async function listTextFiles(root, excludes = [], opts = {}) {
     maxDepth = 8,
     includeFixtures = false,
     languages = 'js',
+    extraExts = [], // 额外收录的扩展名（如 MyBatis 检查要 .xml；不进通用 TEXT_EXTS，避免改变其它检查的扫描面）
   } = opts || {};
   const out = [];
   const skipped = [];
@@ -89,7 +90,7 @@ export async function listTextFiles(root, excludes = [], opts = {}) {
         ? (languages === 'py' ? PY_EXTS.has(ext)
           : languages === 'all' ? ALL_CODE_EXTS.has(ext)
             : CODE_EXTS.has(ext))
-        : (!isEnv && TEXT_EXTS.has(ext));
+        : (!isEnv && (TEXT_EXTS.has(ext) || extraExts.includes(ext)));
       if (!allowed) continue;
       if (excluded(rel)) continue;
       if (out.length >= maxFiles) { overLimit = true; return; }
@@ -104,7 +105,10 @@ export async function listTextFiles(root, excludes = [], opts = {}) {
 }
 
 export async function readRel(root, file) {
-  const text = await readFile(file, 'utf8').catch(() => '');
+  // CRLF 在源头归一（2026-11-18）：几十处检查按换行切行，Windows 换行的文件每行尾残留 CR，
+  // 行尾锚定的正则（`#.*$`、`= (.+)$`）全部静默失效（pygoat requirements 注释被当依赖、0.21.1 的 Python 污点断链）。
+  // 只换行符变化，行号不变。
+  const text = (await readFile(file, 'utf8').catch(() => '')).replace(/\r\n?/g, '\n');
   return { file: path.relative(root, file).replace(/\\/g, '/'), text };
 }
 

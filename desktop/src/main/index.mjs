@@ -1,4 +1,6 @@
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain, protocol } from 'electron';
+import { registerMediaScheme, installMediaProtocol } from './media-protocol.mjs';
+import { setSnapshotRenderer } from './capture.mjs';
 
 // Windows 的「原生遮挡检测」会在窗口被别的窗口盖住时把页面判定为 hidden：
 // Chromium 随即停掉 requestAnimationFrame、把定时器节流到 ~1s，用户切回来就觉得“卡”。
@@ -215,6 +217,9 @@ function createWindow() {
   }
 }
 
+// 右侧预览的视频流协议：特权 scheme 必须在 ready 之前登记
+registerMediaScheme(protocol);
+
 app.whenReady().then(async () => {
   if (!gotLock) return; // 第二实例只让已有窗口聚焦，不再建窗（用户实测多开问题）
   if (app.isPackaged) {
@@ -222,6 +227,13 @@ app.whenReady().then(async () => {
     DATA_ROOT = app.getPath('userData');
     await migrateLegacyData(legacyRoot, DATA_ROOT);
   }
+  installMediaProtocol(protocol);
+  // AI 截图通道（capture_screenshot）：隐藏窗口加载同一份渲染层的 #fc-snapshot 路由
+  setSnapshotRenderer({
+    url: process.env.ELECTRON_RENDERER_URL || null,
+    file: path.join(__dirname, '../renderer/index.html'),
+    preload: path.join(__dirname, '../preload/index.mjs'),
+  });
   // 自检模式：数据根跟随隔离后的 userData——config.json（供应商）与 projects.json（指向独立测试项目）
   // 由自检脚本预置，绝不读写用户的真实会话/项目数据。
   if (process.env.FINALCHECK_UI_SELFCHECK === '1') {

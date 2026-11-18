@@ -16,5 +16,8 @@ if (!files.length) {
   process.exit(1);
 }
 
-const r = spawnSync(process.execPath, ['--test', ...files], { stdio: 'inherit' });
+// 单测默认不真跑 Trivy / Semgrep（每个 audit 用例跑一次会慢到分钟级且依赖网络下载漏洞库）；
+// Trivy 映射逻辑由注入 runner 的用例覆盖。需要真跑时显式 FINALCHECK_TRIVY=on。
+const env = { ...process.env, FINALCHECK_TRIVY: process.env.FINALCHECK_TRIVY || 'off', FINALCHECK_SEMGREP: process.env.FINALCHECK_SEMGREP || 'off' };
+const r = spawnSync(process.execPath, ['--test', ...files], { stdio: 'inherit', env });
 process.exit(r.status ?? 1);

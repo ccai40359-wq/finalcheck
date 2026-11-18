@@ -132,6 +132,10 @@ function toolMeta(e) {
       return { icon: 'edit', label: 'Memory', detail: oneLine(a.fact || '', 200) };
     case 'present_artifact':
       return { icon: 'file', label: 'Artifact', file: p.file, dir: p.dir };
+    case 'view_image':
+      return { icon: 'file', label: 'View', detail: oneLine(a.path || (Array.isArray(a.paths) ? a.paths.join(', ') : ''), 200), mono: true };
+    case 'capture_screenshot':
+      return { icon: 'search', label: 'Screenshot', detail: `${oneLine(a.target || '', 160)}${a.page ? ` · p${a.page}` : ''}${a.time != null ? ` · ${a.time}s` : ''}`, mono: true };
     case 'audit_project':
     case 'get_report':
       return { icon: 'shield', label: 'Audit', detail: oneLine(a.dir || '', 200), mono: true };

@@ -253,7 +253,8 @@ function osvFallbackForRequirements(absReq, relReq) {
   try { text = readFileSync(absReq, 'utf8'); } catch { return null; }
   const deps = [];
   const unlocked = [];
-  for (const raw of text.split('\n')) {
+  // CRLF 先归一：行尾残留的 \r 让 `#.*$` 匹配不上，整行注释被当成「未锁定条目」（pygoat 实测）
+  for (const raw of text.split(/\r?\n/)) {
     const line = String(raw || '').replace(/(^|\s)#.*$/, '').replace(/\\\s*$/, '').trim();
     if (!line) continue;
     // 纯选项行（--hash 续行、--index-url 等）不是依赖条目，跳过不影响覆盖率；
@@ -325,7 +326,7 @@ function dependencyLine(absLock, name) {
   const n = String(name || '');
   if (!n) return 0;
   try {
-    const lines = readFileSync(absLock, 'utf8').split('\n');
+    const lines = readFileSync(absLock, 'utf8').split(/\r?\n/);
     if (/\.json$/i.test(absLock)) {
       // Pipfile.lock：`"name": {` 这样的键行；package-lock 先找 node_modules 路径再退回包名
       for (const key of [`"node_modules/${n}"`, `"${n}":`]) {
@@ -426,16 +427,21 @@ export async function checkDeps(projectDir, options = {}) {
   // 不能走 nonNpmGaps 的「整个生态未接入」通用文案 —— 那样会把「声明的 django 没覆盖」
   // 这种精确缺口降级成一句笼统的生态声明。
   const pyprojectEntries = entries.filter((e) => e.ecosystem === 'python' && !e.auditable && /^pyproject\.toml$/i.test(path.basename(e.path)));
-  const nonNpmEntries = entries.filter((e) => !e.auditable && !pyprojectEntries.includes(e));
+  // Trivy（audit 层跑一次传进来）真审过的生态：Go/Java/PHP/Rust/Ruby/.NET 不再记「未接入审计」。
+  // 只有 Trivy 真的跑成功、且结果里出现了该生态的清单，才摘掉缺口（没跑/失败 → 缺口照旧）。
+  const trivy = options.trivy && options.trivy.ran ? options.trivy : null;
+  const trivyEcos = trivy ? trivy.ecosystems : new Set();
+  const nonNpmEntries = entries.filter((e) => !e.auditable && !pyprojectEntries.includes(e) && !trivyEcos.has(e.ecosystem));
   // 已审计生态：这些生态的锁定依赖本条会真查（npm audit / pip-audit / OSV 批量），
   // 所以同生态里「只有版本范围」的文件不该再封顶结论。
   const auditedEcosystems = new Set([
     ...npmEntries.map((e) => e.ecosystem),
     ...pyEntries.map((e) => e.ecosystem),
+    ...trivyEcos,
   ]);
   const gaps = nonNpmGaps(nonNpmEntries, auditedEcosystems);
-  const findings = [];
-  const warnings = [];
+  const findings = trivy ? [...trivy.s4] : [];
+  const warnings = trivy && trivyEcos.size ? [`S4：${[...trivyEcos].join('、')} 生态依赖由 Trivy 审计（${trivy.s4.length} 个有已知漏洞的包）`] : [];
   let auditedCount = 0;
   let pyAuditedCount = 0;
 
@@ -444,9 +450,9 @@ export async function checkDeps(projectDir, options = {}) {
   if (!npmEntries.length && !pyEntries.length && !pyprojectEntries.length) {
     return {
       checkId: 'S4',
-      findings: [],
+      findings,
       coverageGap: gaps.join('；'),
-      warnings: [],
+      warnings,
       auditedCount: 0,
       pyAuditedCount: 0,
       lockfileEntries: entries,
@@ -617,16 +623,31 @@ export async function checkDeps(projectDir, options = {}) {
         }
         if (notDone.length) pyFailures.push(`pip-audit 未安装（pip install pip-audit），以下 requirements 未审计（无精确锁定版本或 OSV 不可达）：${notDone.join('、')}`);
       } else {
+        // pip-audit 总预算：每个文件单独 180s 时，pygoat 这类「每个实验室一份 requirements」的仓库
+        // 会串行等 8×180s ≈ 24 分钟（真实模型 E2E 实测整轮超时）。一旦超时（= 网络慢），
+        // 后面的文件直接走 OSV 批量（秒级），不再逐个等。
+        const budgetMs = Number(options.pipAuditBudgetMs) > 0 ? Number(options.pipAuditBudgetMs) : 150000;
+        const startedAt = Date.now();
+        let pipAuditSlow = null; // 首次超时/预算耗尽的原因
         for (const entry of pyReqEntries) {
           const abs = path.join(projectDir, entry.path);
           const lockDir = path.dirname(abs);
+          const remaining = budgetMs - (Date.now() - startedAt);
+          if (!pipAuditSlow && remaining < 20000) pipAuditSlow = `pip-audit 总时限（${Math.round(budgetMs / 1000)} 秒）已用完`;
+          if (pipAuditSlow) {
+            const fb = osvFallbackForRequirements(abs, entry.path);
+            if (await tryRequirementsOsv(entry, abs, fb, `${pipAuditSlow}，本文件未跑 pip-audit`)) continue;
+            pyFailures.push(`${entry.path}：未审计（${pipAuditSlow}，且没有可直接查 OSV 的精确锁定版本）`);
+            continue;
+          }
           // ── requirements.txt 路线：pip-audit（cwd 固定到 requirements 所在目录，
           //    否则文件里的 `.` / -e 相对路径会解析失败）──
           let run;
           try {
             run = options.pyAuditRunner
               ? await options.pyAuditRunner(abs)
-              : await runProcess(tool.cmd, [...tool.prefix, '-r', abs, '-f', 'json'], { cwd: lockDir, timeoutMs: 180000, maxOut: 64 * 1024 * 1024 });
+              : await runProcess(tool.cmd, [...tool.prefix, '-r', abs, '-f', 'json'], { cwd: lockDir, timeoutMs: Math.min(120000, remaining), maxOut: 64 * 1024 * 1024 });
+            if (run && (run.status === 124 || run.timedOut || run.timed_out)) pipAuditSlow = `前面的 ${entry.path} 上 pip-audit 已超时（网络慢）`;
           } catch (e) {
             pyFailures.push(`${entry.path}：pip-audit 启动失败（${e?.message || e}）`);
             continue;

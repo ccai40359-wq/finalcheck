@@ -218,7 +218,7 @@ export const TOOLS_SCHEMA = [
   { type: 'function', function: { name: 'read_file', description: '读取单个文本文件，自动带行号，大文件用 offset/limit 续读。⚠️ 这是读文件的唯一正确方式：不要用 run_command 的 cat/type/head/tail 读文件（shell 读不到项目外的文件，也不会给你行号）。要找某个字符串/函数/报错出在哪 → 用 grep_code，不要用它逐个文件翻。', parameters: { type: 'object', properties: { path: { type: 'string', description: '文件绝对路径。' + PATH_JSON_HINT }, offset: { type: 'number', description: '可选：从第几个字符开始，默认 0' }, limit: { type: 'number', description: '可选：本次最多读多少字符，默认 20000，上限 40000' } }, required: ['path'] } } },
   { type: 'function', function: { name: 'edit_file', description: '精确修改文件：把 old_string 替换成 new_string（old_string 必须在文件中唯一，否则拒绝）。改前先 read_file；改后返回 +N/-M 与 diff。需要用户审批', parameters: { type: 'object', properties: { path: { type: 'string', description: '文件绝对路径。' + PATH_JSON_HINT }, old_string: { type: 'string', description: '要替换的原文本（含缩进，必须唯一）' }, new_string: { type: 'string', description: '替换后的文本（可为空字符串=删除）' } }, required: ['path', 'old_string', 'new_string'] } } },
   { type: 'function', function: { name: 'write_file', description: '新建或整体覆盖文本文件（≤2MB），返回 +N/-M 与 diff。父目录必须已存在；需要用户审批', parameters: { type: 'object', properties: { path: { type: 'string', description: '文件绝对路径。' + PATH_JSON_HINT }, content: { type: 'string', description: '完整文件内容' } }, required: ['path', 'content'] } } },
-  { type: 'function', function: { name: 'present_artifact', description: '把生成/修改好的 png / html / pdf / 文本文件登记为右侧可预览产物（用户点一下就在右侧打开）。生成了网页/图片后调用它', parameters: { type: 'object', properties: { path: { type: 'string', description: '文件绝对路径。' + PATH_JSON_HINT }, title: { type: 'string', description: '可选：展示标题' } }, required: ['path'] } } },
+  { type: 'function', function: { name: 'present_artifact', description: '把生成/修改好的 png / html / pdf / 视频（mp4/webm/mov）/ PPT·Word（pptx/docx，右侧一页一页展示）/ 文本文件登记为右侧可预览产物（用户点一下就在右侧打开）。生成了网页/图片/视频/幻灯片后调用它', parameters: { type: 'object', properties: { path: { type: 'string', description: '文件绝对路径。' + PATH_JSON_HINT }, title: { type: 'string', description: '可选：展示标题' } }, required: ['path'] } } },
   {
     type: 'function',
     function: {
@@ -285,7 +285,9 @@ export const TOOLS_SCHEMA = [
       }
     }
   },
-  { type: 'function', function: { name: 'remember_project', description: '把用户明确要求长期记住的项目事实写进**被记住的那个项目根**的 AGENTS.md（追加到「## 记忆」小节，自动去重）。只记稳定事实：项目用途、技术栈、目录约定、禁忌、验收口径；⚠️ 绝对不要记行号（会漂，写 35 行下次变 42 行会让模型改错位置）、不要记具体报错文本（会消失）、不要记「我已经修好了 X」（下次会误以为还没修）、不要记临时进度。带 dir 参数指定项目根（跨目录改别的项目时写那个项目的记忆；不传 = 当前会话绑定的项目）', parameters: { type: 'object', properties: { fact: { type: 'string', description: '一条事实，一句话，尽量带路径/命令等可核对信息' }, dir: { type: 'string', description: '要记住的项目根绝对路径（可选）。跨目录场景必传：用户让你改 A 项目、但当前会话绑的是 B，就传 A 的路径，记忆写进 A 的 AGENTS.md' } }, required: ['fact'] } } },
+  {type: 'function',function: {name: 'view_image',description: '看图：把本地图片（png/jpg/gif/webp/bmp）直接给你看。用于检查自己生成的图、用户/项目里的截图与设计稿。大图会自动缩到 1600px 宽。最多一次 4 张（paths）。',parameters: {type: 'object',properties: {path: {type: 'string',description: '图片绝对路径'},paths: {type: 'array',items: {type: 'string'},description: '可选：一次看多张（≤4）'}}}}},
+  {type: 'function',function: {name: 'capture_screenshot',description: '截图并直接给你看：本地 html/svg（渲染后的真实效果）、pdf / pptx / docx 的某一页、mp4/webm/mov 的某一帧、http(s) 网页。做 PPT / 网页 / 视频 / 海报等视觉产物时，生成后必须用它逐页/关键帧看效果，发现文字溢出、重叠、错位、配色问题就改，改完再截一次确认——不要只凭代码判断「应该没问题」。只在桌面端可用。',parameters: {type: 'object',properties: {target: {type: 'string',description: '本地文件绝对路径或 http(s) 网址'},page: {type: 'number',description: 'pdf / pptx / docx 的页码（从 1 开始）'},time: {type: 'number',description: '视频的时间点（秒）'},width: {type: 'number',description: '视口/输出宽度，默认 1280（PPT 16:9 建议 1600）'},height: {type: 'number',description: '网页视口高度，默认 800'},full_page: {type: 'boolean',description: '网页截整页（长页面）'},wait_ms: {type: 'number',description: '网页加载后再等多少毫秒再截（动画/字体），默认 800-1200'}},required: ['target']}}},
+  {type: 'function',function: {name: 'remember_project',description: '把「下次任何人打开这个项目都成立」的事实写进项目根 AGENTS.md（项目宪法，不是任务日志）。按 kind 分节：overview 项目概况（用途/技术栈/部署）、commands 常用命令（启动/构建/测试/重新生成产物）、layout 目录约定（源码与产物各在哪、哪些是生成的不要手改）、rules 规范与禁忌（长期偏好、不许做的事）、acceptance 验收口径（默认档位、必须过的闸）。会被直接拒绝的写法：行号、进度（已修好/这次/下一步）、会变的数量（13 页/6 个脚本）、产物文件清单、超过 220 字。例：✅「宣传 PPT 源文件在 deck/src/（HTML+CSS），产物输出到 deck/out/，不要手改产物」（layout）✅「重建 PPT：python deck/tools/build_deck.py，改完跑 deck/tools/qa_*.py」（commands）❌「产物 deck/out/finalcheck-deck.pptx（13 页）、finalcheck-deck.pdf、slides/*.png；质检脚本 qa_layout.py、qa_contrast.py…」。已有条目过时了就传 replace（旧条目里的一段原文）就地更新，不要再追加一条。跨目录改别的项目时传 dir 写进那个项目。',parameters: {type: 'object',properties: {fact: {type: 'string',description: '一个长期成立的事实，一句话（≤220 字），带可核对的目录/命令/配置名'},kind: {type: 'string',enum: ['overview','commands','layout','rules','acceptance'],description: '写进哪一节（默认 rules）'},replace: {type: 'string',description: '可选：要更新的旧条目里的一段原文（从 AGENTS.md 复制）；传了就替换那一条而不是追加'},dir: {type: 'string',description: '要记住的项目根绝对路径（可选）。跨目录场景必传：用户让你改 A 项目、但当前会话绑的是 B，就传 A 的路径，记忆写进 A 的 AGENTS.md'}},required: ['fact']}}},
   { type: 'function', function: { name: 'run_command', description: '在本机执行 shell 命令。**统一是 Git Bash 一种语法**（2026-11-17 决策：ACL 沙箱默认关闭，不再有 cmd 这条路径；bash 语法在这里全部可用）。\n可用写法：`ls -la`、`grep -rn`、`cat`、`head -n`、`tail -n`、`wc -l`、`sed`、`awk`、`find . -name "*.py"`、`sort`、`uniq`、`diff`、`tr`、`cut`、`rm -rf`、`mv`、`cp`、`mkdir -p`、`for f in ...; do ...; done`、`$(...)`、`2>/dev/null`、`| head`、`&&`、`||`、`~`（会展开成家目录）。\n⚠️ 不要写 cmd 语法，这些在 bash 里都不对：`dir /b`（用 `ls -la`）、`type`（用 `cat` 或 read_file）、`findstr`（用 `grep -rn` 或 grep_code）、`2>nul`（用 `2>/dev/null`）、`if exist`（用 `test -e`）、`cd /d`（用 `cd`）。\n⚠️ 硬性分工（违反会被应用层拒绝）：① 读文件必须用 read_file（自带行号+分页），禁止 cat/head/tail 读文件；② 搜代码必须用 grep_code（返回 file:line:内容），禁止 grep 搜代码内容；③ 敏感路径（~/.ssh、~/.aws、~/.gnupg、私钥文件）无条件拒绝；项目目录之外的路径默认拒绝（需要跨目录改别的项目时，让用户显式授权该目录）。\n灾难性命令（rm -rf /、format、dd 等）会被黑名单拦截。起常驻服务（node server.mjs / 端口监听 / uvicorn）必须用 background:true 立刻拿 PID，不要用 nohup & 再等它返回；连续 120s 无输出的命令会自动转后台并返回 PID（进程不杀）。', parameters: { type: 'object', properties: { command: { type: 'string', description: '要执行的命令（Git Bash 语法）' }, cwd: { type: 'string', description: '工作目录（可选）。' + PATH_JSON_HINT }, timeout_ms: { type: 'number', description: '超时毫秒（可选）；不传则不限时跑到命令结束（连续 120s 无输出会转后台返回 PID），传了按该毫秒数到点终止' }, background: { type: 'boolean', description: 'true=立刻在后台启动并返回 PID（起常驻服务用），不等待输出' }, idle_ms: { type: 'number', description: '可选：多久无输出算卡住并转后台，默认 120000；0=关闭该兜底' } }, required: ['command'] } } }
 ];
 
@@ -320,22 +322,26 @@ const SYSTEM_BASE = [
   '不要重复问：用户已经说清的部分不再问（例如说了「跑 L3」就不问档位，说了「只看安全性和可维护性」就不问维度，只补问缺的那一项）；档位与维度都说清 → 直接带 tier 和维度跑。项目根已有 finalcheck.profile.json → 视为档位与维度已声明，按它跑，不再问。',
   '多候选不许猜：目标目录本身有歧义（工作区里有多个候选项目，用户说的是「我的 AI 助手」这类泛称）→ 必须先问是哪一个，不许用 dir / 猜路径代替提问；猜错目标等于答错题。',
   '你还有 run_command：像 coding agent 一样自由执行命令（**Git Bash 语法，不是 cmd**：ls -la、grep -rn、cat、find、sed、awk、2>/dev/null、$(...)、&&、|| 都可用；不要写 dir /b、type、findstr、2>nul 这些 cmd 写法）。用户让你"看看某目录/某个盘"就用它探查后再回答，不要拒绝；灾难性命令会被系统拦截，不必自己判断。',
-  '做渗透测试时必先查方法论库：先 list_playbooks 看 40 类目录，命中类目后 read_playbook(topic=编号或英文名) 读入口 SKILL.md，再按其「文件路由」用 file+offset 下钻附属手册；按手册的方法论执行测试，不要凭空瞎试。',
+  '做安全验证时必先查方法论库——不只是渗透测试：验收里报出的高危/可疑项（SQL 注入、命令注入、SSRF、越权、反序列化…）要判断「是否真能被利用」时也算。先 list_playbooks 看 40 类目录（audit_project 结果的 nextSteps 已给出对应 topic 编号），read_playbook(topic=编号或英文名) 读入口 SKILL.md，再按其「文件路由」用 file+offset 下钻附属手册；按手册的方法论复核，不要凭规则名或凭感觉判真假。',
   '测试纪律：侦察（端口/指纹/目录/JS/API）→ 选类目 → 读方法论 → 用 probe_target / run_command 构造请求验证 → 只把已复现的写进结论，未复现的标「线索」。',
   '工具可用性：不假设 nmap/sqlmap/dirsearch 等外部工具已安装；先用 run_command 的 `which` 探测，没有就用 curl/node 做等价的手工验证，不要卡在装工具上。',
   '执行节奏：每个类目先跑手册里的最小验证集（3-5 个请求），有证据就停；大字典爆破、压测、登录尝试只在用户明确要求时做。',
+  '只验收不改代码时，被验收的项目目录保持原样：需要临时脚本（验证哈希、跑个小复现）就写到系统临时目录（/tmp 或 %TEMP%），不要在项目里建文件——哪怕用完就删，交付物的 git 状态也不能被你动过（E2E 实测 go-admin 里建过 tmp_bcrypt_check.py）。',
+  '构建/装依赖有时间预算：静态验收不需要编译通过；只有用户要求「能否构建/跑测试」时才执行 mvn/gradle/npm install/pip install/go build 这类命令，且必须带 timeout_ms（≤ 300000）。超时或依赖下载太慢 → 立刻记为「构建未验证（原因：依赖下载超时）」写进 ## Not covered，继续别的验收项；禁止用 sleep 反复轮询等它（E2E 实测：spring-petclinic 等 Maven 下载 17 分钟直到整轮超时，最终一个字的结论都没交出来）。',
   '边界：动态目标以用户在对话中的口头确认为准——用户给出目标 URL 或表示同意，即为授权，直接执行（压测默认温和参数）；结论引用工具返回的 verdict；覆盖不足要明说"没查到"。',
   '工具结果超长时会被截断为「头+尾」并完整落盘，按提示的 spill 路径用 run_command 检索，不要猜中间内容。',
+  '看图与截图：做 PPT / 网页 / 视频 / 海报 / 图表这类视觉产物时，生成后必须用 capture_screenshot 逐页（或关键帧）看实际效果，文字溢出、重叠、错位、配色不对就改，改完再截一次确认；不要只看代码就说「应该没问题」。用户或项目里的图片用 view_image 直接看。截图只在桌面端可用。',
   '修代码：先 read_file 看清原文，再用 edit_file 做最小替换（old_string 必须唯一）；新建文件用 write_file。改完明确告诉用户「改了哪个文件、+几行/-几行、为什么」。',
   '路径参数转义（硬规则）：JSON 参数里的 Windows 路径一律优先写正斜杠（D:/Projects/demo）；必须用反斜杠时一律双写（D:\\\\Projects\\\\demo）；写成单反斜杠会让参数不是合法 JSON，工具不会执行。',
-  '产出可预览文件（html / png / pdf / md 等）后，调用 present_artifact(path) 登记；用户在聊天里点一下就出现在右侧预览面板。',
+  '产出可预览文件（html / png / pdf / mp4 / pptx / md 等）后，调用 present_artifact(path) 登记；用户在聊天里点一下就出现在右侧预览面板（视频可直接播放，PDF/PPT/Word 分页展示）。',
   '多 agent 工作流（第一步先判断任务形状，再二选一；不要问用户用哪种，你自己判断，最后用一句话说明用了哪种、为什么）：步骤数量固定、方向并列/串行 → 用 steps（每步一个独立子代理：角色 + 自包含任务 + depends_on，引擎按依赖并行；拿到各步结果后汇总成一份结论）；步骤数量由上游结果决定（按列表扇出、循环到满足条件、按类型递归、条件分支、纯计算汇总）→ 用 script（受限 JSON 指令 step/fanout/if/gate/verify/report/loop/recurse/aggregate，只解释执行、不运行代码）；判断不了 → 默认 steps。不要用「我要开始第 1 步」的文字模拟并行。每步 name 必须是职位名（4-10 字，如「SQL 注入审查员」「依赖供应链专员」），不许写「步骤 1」「分析」这种。',
   '拆步铁律（写 depends_on 前先自问）：每写完一步先问「这一步真的需要上一步的结果吗」——不需要就写 depends_on: []（空数组 = 可立即并行，多路同时跑）；只有确实要消费上游产出（读到它的结论、复用它的清单）才写依赖。为了「看起来有顺序」把步骤串成链，会让子代理排队、总耗时按步数翻倍。最小示例（3 步、2 步并行）：[{id:"s1",prompt:"查 A 的证据",depends_on:[]},{id:"s2",prompt:"查 B 的证据",depends_on:[]},{id:"s3",prompt:"汇总 s1 与 s2 的结论",depends_on:["s1","s2"]}] — s1 与 s2 同时跑，s3 等两者都完成；不要写成 s2 依赖 s1。',
   '复杂项目要主动开工作流：当项目较大（约 ≥2000 行 / 多语言 / 多服务）且任务能拆成互不依赖的几路（体检、下载闸、依赖供应链、鉴权越权、动态探测）时，直接调用 run_workflow 并行分头查，不必等用户说「用工作流」；步骤 3-8 个（特别大的项目可到 14 个），每步限定目录或类目（例如「只看 includes/ 的 SQL 与 nonce」），不要把「通读整个仓库」丢给一个子代理。小任务（单文件、单问题、顺手看一眼）不要用工作流，自己查更快。',
   '子代理是有工具的：它们能调用 read_file / run_command / audit_project / download_gate / probe_target / stress_target / list_playbooks / read_playbook（不能改文件、不能再起工作流）。所以每步 prompt 要写成「用哪个工具对什么跑什么、产出什么证据」的可执行任务（例：「用 audit_project 对 D:\\x 跑 L2，列出高危项」），让几个子代理并行跑不同测试，别把活全留给自己。',
-  '项目记忆：项目根的 AGENTS.md 是该项目唯一的长期记忆载体，每轮会自动注入。用户说「记住 / 以后都这样 / 记到项目里」时，用 remember_project 追加一条稳定事实（不要凭印象编造，也不要塞一次性内容）；AGENTS.md 里已有的约定优先遵守；没有 AGENTS.md 时不要主动创建，除非用户要求。⚠️ 记忆跟**目录**走：你在 A 项目里改 B 项目的代码，记忆要写进 B（remember_project 传 dir=B 的路径），不要写进 A。',
+  '项目记忆：项目根的 AGENTS.md 是该项目的「宪法」，每轮会自动注入。用户说「记住 / 以后都这样 / 记到项目里」时，或你摸清了下次一定用得上的长期事实（怎么构建/测试、源码与产物在哪、项目禁忌）时，用 remember_project 按 kind 分节写一条；任务过程、产物清单、数量、进度一律不写（会被拒绝）；旧条目过时就传 replace 就地更新；AGENTS.md 里已有的约定优先遵守；没有 AGENTS.md 时不要主动创建，除非用户要求。⚠️ 记忆跟**目录**走：你在 A 项目里改 B 项目的代码，记忆要写进 B（remember_project 传 dir=B 的路径），不要写进 A。',
   '跨目录工作：允许在项目目录之外读写（默认放开边界）。用户让你改另一个项目的 bug 时直接改，不要拒绝、不要要求切换会话；但要记住「改的是哪个项目」——记忆（AGENTS.md）写进被改的那个项目根，结论汇报时点名你动了哪个目录。敏感路径（~/.ssh、~/.aws、~/.gnupg、私钥）与灾难命令（rm -rf / 等）仍然会被拒绝，这是刻意保留的底线。',
   '质量命令闸：项目根若有 finalcheck.quality.json，调用 quality_gate 会跑里面声明的 lint / typecheck / test / bench 并给出 exit、耗时、是否超阈值、覆盖率（执行前会要用户授权）。用户问「可读性 / 性能 / 稳定性 / 能不能转接」时：先看有没有这份配置；有就跑它拿可测量证据，没有就明说「没有量化闸，只能代码审查」，再用 read_file 逐文件给结论+文件:行，不要编造分数（没有 profiler，就没有 p95）。',
+  'audit_project 返回的 nextSteps 是针对本项目的具体下一步（该读哪个方法论、要不要开工作流、哪些关要列进 Not covered），逐条执行或在回答里说明为什么跳过。',
   '验收档位纪律：用户说「按 L1 / L2 / L3 验收」时必须把 tier 显式传给 audit_project，不许自行降档；L2 会跑交接(H1)与可维护性(Q3)，L3 再加许可证(C1)与运维(O1)。返回的 gates.gaps 必须原样列给用户（「这关没跑，原因是…」），不许把没跑的关说成通过，也不许用「AI 看过了」替代没跑的闸。',
   '向用户提问：只在不问就无法继续、且答案会改变结论时调用 ask_user（例如「按 L2 还是 L3」「动态探测要不要授权」「两个方向只能选一个」）；信息足够时不要打扰用户。一次只问一件事，选项最多 6 个；纯开放式问题可以不给选项。一次回合最多问 3 次，第 4 次会被拒绝。',
   '验收单：任务要分几步做时，开工前先用 todo_write 写 3-8 条，每条 acceptance（怎么算完成）必填；做完一条立刻再调一次 todo_write 把 status 改成 done 并补 evidence（文件:行 / 命令输出 / HTTP 复现）。做不了或跳过的条目写 failed/skipped，最终回答的 ## Not covered 必须逐条点名它们——done 无证据、failed/skipped 没点名，报告闸会判不合格。',
@@ -353,11 +359,12 @@ const SYSTEM_DEV_BASE = [
   '修审计发现时按技能修：audit_project 报出的每类问题（S3 密钥轮换 / S1 路由鉴权 / S2 注入 / S4 依赖 / A1 权限收敛 / A2 提示注入 / A3 沙箱限额 / A4 数据脱敏 / H1 交接 / O1 运维）先 read_playbook(topic=对应编号 41-50) 读修复技能，按其「修复步骤」执行、按其「验证」段重跑对应 gate 确认归零。',
   '多条独立发现并行修：≥3 条互不依赖的审计发现（不同文件/不同规则）→ run_workflow 扇出修复——每条发现一个独立子代理（prompt 写明「先 read_playbook(topic=对应编号) 读修复技能再动手」），depends_on 全部空数组并行；最后一步汇总「各发现修没修好 + 重跑 gate 的结果」。修复失败的发现如实列「未修好 + 原因」，不许为了结论好看硬说修完。',
   '需要并行查证/多路改造时用 run_workflow 分头跑（步骤 3-8 个，每步一个独立子代理；不需要上游结果就写 depends_on: [] 并行）；单文件小改动不要用工作流，自己直接做更快。每步 name 用职位名（4-10 字），不许写「步骤 1」。',
+  '看图与截图：做 PPT / 网页 / 视频 / 海报 / 图表这类视觉产物时，生成后必须用 capture_screenshot 逐页（或关键帧）看实际效果，文字溢出、重叠、错位、配色不对就改，改完再截一次确认；不要只看代码就说「应该没问题」。用户或项目里的图片用 view_image 直接看。截图只在桌面端可用。',
   '需要用户拍板的事（砍功能/动线上数据/花钱的 API）用 ask_user 问一次就动手；其余决策自己定。一次回合最多问 3 次。',
   '路径参数转义（硬规则）：JSON 参数里的 Windows 路径一律优先写正斜杠（D:/Projects/demo）；必须用反斜杠时一律双写（D:\\\\Projects\\\\demo）；写成单反斜杠会让参数不是合法 JSON，工具不会执行。',
   '工具结果超长时会被截断为「头+尾」并完整落盘，按提示的 spill 路径用 run_command 检索，不要猜中间内容。',
-  '产出可预览文件（html / png / pdf / md 等）后，调用 present_artifact(path) 登记；用户在聊天里点一下就出现在右侧预览面板。',
-  '项目记忆：项目根的 AGENTS.md 每轮自动注入，其中约定优先遵守；用户说「记住」时用 remember_project 追加。',
+  '产出可预览文件（html / png / pdf / mp4 / pptx / md 等）后，调用 present_artifact(path) 登记；用户在聊天里点一下就出现在右侧预览面板（视频可直接播放，PDF/PPT/Word 分页展示）。',
+  '项目记忆：项目根的 AGENTS.md（项目宪法）每轮自动注入，其中约定优先遵守。用户说「记住」、或你摸清了下次一定用得上的长期事实（构建/测试命令、源码与产物目录、禁忌）时，用 remember_project 按 kind 分节写一条；不写任务过程、产物清单、数量、进度；旧条目过时就传 replace 更新。',
   '底线（与模式无关）：写操作限制在工作区/用户指定目录内；灾难性命令由系统拦截兜底；密钥/凭据不写进代码、不上传外部服务。',
   '回答简洁，先结论后证据；用与用户提问相同的语言作答（用户写中文就用中文，写英文就用英文）。用 markdown 排版（结论加粗、改动用列表、长输出用代码块）。'
 ].join('\n');
@@ -724,7 +731,7 @@ export function pruneConvo(list, config) {
 // 这类调用大部分时间在等 IO（让出事件循环），凑一批并发能显著缩短一轮耗时。
 // 其余全部串行：run_command / edit_file / write_file 有写顺序依赖；audit_project / download_gate / quality_gate /
 // get_report / run_workflow 是主线程 CPU 或子进程任务，并行只会堵事件循环，甚至让 UI 卡住。
-const PARALLEL_TOOLS = new Set(['read_file', 'read_playbook', 'probe_target', 'stress_target', 'review_diff']);
+const PARALLEL_TOOLS = new Set(['read_file', 'read_playbook', 'probe_target', 'stress_target', 'review_diff', 'grep_code', 'view_image', 'capture_screenshot']);
 
 export function classifyTool(name) {
   return PARALLEL_TOOLS.has(String(name ?? '')) ? 'parallel' : 'serial';
@@ -1151,6 +1158,14 @@ async function runToolCall(tc, tools, onEvent, signal = null, onToolLifecycle = 
   } catch (e) {
     result = { error: e?.message || String(e) };
   }
+  // 工具返回的图片（view_image / capture_screenshot）：不进 JSON 正文（base64 会把上下文撑爆、也不可读），
+  // 单独带出去，由调用方在工具消息之后补一条多模态消息给模型「看」
+  let images = null;
+  if (result && typeof result === 'object' && Array.isArray(result.__images)) {
+    images = result.__images.filter((im) => im && typeof im.base64 === 'string' && /^image\//.test(String(im.mime || ''))).slice(0, 4);
+    const { __images, ...rest } = result;
+    result = { ...rest, imagesAttached: images.length };
+  }
   onEvent?.({ kind: 'tool-end', id: tc?.id, name, ms: Date.now() - t0, ok: !result?.error, ...(result?.cancelled ? { cancelled: true } : {}), result: uiResultSummary(result) });
   // 工具结果策略（对齐 dsh）：超长不整块喂模型——头+尾进上下文，全文落盘给 spill 路径
   let modelContent;
@@ -1182,7 +1197,38 @@ async function runToolCall(tc, tools, onEvent, signal = null, onToolLifecycle = 
     cancelled: !!result?.cancelled,
     at: Date.now(),
   });
-  return { id: tc?.id, trace: { tool: name, args: argsText, result: traceResult }, modelContent };
+  return { id: tc?.id, trace: { tool: name, args: argsText, result: traceResult }, modelContent, ...(images?.length ? { images } : {}) };
+}
+
+const MAX_LIVE_IMAGE_MESSAGES = 2;
+/**
+ * 把一批工具返回的图片变成一条给模型看的消息（OpenAI 多模态 content parts）。
+ * 模型未开视觉（config.vision === false）→ 只给文字说明，不发图（网关会直接拒绝整个请求）。
+ * 老的图片消息只保留最近 MAX_LIVE_IMAGE_MESSAGES 条，更早的换成文字占位，避免每轮重复计费、撑爆上下文。
+ */
+export function appendToolImages(convo, toolResults, { vision } = {}) {
+  const imgs = toolResults.flatMap((r) => (r.images || []).map((im) => ({ ...im, tool: r.trace?.tool })));
+  if (!imgs.length) return false;
+  const label = imgs.map((im, i) => `${i + 1}. ${im.label || im.tool}`).join('；');
+  if (vision === false) {
+    convo.push({ role: 'user', content: `[系统] 工具返回了 ${imgs.length} 张图片（${label}），但当前模型没有开启视觉能力，无法查看。请在回答里说明「图片未经肉眼核对」；用户可在「设置 → 模型」给支持看图的模型勾选 vision。` });
+    return true;
+  }
+  const live = convo.filter((m) => m.__fcImages);
+  for (const m of live.slice(0, Math.max(0, live.length - (MAX_LIVE_IMAGE_MESSAGES - 1)))) {
+    m.content = m.content.map((p) => (p.type === 'image_url' ? { type: 'text', text: '[较早的图片已从上下文移除；需要再看就重新调用 view_image / capture_screenshot]' } : p));
+    delete m.__fcImages;
+  }
+  const msg = {
+    role: 'user',
+    content: [
+      { type: 'text', text: `[系统] 以下是工具返回的 ${imgs.length} 张图片（${label}）。请仔细看图本身（排版、文字是否溢出/重叠、配色、对齐、内容是否正确），不要只复述文件名；发现问题就指出具体位置并修。` },
+      ...imgs.map((im) => ({ type: 'image_url', image_url: { url: `data:${im.mime};base64,${im.base64}` } })),
+    ],
+  };
+  Object.defineProperty(msg, '__fcImages', { value: true, enumerable: false, writable: true, configurable: true });
+  convo.push(msg);
+  return true;
 }
 
 // 一轮 assistant 返回多个 tool_calls 时的调度：
@@ -1456,8 +1502,14 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
     if (announced) onEvent?.({ kind: 'compact-end', scope: 'auto', before, after: estimateMessagesTokens(convo) });
   };
   // 仿 dsh：网关抖动（5xx/429/网络错误）自动重试，最多 5 次，指数退避
-  const RETRYABLE = new Set([408, 425, 429, 500, 502, 503, 504]);
-  const MAX_ATTEMPTS = 5;
+  // 520-524 / 529：Cloudflare 系网关的源站超时/过载（国内中转网关常见；E2E 实测 524 直接结束整轮）
+  const RETRYABLE = new Set([408, 425, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524, 529]);
+  // 退避节奏（2026-11-18）：原来 0.6→1.2→2.4→4.8s，5 次总共只等约 9 秒就放弃——真实模型 E2E 里网关抖一下，
+  // 两个已经跑了 6~12 分钟的验收直接丢光、一个字结论都没交。现在 2→5→10→20→30→30s，最多 7 次（约 1.5 分钟）。
+  // 测试注入极小 retryBaseMs 时按同一比例缩放，不会变慢。
+  const MAX_ATTEMPTS = 7;
+  const BACKOFF_STEPS = [2000, 5000, 10000, 20000, 30000, 30000];
+  const backoffMs = (attempt) => Math.round(BACKOFF_STEPS[Math.min(attempt - 1, BACKOFF_STEPS.length - 1)] * (RETRY_BASE_MS / 600));
   const sleepAbort = (ms, sig) => new Promise((resolve) => {
     const timeoutId = setTimeout(resolve, ms);
     sig?.addEventListener('abort', () => { clearTimeout(timeoutId); resolve('aborted'); }, { once: true });
@@ -1575,7 +1627,7 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
           lastErr = `HTTP ${res.status} ${res.statusText || ''}${keyHint}`;
           if (RETRYABLE.has(res.status) && attempt < MAX_ATTEMPTS) {
             onEvent?.({ kind: 'retry', attempt: attempt + 1, max: MAX_ATTEMPTS, reason: lastErr });
-            await sleepAbort(RETRY_BASE_MS * 2 ** (attempt - 1), signal);
+            await sleepAbort(backoffMs(attempt), signal);
             continue;
           }
           onEvent?.({ kind: 'turn-end', ms: Date.now() - turnStart, error: true });
@@ -1598,7 +1650,7 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
         if (attempt < MAX_ATTEMPTS) {
           // attempt 报「即将进行的下一次尝试」（1 失败 → 重试 2/5），UI 读起来就是「重试第 2 次」
           onEvent?.({ kind: 'retry', attempt: attempt + 1, max: MAX_ATTEMPTS, reason: lastErr });
-          await sleepAbort(RETRY_BASE_MS * 2 ** (attempt - 1), signal);
+          await sleepAbort(backoffMs(attempt), signal);
           continue;
         }
         onEvent?.({ kind: 'turn-end', ms: Date.now() - turnStart, error: true });
@@ -1794,6 +1846,8 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
       trace.push(r.trace);
       convo.push({ role: 'tool', tool_call_id: r.id, content: r.modelContent });
     });
+    // 工具返回的图片：所有 tool 消息之后补一条多模态消息（tool 消息必须紧跟 assistant 的 tool_calls）
+    appendToolImages(convo, toolResults, { vision: liveConfig.vision });
     // 回合内折叠（microcompact）：**按 token 阈值触发**，不再每步无条件清。
     //
     // 2026-11-16 修复（真实事故）：623ab65 引入的是「每步工具结果落地就清掉最近 5 条
@@ -1918,14 +1972,14 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
       if (sendFailed) {
         if (attempt >= FINALIZE_ATTEMPTS) break;
         onEvent?.({ kind: 'retry', attempt: attempt + 1, max: FINALIZE_ATTEMPTS, reason: ferr });
-        await sleepAbort(RETRY_BASE_MS * 2 ** (attempt - 1), signal);
+        await sleepAbort(backoffMs(attempt), signal);
         continue;
       }
       if (attemptRes?.ok) { res = attemptRes; break; }
       ferr = `HTTP ${attemptRes?.status ?? '?'}`;
       if (attemptRes && RETRYABLE.has(attemptRes.status) && attempt < FINALIZE_ATTEMPTS) {
         onEvent?.({ kind: 'retry', attempt: attempt + 1, max: FINALIZE_ATTEMPTS, reason: t('收尾请求 {err}', { err: ferr }) });
-        await sleepAbort(RETRY_BASE_MS * 2 ** (attempt - 1), signal);
+        await sleepAbort(backoffMs(attempt), signal);
         continue;
       }
       break;

@@ -673,6 +673,8 @@ export function registerAgentIpc({
         reasoningEffort: effort,
         contextWindow,
         maxOutputTokens,
+        // 看图能力（模型设置里的 vision 勾选）：false 时工具返回的图片改成文字说明，不发给模型
+        vision: modelEntry ? modelEntry.vision === true : undefined,
         crossTurnBudgetTokens: crossTurnBudget,
         toolConcurrency: Number(cfg.toolConcurrency ?? prov.toolConcurrency) || 8,
         // 静默看门狗：0=关闭，缺省 180s；只杀「连续零字节」，不是工作时长上限
@@ -696,6 +698,7 @@ export function registerAgentIpc({
           apiKey: live.provider.apiKey,
           model: live.model,
           providerId: live.provider.id,
+          vision: resolveModel(live.provider, live.model)?.vision === true, // 运行中换模型：看图能力跟着新模型走
           ...(live.effort ? { reasoningEffort: live.effort } : {})
         };
       },

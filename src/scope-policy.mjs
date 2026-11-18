@@ -67,7 +67,12 @@ function extensionOf(file) {
 export function isNonProductPath(rel) {
   const normalized = normalizePath(rel);
   if (!normalized) return false;
-  const segments = normalized.split('/').filter(Boolean);
+  let segments = normalized.split('/').filter(Boolean);
+  // JVM 源码根（src/main/java 等）以下是包名，不是目录语义：com/example/shop 是 Spring Initializr
+  // 默认包名，按「examples 目录」降级会把整个 Java 产品的发现全变成提示（Semgrep 接入实测 0/10）
+  const jvmRoot = segments.findIndex((s, i) => i >= 2 && /^(java|kotlin|scala|groovy)$/i.test(s)
+    && segments[i - 1].toLowerCase() === 'main' && segments[i - 2].toLowerCase() === 'src');
+  if (jvmRoot >= 0) segments = [...segments.slice(0, jvmRoot + 1), segments[segments.length - 1]];
   if (segments.some((seg, i) => {
     const s = seg.toLowerCase();
     if (!NON_PRODUCT_SEGMENTS.has(s)) return false;

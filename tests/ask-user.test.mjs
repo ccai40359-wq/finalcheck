@@ -162,7 +162,7 @@ test('ask-user: 进行中的 tool part 重开会话后还原为「未回答（�
 test('ask-user: 子代理 schema 不含 ask_user；只有主 agent 的 createAgentTools 注册实现', async () => {
   const subNames = SUBAGENT_TOOLS_SCHEMA.map((x) => x.function.name);
   assert.ok(!subNames.includes('ask_user'), '子代理 schema 不得有 ask_user');
-  assert.equal(SUBAGENT_TOOLS_SCHEMA.length, 14);
+  assert.equal(SUBAGENT_TOOLS_SCHEMA.length, 17); // 2026-11-18 +grep_code +view_image +capture_screenshot
   const agentNames = AGENT_TOOLS_SCHEMA.map((x) => x.function.name);
   assert.ok(agentNames.includes('ask_user'), '主 agent schema 必须有 ask_user');
 

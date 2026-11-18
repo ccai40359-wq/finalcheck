@@ -184,8 +184,8 @@ test('subagent-stream: toolsSchema 覆盖——只读 schema 的请求体里没�
   assert.equal(result.error, undefined);
 });
 
-test('subagent-stream: 子代理工具集固定 14 个（无 run_workflow / remember_project）', () => {
-  assert.equal(SUBAGENT_TOOLS_SCHEMA.length, 14);
+test('subagent-stream: 子代理工具集固定 17 个（无 run_workflow / remember_project）', () => {
+  assert.equal(SUBAGENT_TOOLS_SCHEMA.length, 17); // 2026-11-18 +grep_code +view_image +capture_screenshot
   const names = SUBAGENT_TOOLS_SCHEMA.map((t) => t.function.name);
   assert.deepEqual(names.filter((n) => n === 'run_workflow' || n === 'remember_project'), []);
   assert.ok(names.includes('review_diff'), 'review_diff 是子代理可用工具（只在 AGENT_ONLY_TOOLS_SCHEMA）');

@@ -91,7 +91,7 @@ test('activity: 工具开始执行 → Calling <tool>…（在 tool-start 之前
   assert.ok(calling < started, 'Calling 提示应在工具开始之前');
 });
 
-test('activity: 网关超时自动重试 → retry 事件 attempt=2/5', async () => {
+test('activity: 网关超时自动重试 → retry 事件 attempt=2/7（2026-11-18 起最多 7 次、约 1.5 分钟退避）', async () => {
   const events = [];
   let calls = 0;
   const mockFetch = async () => {
@@ -111,7 +111,7 @@ test('activity: 网关超时自动重试 → retry 事件 attempt=2/5', async ()
   const retry = events.find((e) => e.kind === 'retry');
   assert.ok(retry, '应发出 retry 事件');
   assert.equal(retry.attempt, 2, '1 次失败后重试的是第 2 次尝试');
-  assert.equal(retry.max, 5);
+  assert.equal(retry.max, 7);
   assert.match(retry.reason, /超时|timeout/i);
 });
 

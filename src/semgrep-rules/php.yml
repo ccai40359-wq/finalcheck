@@ -1,0 +1,275 @@
+# FinalCheck 自研 Semgrep 规则（PHP / Laravel）。不用 Semgrep Registry 规则（其许可限制竞品使用）。
+# metadata.fc_check → FC 检查项；metadata.fc_kind → 规则名后缀（S2.sg-php-<kind>）。
+# 污点只在单个函数（或文件顶层脚本）内传播（Semgrep CE 限制）。
+rules:
+  - id: php-sqli
+    languages: [php]
+    severity: ERROR
+    message: SQL 语句由请求输入拼接而成——改用 PDO/mysqli 预处理占位符（prepare + execute([$id])）
+    metadata: { fc_check: S2, fc_kind: sqli }
+    mode: taint
+    pattern-sources: &php-sources
+      - pattern-either:
+          - pattern: $_GET
+          - pattern: $_POST
+          - pattern: $_REQUEST
+          - pattern: $_COOKIE
+          - pattern: $_FILES
+          - pattern: $_SERVER['QUERY_STRING']
+          - pattern: $_SERVER['REQUEST_URI']
+          - pattern: $_SERVER['PATH_INFO']
+          - pattern: $_SERVER['HTTP_REFERER']
+          - pattern: file_get_contents('php://input')
+          - pattern: getallheaders()
+          - pattern: request(...)
+          - pattern: Request::input(...)
+          - pattern: Request::get(...)
+          - pattern: Input::get(...)
+      # $REQ 必须像请求对象：否则 $REQ->query(...) 会把 $db->query(...) 本身当成输入源（实测误报）
+      - patterns:
+          - pattern-either:
+              - pattern: $REQ->input(...)
+              - pattern: $REQ->query(...)
+              - pattern: $REQ->post(...)
+              - pattern: $REQ->get(...)
+              - pattern: $REQ->route(...)
+              - pattern: $REQ->header(...)
+              - pattern: $REQ->cookie(...)
+              - pattern: $REQ->all()
+          - metavariable-regex: { metavariable: $REQ, regex: '(?i)^\$?(request|req|r)$' }
+    pattern-sanitizers: &php-num-sanitizers
+      - pattern-either:
+          - pattern: intval(...)
+          - pattern: floatval(...)
+          - pattern: (int) $X
+          - pattern: (float) $X
+          - pattern: (bool) $X
+          - pattern: filter_var($X, FILTER_VALIDATE_INT, ...)
+          - pattern: mysqli_real_escape_string(...)
+          - pattern: $DB->real_escape_string(...)
+          - pattern: $PDO->quote(...)
+          - pattern: ctype_digit(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: mysqli_query($C, $Q, ...)
+              - pattern: mysqli_multi_query($C, $Q)
+              - pattern: mysqli_prepare($C, $Q)
+              - pattern: mysql_query($Q, ...)
+              - pattern: pg_query($C, $Q)
+              - pattern: sqlite_query($C, $Q)
+              - pattern: $DB->query($Q, ...)
+              - pattern: $DB->exec($Q)
+              - pattern: $DB->multi_query($Q)
+              - pattern: $DB->prepare($Q, ...)
+              - pattern: DB::select($Q, ...)
+              - pattern: DB::statement($Q, ...)
+              - pattern: DB::unprepared($Q)
+              - pattern: DB::raw($Q)
+              - pattern: $QB->whereRaw($Q, ...)
+              - pattern: $QB->orWhereRaw($Q, ...)
+              - pattern: $QB->havingRaw($Q, ...)
+              - pattern: $QB->orderByRaw($Q, ...)
+              - pattern: $QB->selectRaw($Q, ...)
+          # $request->query('q') 是取参不是执行 SQL（Laravel 留出集实测误报）。
+          # PHP 模式里小写 $request 是字面变量名（Semgrep 元变量只认大写）
+          - pattern-not: $request->$FN(...)
+          - pattern-not: $req->$FN(...)
+          - focus-metavariable: $Q
+
+  - id: php-cmdi
+    languages: [php]
+    severity: ERROR
+    message: 系统命令由请求输入拼接而成——参数用 escapeshellarg 包裹，或改用不经 shell 的调用并做白名单校验
+    metadata: { fc_check: S2, fc_kind: cmdi }
+    mode: taint
+    pattern-sources: *php-sources
+    pattern-sanitizers:
+      - pattern-either:
+          - pattern: escapeshellarg(...)
+          - pattern: escapeshellcmd(...)
+          - pattern: intval(...)
+          - pattern: (int) $X
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: system($X, ...)
+              - pattern: exec($X, ...)
+              - pattern: shell_exec($X)
+              - pattern: passthru($X, ...)
+              - pattern: popen($X, ...)
+              - pattern: proc_open($X, ...)
+              - pattern: pcntl_exec($X, ...)
+          - focus-metavariable: $X
+
+  - id: php-code-injection
+    languages: [php]
+    severity: ERROR
+    message: 请求输入进入 eval / assert / create_function（代码注入）——不要动态执行代码
+    metadata: { fc_check: S2, fc_kind: code-injection }
+    mode: taint
+    pattern-sources: *php-sources
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: eval($X)  # finalcheck:allow（规则文本，不是代码）
+              - pattern: assert($X, ...)
+              - pattern: create_function($A, $X)
+          - focus-metavariable: $X
+
+  - id: php-file-inclusion
+    languages: [php]
+    severity: ERROR
+    message: include/require 的路径由请求输入决定（文件包含）——用白名单映射页面名，或 basename 后限定目录
+    metadata: { fc_check: S2, fc_kind: file-inclusion }
+    mode: taint
+    pattern-sources: *php-sources
+    pattern-sanitizers: &php-path-sanitizers
+      - pattern-either:
+          - pattern: basename(...)
+          - pattern: intval(...)
+          - pattern: (int) $X
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: include $X;
+              - pattern: include_once $X;
+              - pattern: require $X;
+              - pattern: require_once $X;
+              - pattern: include($X);
+              - pattern: include_once($X);
+              - pattern: require($X);
+              - pattern: require_once($X);
+          - focus-metavariable: $X
+
+  - id: php-path-traversal
+    languages: [php]
+    severity: ERROR
+    message: 文件路径由请求输入拼接而成，可被 ../ 穿越——用 basename 取文件名，或 realpath 后校验仍在允许目录内
+    metadata: { fc_check: S2, fc_kind: path-traversal }
+    mode: taint
+    pattern-sources: *php-sources
+    pattern-sanitizers: *php-path-sanitizers
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: readfile($P, ...)
+              - pattern: fopen($P, ...)
+              - pattern: file($P, ...)
+              - pattern: file_put_contents($P, ...)
+              - pattern: unlink($P)
+              - pattern: copy($P, ...)
+              - pattern: copy($S, $P)
+              - pattern: rename($P, ...)
+              - pattern: move_uploaded_file($TMP, $P)
+              - pattern: Storage::get($P)
+              - pattern: Storage::delete($P)
+              - pattern: response()->download($P, ...)
+              - pattern: response()->file($P, ...)
+          - focus-metavariable: $P
+      # file_get_contents 既能读本地文件也能发 HTTP 请求：输入在开头 → SSRF/任意读，二者都算
+      - patterns:
+          - pattern: file_get_contents($P, ...)
+          # 读请求体本身是输入源，不是路径穿越（DVWA 实测 13 条误报）
+          - pattern-not: file_get_contents('php://input', ...)
+          - pattern-not: file_get_contents("php://input", ...)
+          - focus-metavariable: $P
+
+  - id: php-ssrf
+    languages: [php]
+    severity: ERROR
+    message: 服务端请求的目标 URL 完全由请求输入决定（SSRF）——只允许白名单域名，禁止内网地址
+    metadata: { fc_check: S2, fc_kind: ssrf }
+    mode: taint
+    pattern-sources: *php-sources
+    pattern-sanitizers:
+      - patterns:
+          - pattern: '"$PFX" . $X'
+          - metavariable-regex: { metavariable: $PFX, regex: '^https?://[^/]+/' }
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: curl_setopt($CH, CURLOPT_URL, $U)
+              - pattern: curl_init($U)
+              - pattern: Http::get($U, ...)
+              - pattern: Http::post($U, ...)
+              - pattern: $GUZZLE->request($M, $U, ...)
+              - pattern: $GUZZLE->get($U, ...)
+          # $request->get('file') 是取参不是发请求（Laravel 留出集实测误报）
+          - pattern-not: $request->$FN(...)
+          - pattern-not: $req->$FN(...)
+          - focus-metavariable: $U
+
+  - id: php-open-redirect
+    languages: [php]
+    severity: WARNING
+    message: 跳转地址直接取自请求输入（开放重定向）——只允许站内相对路径或白名单域名
+    metadata: { fc_check: S2, fc_kind: open-redirect }
+    mode: taint
+    pattern-sources: *php-sources
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: header("..." . $U, ...)
+              - pattern: redirect($U)
+              - pattern: redirect()->to($U)
+              - pattern: Redirect::to($U)
+          - focus-metavariable: $U
+
+  - id: php-xss
+    languages: [php]
+    severity: ERROR
+    message: 请求输入未转义就输出到页面（反射型 XSS）——用 htmlspecialchars($x, ENT_QUOTES) 或模板引擎自动转义
+    metadata: { fc_check: S2, fc_kind: xss }
+    mode: taint
+    pattern-sources: *php-sources
+    pattern-sanitizers:
+      - pattern-either:
+          - pattern: htmlspecialchars(...)
+          - pattern: htmlentities(...)
+          - pattern: strip_tags(...)
+          - pattern: intval(...)
+          - pattern: (int) $X
+          - pattern: json_encode(...)
+          - pattern: urlencode(...)
+          - pattern: e(...)
+          # 命令输出不是请求输入（否则 echo shell_exec(... escapeshellarg($x)) 会被当 XSS，实测误报）
+          - pattern: shell_exec(...)
+          - pattern: exec(...)
+          - pattern: system(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: echo $X;
+              - pattern: echo $X, ...;
+              - pattern: print $X;
+              - pattern: printf($X, ...)
+              - pattern: printf($F, ..., $X, ...)
+              - pattern: exit($X)
+              - pattern: die($X)
+          - focus-metavariable: $X
+
+  - id: php-deserialization
+    languages: [php]
+    severity: ERROR
+    message: 对外部输入做 unserialize（对象注入）——改用 json_decode，或 unserialize($x, ['allowed_classes' => false])
+    metadata: { fc_check: S2, fc_kind: deserialization }
+    mode: taint
+    pattern-sources: *php-sources
+    pattern-sinks:
+      - patterns:
+          - pattern: unserialize($X)
+          - focus-metavariable: $X
+
+  - id: php-weak-password-hash
+    languages: [php]
+    severity: ERROR
+    message: 密码用 md5/sha1 摘要——改用 password_hash($pwd, PASSWORD_DEFAULT) / password_verify
+    metadata: { fc_check: S8, fc_kind: weak-password-hash }
+    patterns:
+      - pattern-either:
+          - pattern: md5($P, ...)
+          - pattern: sha1($P, ...)
+          - pattern: hash('md5', $P, ...)
+          - pattern: hash('sha1', $P, ...)
+      - metavariable-regex: { metavariable: $P, regex: '(?i).*(pass|pwd|\$pw$)' }

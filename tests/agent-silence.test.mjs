@@ -62,7 +62,7 @@ function slowSseResponse(chunks, gapMs, signal) {
   return new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream' } });
 }
 
-test('silence: 网关零字节 → 按 attempt 超时重试，5 次后失败且不挂死', async () => {
+test('silence: 网关零字节 → 按 attempt 超时重试，7 次后失败且不挂死（2026-11-18 起 MAX_ATTEMPTS=7）', async () => {
   let calls = 0;
   const events = [];
   const fetchImpl = async (_url, opts) => {
@@ -79,15 +79,15 @@ test('silence: 网关零字节 → 按 attempt 超时重试，5 次后失败且�
     onEvent: (ev) => events.push(ev)
   });
   const elapsed = Date.now() - t0;
-  assert.equal(calls, 5, '应沿用 MAX_ATTEMPTS=5 次尝试');
+  assert.equal(calls, 7, '应沿用 MAX_ATTEMPTS=7 次尝试');
   assert.match(out.error, /静默/, '错误文案要说清「静默」');
-  assert.match(out.error, /已重试 5 次/);
+  assert.match(out.error, /已重试 7 次/);
   assert.doesNotMatch(out.error, /at .*agent-service\.mjs|stack/i, '错误文案不带栈');
   assert.ok(elapsed < 5000, `静默失败应在 5s 内结束，实际 ${elapsed}ms`);
   const retries = events.filter((e) => e.kind === 'retry');
-  assert.equal(retries.length, 4, '4 次重试事件（第 5 次尝试后放弃）');
+  assert.equal(retries.length, 6, '6 次重试事件（第 7 次尝试后放弃）');
   assert.match(retries[0].reason, /静默/);
-  assert.equal(events.filter((e) => e.kind === 'activity' && /等待网关响应/.test(e.label || '')).length, 5);
+  assert.equal(events.filter((e) => e.kind === 'activity' && /等待网关响应/.test(e.label || '')).length, 7);
 });
 
 test('silence: 每 100ms 有字节的 1.2s 慢流 → 不被中止，正常完成', async () => {
@@ -134,7 +134,7 @@ test('silence: 子代理 noLimits 同样启用静默看门狗', async () => {
     onTranscript: () => {}
   });
   const elapsed = Date.now() - t0;
-  assert.equal(calls, 5);
+  assert.equal(calls, 7);
   assert.match(String(out.error || ''), /静默|网关无响应/);
   assert.ok(elapsed < 5000, `子代理静默失败也应快速结束，实际 ${elapsed}ms`);
 });

@@ -392,4 +392,10 @@ export const EN_MAIN = {
   '工具参数连续两次被输出上限截断（{code}），本轮已停止，这些调用没有执行。建议把参数拆小（减少 steps / 精简 prompt）后重试本步。': 'Tool arguments were truncated by the output limit twice in a row ({code}); this turn stopped and those calls were not executed. Split the arguments (fewer steps or a shorter prompt) and retry this step.',
   '工具参数被截断，正在重发…': 'Tool arguments were truncated; retrying…',
   '工具参数有误，正在让模型重发…': 'Invalid tool arguments; asking the model to resend…',
+  // 右侧分页 / 视频预览
+  '文件过大（上限 200MB）': 'File is too large (200MB max)',
+  '预览 PPT / Word 需要本机安装 LibreOffice（免费）：装好后点「刷新」即可分页预览；也可以先点「外部打开」': 'Previewing PPT / Word files requires LibreOffice (free) on this machine. After installing it, click "Refresh" to view page by page, or click "Open externally" for now',
+  '转换超时（3 分钟），请点「外部打开」查看': 'Conversion timed out (3 minutes). Click "Open externally" to view it',
+  '转换失败：{detail}': 'Conversion failed: {detail}',
+  '该文件未经预览放行': 'This file has not been cleared for preview'
 };

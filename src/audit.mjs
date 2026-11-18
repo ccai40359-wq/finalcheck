@@ -28,6 +28,9 @@ import { ACCEPT_FILE, applyAcceptances } from './accept.mjs';
 import { applyScopePolicy, detectLanguageGap } from './scope-policy.mjs';
 import { runPyBandit } from './checks/py-bandit.mjs';
 import { checkPyRules } from './checks/py-rules.mjs';
+import { runTrivy } from './checks/trivy.mjs';
+import { runSemgrep } from './checks/semgrep.mjs';
+import { checkMybatis } from './checks/mybatis.mjs';
 import { checkAiToolPerms, checkAiPromptInjection, checkAiSandbox, checkAiDataBoundary } from './checks/ai-agent.mjs';
 import { isLibraryRepo } from './project-kind.mjs';
 
@@ -53,7 +56,7 @@ export async function loadConfig(projectDir) {
   } catch { return {}; }
 }
 
-export async function audit(projectDir, { tier = null, interactive = false, runTests = false, profile = null, runtime = null, sources = null, includeFixtures = false, noCaps = false } = {}) {
+export async function audit(projectDir, { tier = null, interactive = false, runTests = false, profile = null, runtime = null, sources = null, includeFixtures = false, noCaps = false, trivyRunner = null, semgrepRunner = null } = {}) {
   const cfg = await loadConfig(projectDir);
   // 报告条数上限集中解析一次，三个检查从参数拿，不各自读配置；默认不截断。
   const { caps: reportCaps, warnings: reportCapWarnings } = resolveReportCaps(cfg, { noCaps });
@@ -101,6 +104,12 @@ export async function audit(projectDir, { tier = null, interactive = false, runT
   // Q1/Q2 无论是否授权都进计划：没授权就记 coverageGap，绝不「静默不跑」
   const basePlanned = profilePlan ? profilePlan.planned : GATES[effective];
   const planned = basePlanned.slice().concat(qualityOn ? ['Q2'] : []);
+  // Trivy（可选增强，2026-11-18）：跑一次，结果分发给 S4（Go/Java/PHP/Rust/Ruby/.NET 依赖）、
+  // O1（Dockerfile/K8s/Terraform 配置）、S3（密钥）。没装/失败只记 warning，原有缺口照旧。
+  const trivy = (planned.includes('S4') || planned.includes('O1') || planned.includes('S3'))
+    ? await runTrivy(projectDir, { excludes, runner: trivyRunner })
+      .catch((e) => ({ ran: false, s4: [], o1: [], s3: [], ecosystems: new Set(), warnings: [`Trivy 运行异常：${e.message}`] }))
+    : { ran: false, s4: [], o1: [], s3: [], ecosystems: new Set(), warnings: [] };
   const results = [];
   for (const id of planned) {
     if (id === 'S1') results.push(await checkAuthCoverage(routeResult));
@@ -122,7 +131,7 @@ export async function audit(projectDir, { tier = null, interactive = false, runT
     if (id === 'D1') results.push(await checkData(projectDir, { tier: effective, excludes, includeFixtures }));
     if (id === 'D2') results.push(await checkBackup(projectDir, { tier: effective, excludes, includeFixtures }));
     if (id === 'D3') results.push(await checkPrivacy(projectDir, { tier: effective, excludes, includeFixtures }));
-    if (id === 'S4') results.push(await checkDeps(projectDir));
+    if (id === 'S4') results.push(await checkDeps(projectDir, { trivy }));
     if (id === 'S5') results.push(await checkConfig(projectDir, effective, { excludes, includeFixtures }));
     if (id === 'Q1') results.push(await checkQ1(projectDir, { tier: effective, excludes, routeResult, run: runTests, includeFixtures }));
     if (id === 'Q2') results.push(await checkQuality(projectDir, { tier: effective, run: runTests }));
@@ -154,8 +163,26 @@ export async function audit(projectDir, { tier = null, interactive = false, runT
     py.warnings.push(`Python 规则运行异常：${e.message}`);
     return { findings: [] };
   });
+  // Go/Java/PHP 注入类检测（Semgrep + FC 自研规则包，2026-11-18）：只在计划含 S2 时跑；
+  // 没装/失败 → 语言缺口照旧（下面按 coveredExts 逐语言解除，不一刀切）
+  const semgrep = planned.includes('S2')
+    ? await runSemgrep(projectDir, { excludes, includeFixtures, runner: semgrepRunner })
+      .catch((e) => ({ ran: false, findings: [], coveredExts: new Set(), warnings: [`Semgrep 运行异常：${e.message}`] }))
+    : { ran: false, findings: [], coveredExts: new Set(), warnings: [] };
+  py.warnings.push(...semgrep.warnings);
+  // MyBatis ${} 拼接（纯文本规则，不依赖 Semgrep；java-sec-code E2E 实测漏报后补）
+  const mybatis = planned.includes('S2')
+    ? await checkMybatis(projectDir, { excludes, includeFixtures }).catch((e) => { py.warnings.push(`MyBatis 规则运行异常：${e.message}`); return { findings: [] }; })
+    : { findings: [] };
   const resultsByCheck = new Map(results.map((r) => [r.checkId, r]));
-  for (const f of [...pyRules.findings, ...py.findings]) {
+  // Trivy 的配置/密钥发现只并入本轮计划里的检查项（L1 不跑 O1 就不塞 O1）
+  // 容器/IaC 配置问题归 O1（运维关）；L2 不跑 O1 时并入 S5（配置关），别让 Trivy 的发现被静默丢掉
+  const cfgGate = planned.includes('O1') ? 'O1' : planned.includes('S5') ? 'S5' : null;
+  const trivyCfg = cfgGate ? trivy.o1.map((f) => (cfgGate === 'O1' ? f : { ...f, checkId: 'S5', rule: f.rule.replace(/^O1\./, 'S5.') })) : [];
+  const trivyExtra = [...trivyCfg, ...(planned.includes('S3') ? trivy.s3 : [])];
+  py.warnings.push(...trivy.warnings);
+  const semgrepFindings = semgrep.findings.filter((f) => planned.includes(f.checkId));
+  for (const f of [...pyRules.findings, ...py.findings, ...trivyExtra, ...semgrepFindings, ...mybatis.findings]) {
     const entry = resultsByCheck.get(f.checkId);
     if (entry) entry.findings.push(f);
     else {
@@ -270,8 +297,11 @@ export async function audit(projectDir, { tier = null, interactive = false, runT
         .filter((r) => r?.pythonCoverage && Number(r.pythonCoverage.files || 0) > 0)
         .map((r) => r.checkId)
     );
+    // S2 按语言逐个判：.py 由 Bandit 覆盖，.go/.java/.php 由 Semgrep 自研规则覆盖；
+    // 仓库里还有任何没被覆盖的语言（如 .rb/.rs），S2 缺口就保留（不能拿一门语言的覆盖冒充全部）
+    const s2Covered = languageGap.exts.every((ext) => (ext === '.py' && pyBanditRan) || semgrep.coveredExts.has(ext));
     const gapCheckIds = languageGap.checkIds.filter((id) => {
-      if (pyBanditRan && id === 'S2') return false;
+      if (s2Covered && id === 'S2') return false;
       if ((nonJsRoutesCovered || pyRoutesScanned) && id === 'S1') return false;
       // Q1：Python 仓有测试时 checkQ1 会真跑 pytest；没测试时它自己给 gap，不需要审计层再加一条
       if (id === 'Q1') return false;
@@ -284,8 +314,12 @@ export async function audit(projectDir, { tier = null, interactive = false, runT
       const covered = languageGap.checkIds.filter((id) => !gapCheckIds.includes(id));
       warnings.push(`语言缺口已按检查解除：${covered.join('/')} 已真实覆盖 .py（其余仍按未覆盖计）`);
     }
-    if (pyBanditRan && gapCheckIds.includes('S2') === false && languageGap.checkIds.includes('S2')) {
-      warnings.push('S2 的语言缺口已由 Bandit 部分覆盖（Python SAST：注入/反序列化/弱哈希），框架路由与鉴权面由路由提取结果决定');
+    if (s2Covered && languageGap.checkIds.includes('S2')) {
+      const by = [
+        pyBanditRan && languageGap.exts.includes('.py') ? 'Bandit（Python SAST：注入/反序列化/弱哈希）' : null,
+        semgrep.coveredExts.size ? `Semgrep 自研规则（${[...semgrep.coveredExts].map((e) => e.slice(1)).join('/')}：注入/路径穿越/SSRF/XSS/反序列化，污点限单函数内）` : null,
+      ].filter(Boolean).join(' + ');
+      warnings.push(`S2 的语言缺口已由 ${by} 部分覆盖，框架路由与鉴权面由路由提取结果决定`);
     }
     if ((nonJsRoutesCovered || pyRoutesScanned) && !gapCheckIds.includes('S1') && languageGap.checkIds.includes('S1')) {
       warnings.push(nonJsRoutesCovered

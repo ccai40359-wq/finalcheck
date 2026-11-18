@@ -227,6 +227,16 @@ function putExport(exportsMap, slot, right) {
   };
   if (right.type === 'Identifier') return assign(right.name);
   if (right.type === 'FunctionDeclaration' && right.id) return assign(right.id.name);
+  // `module.exports = function (passport) { router.get(...); return router }`：导出的是返回模块级
+  // router 的匿名工厂（dvna 实测：路由全部「从未挂载」，S1/S6/S7 被记成不适用）
+  if (right.type === 'FunctionExpression' || right.type === 'ArrowFunctionExpression') {
+    let ret = null;
+    try {
+      walk(right.body, (n) => { if (!ret && n.type === 'ReturnStatement' && n.argument?.type === 'Identifier') ret = n.argument.name; });
+    } catch { /* ignore */ }
+    if (right.body?.type === 'Identifier') ret = right.body.name; // () => router
+    if (ret) return assign({ fnReturn: ret });
+  }
   if (isRequireCall(right)) return assign({ reexport: right.arguments[0].value, name: 'default' });
   if (right.type === 'ObjectExpression') {
     for (const p of right.properties) {
@@ -351,6 +361,8 @@ function analyzeFile(abs, rel, warnings) {
     if (node.type === 'AssignmentExpression' && node.operator === '=' && node.left.type === 'MemberExpression') {
       const left = node.left;
       if (left.object.type === 'Identifier' && left.object.name === 'module' && memberPropName(left) === 'exports') {
+        // 匿名导出函数体内新建 router（`module.exports = () => { const r = express.Router(); ...; return r }`）按工厂登记
+        if (isFunctionNode(node.right)) registerFunctionLike('__fc_default_export__', node.right.body, functions, routerFactories);
         putExport(exportsMap, 'default', node.right);
       } else if (left.object.type === 'MemberExpression' && left.object.object.type === 'Identifier' &&
                  left.object.object.name === 'module' && memberPropName(left.object) === 'exports') {
@@ -465,6 +477,8 @@ function classifyTarget(file, n) {
   }
   if (n.type === 'CallExpression') {
     const c = n.callee;
+    // app.use('/app', require('./routes/app')(passport))：调用导出的路由工厂
+    if (isRequireCall(c)) return { import: { source: c.arguments[0].value, name: 'default' } };
     if (c.type === 'Identifier') {
       if (file.routerFactories.has(c.name)) return { localFactory: c.name };
       const imp = file.imports.get(c.name);
@@ -558,6 +572,13 @@ function resolveTargetFile(fromFile, imp, ctx, line) {
       }
       ctx.warnings.push(`${file.rel}: export "${varName}" was not recognized as express.Router(); mounting anyway`);
       return { file, varName, kind: 'router' };
+    }
+    if (varName && varName.fnReturn) {
+      const v = varName.fnReturn;
+      if (file.routers.has(v) || file.apps.has(v)) return { file, varName: v, kind: 'router' };
+      if (file.routerFactories.has('__fc_default_export__')) return { file, varName: '__fc_default_export__', kind: 'factory' };
+      ctx.warnings.push(`${file.rel}: exported function returns "${v}", which was not recognized as express.Router(); mounting anyway`);
+      return { file, varName: v, kind: 'router' };
     }
     if (varName && varName.reexport) {
       curFile = file;

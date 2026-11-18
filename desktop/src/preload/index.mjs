@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('finalcheck', {
   saveAttachment: (payload) => ipcRenderer.invoke('finalcheck:attachment:save', payload),
   artifactRead: (p) => ipcRenderer.invoke('finalcheck:artifact:read', p),
   artifactOpen: (p) => ipcRenderer.invoke('finalcheck:artifact:open', p),
+  artifactBytes: (p) => ipcRenderer.invoke('finalcheck:artifact:bytes', p),
   copyText: (text) => ipcRenderer.invoke('finalcheck:clipboard:write', text),
   skillsList: () => ipcRenderer.invoke('finalcheck:skills:list'),
   compactSession: (id) => ipcRenderer.invoke('finalcheck:compact-session', id),

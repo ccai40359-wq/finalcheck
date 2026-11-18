@@ -11,6 +11,7 @@ import { applyAgentEvent, mergeTraceIntoEvents } from './lib/process-events.mjs'
 import { ArtifactPanel } from './chat/ArtifactPanel.jsx';
 import { SubagentPanel } from './chat/SubagentPanel.jsx';
 import { shouldShowArtifactPanel, shouldShowStepPanel } from './lib/panel-visibility.mjs';
+import { buildSendHistory } from './lib/interrupted-digest.mjs';
 // 双语：t() 在英文模式查词典、中文模式原样返回；useLanguage() 只负责切换语言时触发重渲染
 import { t, setLanguage, resolveLanguage } from './i18n/core.mjs';
 import { useLanguage } from './i18n/index.jsx';
@@ -203,6 +204,7 @@ export default function App() {
     setStepView((cur) => (cur && !shouldShowStepPanel({ view: page, stepView: cur, activeSessionId: activeId }) ? null : cur));
   }, [page, activeId]);
   const [artifactLoading, setArtifactLoading] = useState(false);
+  const artifactBySessionRef = useRef(new Map()); // sessionId → 该会话右侧打开着的产物路径
   const [artifactError, setArtifactError] = useState('');
   const [skills, setSkills] = useState([]); // 40 类方法论（slash 菜单）
   const [slashIndex, setSlashIndex] = useState(0);
@@ -528,6 +530,10 @@ export default function App() {
       const merged = mergeRunningRun(loaded, run, { stopped: stoppedRef.current.has(id) });
       setMessages(merged.messages);
       setStepView(null); // 面板属于某个会话的某一步：切会话就收起，别留着上一条的上下文
+      // 产物预览同理：收起上一条会话的预览；这条会话之前开着的预览恢复回来
+      setArtifact(null); setArtifactError(''); setArtifactLoading(false);
+      const keptArtifact = artifactBySessionRef.current.get(s.id);
+      if (keptArtifact) void openArtifact(keptArtifact, { forSession: s.id });
       setPage('chat');
       // 排队消息存档：重启后恢复成「待发送」（hold=true），并明确告知；绝不自动发送/静默丢。
       // 本进程里已经有更新的队列时不覆盖（用户刚入队的那几条更可信）。
@@ -996,12 +1002,17 @@ export default function App() {
   };
 
   // ---- 右侧产物预览 ----
-  const openArtifact = async (p) => {
+  // 预览按会话记：A 会话打开的产物，切到 B 不能还挂在右边（用户实测串会话）；切回 A 再恢复
+  const openArtifact = async (p, { forSession } = {}) => {
     if (!y?.artifactRead || !p) return;
+    const sid = forSession !== undefined ? forSession : activeIdRef.current;
+    if (sid) artifactBySessionRef.current.set(sid, p);
     setArtifactLoading(true);
     setArtifactError('');
     try {
       const r = await y.artifactRead(p);
+      // 读的过程中切走了：结果属于原会话，不能落到现在这条会话的面板上
+      if (sid !== activeIdRef.current) return;
       if (r && r.kind === 'missing') {
         setArtifact({ path: p, name: r.name || baseName(p) });
         setArtifactError(r.error || t('文件已不存在'));
@@ -1009,13 +1020,17 @@ export default function App() {
         setArtifact(r);
       }
     } catch (e) {
+      if (sid !== activeIdRef.current) return;
       setArtifact({ path: p, name: baseName(p) });
       setArtifactError(e.message || t('读取失败'));
     } finally {
-      setArtifactLoading(false);
+      if (sid === activeIdRef.current) setArtifactLoading(false);
     }
   };
-  const closeArtifact = () => { setArtifact(null); setArtifactError(''); setArtifactLoading(false); };
+  const closeArtifact = () => {
+    if (activeIdRef.current) artifactBySessionRef.current.delete(activeIdRef.current);
+    setArtifact(null); setArtifactError(''); setArtifactLoading(false);
+  };
 
   // ---- / 技能（dsh 式：文字后面空格 + / 就能唤起，命令/技能可嵌在正文里） ----
   // 只由 send() 在「整条消息就是 /compact」时调用：没有活动会话不新建，直接提示用户先打开会话
@@ -1228,13 +1243,11 @@ export default function App() {
     // 本地显示历史：保留消息的完整显示字段（trace 工具明细 / reasoning / interrupted / workedMs / pasted）——
     // round9 用户实测事故：发一条消息，之前回合的 154 步工具明细从界面整段消失（库里数据完好），
     // 根因就是这里把历史重建成只剩 role+content。只剥掉流式瞬态字段（streaming/events/startedAt）。
-    const baseList = baseMessages
-      .filter((m) => !m.error && !m.local && !m.steer && (m.role === 'user' || m.role === 'assistant'))
-      .map((m) => {
-        const { streaming, events, startedAt, ...rest } = m;
-        return rest;
-      });
-    const wireHistory = [...baseList.map((m) => ({ role: m.role, content: m.content })), { role: 'user', content: finalText }]; // 发给主进程：只有 role/content
+    // 2026-11-18 用户实测：网关断开的回合（error）以前在这里被整条过滤——说「继续」后 10 分钟的工具记录
+    // 从界面消失、模型也不知道做到哪。现在出错回合照常显示；发给模型时换成「中断前做了什么」的摘要。
+    const sendHistory = buildSendHistory(baseMessages);
+    const baseList = sendHistory.display;
+    const wireHistory = [...sendHistory.wire, { role: 'user', content: finalText }]; // 发给主进程：只有 role/content
     const displayUser = { role: 'user', content: finalText, ...(pastedTexts.length ? { pasted: pastedTexts, typed: typedText } : {}) };
     const history = [...baseList, displayUser]; // 本地渲染：带 trace 等显示字段，明细不丢
     const startedAt = Date.now();
@@ -1675,6 +1688,7 @@ export default function App() {
         <SubagentPanel target={stepView} onClose={() => setStepView(null)} />
       ) : showArtifactPanel && (
         <ArtifactPanel
+          y={y}
           artifact={artifact}
           loading={artifactLoading}
           error={artifactError}

@@ -1,14 +1,20 @@
-// 右侧产物预览：图片 / HTML / PDF / 文本（agent 生成的文件可直接点开看）
+// 右侧产物预览：图片 / HTML / 视频 / PDF·PPT·Word（分页）/ 文本（agent 生成的文件可直接点开看）
 // .md/.markdown 走 markdown 渲染（与聊天气泡同一套净化渲染器），其余文本保持等宽原文
 import React, { useEffect, useRef, useState } from 'react';
 import { t } from '../i18n/core.mjs';
 import { renderMarkdown } from './md.jsx';
+import { PdfPager } from './PdfPager.jsx';
 
 export const PREVIEW_EXTS = new Set([
   '.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp',
   '.html', '.htm', '.pdf',
+  '.mp4', '.m4v', '.webm', '.mov', '.ogv',
+  '.pptx', '.ppt', '.pps', '.ppsx', '.odp', '.key', '.docx', '.doc', '.odt', '.rtf',
   '.txt', '.md', '.markdown', '.json', '.js', '.mjs', '.css', '.csv', '.log', '.xml', '.yml', '.yaml'
 ]);
+
+const VIDEO_RE = /^\.(mp4|m4v|webm|mov|ogv)$/;
+const SLIDES_RE = /^\.(pptx?|ppsx?|odp|key|pdf|docx?|odt|rtf)$/;
 
 export const isMarkdownArtifact = (p) => /\.(md|markdown)$/i.test(String(p || ''));
 
@@ -23,7 +29,7 @@ export function collectArtifacts(trace) {
   const out = [];
   const seen = new Set();
   for (const entry of trace || []) {
-    if (!['edit_file', 'write_file', 'present_artifact'].includes(entry?.tool)) continue;
+    if (!['edit_file', 'write_file', 'present_artifact', 'capture_screenshot'].includes(entry?.tool)) continue;
     const r = entry.result;
     if (!r || typeof r !== 'object' || r.error || !r.path) continue;
     if (!PREVIEW_EXTS.has(extOf(r.path)) || seen.has(r.path)) continue;
@@ -43,7 +49,7 @@ export function ArtifactChips({ artifacts, activePath, onOpen }) {
         return (
           <button key={a.path} onClick={() => onOpen(a.path)} title={a.path}
             className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[11px] font-mono transition-colors ${activePath === a.path ? 'bg-gold/12 text-goldSoft' : 'bg-white/[0.035] text-mute hover:bg-white/[0.06] hover:text-goldSoft'}`}>
-            <span className="text-goldDeep">{isImg ? '▣' : ext === '.html' || ext === '.htm' ? '◇' : '▤'}</span>
+            <span className="text-goldDeep">{isImg ? '▣' : ext === '.html' || ext === '.htm' ? '◇' : VIDEO_RE.test(ext) ? '▶' : SLIDES_RE.test(ext) ? '▦' : '▤'}</span>
             <span className="max-w-[220px] truncate text-ink/85">{a.name}</span>
             {a.added != null ? <span className="text-jade">+{a.added}</span> : null}
             {a.removed != null ? <span className="text-red-400">-{a.removed}</span> : null}
@@ -54,7 +60,7 @@ export function ArtifactChips({ artifacts, activePath, onOpen }) {
   );
 }
 
-export function ArtifactPanel({ artifact, loading, error, onClose, onReload, onOpen }) {
+export function ArtifactPanel({ y, artifact, loading, error, onClose, onReload, onOpen }) {
   const a = artifact;
   // 拖左边缘调宽度；拖到头（<220px）直接关闭。宽度记在本机。
   const [width, setWidth] = useState(() => {
@@ -120,8 +126,12 @@ export function ArtifactPanel({ artifact, loading, error, onClose, onReload, onO
               ) : a.kind === 'html' ? (
                 <iframe title={a.name} srcDoc={a.content} sandbox="allow-scripts allow-forms allow-modals allow-popups"
                   className="w-full h-full bg-white border-0" />
-              ) : a.kind === 'pdf' ? (
-                <iframe title={a.name} src={a.dataUrl} className="w-full h-full border-0 bg-white" />
+              ) : a.kind === 'video' ? (
+                <div className="w-full h-full flex items-center justify-center p-4 bg-black">
+                  <video key={a.path} src={a.url} controls preload="metadata" className="max-w-full max-h-full rounded-lg" />
+                </div>
+              ) : a.kind === 'pdf' && a.pdfPath ? (
+                <PdfPager key={a.pdfPath} y={y} artifact={a} />
               ) : isMarkdownArtifact(a.path || a.name) ? (
                 <div
                   title={t('Markdown 渲染（原文本可外部打开查看）')}

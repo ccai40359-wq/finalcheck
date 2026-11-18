@@ -53,7 +53,7 @@ export function parseTomlLock(text) {
     if (!isExactVersion(cur.version)) { skipped.push({ name, version: cur.version, reason: `版本不是精确锁定值（${cur.version}）` }); return; }
     deps.push({ name, version: cur.version });
   };
-  for (const raw of String(text || '').split('\n')) {
+  for (const raw of String(text || '').split(/\r?\n/)) {
     const line = raw.trim();
     if (line.startsWith('[[package]]')) {
       flush();
@@ -238,7 +238,7 @@ export function parsePyprojectDepNames(text) {
     return false;
   };
 
-  for (const rawLine of src.split('\n')) {
+  for (const rawLine of src.split(/\r?\n/)) {
     const line = stripTomlComment(rawLine.replace(/\r$/, '')).trim();
     if (!line) continue;
     if (collecting) {

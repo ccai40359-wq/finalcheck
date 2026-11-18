@@ -249,5 +249,11 @@ export const EN_CHAT = {
 
   // 输入区 / 通用复制按钮
   '附件保存失败': 'Failed to save attachment',
-  '复制修复提示词': 'Copy fix prompt'
+  '复制修复提示词': 'Copy fix prompt',
+  // 右侧分页 / 视频预览
+  '上一页': 'Previous',
+  '下一页': 'Next',
+  '第 {n} 页': 'Page {n}',
+  '无法打开：{msg}': 'Cannot open: {msg}',
+  '正在加载转换后的页面…': 'Loading converted pages…'
 };

@@ -15,7 +15,7 @@ import { listTextFiles } from '../src/walk.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const benchRoot = path.join(root, 'tests', 'benchmark', 'python');
-const MARK_RE = /#\s*(EXPECT|SAFE):\s*(S\d+)(?:\s+([\w-]+))?/;
+const MARK_RE = /(?:#|\/\/)\s*(EXPECT|SAFE):\s*(S\d+)(?:\s+([\w-]+))?/;
 // 训练集：规则是对着它们修的；盲测集：规则改完后另写、刻意换写法，用来看泛化（不要对着它们调规则）
 const TRAIN = ['flask-shop', 'django-blog', 'fastapi-notes'];
 const HOLDOUT = ['holdout-flask-bp', 'holdout-drf', 'holdout-fastapi-annotated'];
@@ -40,7 +40,7 @@ async function readMarks(dir) {
   const marks = [];
   for (const abs of resolved) {
     const rel = norm(path.relative(dir, abs));
-    if (!/(?:\.(py|txt|toml|cfg)|(?:^|\/)\.env)$/.test(rel)) continue;
+    if (!/(?:\.(py|txt|toml|cfg|go|java|php)|(?:^|\/)\.env)$/.test(rel)) continue;
     const lines = (await readFile(abs, 'utf8')).split(/\r?\n/);
     lines.forEach((text, i) => {
       // 一行可以有多个标记：`# EXPECT: S1 x  # EXPECT: S7 y`（类视图的 S1/S7 都落在 class 行）

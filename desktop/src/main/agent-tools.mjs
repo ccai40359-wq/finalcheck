@@ -1,6 +1,7 @@
 // Agent 工具实现（从 index.mjs 抽出：可单测、可替换权限台账）
 // 只负责「工具做什么」；工具名/参数的模型可见 schema 在 agent-service.mjs（SSOT）
 import path from 'node:path';
+import os from 'node:os';
 import { stat } from 'node:fs/promises';
 import { existsSync, statSync } from 'node:fs';
 import { spawn } from 'node:child_process';
@@ -11,6 +12,8 @@ import { readFileTool, editFileTool, writeFileTool } from '../../../src/fs-tools
 import { assertPathAllowed, checkFileName, assertCwd, checkCommand, checkDestructiveTargets, checkCommandPaths, scrubEnv } from './policy.mjs';
 import { runHookEvent } from './hooks.mjs';
 import { isBlocked } from './shell.mjs';
+import { shellReadRedirect } from './shell-route.mjs';
+import { auditNextSteps } from './next-steps.mjs';
 import { resolveShell } from './shell-resolver.mjs';
 import { dynamicRuntime, recordProbe, recordStress } from './dynamic-evidence.mjs';
 import { assertArtifactPath } from './artifact-gate.mjs';
@@ -18,7 +21,7 @@ import { createSandboxedRun, sandboxAvailability, sandboxCompatible } from './sa
 // 工作流兜底提示走双语词典（zh 原样返回，en 查表）
 import { t } from '../renderer/i18n/core.mjs';
 
-const PREVIEW_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp', '.html', '.htm', '.pdf', '.txt', '.md', '.json', '.js', '.mjs', '.css', '.csv', '.log', '.xml', '.yml', '.yaml']);
+const PREVIEW_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp', '.html', '.htm', '.pdf', '.mp4', '.m4v', '.webm', '.mov', '.ogv', '.pptx', '.ppt', '.pps', '.ppsx', '.odp', '.key', '.docx', '.doc', '.odt', '.rtf', '.txt', '.md', '.json', '.js', '.mjs', '.css', '.csv', '.log', '.xml', '.yml', '.yaml']);
 
 // hook 说 ask 时可以接上现有审批通道的工具（其余工具没有审批通道 → 明确报错，不静默执行）
 const APPROVAL_TOOLS = new Set(['edit_file', 'write_file', 'run_command', 'quality_gate']);
@@ -530,7 +533,17 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
       const { audit } = await import(engineUrl('src/audit.mjs'));
       const r = await audit(dir, { tier: explicitTier, interactive: true, runTests: false, profile, runtime });
       if (policy?.mode !== 'readonly') recordAudit(dir, r).catch(() => {});
+      // 下一步建议写进结果本身（模型对工具结果的服从远高于系统提示；E2E 实测方法论库/工作流 0 次调用）
+      let nextSteps = [];
+      try {
+        const { listTextFiles } = await import(engineUrl('src/walk.mjs'));
+        const { hasQualityConfig } = await import(engineUrl('src/checks/quality.mjs'));
+        const { files } = await listTextFiles(dir, [], { maxFiles: 8000 });
+        const codeFiles = files.filter((f) => /\.(?:[cm]?[jt]sx?|py|go|java|kt|php|rb|rs|cs|vue|svelte|swift|c|cc|cpp|h)$/i.test(f)).length;
+        nextSteps = auditNextSteps(r, { dir, codeFiles, hasQualityConfig: await hasQualityConfig(dir) });
+      } catch { /* 建议生成失败不影响审计结果 */ }
       return {
+        nextSteps,
         verdict: r.conclusion.verdict,
         reason: r.conclusion.reason,
         gates: r.gates,
@@ -810,6 +823,86 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
       return { path: abs, name: path.basename(abs), title: String(args?.title || path.basename(abs)).slice(0, 120), size: st.size };
     },
 
+    // ---- AI 的眼睛（2026-11-18）：看图 / 截图。图片经 __images 带出，由 agent-service 作为多模态消息发给模型 ----
+    view_image: async (args) => {
+      const list = (Array.isArray(args?.paths) ? args.paths : [args?.path]).filter(Boolean).slice(0, 4);
+      if (!list.length) return { error: '缺少 path（要看的图片绝对路径；最多 4 张可用 paths 数组）' };
+      const { loadImageForModel } = await import('./capture.mjs');
+      const images = [];
+      const meta = [];
+      for (const p of list) {
+        const gate = assertArtifactPath(p, { policy });
+        if (!gate.ok) return { error: gate.reason, path: gate.path };
+        const ext = path.extname(gate.path).toLowerCase();
+        if (ext === '.svg') return { error: 'SVG 是矢量文本：用 capture_screenshot(target=该 svg 路径) 渲染成图再看' };
+        try {
+          const im = await loadImageForModel(gate.path);
+          images.push({ mime: im.mime, base64: im.buf.toString('base64'), label: path.basename(gate.path) });
+          meta.push({ path: gate.path, width: im.width, height: im.height, ...(im.original && im.original.width !== im.width ? { scaledFrom: im.original } : {}) });
+        } catch (e) {
+          return { error: `读不了图片 ${gate.path}：${e.message}` };
+        }
+      }
+      return { ok: true, images: meta, note: '图片已附在下一条消息里，请直接看图下结论', __images: images };
+    },
+
+    capture_screenshot: async (args) => {
+      const target = String(args?.target || args?.path || args?.url || '').trim();
+      if (!target) return { error: '缺少 target：本地文件路径（html/svg/pdf/pptx/docx/mp4/图片）或 http(s) 网址' };
+      const cap = await import('./capture.mjs');
+      if (!(await cap.captureAvailable())) return { error: '截图只在 FinalCheck 桌面端可用（当前是无界面运行）；图片文件可以用 view_image 直接看' };
+      const width = Math.max(320, Math.min(2400, Number(args?.width) || 1280));
+      const height = Math.max(240, Math.min(4000, Number(args?.height) || 800));
+      // 截图存进项目的 .finalcheck/captures（%APPDATA%\FinalCheck 下的 spill 目录会被产物闸拒绝，用户点不开）
+      const outDir = projectPath ? path.join(projectPath, '.finalcheck', 'captures') : path.join(os.tmpdir(), 'fc-captures');
+      let shot;
+      let what;
+      try {
+        if (/^https?:\/\//i.test(target)) {
+          shot = await cap.captureUrl(target, { width, height, waitMs: Number(args?.wait_ms) || 1200, fullPage: !!args?.full_page, outDir });
+          what = target;
+        } else {
+          const gate = assertArtifactPath(target, { policy });
+          if (!gate.ok) return { error: gate.reason, path: gate.path };
+          const abs = gate.path;
+          const ext = path.extname(abs).toLowerCase();
+          const { OFFICE_EXTS, VIDEO_EXTS, officeToPdf } = await import('./preview-convert.mjs');
+          const { allowPreviewFile } = await import('./preview-allow.mjs');
+          if (['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'].includes(ext)) {
+            return tools.view_image({ path: abs });
+          } else if (['.html', '.htm', '.svg'].includes(ext)) {
+            shot = await cap.captureUrl(abs, { width, height, waitMs: Number(args?.wait_ms) || 800, fullPage: !!args?.full_page, outDir });
+            what = path.basename(abs);
+          } else if (ext === '.pdf' || OFFICE_EXTS.has(ext)) {
+            let pdf = abs;
+            if (ext !== '.pdf') {
+              const cacheDir = path.join(path.dirname(process.env.FINALCHECK_CONFIG_FILE || path.join(os.tmpdir(), 'x')), 'preview-cache');
+              const r = await officeToPdf(abs, { cacheDir });
+              if (!r.ok) return { error: r.reason === 'no-libreoffice' ? '截 PPT/Word 需要本机安装 LibreOffice（免费）；也可以先导出成 PDF 再截' : `转换失败：${r.reason}` };
+              pdf = r.pdfPath;
+            }
+            shot = await cap.captureSnapshot({ kind: 'pdf', pdfPath: allowPreviewFile(pdf), page: String(Number(args?.page) || 1), width: String(width) }, { outDir });
+            const [n, total] = String(shot.info).split('/');
+            what = `${path.basename(abs)} 第 ${n}/${total} 页`;
+          } else if (VIDEO_EXTS.has(ext)) {
+            const url = `fc-media://local/${encodeURIComponent(abs)}`;
+            shot = await cap.captureSnapshot({ kind: 'video', url, time: String(Number(args?.time) || 0), width: String(width) }, { outDir });
+            const [t0, dur] = String(shot.info).split('/');
+            what = `${path.basename(abs)} @ ${t0}s / 共 ${dur}s`;
+          } else {
+            return { error: `不支持截图的类型：${ext}（支持 html/svg/pdf/pptx/docx/mp4/webm/mov/图片 与 http(s) 网址）` };
+          }
+        }
+      } catch (e) {
+        return { error: `截图失败：${e.message}` };
+      }
+      return {
+        ok: true, path: shot.file, title: `截图：${what}`, width: shot.width, height: shot.height,
+        note: '截图已附在下一条消息里，请直接看图检查（文字溢出/重叠、对齐、配色、内容是否正确）',
+        __images: [{ mime: shot.mime, base64: shot.buf.toString('base64'), label: what }],
+      };
+    },
+
     remember_project: async (args) => {
       // 2026-11-17 决策 2：记忆跟**目录**走，不跟会话走。
       // 你在这个项目里顺手改了另一个项目的代码时，那条记忆应该写进**被改的那个项目**，
@@ -824,7 +917,7 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
       }
       const { rememberProject } = await import('./project-memory.mjs');
       try {
-        const r = await rememberProject(resolvedDir, args?.fact);
+        const r = await rememberProject(resolvedDir, args?.fact, { kind: args?.kind, replace: args?.replace });
         return { ...r, dir: resolvedDir };
       } catch (e) {
         return { error: e.message };
@@ -895,6 +988,10 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
         const deleteCheck = checkDestructiveTargets(policy, cmd, runCwd);
         if (!deleteCheck.ok) return policyDenyResult(deleteCheck);
       }
+      // 读源码 / 搜代码改道到 read_file / grep_code（工具描述早就写了「违反会被应用层拒绝」，这里才真正落实）。
+      // 放在路径闸之后：越界/敏感路径必须先按安全原因拒绝，而不是被说成「换个工具就行」
+      const reroute = shellReadRedirect(cmd);
+      if (reroute) return { error: reroute.message, redirect: reroute.kind === 'read' ? 'read_file' : 'grep_code' };
       // 审批参数模式：单段命令看前两个 token；含 && || | ; & 换行的复合命令看整条，
       // 避免「本会话允许 git status」把 `git status && curl … | sh` 一起放行。
       const pattern = typeof permissions?.approvalPatternFor === 'function'

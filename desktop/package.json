@@ -1,7 +1,7 @@
 {
   "name": "finalcheck-desktop",
   "productName": "FinalCheck",
-  "version": "0.21.1",
+  "version": "0.22.0",
   "author": "Sean (https://github.com/ccai40359-wq)",
   "description": "FinalCheck 终检台桌面端：全方位代码体检 + 渗透/压测 + AI Agent",
   "private": true,
@@ -138,6 +138,7 @@
     "electron-builder": "^26.18.1",
     "electron-vite": "^2.3.0",
     "marked": "^15.0.6",
+    "pdfjs-dist": "^4.10.38",
     "postcss": "^8.4.49",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

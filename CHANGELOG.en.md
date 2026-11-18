@@ -6,6 +6,40 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.22.0] - 2026-11-18
+
+The multi-language and real-model acceptance release: Go / Java / PHP projects get injection checks for the first time, and Go / Java / PHP / Rust / Ruby / .NET dependencies plus Dockerfile / K8s configuration are checked through Trivy. The full AI acceptance flow was run with a real model (deepseek-v4.1-flash-eco) on 6 real repositories, and the problems it surfaced are fixed. The right-hand preview now plays videos and shows PPT / Word / PDF page by page.
+
+### Added
+
+- **The AI can look at images and take screenshots**: new `view_image` (look at a local image) and `capture_screenshot` (render a web page / local HTML / SVG, one page of a PDF / PPT / Word file, or one frame of a video into an image the AI can see). When building visual deliverables such as decks, pages and videos, the AI now screenshots its own output to check for overflowing, overlapping or misaligned text before fixing it; screenshots also appear in the chat and open at full size. In testing, asked only "is the layout OK?", the model captured both a desktop and a phone viewport on its own and pointed out text running 200px past the card and clipping on mobile. Requires the model to have the vision option checked in Settings → Models.
+- **Injection checks for Go / Java / PHP**: the Semgrep engine with FinalCheck's own rule pack (not Semgrep's official rule registry), covering SQL / command / code injection, path traversal, file inclusion, SSRF, open redirect, XSS, unsafe deserialization, XXE, SpEL / Groovy / template expression injection, and passwords hashed with MD5/SHA1; supports net/http, gin, echo, fiber, Spring (including unannotated parameters), Servlet, JPA, Laravel and plain PHP. On real repositories: about 85% of DVWA findings are real issues, and two normal projects (spring-petclinic, gin RealWorld) produced zero noise.
+- **MyBatis `${}` SQL injection**: `${}` in mapper XML and in `@Select` / `@Update` annotations is reported, with a fix suited to the case (LIKE queries, an order-by whitelist, `foreach` for IN lists). Does not need Semgrep.
+- **Trivy integration**: Go / Java / PHP / Rust / Ruby / .NET dependency vulnerabilities are no longer all marked "not audited"; Dockerfile / Kubernetes / Terraform misconfigurations (such as containers running as root) and cloud provider keys are found as well. Without Trivy or Semgrep installed, FinalCheck shows the install command and still reports the area as not covered instead of pretending it was checked.
+- **Video and paged documents in the right-hand preview**: mp4 / webm / mov play directly (seeking works, and the 15MB limit no longer applies); PDFs show one page at a time with previous / next buttons and a thumbnail strip; PPT / Word files are converted to PDF with the local LibreOffice and previewed the same way (each file is converted only once).
+- Real-model end-to-end test script `desktop/scripts/e2e-agent.mjs`: runs an unattended acceptance on any repository with the same AI and tools as the desktop app, recording every tool call, its duration and token usage.
+
+### Fixed
+
+- **After the gateway dropped, saying "continue" lost the previous turn**: a turn that ended in an error used to be filtered out on the next send, so minutes of tool history vanished from the screen and the AI had no idea where it had stopped and started over; the turn now stays visible, and a summary of what was done before the interruption (tools called, their arguments and key results) is handed to the AI so it can pick up from there.
+- **Giving up too quickly on network hiccups**: retries go from 5 attempts within about 9 seconds to 7 attempts with 2 → 5 → 10 → 20 → 30 → 30 second backoff (about 1.5 minutes), so a brief network drop no longer throws away an acceptance run that has been going for ten minutes or more.
+- Project memory (AGENTS.md) got written as one task's deliverable inventory ("13 pages", six script names…), which turned into wrong information as soon as the deliverable changed; it is now organized into project overview / common commands / directory conventions / rules / acceptance criteria, entries with line numbers, progress notes, counts that drift, file inventories or more than 220 characters are sent back for the AI to rewrite, and stale entries can be updated in place instead of piling up.
+- A preview opened in one session stayed open after switching to another session; each session now remembers its own preview and restores it when you switch back.
+- Express projects that export routes with `module.exports = function () { …; return router }` and mount them with `app.use('/x', require('./routes/x')())` yielded no routes at all, so auth, webhook and IDOR checks were marked "not applicable" (found on dvna).
+- Spring's default package path `com/example/...` was treated as an examples folder, demoting every finding in the Java project to a tip.
+- Files with Windows (CRLF) line endings: whole-line comments in requirements.txt were treated as "unpinned dependencies"; every check now normalizes line endings when reading files.
+- Python projects with many requirements.txt files waited 3 minutes per file for pip-audit, serially, for 24 minutes until the whole turn timed out (found on pygoat); files now share a 2.5-minute total budget, and after one timeout the rest go straight to a batched OSV query.
+- A Cloudflare 524 (origin timeout) from the model gateway failed the whole turn; it is now retried like 502 / 503.
+- Once "password" appeared anywhere in a file, an `md5(...)` used for a cache tag in the same file was reported as weak password hashing; the password now has to appear near the call, and comments and YAML no longer count.
+
+### Improved
+
+- "Read files with read_file and search code with grep_code" used to be only a line in the tool description and was never enforced (in E2E runs, `nl -ba` was used 37 times to read files and `grep -rn` 34 times to search code); run_command now actually redirects these, while logs, piped processing, counting, git and other legitimate uses still go through. Sub-agents can now use grep_code too.
+- Audit results now include concrete next steps: which verification methodology to read for each high-risk finding (down to the topic number), whether a large repository should use a parallel workflow, and which skipped checks belong in Not covered; the methodology library is now triggered when confirming suspicious findings, not only during penetration tests — in E2E runs the methodology library and workflows had never been used.
+- Trivy uses its local vulnerability database for 7 days instead of updating over the network on every acceptance (measured in China: from a 2–5 minute stall down to 1.5 seconds); Java dependencies are resolved offline, so an unreachable Maven Central no longer fails the whole run, and the report notes that transitive dependencies may not be fully expanded.
+- Less noise from Trivy configuration results: dev containers (`.devcontainer/`) and CI configuration are excluded from delivery acceptance, and medium/low K8s hardening suggestions are shown as tips; only high-risk ones (such as running as root) must be fixed.
+- AI acceptance discipline: static acceptance does not require a successful build; build commands such as mvn / npm install run only when the user asks, always with a time limit, and a timeout is recorded as "build not verified" before moving on instead of repeatedly sleeping on dependency downloads (spring-petclinic waited 17 minutes).
+
 ## [0.21.1] - 2026-11-18
 
 ### Fixed

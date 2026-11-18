@@ -1,0 +1,332 @@
+# FinalCheck 自研 Semgrep 规则（Java / Spring / Servlet）。不用 Semgrep Registry 规则（其许可限制竞品使用）。
+# metadata.fc_check → FC 检查项；metadata.fc_kind → 规则名后缀（S2.sg-java-<kind>）。
+# 污点只在单个方法内传播（Semgrep CE 限制）。
+rules:
+  - id: java-sqli
+    languages: [java]
+    severity: ERROR
+    message: SQL 语句由请求输入拼接而成——改用 PreparedStatement 占位符 / JdbcTemplate 参数（"... WHERE id = ?", id）
+    metadata: { fc_check: S2, fc_kind: sqli }
+    mode: taint
+    pattern-sources: &java-sources
+      - pattern: (HttpServletRequest $REQ).getParameter(...)
+      - pattern: (HttpServletRequest $REQ).getParameterValues(...)
+      - pattern: (HttpServletRequest $REQ).getParameterMap()
+      - pattern: (HttpServletRequest $REQ).getHeader(...)
+      - pattern: (HttpServletRequest $REQ).getQueryString()
+      - pattern: (HttpServletRequest $REQ).getPathInfo()
+      - pattern: (HttpServletRequest $REQ).getRequestURI()
+      - pattern: (HttpServletRequest $REQ).getInputStream()
+      - pattern: (HttpServletRequest $REQ).getReader()
+      - pattern: (Cookie $CK).getValue()
+      - patterns:
+          - pattern-either:
+              - pattern-inside: '$RET $M(..., @RequestParam $T $P, ...) { ... }'
+              - pattern-inside: '$RET $M(..., @RequestParam(...) $T $P, ...) { ... }'
+              - pattern-inside: '$RET $M(..., @PathVariable $T $P, ...) { ... }'
+              - pattern-inside: '$RET $M(..., @PathVariable(...) $T $P, ...) { ... }'
+              - pattern-inside: '$RET $M(..., @RequestHeader $T $P, ...) { ... }'
+              - pattern-inside: '$RET $M(..., @RequestHeader(...) $T $P, ...) { ... }'
+              - pattern-inside: '$RET $M(..., @CookieValue $T $P, ...) { ... }'
+              - pattern-inside: '$RET $M(..., @CookieValue(...) $T $P, ...) { ... }'
+          - pattern: $P
+          # 数值型参数（Long id）已被框架转换，拼进 SQL/路径也注入不了
+          - metavariable-regex: { metavariable: $T, regex: '^(String|Object|Map<.*>|List<String>|String\[\])$' }
+      # @RequestBody 的 DTO 任何类型都算：字段（body.callbackUrl）完全由调用方决定（留出集实测漏报）
+      - patterns:
+          - pattern-either:
+              - pattern-inside: '$RET $M(..., @RequestBody $T $P, ...) { ... }'
+              - pattern-inside: '$RET $M(..., @RequestBody(...) $T $P, ...) { ... }'
+              - pattern-inside: '$RET $M(..., @ModelAttribute $T $P, ...) { ... }'
+          - pattern: $P
+      # Spring 隐式绑定：映射方法里不加注解的 String 参数同样来自请求（java-sec-code 实测大量漏报）
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  @$MAP(...)
+                  $RET $M(..., String $P, ...) { ... }
+              - pattern-inside: |
+                  @$MAP
+                  $RET $M(..., String $P, ...) { ... }
+          - metavariable-regex: { metavariable: $MAP, regex: '^(RequestMapping|GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping)$' }
+          - pattern: $P
+    pattern-sanitizers: &java-num-sanitizers
+      - pattern-either:
+          - pattern: Integer.parseInt(...)
+          - pattern: Integer.valueOf(...)
+          - pattern: Long.parseLong(...)
+          - pattern: Long.valueOf(...)
+          - pattern: UUID.fromString(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: (Statement $S).executeQuery($Q)
+              - pattern: (Statement $S).execute($Q, ...)
+              - pattern: (Statement $S).executeUpdate($Q, ...)
+              - pattern: (Statement $S).addBatch($Q)
+              - pattern: (Connection $C).prepareStatement($Q, ...)
+              - pattern: (Connection $C).prepareCall($Q, ...)
+              - pattern: (JdbcTemplate $J).$METHOD($Q, ...)
+              - pattern: (NamedParameterJdbcTemplate $J).$METHOD($Q, ...)
+              - pattern: (EntityManager $EM).createQuery($Q, ...)
+              - pattern: (EntityManager $EM).createNativeQuery($Q, ...)
+              - pattern: (Session $SS).createQuery($Q, ...)
+              - pattern: (Session $SS).createNativeQuery($Q, ...)
+              - pattern: (Session $SS).createSQLQuery($Q)
+          - focus-metavariable: $Q
+
+  - id: java-cmdi
+    languages: [java]
+    severity: ERROR
+    message: 系统命令由请求输入拼接而成——不要拼字符串交给 Runtime.exec / sh -c，参数逐个传入并做白名单校验
+    metadata: { fc_check: S2, fc_kind: cmdi }
+    mode: taint
+    pattern-sources: *java-sources
+    pattern-sanitizers: *java-num-sanitizers
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: (Runtime $RT).exec($X, ...)
+              - pattern: Runtime.getRuntime().exec($X, ...)
+              - pattern: new ProcessBuilder($X, ...)
+              - pattern: (ProcessBuilder $PB).command($X, ...)
+          - focus-metavariable: $X
+      # 经 shell 执行：sh -c 后面那段整条命令才是注入点（留出集实测漏报）
+      - patterns:
+          - pattern-either:
+              - pattern: new ProcessBuilder("$SH", "-c", $X, ...)
+              - pattern: (ProcessBuilder $PB).command("$SH", "-c", $X, ...)
+              - pattern: Runtime.getRuntime().exec(new String[]{"$SH", "-c", $X, ...})
+          - metavariable-regex: { metavariable: $SH, regex: '^(/bin/|/usr/bin/)?(sh|bash|zsh|cmd(\.exe)?|powershell(\.exe)?)$' }
+          - focus-metavariable: $X
+
+  - id: java-path-traversal
+    languages: [java]
+    severity: ERROR
+    message: 文件路径由请求输入拼接而成，可被 ../ 穿越——用 FilenameUtils.getName / Path.getFileName 取文件名，或 normalize 后校验前缀
+    metadata: { fc_check: S2, fc_kind: path-traversal }
+    mode: taint
+    pattern-sources: *java-sources
+    pattern-sanitizers:
+      - pattern-either:
+          - pattern: FilenameUtils.getName(...)
+          - pattern: (Path $PP).getFileName()
+          - pattern: Paths.get(...).getFileName()
+          - pattern: new File(...).getName()
+          - pattern: Integer.parseInt(...)
+          - pattern: UUID.fromString(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: new File($P)
+              - pattern: new File($D, $P)
+              - pattern: new FileInputStream($P)
+              - pattern: new FileOutputStream($P, ...)
+              - pattern: new FileReader($P)
+              - pattern: new FileWriter($P, ...)
+              - pattern: new RandomAccessFile($P, ...)
+              - pattern: Paths.get($P, ...)
+              - pattern: Path.of($P, ...)
+              - pattern: (Path $BASE).resolve($P)
+          - focus-metavariable: $P
+
+  - id: java-ssrf
+    languages: [java]
+    severity: ERROR
+    message: 服务端请求的目标 URL 完全由请求输入决定（SSRF）——只允许白名单域名，禁止内网地址
+    metadata: { fc_check: S2, fc_kind: ssrf }
+    mode: taint
+    pattern-sources: *java-sources
+    pattern-sanitizers:
+      - patterns:
+          - pattern: '"$PFX" + $X'
+          - metavariable-regex: { metavariable: $PFX, regex: '^https?://[^/]+/' }
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: new URL($U)
+              - pattern: URI.create($U)
+              - pattern: new URI($U)
+              - pattern: (RestTemplate $RT).$METHOD($U, ...)
+              - pattern: (WebClient $WC).get().uri($U, ...)
+              - pattern: (WebClient $WC).post().uri($U, ...)
+              - pattern: new HttpGet($U)
+              - pattern: new HttpPost($U)
+          - focus-metavariable: $U
+
+  - id: java-open-redirect
+    languages: [java]
+    severity: WARNING
+    message: 跳转地址直接取自请求输入（开放重定向）——只允许站内相对路径或白名单域名
+    metadata: { fc_check: S2, fc_kind: open-redirect }
+    mode: taint
+    pattern-sources: *java-sources
+    pattern-sinks:
+      - patterns:
+          - pattern: (HttpServletResponse $RESP).sendRedirect($U)
+          - focus-metavariable: $U
+      - patterns:
+          - pattern: '"redirect:" + $U'
+          - focus-metavariable: $U
+
+  - id: java-xss
+    languages: [java]
+    severity: ERROR
+    message: 请求输入未转义就写进 HTML 响应（反射型 XSS）——用模板引擎自动转义，或 HtmlUtils.htmlEscape / Encode.forHtml
+    metadata: { fc_check: S2, fc_kind: xss }
+    mode: taint
+    pattern-sources: *java-sources
+    pattern-sanitizers:
+      - pattern-either:
+          - pattern: HtmlUtils.htmlEscape(...)
+          - pattern: StringEscapeUtils.escapeHtml4(...)
+          - pattern: Encode.forHtml(...)
+          - pattern: ESAPI.encoder().encodeForHTML(...)
+          - pattern: Integer.parseInt(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: (HttpServletResponse $RESP).getWriter().$W($X)
+              - pattern: (PrintWriter $PW).$W($X)
+          - metavariable-regex: { metavariable: $W, regex: '^(write|print|println|append|format|printf)$' }
+          - focus-metavariable: $X
+
+  - id: java-xss-response-body
+    languages: [java]
+    severity: WARNING
+    message: 接口把请求输入原样作为响应体返回（反射型 XSS，浏览器按 text/html 渲染时可执行脚本）——返回前做 HTML 转义，或固定 Content-Type 为 application/json
+    metadata: { fc_check: S2, fc_kind: xss }
+    mode: taint
+    pattern-sources: *java-sources
+    pattern-sanitizers:
+      - pattern-either:
+          - pattern: HtmlUtils.htmlEscape(...)
+          - pattern: StringEscapeUtils.escapeHtml4(...)
+          - pattern: Encode.forHtml(...)
+          - pattern: Integer.parseInt(...)
+          - pattern: Long.parseLong(...)
+      # 只认「原样/拼接后返回」：经过其它方法加工的返回值（编码函数、文件内容、命令输出、HTTP 响应）
+      # 不按 XSS 报（java-sec-code 实测：encode(xss) / getImgBase64(path) 被误报）。取参方法本身除外
+      - patterns:
+          - pattern-either:
+              - pattern: $F(...)
+              - pattern: $O.$F(...)
+          - metavariable-regex: { metavariable: $F, regex: '^(?!(toString|trim|strip|valueOf|format|concat|substring|toLowerCase|toUpperCase|replace|replaceAll|get|getParameter|getParameterValues|getParameterMap|getHeader|getQueryString|getPathInfo|getRequestURI|getInputStream|getReader|getValue)$)' }
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  @RestController
+                  class $C { ... }
+              - pattern-inside: |
+                  @ResponseBody
+                  $RET $M(...) { ... }
+          - pattern-inside: |
+              String $M(...) { ... }
+          - pattern: return $X;
+          - focus-metavariable: $X
+          # 以 "redirect:"/"forward:" 开头的是跳转（由 open-redirect 规则管）
+          - pattern-not: return "..." + $Y;
+
+  - id: java-expression-injection
+    languages: [java]
+    severity: ERROR
+    message: 请求输入被当作表达式/脚本执行（SpEL / Groovy / ScriptEngine / OGNL / MVEL / 模板），可直接远程执行代码——不要执行用户提供的表达式
+    metadata: { fc_check: S2, fc_kind: code-injection }
+    mode: taint
+    pattern-sources: *java-sources
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: (ExpressionParser $EP).parseExpression($X, ...)
+              - pattern: (SpelExpressionParser $EP).parseExpression($X, ...)
+              - pattern: new SpelExpressionParser().parseExpression($X, ...)
+              - pattern: (GroovyShell $G).evaluate($X, ...)
+              - pattern: (GroovyShell $G).parse($X, ...)
+              - pattern: new GroovyShell().evaluate($X, ...)
+              - pattern: (ScriptEngine $SE).eval($X, ...)
+              - pattern: Ognl.getValue($X, ...)
+              - pattern: Ognl.parseExpression($X)
+              - pattern: MVEL.eval($X, ...)
+              - pattern: Velocity.evaluate($CTX, $W, $TAG, $X)
+              - pattern: (ExpressRunner $ER).execute($X, ...)
+          - focus-metavariable: $X
+
+  - id: java-deserialization-tainted
+    languages: [java]
+    severity: ERROR
+    message: 请求输入进入不安全的反序列化（YAML/XStream/Fastjson autoType）——可构造对象链远程执行代码，改用安全构造器或白名单类型
+    metadata: { fc_check: S2, fc_kind: deserialization }
+    mode: taint
+    pattern-sources: *java-sources
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: (Yaml $Y).load($X)
+              - pattern: new Yaml().load($X)
+              - pattern: (XStream $XS).fromXML($X, ...)
+              - pattern: JSON.parseObject($X)
+              - pattern: JSON.parse($X)
+          - focus-metavariable: $X
+
+  - id: java-deserialization
+    languages: [java]
+    severity: ERROR
+    message: 对外部输入做 Java 原生反序列化（ObjectInputStream.readObject）——可被构造 gadget 链远程执行代码，改用 JSON 并限定类型
+    metadata: { fc_check: S2, fc_kind: deserialization }
+    patterns:
+      - pattern-either:
+          - pattern: (ObjectInputStream $O).readObject()
+          - pattern: (ObjectInputStream $O).readUnshared()
+          - pattern: (XMLDecoder $X).readObject()
+          - pattern: new Yaml().load(...)
+      - pattern-not-inside: |
+          class $C extends ObjectInputStream { ... }
+
+  - id: java-xxe
+    languages: [java]
+    severity: ERROR
+    message: XML 解析器未禁用外部实体（XXE）——setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
+    metadata: { fc_check: S2, fc_kind: xxe }
+    patterns:
+      - pattern-either:
+          - pattern: $F = DocumentBuilderFactory.newInstance();
+          - pattern: $T $F = DocumentBuilderFactory.newInstance();
+          - pattern: $F = SAXParserFactory.newInstance();
+          - pattern: $T $F = SAXParserFactory.newInstance();
+          - pattern: $F = XMLInputFactory.newInstance();
+          - pattern: $T $F = XMLInputFactory.newInstance();
+      - pattern-not-inside: |
+          $T $F = $FAC.newInstance();
+          ...
+          $F.setFeature(...);
+      - pattern-not-inside: |
+          $F = $FAC.newInstance();
+          ...
+          $F.setFeature(...);
+      - pattern-not-inside: |
+          $T $F = $FAC.newInstance();
+          ...
+          $F.setProperty(...);
+      - pattern-not-inside: |
+          $T $F = $FAC.newInstance();
+          ...
+          $F.setExpandEntityReferences(false);
+
+  - id: java-weak-password-hash
+    languages: [java]
+    severity: ERROR
+    message: 密码用 MD5/SHA1 摘要——改用 BCryptPasswordEncoder / Argon2PasswordEncoder
+    metadata: { fc_check: S8, fc_kind: weak-password-hash }
+    patterns:
+      - pattern-either:
+          - patterns:
+              - pattern: MessageDigest.getInstance("$ALG")
+              - metavariable-regex: { metavariable: $ALG, regex: '(?i)^(md5|md2|sha-?1)$' }
+          - pattern: DigestUtils.md5Hex(...)
+          - pattern: DigestUtils.sha1Hex(...)
+          - pattern: DigestUtils.md5(...)
+          - pattern: DigestUtils.sha1(...)
+      - pattern-inside: |
+          $RET $M(..., $PT $PASS, ...) { ... }
+      - metavariable-regex: { metavariable: $PASS, regex: '(?i).*(pass|pwd)' }

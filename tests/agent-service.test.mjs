@@ -51,7 +51,7 @@ test('agent: tool-use 循环——先调工具再作答', async () => {
 
 test('agent: 网关 500 返回人话错误', async () => {
   const mockFetch = async () => new Response('boom', { status: 500 });
-  const out = await runAgentTurn({ config: { baseUrl: 'https://mock.example/v1', apiKey: 'k', model: 'm' }, messages: [], tools: {}, fetchImpl: mockFetch });
+  const out = await runAgentTurn({ config: { baseUrl: 'https://mock.example/v1', apiKey: 'k', model: 'm' }, messages: [], tools: {}, fetchImpl: mockFetch, retryBaseMs: 1 });
   assert.match(out.error, /HTTP 500/);
 });
 
@@ -704,7 +704,7 @@ test('agent: 收尾请求遇到 503 会重试，已有证据不丢', async () =>
     return sse([{ choices: [{ delta: { content: '结论：证据已在时间线里' } }] }]);
   };
   const out = await runAgentTurn({
-    config: cfg({ maxTurnTokens: 10 }),
+    config: cfg({ maxTurnTokens: 10 }), retryBaseMs: 1,
     messages: [{ role: 'user', content: '跑' }],
     tools: { fake_tool: async () => ({ ok: true }) },
     fetchImpl: mockFetch,
@@ -751,4 +751,21 @@ test('agent: 空回复补救最多两次——第二次仍空就认输，不无�
   assert.equal(out.answer, '(空回复)');
   assert.equal(out.emptyReply, true, '空回复要带显式标记，上层据此归因 EMPTY_CONTENT');
   assert.equal(out.roundsUsed, 3, '记录主循环轮数，便于定位 length 截断 / 模型自己停');
+});
+
+test('agent: Cloudflare 524（源站超时）按网关抖动重试，不直接结束整轮（E2E 2026-11-18 go-admin 实测）', async () => {
+  const events = [];
+  let calls = 0;
+  const mockFetch = async () => {
+    calls += 1;
+    if (calls === 1) return new Response('<html>A timeout occurred</html>', { status: 524 });
+    return sse([{ choices: [{ delta: { content: '结论：重试后拿到了' } }] }]);
+  };
+  const out = await runAgentTurn({
+    config: cfg(), messages: [{ role: 'user', content: '跑' }], tools: {},
+    fetchImpl: mockFetch, retryBaseMs: 1, onEvent: (ev) => events.push(ev)
+  });
+  assert.equal(out.error, undefined, JSON.stringify(out.error));
+  assert.match(out.answer, /重试后拿到了/);
+  assert.ok(events.some((e) => e.kind === 'retry'));
 });
