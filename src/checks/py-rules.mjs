@@ -165,7 +165,9 @@ export async function checkPyRules(projectDir, { excludes = [], includeFixtures 
   const pyFiles = files.filter((f) => /\.py$/i.test(f));
   for (const f of pyFiles) {
     const { file, text } = await readRel(projectDir, f);
-    const lines = text.split('\n');
+    // CRLF 必须先归一：行尾残留的 \r 会让 `= (.+)$` 这类赋值匹配全部失败，
+    // 污点跟踪整条断掉（Windows 检出的项目，路径穿越/SSRF 静默漏报——CI 实测）
+    const lines = text.split(/\r?\n/);
     const taint = taintByLine(lines);
     for (let i = 0; i < lines.length; i++) {
       if (/finalcheck:allow/.test(lines[i])) continue;

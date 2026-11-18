@@ -110,7 +110,7 @@ export async function checkAuthz(projectDir, { tier, excludes = [], routeResult 
       warnings.push('路由条目缺少 file 字段，S7 跳过该条');
       continue;
     }
-    const text = await readFile(path.join(projectDir, file), 'utf8').catch(() => null);
+    const text = (await readFile(path.join(projectDir, file), 'utf8').catch(() => null))?.replace(/\r\n/g, '\n') ?? null; // CRLF 归一
     if (text == null) {
       warnings.push(`无法读取路由文件 ${file}，S7 跳过该文件`);
       continue;

@@ -194,7 +194,7 @@ export async function extractPyRoutes(projectDir, { excludes = [], includeFixtur
     const rel0 = path.relative(projectDir, abs).replace(/\\/g, '/');
     // 教程/测试/示例目录里的路由是演示代码，不进鉴权面（跳过数记入 warnings 保持透明）
     if (rel0.split('/').some((seg) => NON_PRODUCT_DIRS.has(seg.toLowerCase()))) { skippedNonProduct++; continue; }
-    const text = await readFile(abs, 'utf8').catch(() => null);
+    const text = (await readFile(abs, 'utf8').catch(() => null))?.replace(/\r\n/g, '\n') ?? null; // CRLF 归一
     if (text == null) continue;
     scannedFiles++;
     const rel = rel0;

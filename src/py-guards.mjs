@@ -26,7 +26,7 @@ export async function collectPyGuards(rootDir, relFiles) {
   const decorators = new Set();
   const aliases = new Set();
   for (const rel of relFiles) {
-    const text = await readFile(path.join(rootDir, rel), 'utf8').catch(() => null);
+    const text = (await readFile(path.join(rootDir, rel), 'utf8').catch(() => ''))?.replace(/\r\n/g, '\n'); // CRLF 归一（行尾 \r 会让 $ 锚点失配）
     if (!text) continue;
     // 依赖别名：X = Annotated[..., Depends(dep)]（也认 Security(dep)）
     for (const m of text.matchAll(/^(\w+)\s*(?::\s*\w+\s*)?=\s*Annotated\s*\[[^\n]*?\b(?:Depends|Security)\s*\(\s*([\w.]+)/gm)) {

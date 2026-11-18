@@ -121,3 +121,23 @@ test('S6：Python webhook 有 hmac 验签就不报，没验签照报（以前 Py
     assert.equal(hit, expectHit, name);
   }
 });
+
+test('CRLF 换行（Windows 检出）：规则、守卫识别、Django 路由结果与 LF 完全一致', async (t) => {
+  const { readdirSync, readFileSync, statSync } = await import('node:fs');
+  const toCrlf = (src, dst) => {
+    for (const name of readdirSync(src)) {
+      const s = path.join(src, name); const d = path.join(dst, name);
+      if (statSync(s).isDirectory()) { mkdirSync(d, { recursive: true }); toCrlf(s, d); continue; }
+      writeFileSync(d, readFileSync(s, 'utf8').replace(/\r?\n/g, '\r\n'));
+    }
+  };
+  for (const name of ['flask-shop', 'django-blog', 'holdout-flask-bp']) {
+    const dir = mkdtempSync(path.join(tmpdir(), 'fc-crlf-bench-'));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    toCrlf(bench(name), dir);
+    const sig = (r) => r.findings.map((f) => `${f.rule}@${f.file}:${f.line}`).sort();
+    assert.deepEqual(sig(await checkPyRules(dir)), sig(await checkPyRules(bench(name))), `${name} 规则`);
+    const routes = async (d) => (await extractPyRoutes(d)).routes.map((r) => `${r.method} ${r.path} ${r.file}:${r.line} ${r.hasGuard}`).sort();
+    assert.deepEqual(await routes(dir), await routes(bench(name)), `${name} 路由/守卫`);
+  }
+});

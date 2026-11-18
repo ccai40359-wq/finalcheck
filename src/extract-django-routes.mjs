@@ -173,7 +173,8 @@ export async function extractDjangoRoutes(rootDir, pyFilesRel, { isGuard = () =>
   const fileSet = new Set(pyFilesRel);
   const textCache = new Map();
   const read = async (rel) => {
-    if (!textCache.has(rel)) textCache.set(rel, await readFile(path.join(rootDir, rel), 'utf8').catch(() => null));
+    // CRLF 归一：Windows 检出的项目行尾带 \r，会让按行的正则（$ 锚点、缩进判定）失配
+    if (!textCache.has(rel)) textCache.set(rel, (await readFile(path.join(rootDir, rel), 'utf8').catch(() => null))?.replace(/\r\n/g, '\n') ?? null);
     return textCache.get(rel);
   };
   const urlFiles = [];

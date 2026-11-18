@@ -6,6 +6,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.21.1] - 2026-11-18
+
+### Fixed
+
+- In Python projects with Windows (CRLF) line endings, tracking of "this variable came from the request" broke, so path traversal and SSRF were silently missed; the Python rules, guard recognition and Django route parsing added in 0.21.0 now normalize line endings before analysis (caught on GitHub CI's Windows runner).
+
 ## [0.21.0] - 2026-11-18
 
 The Python accuracy release: Django projects can be fully audited for the first time, and Python security checks move from "Bandit only" to dedicated rules plus graded Bandit results. It also fixes several places in context compaction, the task ledger and the edit tool that failed silently.
