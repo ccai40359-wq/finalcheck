@@ -143,6 +143,22 @@
       "hash": "f82e50a54b7ed9f4017addf321cb8f7cf79c35d686085896e07ed3ba9aadff38",
       "reason": "测试用合成密钥/夹具，不是真实凭据",
       "expires": "2027-01-01"
+    },
+    {
+      "rule": "S3.secret-literal",
+      "file": "tests/benchmark/python/flask-shop/shop/app.py",
+      "line": 18,
+      "hash": "9bcc5a5dbe6dd4023eeead0021dd425f09a618e42511f4f259c7305e228184ca",
+      "reason": "Python 准确率基准里故意埋的假密钥（# EXPECT 标记的检测目标），不是真实凭据",
+      "expires": "2027-01-01"
+    },
+    {
+      "rule": "S3.secret-literal",
+      "file": "tests/benchmark/python/django-blog/config/settings.py",
+      "line": 6,
+      "hash": "fe3043b3f25deb565c63bd308b82d82a0a187b20d7fca691a488e3e5c40f621b",
+      "reason": "Python 准确率基准里故意埋的假密钥（# EXPECT 标记的检测目标），不是真实凭据",
+      "expires": "2027-01-01"
     }
   ]
 }

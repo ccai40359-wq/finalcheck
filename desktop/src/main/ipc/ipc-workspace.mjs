@@ -75,10 +75,22 @@ export function registerWorkspaceIpc({ ipcMain, getWin, getDataRoot, imageMime, 
     // 而跨轮摘要那边用的是 slice(0, maxChars)（保头丢尾）—— 同一上限、两个相反口径，
     // 必有一个是错的。现在整段交给 summarizeWithProvider，超长时它会分块逐段摘要再合并，
     // 头尾都覆盖。
-    const text = (s.messages || [])
-      .filter((m) => m.role === 'user' || m.role === 'assistant')
-      .map((m) => `[${m.role}] ${String(m.content || '')}`)
-      .join('\n');
+    // 已有会话摘要时只压「旧摘要 + 切分点之后的新消息」（2026-11-17 优化）：
+    // 旧实现每次 /compact 都把全部历史从头再摘要一遍，会话越长越慢、越贵，越容易超时。
+    // 切分点之前的内容已经在旧摘要里，原文也仍在库里（压缩只改发给模型的视图）。
+    const prevCut = s.summary ? (Number(s.summaryAt) || 0) : 0;
+    const included = (s.messages || []).filter((m) => (m.role === 'user' || m.role === 'assistant')
+      && !(prevCut > 0 && Number.isFinite(Number(m?.at)) && Number(m.at) < prevCut));
+    const text = [
+      ...(prevCut > 0 ? [`[此前对话摘要]\n${String(s.summary)}`] : []),
+      ...included.map((m) => `[${m.role}] ${String(m.content || '')}`)
+    ].join('\n');
+    // 切分点 = 摘要实际覆盖到的最后一条消息时间 + 1（2026-11-17 修复）。
+    // 旧实现用「摘要写入时刻」切：压缩要跑几十秒，期间新到的消息时间早于写入时刻、
+    // 却不在摘要输入里 → 下一轮既不在摘要里也不在历史里，凭空消失。
+    const startedAt = Date.now();
+    const lastAt = included.reduce((mx, m) => Math.max(mx, Number(m?.at) || 0), 0);
+    const cutAt = lastAt > 0 ? lastAt + 1 : (prevCut > 0 ? prevCut : startedAt);
     if (!text.trim()) return { error: t('没有可压缩的对话') };
     const key = String(sessionId ?? '');
     const ctl = new AbortController();
@@ -86,7 +98,7 @@ export function registerWorkspaceIpc({ ipcMain, getWin, getDataRoot, imageMime, 
     emitCompact(sessionId, { kind: 'compact-start', scope: 'manual', before: text.length });
     try {
       const summary = await store.summarizeWithProvider(prov, text, { signal: ctl.signal });
-      await sessions.saveSummary(sessionId, summary);
+      await sessions.saveSummary(sessionId, summary, { cutAt });
       await sessions.appendNotice(sessionId, t('上下文已压缩：{before} 字符 → 摘要 {after} 字符；后续请求带摘要 + 压缩之后新增的全部消息（历史继续正常累积）。', { before: text.length, after: summary.length }), 'compact');
       emitCompact(sessionId, { kind: 'compact-end', scope: 'manual', before: text.length, after: summary.length });
       return { ok: true, summary, before: text.length, after: summary.length };

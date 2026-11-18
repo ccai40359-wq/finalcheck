@@ -55,7 +55,9 @@ export async function checkPassword(projectDir, { tier, excludes = [], includeFi
       const line = lines[i];
       if (line.length > 1000) continue;
       if (line.includes('finalcheck:allow')) continue;
-      if (pwContext && (RE_CREATEHASH.test(line) || RE_WEAK_CALL.test(line))) {
+      // usedforsecurity=False 是 Python 标准的「非安全用途」声明（ETag/缓存键/去重），Bandit B324 也认它；
+      // 文件级口令上下文不能把同文件里算 ETag 的 md5 也打成口令哈希（基准实测误报）。
+      if (pwContext && (RE_CREATEHASH.test(line) || RE_WEAK_CALL.test(line)) && !/usedforsecurity\s*=\s*False/.test(line)) {
         push('S8.weak-hash', '使用黑名单哈希算法（MD5/SHA1）处理口令——改用 bcrypt/argon2 加盐哈希', i);
       }
       if (RE_PLAIN_CMP.test(line)) {

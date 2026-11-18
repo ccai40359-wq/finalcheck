@@ -16,12 +16,40 @@ const CHECK_MAP = {
   B303: 'S8', B324: 'S8',
 };
 const SEVERITY_MAP = { HIGH: 'high', MEDIUM: 'medium', LOW: 'low' };
+// 只是「提醒你注意」的规则：导入了 pickle/subprocess（B4xx 黑名单导入）、用了 assert（B101）、
+// 列表参数调用子进程（B603）、命令没写绝对路径（B607）——本身不是漏洞，真正的危险调用另有规则报。
+const ADVISORY_TESTS = new Set(['B101', 'B403', 'B404', 'B405', 'B406', 'B407', 'B408', 'B409', 'B410', 'B411', 'B412', 'B413', 'B603', 'B607']);
+
+// 2026-11-17 基准实测：以前所有 Bandit 结果一律 force:'card'，LOW 级提醒也算卡项进结论
+// （Requests 的 16 条「S2」大多是测试辅助代码以外的 assert）。按 Bandit 自己给的分级落档：
+//   提醒类 / LOW 严重度 → tip（列出但不计入结论）；LOW 置信度 → check（人工复核）；其余 card。
+function banditForce(item) {
+  const sev = String(item.issue_severity || '').toUpperCase();
+  const conf = String(item.issue_confidence || '').toUpperCase();
+  if (ADVISORY_TESTS.has(String(item.test_id))) return 'tip';
+  // 硬编码口令/密钥（B105/B106/B107）Bandit 定为 LOW 严重度，但 S3 是各档都认的硬卡：不降档
+  if (/^B10[567]$/.test(String(item.test_id))) return conf === 'LOW' ? 'check' : 'card';
+  if (sev === 'LOW') return 'tip';
+  if (conf === 'LOW') return 'check';
+  return 'card';
+}
 const PY_CANDIDATES = ['python', 'python3', 'py'];
 const EXCLUDE_DIRS = ['venv', '.venv', 'env', 'node_modules', '.git', 'dist', 'build', 'coverage', '.finalcheck'];
 const SANITIZE_RE = /(['"])[^'"]{6,}\1/g;
 
 function mask(raw) {
   return String(raw || '').replace(SANITIZE_RE, (m, q) => `${q}***${q}`).slice(0, 120);
+}
+
+const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+const hasText = (value) => typeof value === 'string' && value.trim().length > 0;
+function validBanditResult(item) {
+  return isObject(item) && /^B\d{3}$/.test(item.test_id)
+    && hasText(item.filename) && Number.isInteger(item.line_number) && item.line_number > 0
+    && ['HIGH', 'MEDIUM', 'LOW', 'UNDEFINED'].includes(item.issue_severity)
+    && hasText(item.issue_text)
+    && (item.code === undefined || typeof item.code === 'string')
+    && (item.test_name === undefined || typeof item.test_name === 'string');
 }
 
 // python + bandit 可用性：找到第一个能跑 `-m bandit --version` 的解释器并缓存。
@@ -59,6 +87,7 @@ export function mapBanditResults(json, { skipExisting = [] } = {}) {
   const skipSet = new Set(skipExisting.map((f) => `${f.checkId}|${String(f.file).replace(/\\/g, '/')}|${f.line}`));
   const findings = [];
   for (const item of results) {
+    if (!validBanditResult(item)) continue;
     const testId = String(item.test_id || '');
     const checkId = CHECK_MAP[testId] || 'S2';
     const file = String(item.filename || '').replace(/\\/g, '/');
@@ -68,7 +97,7 @@ export function mapBanditResults(json, { skipExisting = [] } = {}) {
     findings.push({
       checkId,
       severity: SEVERITY_MAP[String(item.issue_severity || '').toUpperCase()] || 'high',
-      force: 'card',
+      force: banditForce(item),
       file,
       line,
       rule: `bandit-${testId}`,
@@ -81,7 +110,7 @@ export function mapBanditResults(json, { skipExisting = [] } = {}) {
 }
 
 // 主入口：返回 { ran, findings, warnings, coverageGap }。
-// ran=false 时 coverageGap 说明缺什么；ran=true 时 findings 可直接并入各 checkId。
+// ran 只表示完整扫描；部分扫描的已确认 findings 仍返回，但同时保留 coverageGap。
 export async function runPyBandit(projectDir, { excludes = [], includeFixtures = false, tooling = null, runner = null, minFiles = 1, gapThreshold = 5, tier = 'L2' } = {}) {
   const warnings = [];
   const pyCount = await countPyProductFiles(projectDir, excludes, includeFixtures);
@@ -95,12 +124,18 @@ export async function runPyBandit(projectDir, { excludes = [], includeFixtures =
       : null;
     return { ran: false, findings: [], warnings, coverageGap, pyCount };
   }
-  const run = runner
-    ? await runner(projectDir)
-    : await runProcess(resolved.pythonBin, ['-m', 'bandit', '-r', projectDir, '-q', '-f', 'json', '-x', EXCLUDE_DIRS.join(',')], { timeoutMs: 180000, maxOut: 64 * 1024 * 1024 });
-  // Bandit 语义：exit 0 = 没发现问题，exit 1 = 发现了问题（JSON 仍有效）。
-  // 所以「有 JSON 就解析」，只有真的没输出/崩溃才记缺口——别把"发现了问题"当成"运行失败"。
-  const hasJson = run.stdout && run.stdout.trim().startsWith('{');
+  let run;
+  try {
+    run = (runner
+      ? await runner(projectDir)
+      : await runProcess(resolved.pythonBin, ['-m', 'bandit', '-r', projectDir, '-q', '-f', 'json', '-x', EXCLUDE_DIRS.join(',')], { timeoutMs: 180000, maxOut: 64 * 1024 * 1024 })) || {};
+  } catch (error) { run = { status: null, error }; }
+  // exit 1 是发现漏洞；exit 2/超时/启动错误即使输出 JSON，也不能证明完整覆盖。
+  const incomplete = [];
+  if (![0, 1].includes(run.status) || run.error || run.timedOut || run.timed_out) {
+    incomplete.push(`运行失败（exit ${run.status ?? 'null'}${run.error ? `：${String(run.error.message || run.error).slice(0, 160)}` : ''}）`);
+  }
+  const hasJson = typeof run.stdout === 'string' && run.stdout.trim().startsWith('{');
   if (!hasJson) {
     return {
       ran: false, findings: [], warnings,
@@ -114,13 +149,22 @@ export async function runPyBandit(projectDir, { excludes = [], includeFixtures =
   } catch (e) {
     return { ran: false, findings: [], warnings: [`Bandit 输出解析失败：${e.message}`], coverageGap: 'Bandit 输出无法解析，Python SAST 未覆盖', pyCount };
   }
+  if (!isObject(parsed) || !Array.isArray(parsed.results) || !Array.isArray(parsed.errors)) {
+    incomplete.push('输出缺少合法 results/errors 数组');
+  }
+  const results = Array.isArray(parsed?.results) ? parsed.results : [];
+  if (results.some((item) => !validBanditResult(item))) incomplete.push('results 含畸形条目');
+  if (Array.isArray(parsed?.errors) && parsed.errors.length) {
+    incomplete.push(`扫描 errors 非空（${parsed.errors.length} 个文件未完成）`);
+  }
   // 路径转相对：Bandit 给绝对路径（-r 指向项目根时 filename 为绝对或相对，取决于调用）
   const rootAbs = path.resolve(projectDir).replace(/\\/g, '/').toLowerCase();
-  for (const f of parsed.results || []) {
+  const validResults = results.filter(validBanditResult).map((item) => ({ ...item }));
+  for (const f of validResults) {
     const abs = String(f.filename || '').replace(/\\/g, '/');
-    if (abs.toLowerCase().startsWith(rootAbs)) f.filename = abs.slice(rootAbs.length).replace(/^\//, '');
+    if (abs.toLowerCase().startsWith(`${rootAbs}/`)) f.filename = abs.slice(rootAbs.length + 1);
   }
-  const findings = mapBanditResults(parsed);
+  const findings = mapBanditResults({ results: validResults });
   // 夹具豁免口径与 audit 一致：非产品路径（tests/examples/...）不进产品结论
   const product = findings.filter((f) => !isNonProductPath(f.file));
   const skipped = findings.length - product.length;
@@ -129,5 +173,6 @@ export async function runPyBandit(projectDir, { excludes = [], includeFixtures =
   if (String(tier || 'L2').toUpperCase() === 'L1') {
     for (const f of product) if (f.checkId !== 'S3') f.force = 'tip';
   }
-  return { ran: true, findings: product, warnings, coverageGap: null, pyCount };
+  const coverageGap = incomplete.length ? `Bandit 未完成：${incomplete.join('；')}，Python SAST 未完整覆盖` : null;
+  return { ran: !coverageGap, findings: product, warnings, coverageGap, pyCount };
 }

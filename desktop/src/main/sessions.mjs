@@ -1177,18 +1177,27 @@ async function sqliteRewindToUserTurn(id, keepUserTurns) {
   });
 }
 
-async function sqliteSaveSummary(id, summary) {
+// 摘要切分点：调用方给了 cutAt（摘要实际覆盖到的最后一条消息时间 + 1）就用它；
+// 没给才退回「写入时刻」（旧行为）。2026-11-17 修复：压缩要跑几十秒，期间新到的消息
+// 时间早于写入时刻、却不在摘要里 —— 旧实现按写入时刻切，这些消息既不在摘要里也不在历史里。
+function summaryCutOf(opts) {
+  const c = Number(opts?.cutAt);
+  return Number.isFinite(c) && c > 0 ? c : Date.now();
+}
+
+async function sqliteSaveSummary(id, summary, opts = {}) {
   return withQueue(id, async () => {
     const { db } = await openDb(dirFor(id));
     requireSession(db, id);
     const now = Date.now();
+    const cut = summaryCutOf(opts);
     const tx = db.transaction(() => {
       setMeta(db, 'summary:' + id, String(summary || ''));
-      setMeta(db, 'summaryAt:' + id, String(now));
+      setMeta(db, 'summaryAt:' + id, String(cut));
       db.prepare(SQL.touch).run(now, id);
     });
     tx();
-    return { id, summaryAt: now };
+    return { id, summaryAt: cut };
   });
 }
 
@@ -1560,11 +1569,11 @@ async function jsonRewindToUserTurn(id, keepUserTurns) {
   });
 }
 
-async function jsonSaveSummary(id, summary) {
+async function jsonSaveSummary(id, summary, opts = {}) {
   return withQueue(id, async () => {
     const s = await jsonLoadSession(id);
     s.summary = String(summary || '');
-    s.summaryAt = Date.now();
+    s.summaryAt = summaryCutOf(opts);
     s.updatedAt = Date.now();
     await atomicWrite(fileOf(s.id), JSON.stringify(s));
     return { id: s.id, summaryAt: s.summaryAt };
@@ -1836,11 +1845,12 @@ export async function rewindToUserTurn(id, keepUserTurns) {
  * 保存会话摘要（上下文压缩用）。
  * @param {string} id
  * @param {string} summary
+ * @param {{cutAt?:number}} [opts] cutAt：摘要覆盖到的最后一条消息时间 + 1（切分点）
  * @returns {Promise<{id:string, summaryAt:number}>}
  */
-export async function saveSummary(id, summary) {
+export async function saveSummary(id, summary, opts = {}) {
   if (!OK_ID.test(id)) throw new Error('非法会话 ID');
-  return useSqliteStore() ? sqliteSaveSummary(id, summary) : jsonSaveSummary(id, summary);
+  return useSqliteStore() ? sqliteSaveSummary(id, summary, opts) : jsonSaveSummary(id, summary, opts);
 }
 
 /**

@@ -15,7 +15,23 @@
 //
 // 跨项目时（规格 §4.2）：写进**被改文件所属项目**的账本，并在当前项目账本留一行交叉引用。
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
+
+// 同一账本文件的「读 → 拼 → 写」必须串行（2026-11-17 修复）：
+// 两个回合的账本写入是 fire-and-forget 并发跑的，各自读到同一份旧内容、各自数出
+// 「第 N 轮」再整份覆盖写回 —— 结果是两个「第 N 轮」或者后写的把先写的那轮整段抹掉。
+// 进程内按文件路径排队即可（账本只由主进程写）。
+const fileLocks = new Map();
+export function withFileLock(file, fn) {
+  const key = path.resolve(String(file || ''));
+  const prev = fileLocks.get(key) || Promise.resolve();
+  const run = prev.catch(() => {}).then(fn);
+  const tail = run.catch(() => {});
+  fileLocks.set(key, tail);
+  tail.then(() => { if (fileLocks.get(key) === tail) fileLocks.delete(key); });
+  return run;
+}
 
 export const LEDGER_REL = path.join('.finalcheck', 'ledger.md');
 
@@ -70,15 +86,26 @@ export async function appendRoundToLedger({ projectRoot, round }) {
   const lines = Array.isArray(round?.lines) ? round.lines : [];
   const body = lines.map((l) => (typeof l === 'string' ? l : formatLedgerLine(l))).filter(Boolean);
   if (!body.length) return { ok: true, file, skipped: true };
+  return withFileLock(file, () => appendRoundLocked(file, round, body));
+}
+
+async function appendRoundLocked(file, round, body) {
   try {
     await mkdir(path.dirname(file), { recursive: true });
     let existing = '';
     try { existing = await readFile(file, 'utf8'); } catch { /* 首次 */ }
-    // 幂等指纹：标题 + 首行 + 末行（同一轮重试时这三样一致）
-    const fingerprint = `"${String(round?.title || '').slice(0, 60)}"|${body[0]}|${body[body.length - 1]}`;
-    if (existing.includes(fingerprint)) return { ok: true, file, skipped: true };
+    // 幂等指纹：调用方给的 roundId 优先；否则用「标题 + 全部条目」的哈希。
+    // 2026-11-17 修复：旧实现拿 `"标题"|首行|末行` 这串文本去 existing.includes()，
+    // 但写进文件的块里根本没有这串文本 → 永远不命中，同一轮重试会重复记账。
+    // 现在把指纹以 HTML 注释写进块尾（Markdown 渲染不可见），查重就查它。
+    const fp = createHash('sha1')
+      .update(String(round?.id || ''))
+      .update('\0' + String(round?.title || '') + '\0' + body.join('\n'))
+      .digest('hex').slice(0, 16);
+    const marker = `<!-- fc-round:${fp} -->`;
+    if (existing.includes(marker)) return { ok: true, file, skipped: true };
     const roundNo = (existing.match(/^## 第 \d+ 轮/gm) || []).length + 1;
-    const block = `## 第 ${roundNo} 轮  ${round?.at || nowStamp()}${round?.title ? '  "' + String(round.title).slice(0, 60) + '"' : ''}\n${body.join('\n')}`;
+    const block = `## 第 ${roundNo} 轮  ${round?.at || nowStamp()}${round?.title ? '  "' + String(round.title).slice(0, 60) + '"' : ''}\n${body.join('\n')}\n${marker}`;
     const prefix = existing
       ? (existing.endsWith('\n\n') ? existing : existing.replace(/\n*$/, '\n\n'))
       : '# 任务账本\n\n';
@@ -96,6 +123,10 @@ export async function appendRoundToLedger({ projectRoot, round }) {
 export async function appendCrossReference({ currentRoot, targetRoot, ledgerPath }) {
   if (!currentRoot) return { ok: false };
   const file = path.join(currentRoot, LEDGER_REL);
+  return withFileLock(file, () => appendCrossRefLocked(file, targetRoot, ledgerPath));
+}
+
+async function appendCrossRefLocked(file, targetRoot, ledgerPath) {
   try {
     await mkdir(path.dirname(file), { recursive: true });
     let existing = '';
@@ -139,6 +170,25 @@ export async function readLedgerIndex(projectRoot, { maxRounds = 8 } = {}) {
 }
 
 /**
+ * 取 trace 条目的参数对象。
+ * 2026-11-17 修复：agent-service 的 trace 里 `args` 是**原始 JSON 字符串**（argsText），
+ * 不是对象。旧实现 `typeof call.args === 'object'` 永远为假 → 每条都拿到 {} →
+ * read/edit 全部返回 null、命令报错只剩退出码 —— 生产环境的账本实际上几乎是空的
+ * （单测用的是对象参数，所以没暴露）。两种形态都接受。
+ */
+export function traceArgsOf(call) {
+  const a = call?.args;
+  if (a && typeof a === 'object') return a;
+  if (typeof a === 'string' && a.trim()) {
+    try {
+      const j = JSON.parse(a);
+      return j && typeof j === 'object' && !Array.isArray(j) ? j : {};
+    } catch { return {}; }
+  }
+  return {};
+}
+
+/**
  * 从工具调用构造一条账本记录（规格 §3.5 的 3 个收口点）。
  * 只做确定性映射，不推断、不总结。
  * @param {{tool:string, args:object, result:object, ms?:number}} call
@@ -146,7 +196,7 @@ export async function readLedgerIndex(projectRoot, { maxRounds = 8 } = {}) {
  */
 export function ledgerEntryOf(call) {
   const tool = String(call?.tool || '');
-  const args = call?.args && typeof call.args === 'object' ? call.args : {};
+  const args = traceArgsOf(call);
   const result = call?.result && typeof call.result === 'object' ? call.result : {};
 
   if (tool === 'read_file' || tool === 'grep_code') {
@@ -159,12 +209,22 @@ export function ledgerEntryOf(call) {
       return { kind: 'read', text: `read ${target}${size ? '（' + size + '）' : ''}` };
     }
     const hits = Array.isArray(result.results) ? result.results.length : (Number(result.total) || 0);
-    return { kind: 'read', text: `grep "${target}"（命中 ${hits} 处）` };
+    // 记「搜了什么、在哪搜」：旧实现 path 优先，账本里只剩文件名看不出搜的关键词
+    const pattern = String(args.pattern || '').slice(0, 60);
+    const scope = args.path ? ' @ ' + String(args.path).slice(0, 120) : '';
+    return { kind: 'read', text: `grep "${pattern || target}"${pattern ? scope : ''}（命中 ${hits} 处）` };
   }
 
   if (tool === 'edit_file' || tool === 'write_file') {
     const target = String(args.path || '');
     if (!target) return null;
+    // 失败/被拒的改动不能记成「改」（2026-11-17 桌面实测：CRLF 文件两次 edit_file 未找到 old_string，
+    // 账本却记了两条「✎ 改」）
+    const failed = result.error || result.blocked || result.denied || result.cancelled;
+    if (failed) {
+      const why = String(result.error || (result.denied ? '被拒绝' : result.cancelled ? '已取消' : '被拦截')).split('\n')[0].slice(0, 120);
+      return { kind: 'error', text: `${tool === 'write_file' ? '写' : '改'} ${target} 失败：${why}` };
+    }
     // 行号来自 edit 的实际结果（若有），否则不写行号——绝不估算
     const line = Number(result.line || result.lineNo || 0);
     const where = line > 0 ? `${target}:${line}` : target;

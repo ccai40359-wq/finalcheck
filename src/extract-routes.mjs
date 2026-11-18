@@ -817,6 +817,25 @@ function detectUnsupportedFrameworks(rootDir, maxFiles) {
     if (/\brocket::/i.test(text) && !hits.includes('Rocket')) hits.push('Rocket');
     if (/@(?:RestController|GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping|RequestMapping)\b/.test(text)
       && !hits.includes('Spring')) hits.push('Spring');
+    // 2026-11-17（第二组盲测）：还没有路由提取的 Python Web 框架——必须如实记缺口，
+    // 否则项目里同时有 Flask 路由时，S1 会显得「已覆盖」，这些框架的接口其实一条都没查
+    for (const [name, re] of [
+      ['Tornado', /\btornado\.web\.(?:Application|RequestHandler)\b/],
+      ['Sanic', /\bfrom\s+sanic\s+import\b|\bSanic\s*\(/],
+      ['Bottle', /\bfrom\s+bottle\s+import\b|\bbottle\.Bottle\s*\(/],
+      ['Falcon', /\bfalcon\.(?:App|API)\s*\(/],
+      ['Pyramid', /\bfrom\s+pyramid\.config\s+import\b|\bConfigurator\s*\(/],
+    ]) {
+      if (re.test(text) && !hits.includes(name)) hits.push(name);
+    }
+    // 2026-11-17（tradingagents 实测）：Python 标准库自建 Web 服务。
+    // 旧实现完全不认 http.server / BaseHTTPRequestHandler → httpSurface.exists=false
+    // → S7 判「未发现 HTTP 路由或 IPC 权限面，不适用」，把一个**真在公网服务的入口**
+    // 说成「没有 HTTP 面」。这比「解析不了」更糟：它把「没查」写成「不适用」。
+    if (/\b(?:ThreadingHTTPServer|HTTPServer|BaseHTTPRequestHandler|SimpleHTTPRequestHandler)\b/.test(text)
+      && !hits.includes('Python http.server（自建 HTTP 服务，无路由表）')) {
+      hits.push('Python http.server（自建 HTTP 服务，无路由表）');
+    }
     // 已经找到两个非 JS 框架就够了；继续扫只会拖慢大仓。
     if (hits.length >= 2) break;
   }
@@ -957,9 +976,13 @@ export async function extractRoutes(projectDir, options = {}) {
     pyScannedFiles = py.scannedFiles || 0;
     if (Array.isArray(py.warnings) && py.warnings.length) warnings.push(...py.warnings); // py 侧跳过数保持透明
     // FastAPI/Flask 现已支持：不再把它们标成 unsupported framework（Django/Rails/Gin 等仍不支持）
+    // Django 只有真解析出路由时才摘掉「不支持」（urls.py 写法不在识别范围时仍如实记缺口）
     for (let i = unsupportedFrameworks.length - 1; i >= 0; i--) {
       if (/^(?:FastAPI|Flask)/.test(unsupportedFrameworks[i])) unsupportedFrameworks.splice(i, 1);
+      else if (py.djangoRoutes > 0 && /^Django/.test(unsupportedFrameworks[i])) unsupportedFrameworks.splice(i, 1);
     }
+    // publicRoutes 白名单对 Python 路由同样生效（以前在 Python 路由并入前就算完了守卫，登记了也没用）
+    for (const r of py.routes) r.hasGuard = r.hasGuard || isPublicPath(r.path, publicRoutes);
     routes.sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : a.line - b.line || (a.path < b.path ? -1 : a.path > b.path ? 1 : a.method < b.method ? -1 : 1)));
   } catch (e) {
     warnings.push(`extractRoutes failed unexpectedly: ${e && e.message ? e.message : e}`);

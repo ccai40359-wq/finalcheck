@@ -6,6 +6,41 @@
 每版固定三段：### 新增 / ### 修复 / ### 优化；没有内容的段直接省略，不要留空标题。
 每条一句话，说人话，写「用户能感知到什么」，不写内部术语。
 
+## [0.21.0] - 2026-11-18
+
+Python 准确率版：Django 项目第一次能被完整体检，Python 安全规则从「只靠 Bandit」变成自研规则 + Bandit 分级；同时修掉上下文压缩、任务账本、编辑工具里多处「不报错但没生效」的问题。
+
+### 新增
+
+- **Django / DRF 路由支持**：解析 `urls.py` → 视图（含 `include` 前缀、`router.register` 的 ViewSet、`from .views import *`），Django 项目的「鉴权覆盖 / webhook 验签 / 越权」三关不再一律记「框架尚未支持」。
+- 支持 Flask 的 `add_url_rule` / `MethodView` 类视图和 aiohttp 路由表；Tornado、Sanic、Bottle、Falcon、Pyramid 会明确报「未覆盖」，不再让人以为已经查过。
+- **Python 专用安全规则**：路径穿越、模板注入（SSTI）、SSRF、开放重定向、反射 XSS、Flask/Django/FastAPI 三种 CORS 全开写法、`ALLOWED_HOSTS=['*']`、关闭 Secure/HttpOnly 的 cookie、JWT 不验签或允许 `none` 算法。
+- 认得项目自己写的鉴权：自定义装饰器（如 `@token_required`）、FastAPI 的 `Annotated` 依赖别名（如 `user: CurrentUser`）、DRF 的 `@permission_classes`、视图开头的 `if request.user.is_authenticated` 内联检查。
+- Python 锁文件依赖审计：`uv.lock` / `poetry.lock` / `Pipfile.lock` 直接查 OSV 漏洞库；pip-audit 超时自动改走 OSV。
+- Python 项目也能跑可读性（Q4）、静态性能（Q5）、测试关（Q1，走 pytest）和 AI 调用检查（A2-A4），纯 Python 仓不再整片「只解析 JS/TS」。
+- Python 准确率基准：`tests/benchmark/python/` 下 7 个带标注的 Flask/Django/FastAPI 项目，`node scripts/bench-py.mjs` 直接给出检出率和误报数，以后改规则有数可比。
+
+### 修复
+
+- **`/compact` 显示成功但下一轮其实没变短**：前端发来的历史不带时间，旧逻辑判断不了哪些已被摘要覆盖，于是全部保留；现在按原文对齐裁剪，实测压缩后同类问题输入从 18,049 降到 12,684 token。
+- 长会话 `/compact` 必定「操作已中止」：所有摘要请求共用一个 30 秒总时限，现在每个请求单独计时。
+- 跨轮记忆会永久丢掉第 1 轮、会话摘要和轮摘要重复注入占双份预算、摘要截断总是先砍掉「下一步」。
+- 任务账本几乎是空的、没有行号，重试会重复记一轮；失败的修改被记成「改」，现在记为失败并写明原因。
+- 在单个文件里搜索一条结果都返回不了；在 FinalCheck 自己的仓库里搜索直接报错。
+- `edit_file` 改不了 Windows 换行（CRLF）的文件，模型只能退回写脚本改。
+- 命令里写 `"\r\n"`、`"\t"` 被当成「项目外路径」拒绝。
+- Python 依赖审计把「pip-audit 异常退出 / 跳过了包 / 只查了一部分」都算成「已审计」，pyproject 用单引号写的依赖被当成「没有依赖」；Bandit 中途报错也被当成完整扫描。现在一律如实记缺口。
+- 越权检查把「已登录」当成「校验了属主」（FastAPI 最典型的越权写法因此漏报）；同时不再误报没访问数据的接口、只查公开内容的接口和 webhook。
+- webhook 验签检查把所有 Python 路由都当成公开接口，写了 hmac 验签也照样报。
+- `finalcheck.config.json` 里登记的 `publicRoutes` 对 Python 路由不生效。
+- 设置页：沙箱模式卡片三列时看不清、英文界面混入中文；补充说明沙箱真实能拦什么，清理默认项目目录。
+
+### 优化
+
+- Bandit 结果按它自己的严重度和置信度分级：`assert`、「导入了 subprocess」这类提醒只列出、不再计入结论；同一行被自研规则和 Bandit 各报一次的合并成一条。
+- 算 ETag 用的 `md5(..., usedforsecurity=False)` 不再被当成口令哈希；`app.config["SECRET_KEY"] = "..."` 能识别为硬编码密钥。
+- 实测效果：自写基准检出率 63.9% → 100%、安全写法误报 2/28 → 0/49；PyGoat 主应用的「无登录守卫」误报基本清零。最后一组没调过规则的盲测首跑检出 55.6%，没见过的写法仍可能漏，持续用基准迭代。
+
 ## [0.20.0] - 2026-11-17
 
 ### 优化

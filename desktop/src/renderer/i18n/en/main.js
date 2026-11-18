@@ -148,6 +148,7 @@ export const EN_MAIN = {
 
   // ---- index.mjs（主进程入口：IPC / 附件 / 压缩 / 更新）----
   '空摘要': 'Empty summary',
+  '摘要请求超时（{sec} 秒）': 'Summary request timed out ({sec}s)',
   '项目不存在': 'Workspace not found',
   '附件为空': 'Attachment is empty',
   '附件过大（上限 20MB）': 'Attachment is too large (20MB max)',

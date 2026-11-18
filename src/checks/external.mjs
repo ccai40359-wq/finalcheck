@@ -13,6 +13,24 @@ import { isGuardName } from './routes.mjs';
 
 const WEBHOOK_PATH_RE = /(?:webhook|callback|hook)/i;
 const VERIFY_RE = /hmac|signature|verify/i;
+const PY_VERIFY_RE = /\bhmac\.|\bcompare_digest\s*\(|\bconstruct_event\s*\(|\bverify_(?:signature|webhook|request)\w*\s*\(|\bvalidate_(?:signature|request)\w*\s*\(|\bWebhook\s*\.\s*verify\b|\bRequestValidator\b/;
+
+// 从路由行（装饰器或 def 本身）往下取 Python 处理函数体（按缩进）
+function pyFunctionBody(text, line) {
+  const lines = String(text).split('\n');
+  let d = -1;
+  for (let i = Math.max(0, line - 1); i < Math.min(lines.length, line + 12); i++) {
+    if (/^\s*(?:async\s+)?def\s/.test(lines[i])) { d = i; break; }
+  }
+  if (d < 0) return '';
+  const ind = /^\s*/.exec(lines[d])[0].length;
+  const out = [lines[d]];
+  for (let k = d + 1; k < lines.length; k++) {
+    if (lines[k].trim() && /^\s*/.exec(lines[k])[0].length <= ind) break;
+    out.push(lines[k]);
+  }
+  return out.join('\n');
+}
 const CORS_WILDCARD_RES = [
   /origin\s*:\s*(?:['"]\*['"]|true)/i,
   /Access-Control-Allow-Origin['"]?\s*[,:]\s*['"]?\*/i,
@@ -151,7 +169,10 @@ export async function checkExternal(projectDir, { tier, excludes = [], includeFi
       // 公开 = 无守卫，或显式登记进 finalcheck.config.json 的 publicRoutes。
       // 有 middlewares 时复用 S1 的 isGuardName 重新判定（routes.isLoggedIn 不是
       // 「公开」，authRoutes 也不是守卫）；老调用方只给 hasGuard 布尔值时沿用。
-      const hasGuard = r.hasInternalGuard || (Array.isArray(r.middlewares)
+      // Python/Django 路由的守卫在 hasGuard 里（装饰器/依赖注入），middlewares 恒为空数组——
+      // 不能按中间件重算，否则所有 Python 路由都被当成公开（盲测基准：@token_required 保护的接口被报 S6）
+      const isPyRoute = r.framework === 'python' || r.framework === 'django';
+      const hasGuard = r.hasInternalGuard || (isPyRoute ? Boolean(r.hasGuard) : Array.isArray(r.middlewares)
         ? r.middlewares.some((m) => isGuardName(m))
         : Boolean(r.hasGuard));
       const isPublic = !hasGuard || isPublicPath(routePath, publicRoutes);
@@ -159,9 +180,15 @@ export async function checkExternal(projectDir, { tier, excludes = [], includeFi
       const rel = String(r.file || '');
       const text = await readText(rel);
       if (text == null) continue;
-      const model = sourceModel(text);
-      const handlers = routeHandlers(model, r);
-      if (someCall(handlers.nodes, (call) => VERIFY_RE.test(memberName(call.callee) || call.callee?.name || ''))) continue;
+      if (isPyRoute) {
+        // Python 文件喂不了 Babel（sourceModel 恒为 null → 任何 Python webhook 都被报「未验签」）：
+        // 按缩进取处理函数体，找 hmac / compare_digest / Stripe construct_event / verify_signature 等验签调用
+        if (PY_VERIFY_RE.test(pyFunctionBody(text, Number(r.line) || 1))) continue;
+      } else {
+        const model = sourceModel(text);
+        const handlers = routeHandlers(model, r);
+        if (someCall(handlers.nodes, (call) => VERIFY_RE.test(memberName(call.callee) || call.callee?.name || ''))) continue;
+      }
       const routeLine = Number(r.line) || 1;
       const lineText = text.split('\n')[routeLine - 1] || '';
       if (lineText.includes('finalcheck:allow')) continue;

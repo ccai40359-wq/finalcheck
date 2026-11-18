@@ -738,7 +738,9 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
       const rg = resolveRipgrepPath({ repoRoot });
       if (rg) {
         // 模式参数原样传 rg（-- 分隔符防 pattern 以 - 开头被当 flag）；argv 数组直传不经 shell
-        const argv = ['-n', '--no-heading', '--max-count', String(max)];
+        // -H（--with-filename）必须带：rg 搜**单个文件**时默认不输出文件名，行变成
+        // `12:text`，parseGrepRow 解析不出 → 命中全被丢掉，模型看到「0 处命中」（2026-11-17 修复）。
+        const argv = ['-n', '-H', '--no-heading', '--max-count', String(max)];
         if (glob) argv.push('-g', glob);
         argv.push('--', pattern, target);
         const r = await spawnCapture(rg, argv);

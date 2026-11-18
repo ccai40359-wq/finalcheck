@@ -114,6 +114,13 @@ export async function editFileTool({ path: p, old_string, new_string } = {}) {
   } catch (e) {
     return { error: `读取失败：${e.message}`, path: abs };
   }
+  // CRLF 文件：模型给的 old_string/new_string 几乎总是 \n 换行，原样匹配必然「未找到」
+  // （2026-11-17 桌面端实测：Windows 检出的 Python 项目连续两次 edit_file 失败）。
+  // 文件是 CRLF 且原样匹配不到时，把两边都换成 CRLF 再匹配，写回也保持 CRLF。
+  if (before.includes('\r\n') && !old_string.includes('\r') && countOccurrences(before, old_string) === 0) {
+    old_string = old_string.replace(/\n/g, '\r\n');
+    new_string = new_string.replace(/\r?\n/g, '\r\n');
+  }
   const count = countOccurrences(before, old_string);
   if (count === 0) return { error: '未找到 old_string：必须与文件内容完全一致（含缩进/换行）', path: abs };
   if (count > 1) return { error: `old_string 在文件中出现 ${count} 次，必须唯一；请带上更多上下文再改`, path: abs };
@@ -131,9 +138,12 @@ export async function editFileTool({ path: p, old_string, new_string } = {}) {
     return { error: `写入失败：${e.message}`, path: abs };
   }
   const d = computeDiff(before, after);
+  // 改动起始行（1 起算，按改动前的文件计）：给程序账本记「真实行号」用，不靠模型估算
+  const line = before.slice(0, idx).split('\n').length;
   return {
     file: path.basename(abs),
     path: abs,
+    line,
     added: d.added,
     removed: d.removed,
     diff: d.lines,

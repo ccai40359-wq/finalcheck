@@ -544,6 +544,10 @@ function literalPathsIn(text) {
   let m;
   while ((m = re.exec(text)) !== null) {
     const value = (m[1] || m[2] || m[3] || '').trim();
+    // 纯转义序列（"\r\n"、'\t'、"\x41"）不是路径：Windows 上 `\r\n` 会被 path.isAbsolute
+    // 当成「当前盘根目录下的路径」→ 误判项目外而拒绝（2026-11-17 桌面实测：python 脚本里
+    // 写 "\r\n" 换行被拦，模型只好改写成 chr(13)+chr(10)）。
+    if (/^(?:\\(?:[nrtvfab0e'"\\]|x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}))+$/.test(value)) continue;
     // 含 %VAR% / 通配符 / 管道符号的不猜，交给黑名单与审批
     if (value && !value.includes('%') && !value.includes('*') && !value.includes('?')) found.push(value);
   }

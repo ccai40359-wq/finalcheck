@@ -27,6 +27,7 @@ import { resolveReportCaps } from './report-caps.mjs';
 import { ACCEPT_FILE, applyAcceptances } from './accept.mjs';
 import { applyScopePolicy, detectLanguageGap } from './scope-policy.mjs';
 import { runPyBandit } from './checks/py-bandit.mjs';
+import { checkPyRules } from './checks/py-rules.mjs';
 import { checkAiToolPerms, checkAiPromptInjection, checkAiSandbox, checkAiDataBoundary } from './checks/ai-agent.mjs';
 import { isLibraryRepo } from './project-kind.mjs';
 
@@ -147,8 +148,14 @@ export async function audit(projectDir, { tier = null, interactive = false, runT
     ran: false, findings: [], warnings: [`Bandit 运行异常：${e.message}`],
     coverageGap: 'Bandit 运行异常，Python SAST 未覆盖', pyCount: 0,
   }));
+  // Python 专用规则（2026-11-17）：路径穿越/SSTI/SSRF、Flask/Django/FastAPI 的 CORS 与 ALLOWED_HOSTS、
+  // 不安全 cookie、JWT 不验签——JS 侧规则和 Bandit 都覆盖不到（tests/benchmark/python 基准实测漏报）。
+  const pyRules = await checkPyRules(projectDir, { excludes, includeFixtures }).catch((e) => {
+    py.warnings.push(`Python 规则运行异常：${e.message}`);
+    return { findings: [] };
+  });
   const resultsByCheck = new Map(results.map((r) => [r.checkId, r]));
-  for (const f of py.findings) {
+  for (const f of [...pyRules.findings, ...py.findings]) {
     const entry = resultsByCheck.get(f.checkId);
     if (entry) entry.findings.push(f);
     else {
@@ -189,6 +196,10 @@ export async function audit(projectDir, { tier = null, interactive = false, runT
     const skipped = before - findings.length;
     if (skipped) warnings.push(`夹具目录默认不参与产品结论：已跳过 ${skipped} 条发现（includeFixtures 可显式纳入）`);
   }
+  // 同位去重（2026-11-17）：同一检查项、同一文件、同一行被自研规则和 Bandit 各报一次
+  // （S5.debug-on + B201、S8.weak-hash + B324、S2.sqli-concat + B608、B703 + B308……），
+  // 读报告的人看到两条一样的问题。保留严重度最高的一条，其余规则名记进 relatedRules。
+  findings = collapseSameLine(findings);
   // 跨副本去重：同一检查/规则 + 归一化路径 + 行号只保留一条，优先真实源码路径
   const deduped = dedupeCrossCopies(findings);
   findings = deduped.findings;
@@ -247,19 +258,39 @@ export async function audit(projectDir, { tier = null, interactive = false, runT
     // 路由表里已有非 JS 路由（FastAPI/Flask 提取成功）时，S1 的路由/鉴权面也已真覆盖；
     // py 提取器真实扫过产品文件（即使 0 条路由）时同理——S1 的结论由路由提取自身给出，
     // 不再套「只解析 JS/TS」的帽子（fastapi 实测：库仓产品目录 0 条路由是真没有，不是没查）。
+    //
+    // 2026-11-17：Q3/Q4/Q5/A2-A4/Q1/S7 已各自补 Python 分支，语言缺口要按**检查自己声明的
+    // pythonCoverage** 解除，而不是继续在审计层统一封顶——否则「做了 Python 支持」等于没做：
+    // 检查跑出了真实 findings，结论却仍是「无法验收」。
     const nonJsRoutesCovered = (routeResult.routes || []).some((r) => !/\.[cm]?[jt]sx?$/i.test(String(r.file || '')));
     const pyRoutesScanned = Number(routeResult.pyScannedFiles || 0) > 0;
+    // 检查自己声明了 Python 覆盖（pythonCoverage 字段）→ 说明它真的扫了 .py，缺口对它不成立
+    const pyCoveredChecks = new Set(
+      results
+        .filter((r) => r?.pythonCoverage && Number(r.pythonCoverage.files || 0) > 0)
+        .map((r) => r.checkId)
+    );
     const gapCheckIds = languageGap.checkIds.filter((id) => {
       if (pyBanditRan && id === 'S2') return false;
       if ((nonJsRoutesCovered || pyRoutesScanned) && id === 'S1') return false;
+      // Q1：Python 仓有测试时 checkQ1 会真跑 pytest；没测试时它自己给 gap，不需要审计层再加一条
+      if (id === 'Q1') return false;
+      // Q3/Q4/Q5/A2-A4：这些检查补了 Python 分支后自己会写 pythonCoverage；没有该字段说明
+      // 它其实没跑（老版本/被禁用），这时缺口必须保留（fail-closed）
+      if (pyCoveredChecks.has(id)) return false;
       return true;
     });
-    if (pyBanditRan && gapCheckIds.length !== languageGap.checkIds.length) {
+    if (gapCheckIds.length !== languageGap.checkIds.length) {
+      const covered = languageGap.checkIds.filter((id) => !gapCheckIds.includes(id));
+      warnings.push(`语言缺口已按检查解除：${covered.join('/')} 已真实覆盖 .py（其余仍按未覆盖计）`);
+    }
+    if (pyBanditRan && gapCheckIds.includes('S2') === false && languageGap.checkIds.includes('S2')) {
       warnings.push('S2 的语言缺口已由 Bandit 部分覆盖（Python SAST：注入/反序列化/弱哈希），框架路由与鉴权面由路由提取结果决定');
-    } else if (nonJsRoutesCovered && gapCheckIds.length !== languageGap.checkIds.length) {
-      warnings.push('S1 的语言缺口已解除：Python（FastAPI/Flask）路由提取成功，路由鉴权面已真覆盖');
-    } else if (pyRoutesScanned && gapCheckIds.length !== languageGap.checkIds.length) {
-      warnings.push(`S1 的语言缺口已解除：Python 路由提取已真实扫描 ${routeResult.pyScannedFiles} 个产品文件（tests/docs 示例不计入），鉴权面由提取结果自身给出`);
+    }
+    if ((nonJsRoutesCovered || pyRoutesScanned) && !gapCheckIds.includes('S1') && languageGap.checkIds.includes('S1')) {
+      warnings.push(nonJsRoutesCovered
+        ? 'S1 的语言缺口已解除：Python（FastAPI/Flask）路由提取成功，路由鉴权面已真覆盖'
+        : `S1 的语言缺口已解除：Python 路由提取已真实扫描 ${routeResult.pyScannedFiles} 个产品文件（tests/docs 示例不计入），鉴权面由提取结果自身给出`);
     }
     for (const checkId of gapCheckIds) {
       const existing = gapItems.find((g) => g.checkId === checkId);
@@ -382,6 +413,29 @@ export function conclude(tier, findings, gapItems = []) {
     };
   }
   return baseVerdict(tier, findings);
+}
+
+const SEVERITY_RANK = { critical: 4, high: 3, medium: 2, low: 1, info: 0 };
+const FORCE_RANK = { card: 2, check: 1, tip: 0 };
+
+// 同一检查项 + 同一文件 + 同一行（line>0）只留一条：严重度 > 强制级别 > 自研规则优先（消息更具体）
+export function collapseSameLine(findings) {
+  const out = [];
+  const byKey = new Map();
+  for (const f of findings) {
+    const line = Number(f.line) || 0;
+    if (line <= 0 || !f.file) { out.push(f); continue; }
+    const key = `${f.checkId}|${String(f.file).replace(/\\/g, '/')}|${line}`;
+    const prev = byKey.get(key);
+    if (!prev) { byKey.set(key, f); out.push(f); continue; }
+    const score = (x) => (SEVERITY_RANK[x.severity] ?? 1) * 10 + (FORCE_RANK[x.force] ?? 0) * 2 + (String(x.rule || '').startsWith('bandit-') ? 0 : 1);
+    const [keep, drop] = score(f) > score(prev) ? [f, prev] : [prev, f];
+    const related = [...new Set([...(prev.relatedRules || []), ...(f.relatedRules || []), drop.rule].filter(Boolean))].filter((r) => r !== keep.rule);
+    const merged = { ...keep, relatedRules: related };
+    out[out.indexOf(prev)] = merged;
+    byKey.set(key, merged);
+  }
+  return out;
 }
 
 function baseVerdict(tier, findings) {

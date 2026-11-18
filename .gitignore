@@ -25,7 +25,7 @@ desktop/release-dist/
 _t*.txt
 _*.txt
 tmp-redteam/
-{*
+[{]*
 _*
 
 # 运行时迁移标记（dev 数据目录用，不入库）
@@ -51,3 +51,9 @@ nul-*.json
 # 完整 Git for Windows 运行时（392MB / 9296 文件，不能进版本库）
 # 由 scripts/fetch-gitbash.mjs 在打包前从本机或官方安装包准备
 desktop/resources/gitbash-full/
+
+# Python 包标记文件不能被上面的 _* 规则吞掉（基准项目与任何 Python 包都需要）
+!__init__.py
+# 桌面开发版运行时生成的工作区列表与编辑快照（不入库）
+desktop/projects.json
+desktop/snapshots/

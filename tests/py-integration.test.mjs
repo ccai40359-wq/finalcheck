@@ -56,6 +56,7 @@ test('bandit 运行：runner 注入、非产品路径跳过、L1 只认 S3', asy
       { test_id: 'B602', issue_severity: 'HIGH', filename: `${dir.replace(/\\/g, '/')}/app.py`, line_number: 2, issue_text: 'shell=True', code: "subprocess.call('ls '+u, shell=True)\n" },
       { test_id: 'B602', issue_severity: 'HIGH', filename: `${dir.replace(/\\/g, '/')}/tests/helper.py`, line_number: 2, issue_text: 'shell=True', code: 'subprocess.call("x", shell=True)\n' },
     ],
+    errors: [],
   };
   const r = await runPyBandit(dir, {
     tooling: { pythonBin: 'python' },
@@ -69,7 +70,7 @@ test('bandit 运行：runner 注入、非产品路径跳过、L1 只认 S3', asy
 
   const l1 = await runPyBandit(dir, {
     tooling: { pythonBin: 'python' },
-    runner: async () => ({ status: 0, stdout: JSON.stringify({ results: [{ test_id: 'B105', issue_severity: 'HIGH', filename: `${dir.replace(/\\/g, '/')}/app.py`, line_number: 9, issue_text: 'pwd', code: "password='x'\n" }] }) }),
+    runner: async () => ({ status: 0, stdout: JSON.stringify({ results: [{ test_id: 'B105', issue_severity: 'HIGH', filename: `${dir.replace(/\\/g, '/')}/app.py`, line_number: 9, issue_text: 'pwd', code: "password='x'\n" }], errors: [] }) }),
     tier: 'L1',
   });
   assert.ok(l1.findings.every((f) => f.checkId === 'S3' ? f.force === 'card' : f.force === 'tip'), 'L1 只认 S3 硬卡');
@@ -92,9 +93,9 @@ test('deps：requirements.txt 由 pip-audit 审计（runner 注入），pyprojec
   assert.equal(pip[0].severity, 'high');
   assert.equal(pip[0].file, 'requirements.txt');
   assert.match(pip[0].message, /CVE-2019-20477/);
-  assert.match(String(r.coverageGap), /pyproject\.toml/);
-  assert.ok(!/requirements\.txt/.test(String(r.coverageGap).split('未完成审计')[0]), '已审计的 requirements 不进缺口');
-  assert.equal(r.pyAuditedCount, 1);
+  // 2026-11-17 新契约：pyproject 没有声明运行时依赖时不封顶结论，但要留一条说明
+  assert.equal(r.coverageGap, null, 'requirements 已审计 + pyproject 无依赖声明 → 不封顶结论');
+  assert.ok(r.warnings.some((w) => /pyproject\.toml 未声明运行时依赖/.test(w)), '要说明 pyproject 为什么无需审计');
 });
 
 test('deps：pip-audit 失败/未产出 JSON → 诚实缺口，不判 0 漏洞', async (t) => {
@@ -106,11 +107,14 @@ test('deps：pip-audit 失败/未产出 JSON → 诚实缺口，不判 0 漏洞'
   assert.match(String(r.coverageGap), /network down/);
 });
 
-test('deps：pip-audit JSON 解析（dependencies[].vulns[]）', () => {
+test('deps：pip-audit JSON 解析（dependencies[].vulns[]）；结构不对的必须抛错', () => {
   const items = interpretPipAuditJson(JSON.stringify({
     dependencies: [{ name: 'django', version: '4.2', vulns: [{ id: 'GHSA-x', aliases: ['CVE-1'], description: 'd' }] }],
   }));
-  assert.deepEqual(items, [{ name: 'django', version: '4.2', id: 'GHSA-x', description: 'd' }]);
+  assert.deepEqual(items.items, [{ name: 'django', version: '4.2', id: 'GHSA-x', description: 'd' }]);
+  assert.deepEqual(items.names, ['django']);
+  // 2xx/exit-0 的错误载荷（代理拦截页、schema 变化）不能当成「0 漏洞」
+  assert.throws(() => interpretPipAuditJson('{"error":"blocked"}', { requireSchema: true }), /dependencies 不是数组/);
 });
 
 // pygoat 实测回归：主 requirements 15 个漏洞包/299 条 advisory 曾被塌成 1 条——

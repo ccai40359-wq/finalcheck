@@ -6,10 +6,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  planRollup, checkSummaryLength, estimateSummaryTokens, buildMergeInput,
+  planRollup, checkSummaryLength, estimateSummaryTokens, buildMergeInput, buildMergeGroups,
   SUMMARY_MAX_TOKENS, KEEP_RECENT_ROUNDS, SUMMARY_FIELDS
 } from '../desktop/src/main/round-summary.mjs';
-import { toolDigestOf, renderRoundSummaries } from '../desktop/src/main/round-summary-wire.mjs';
+import { toolDigestOf, renderRoundSummaries, writeRoundSummary, awaitPendingRoundSummary } from '../desktop/src/main/round-summary-wire.mjs';
 
 const mk = (n, textOf = (i) => '第 ' + i + ' 轮摘要：读了 src/file' + i + '.mjs，改了第 ' + (i + 10) + ' 行') =>
   Array.from({ length: n }, (_, i) => ({ id: 'r' + i, text: textOf(i), at: i * 1000 }));
@@ -92,13 +92,16 @@ test('§3.4: toolDigestOf 把工具调用压成可抄行号的清单', () => {
   assert.match(digest, /报错：exit 1/, '报错要带上');
 });
 
-test('§7 已知上限: buildMergeInput 超预算时保留更近的', () => {
-  // 造 5 份，每份 5000 字符；预算 12000 → 只能保留最后 2 份左右
+test('§7: 合并输入超预算时分组，任何一份都不丢（旧实现从最老的开始丢）', () => {
+  // 5 份 × 5000 字符，预算 12000 → 分成多组，但第 0 份（古老摘要所在位置）必须在
   const list = Array.from({ length: 5 }, (_, i) => ({ text: '第' + i + '轮' + 'x'.repeat(4990) }));
-  const out = buildMergeInput(list, 12000);
-  assert.ok(out.length <= 12000 + 100, '不超预算');
-  assert.match(out, /第4轮/, '最近的必须保留');
-  assert.doesNotMatch(out, /第0轮/, '最老的被丢掉');
+  const groups = buildMergeGroups(list, 12000);
+  assert.ok(groups.length >= 2, '超预算必须分组');
+  const all = groups.join('\n');
+  for (let i = 0; i < 5; i++) assert.match(all, new RegExp('第' + i + '轮'), `第 ${i} 份不能丢`);
+  for (const g of groups) assert.ok(g.length <= 12000 + 200, '每组不超预算');
+  assert.match(groups[0], /第0轮/, '最老的（古老摘要）排在第一组');
+  assert.match(buildMergeInput(list), /第0轮/, '兼容接口也不再截断');
 });
 
 test('边界: 空摘要 / 空输入不崩', () => {
@@ -107,4 +110,71 @@ test('边界: 空摘要 / 空输入不崩', () => {
   assert.equal(buildMergeInput([]), '');
   assert.equal(estimateSummaryTokens(''), 0);
   assert.equal(toolDigestOf(null), '');
+});
+
+// ───────── 2026-11-17 修复回归（fix/zcode-codex-review 分支）─────────
+
+test('toolDigestOf：真实 trace 的 args 是 JSON 字符串，路径/行号必须解析出来', () => {
+  const trace = [
+    { tool: 'read_file', args: JSON.stringify({ path: 'src/a.mjs' }), result: { totalLines: 120, offset: 0 } },
+    { tool: 'grep_code', args: JSON.stringify({ pattern: 'NON_JS_EXTS', path: 'src' }), result: { total: 2, results: [{ file: 'src/scope-policy.mjs', line: 35, text: 'x' }, { file: 'src/walk.mjs', line: 9, text: 'y' }] } },
+    { tool: 'edit_file', args: JSON.stringify({ path: 'src/b.mjs', old_string: 'a', new_string: 'b' }), result: { line: 42, added: 1, removed: 1 } },
+    { tool: 'run_command', args: JSON.stringify({ command: 'npm test' }), result: { code: 1, stderr: '\nError: boom\n' } },
+  ];
+  const d = toolDigestOf(trace);
+  assert.match(d, /read_file src\/a\.mjs 共 120 行/);
+  assert.match(d, /src\/scope-policy\.mjs:35/, 'grep 命中行号要进清单');
+  assert.match(d, /edit_file src\/b\.mjs 改动起始于第 42 行/);
+  assert.match(d, /npm test 退出码 1 stderr：Error: boom/);
+});
+
+test('writeRoundSummary：同一会话并发写入不丢摘要（旧实现后写覆盖先写）', async () => {
+  let store = [];
+  const sessions = {
+    loadRoundSummaries: async () => store.slice(),
+    saveRoundSummaries: async (_id, l) => { await new Promise((r) => setTimeout(r, 5)); store = l; },
+  };
+  const slow = (ms, txt) => async () => { await new Promise((r) => setTimeout(r, ms)); return txt; };
+  const a = writeRoundSummary({ sessionId: 'race', roundId: 'r1', userMessage: 'u1', trace: [], answer: 'a1', summarize: slow(30, '## 第一轮'), sessions });
+  const b = writeRoundSummary({ sessionId: 'race', roundId: 'r2', userMessage: 'u2', trace: [], answer: 'a2', summarize: slow(1, '## 第二轮'), sessions });
+  await Promise.all([a, b]);
+  assert.deepEqual(store.map((x) => x.text), ['## 第一轮', '## 第二轮'], '两轮都在，且按回合顺序');
+  assert.equal(await awaitPendingRoundSummary('race', { timeoutMs: 10 }), true);
+});
+
+test('writeRoundSummary：同一 roundId 重放不产生第二份摘要', async () => {
+  let store = [];
+  const sessions = { loadRoundSummaries: async () => store.slice(), saveRoundSummaries: async (_id, l) => { store = l; } };
+  let calls = 0;
+  const summarize = async () => { calls++; return '## 摘要'; };
+  await writeRoundSummary({ sessionId: 'idem', roundId: 'x1', userMessage: 'u', trace: [], answer: 'a', summarize, sessions });
+  const r = await writeRoundSummary({ sessionId: 'idem', roundId: 'x1', userMessage: 'u', trace: [], answer: 'a', summarize, sessions });
+  assert.equal(r.skipped, true);
+  assert.equal(store.length, 1);
+  assert.equal(calls, 1, '已有摘要时不再调模型');
+});
+
+test('awaitPendingRoundSummary：摘要很慢时按超时返回 false，不卡住下一轮', async () => {
+  const sessions = { loadRoundSummaries: async () => [], saveRoundSummaries: async () => {} };
+  const p = writeRoundSummary({ sessionId: 'slow', roundId: 's', userMessage: 'u', trace: [], answer: 'a', summarize: () => new Promise((r) => setTimeout(() => r('x'), 200)), sessions });
+  const t0 = Date.now();
+  assert.equal(await awaitPendingRoundSummary('slow', { timeoutMs: 20 }), false);
+  assert.ok(Date.now() - t0 < 150);
+  await p;
+});
+
+test('滚动合并：合并输入超预算时逐组合并，古老摘要不丢', async () => {
+  const ancient = { id: 'ancient', text: 'ANCIENT-第1轮 shell-resolver.mjs:42 ' + 'a'.repeat(20000), ancient: true, at: 1000, coversUntil: 1000 };
+  const normal = Array.from({ length: 12 }, (_, i) => ({ id: 'r' + i, text: `第 ${i + 2} 轮 ` + 'b'.repeat(6000), at: 2000 + i * 1000 }));
+  let saved = null;
+  const sessions = { loadRoundSummaries: async () => [ancient, ...normal], saveRoundSummaries: async (_id, l) => { saved = l; } };
+  const mergeInputs = [];
+  const summarize = async (prompt) => {
+    if (prompt.includes('合并成一份')) { mergeInputs.push(prompt); return prompt.includes('ANCIENT') ? 'MERGED-含ANCIENT' : 'MERGED'; }
+    return '## 新一轮';
+  };
+  await writeRoundSummary({ sessionId: 'mg', roundId: 'n', userMessage: 'u', trace: [], answer: 'a', summarize, sessions });
+  assert.ok(mergeInputs.length >= 2, '超预算要分组合并');
+  assert.ok(mergeInputs.some((p) => p.includes('ANCIENT-第1轮')), '古老摘要必须进合并输入');
+  assert.ok(saved.find((s) => s.ancient), '产出新的古老摘要');
 });

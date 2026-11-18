@@ -165,7 +165,8 @@ export function looksLikeSecret(v) {
 const RULES = [
   { id: 'S3.aws-key', re: /AKIA[0-9A-Z]{16}/, msg: '疑似 AWS Access Key 硬编码' },
   { id: 'S3.private-key', re: /-----BEGIN [A-Z ]*PRIVATE KEY-----/, msg: '私钥内容硬编码' },
-  { id: 'S3.secret-literal', re: new RegExp(`\\b${SECRET_KEY}["']?\\s*[:=]\\s*['"]([^'"\\s]{8,})['"]`, 'i'), msg: '疑似密钥/口令字面量', allow: ALLOW_VALUE, verify: looksLikeSecret },
+  // ["']?\]? ：同时认 Python 下标赋值 app.config["SECRET_KEY"] = "..."（基准实测漏报，只剩 Bandit B105 兜底）
+  { id: 'S3.secret-literal', re: new RegExp(`\\b${SECRET_KEY}["']?\\]?\\s*[:=]\\s*['"]([^'"\\s]{8,})['"]`, 'i'), msg: '疑似密钥/口令字面量', allow: ALLOW_VALUE, verify: looksLikeSecret },
   { id: 'S3.secret-value', re: new RegExp(`\\b${SECRET_KEY}["']?\\s*[:=]\\s*(${SECRET_VALUE})`, 'i'), msg: '疑似密钥值（未加引号的常见密钥前缀）', allow: ALLOW_HINT, verify: (v) => v.length >= 8 },
   { id: 'S3.weak-default', re: new RegExp(`(?:${SECRET_KEY})["']?\\s*[:=]\\s*['"](admin|admin123|123456|12345678|12345|password|root|qwerty)['"]`, 'i'), msg: '弱默认口令' },
 ];

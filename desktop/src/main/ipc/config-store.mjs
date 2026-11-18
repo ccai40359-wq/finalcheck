@@ -4,6 +4,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { resolveModel, modelIdsOf, pickUsableProvider } from '../model-config.mjs';
 import { setLanguage, resolveLanguage, t } from '../../renderer/i18n/core.mjs';
 import { testProviderConnection } from '../provider-test.mjs';
+import { summarizeChunked, requestSignal, DEFAULT_REQUEST_TIMEOUT_MS } from '../summarize-core.mjs';
 
 // 配置 schema v2：{ providers: [{ id, name, baseUrl, apiFormat, apiKey, models, enabled }], activeProviderId }
 // 兼容旧单供应商形状 { baseUrl, apiKey, model } → 映射为一个 provider
@@ -113,67 +114,47 @@ export function createConfigStore({ app, getDataRoot, engineUrl }) {
   const pickActiveProvider = (cfg) => pickUsableProvider(cfg, '') || null;
   const firstModelId = (prov) => resolveModel(prov, null)?.id || '';
 
-  // 非流式摘要：上下文压缩 / 手动 /compact 共用（失败由调用方兜底）
-  // signal：调用方的取消信号（手动压缩点「停止」），与内部 30s 超时取或
+  // 非流式摘要：上下文压缩 / 手动 /compact / 每轮摘要共用（失败由调用方兜底）。
   //
-  // 2026-11-17（规格 §4 步 5，修缺陷 D3/D4）：
-  //   · maxTokens 从 800 提到 5120 —— 800 token 连 CC 八段模板的标题都写不完，
-  //     压缩出来的摘要信息量趋零。
-  //   · 原来 `String(text).slice(0, maxChars)` 是**保头丢尾**：被压缩区最老的
-  //     3 万字符进摘要，最新的 93% 直接消失。而手动 /compact 用的是 slice(-30000)
-  //     （保尾）—— 同一上限两个路径口径相反。
-  //   · 现在超长时分段摘要再合并：每段都进摘要，覆盖头也覆盖尾。
-  async function summarizeWithProvider(prov, text, { maxChars = 30000, maxTokens = 5120, signal = null } = {}) {
-    const ctl = new AbortController();
-    const timer = setTimeout(() => ctl.abort(), 30000);
-    const onAbort = () => ctl.abort();
-    if (signal) {
-      if (signal.aborted) ctl.abort();
-      else signal.addEventListener('abort', onAbort, { once: true });
-    }
-    try {
-      const full = String(text ?? '');
-      // 分段：超长文本按 maxChars 切块，每块都进摘要（这样头尾都覆盖，不会像
-      // slice(0, maxChars) 那样把最新 93% 丢掉）。短文本只有一块，行为与旧版一致。
-      const chunks = [];
-      if (full.length <= maxChars) {
-        chunks.push(full);
-      } else {
-        for (let i = 0; i < full.length; i += maxChars) chunks.push(full.slice(i, i + maxChars));
-      }
-      const askOne = async (payload, isMerge) => {
-        const prompt = isMerge
-          ? '下面是把同一段对话历史分块压缩后得到的多份摘要。请合并成一份完整摘要，使用与对话相同的语言，保留关键结论、文件路径与数字，去掉重复，直接输出摘要本身：\n\n' + payload
-          : '请把以下对话历史压缩成要点摘要，使用与对话相同的语言，保留关键结论、路径与数字，直接输出摘要本身：\n\n' + payload;
+  // 2026-11-17（规格 §4 步 5，修缺陷 D3/D4）：maxTokens 800 → 5120；超长时分段摘要再合并。
+  // 2026-11-17（fix/zcode-codex-review）：纯逻辑拆到 summarize-core.mjs，修三处：
+  //   · 每个请求单独计时（旧：整段共用 30 秒 → 长会话手动压缩必然 aborted）
+  //   · 合并输入逐层分组合并，不再 slice(0, maxChars) 截掉后半段分块摘要
+  //   · raw=true 时提示词原样发送（轮摘要的 6 段模板不再被包一层「压缩以下对话」）
+  //   · model 可指定（旧：永远用供应商列表第一个模型，不是用户当前选的）
+  // signal：调用方的取消信号（手动压缩点「停止」），对每个请求都生效。
+  async function summarizeWithProvider(prov, text, {
+    maxChars = 30000, maxTokens = 5120, signal = null, raw = false, model = '',
+    requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS
+  } = {}) {
+    const modelId = String(model || '').trim() || firstModelId(prov);
+    const ask = async (prompt) => {
+      const rs = requestSignal(signal, requestTimeoutMs);
+      try {
         const res = await fetch(prov.baseUrl.replace(/\/+$/, '') + '/chat/completions', {
           method: 'POST',
           headers: { 'content-type': 'application/json', authorization: 'Bearer ' + prov.apiKey },
           body: JSON.stringify({
-            model: firstModelId(prov),
+            model: modelId,
             messages: [{ role: 'user', content: prompt }],
             max_tokens: maxTokens,
             stream: false
           }),
-          signal: ctl.signal
+          signal: rs.signal
         });
         if (!res.ok) throw new Error('HTTP ' + res.status);
         const j = await res.json();
         const s = j.choices?.[0]?.message?.content;
         if (!s || !String(s).trim()) throw new Error(t('空摘要'));
         return String(s).trim();
-      };
-      // 一块：直接一次摘要
-      if (chunks.length === 1) return await askOne(chunks[0], false);
-      // 多块：逐块摘要 → 合并（覆盖率 100%，不再丢尾）
-      const parts = [];
-      for (const c of chunks) parts.push(await askOne(c, false));
-      // 合并请求本身也可能超长：合并输入按 maxChars 截，但只截「多份摘要的拼接」，
-      // 每份摘要本身已经是压缩过的，所以这里截不会丢原始信息
-      return await askOne(parts.join('\n\n---\n\n').slice(0, maxChars), true);
-    } finally {
-      clearTimeout(timer);
-      if (signal) signal.removeEventListener('abort', onAbort);
-    }
+      } catch (e) {
+        if (rs.timedOut()) throw new Error(t('摘要请求超时（{sec} 秒）', { sec: Math.round(requestTimeoutMs / 1000) }));
+        throw e;
+      } finally {
+        rs.done();
+      }
+    };
+    return summarizeChunked({ text, ask, maxChars, raw });
   }
 
   // 会话标题（dsh 式 AI 命名）：首轮结束后用一句短 prompt 生成，失败就保留第一条消息当标题

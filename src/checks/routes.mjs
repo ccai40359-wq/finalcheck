@@ -153,7 +153,7 @@ export async function checkAuthCoverage(routeResult) {
   const findings = [];
   const routes = Array.isArray(routeResult && routeResult.routes) ? routeResult.routes : [];
   const unsupportedGap = routeResult?.unsupportedFrameworks?.length
-    ? `HTTP 框架尚未支持：${routeResult.unsupportedFrameworks.join('；')}（目前仅支持 Express 路由）` : null;
+    ? `HTTP 框架尚未支持：${routeResult.unsupportedFrameworks.join('；')}（目前支持 Express、FastAPI、Flask、Django/DRF、aiohttp 路由）` : null;
   // 空路由表但有 HTTP 服务/路由注册信号 → 提取器没解析出来，S1 未覆盖（unavailable）。
   // 只有完全没有 HTTP 信号时才是结构性的 not-applicable（本地 IPC 权限面由 S7 检查）。
   const httpSignal = Boolean(unsupportedGap) || Boolean(routeResult?.httpSurface?.exists);

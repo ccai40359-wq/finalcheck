@@ -5,6 +5,7 @@ import { parse } from '@babel/parser';
 import { t } from '../../desktop/src/renderer/i18n/core.mjs';
 import { findBinary } from '../which.mjs';
 import { listTextFiles, prunedWarning, fixturesWarning } from '../walk.mjs';
+import { analyzePyFile, isPySource } from './readability-py.mjs';
 import {
   DEFAULT_NOISE_HINTS, noiseWarning, reportCap, truncationRecord, truncationWarning,
 } from '../report-caps.mjs';
@@ -654,6 +655,8 @@ export async function checkReadability(projectDir, opts = {}) {
     files, skipped: tooBig, pruned, fixtures, overLimit,
   } = await listTextFiles(root, excludes, {
     codeOnly: true,
+    // 2026-11-17：Q4 补 Python 支持 → 必须收 .py（默认 'js' 只收 JS/TS 是语言缺口的根因之一）
+    languages: 'all',
     maxBytes: thresholds.maxFileBytes,
     maxFiles: thresholds.maxFiles,
     maxDepth: WALK_DEPTH_LIMIT,
@@ -673,11 +676,13 @@ export async function checkReadability(projectDir, opts = {}) {
     }));
   }
   if (!files.length) {
-    warnings.push(t('Q4：未找到可扫描的代码文件（ts/js/mjs/cjs/jsx/tsx）'));
+    warnings.push(t('Q4：未找到可扫描的代码文件（ts/js/mjs/cjs/jsx/tsx/py）'));
     return { checkId: CHECK_ID, findings, coverageGap: null, warnings };
   }
 
   let skippedGenerated = 0;
+  const pyUnsupported = [];
+  let pyFileCount = 0;
   for (const abs of files) {
     const file = path.relative(root, abs).replace(/\\/g, '/');
     let text;
@@ -687,10 +692,26 @@ export async function checkReadability(projectDir, opts = {}) {
       warnings.push(t('Q4：无法读取 {file}，已跳过', { file }));
       continue;
     }
+    const ext = path.extname(abs).toLowerCase();
     const emit = makeEmitter(findings, warnings, file, thresholds, perFile);
+    // 2026-11-17：Python 走独立的缩进/结构分析（无 AST 依赖），规则 id 与阈值与 JS 侧一致
+    if (isPySource(ext)) {
+      pyFileCount++;
+      const lines = String(text).replace(/\r\n?/g, '\n').split('\n');
+      const result = analyzePyFile({
+        file,
+        text,
+        thresholds,
+        emit,
+        snip: (line) => snippetAt(lines, line),
+      });
+      if (result.skippedGenerated) skippedGenerated++;
+      for (const u of result.unsupported) if (!pyUnsupported.includes(u)) pyUnsupported.push(u);
+      continue;
+    }
     const result = analyzeFile({
       file,
-      ext: path.extname(abs).toLowerCase(),
+      ext,
       text,
       thresholds,
       emit,
@@ -700,6 +721,10 @@ export async function checkReadability(projectDir, opts = {}) {
   }
   if (skippedGenerated) {
     warnings.push(t('Q4：跳过生成/压缩文件 {n} 个', { n: skippedGenerated }));
+  }
+  // Python 侧明确不做的规则要点名（fail-closed：别把「没查」当成「查了没问题」）
+  if (pyFileCount > 0) {
+    for (const u of pyUnsupported) warnings.push(`Q4：${u}`);
   }
 
   findings.sort((a, b) => (
@@ -765,6 +790,16 @@ export async function checkReadability(projectDir, opts = {}) {
     }
   }
   const out = { checkId: CHECK_ID, findings: kept, coverageGap: null, warnings };
+  // 2026-11-17：Python 覆盖声明（审计层据此解除「只解析 JS/TS」的语言缺口）。
+  // 没有这个字段时，即使 Python 分支真的扫了 .py，结论仍然卡在「无法验收」。
+  if (pyFileCount > 0) {
+    out.pythonCoverage = {
+      files: pyFileCount,
+      supported: ['Q4.fn-length', 'Q4.nesting-depth', 'Q4.comment-density', 'Q4.magic-number', 'Q4.naming'],
+      unsupported: ['Q4.duplicate-string', 'Q4.ts-any', 'Q4.ts-ignore'],
+      note: 'Python 侧按缩进结构解析（无 AST），字符串重复/TS 专属规则不适用',
+    };
+  }
   // 只有真的发生截断才加字段：未配置时返回形状与旧版一致
   if (reportTruncations.length) out.reportTruncations = reportTruncations;
   if (opts.rustMetrics !== false) {

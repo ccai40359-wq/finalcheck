@@ -6,6 +6,41 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.21.0] - 2026-11-18
+
+The Python accuracy release: Django projects can be fully audited for the first time, and Python security checks move from "Bandit only" to dedicated rules plus graded Bandit results. It also fixes several places in context compaction, the task ledger and the edit tool that failed silently.
+
+### Added
+
+- **Django / DRF route support**: `urls.py` is resolved to views (including `include` prefixes, `router.register` ViewSets and `from .views import *`), so Django projects no longer get "framework not supported" for auth coverage, webhook verification and IDOR.
+- Flask `add_url_rule` / `MethodView` class views and aiohttp route tables are parsed; Tornado, Sanic, Bottle, Falcon and Pyramid are now reported explicitly as "not covered" instead of looking checked.
+- **Python security rules**: path traversal, server-side template injection, SSRF, open redirect, reflected XSS, wide-open CORS in Flask/Django/FastAPI, `ALLOWED_HOSTS=['*']`, cookies with Secure/HttpOnly turned off, and JWT decoding without signature checks or with the `none` algorithm.
+- Project-specific auth is recognized: custom decorators such as `@token_required`, FastAPI `Annotated` dependency aliases such as `user: CurrentUser`, DRF `@permission_classes`, and inline `if request.user.is_authenticated` checks at the top of a view.
+- Python lockfile dependency audit: `uv.lock` / `poetry.lock` / `Pipfile.lock` are checked against OSV directly, and a pip-audit timeout falls back to OSV.
+- Python projects now get readability (Q4), static performance (Q5), tests (Q1, via pytest) and AI-call checks (A2-A4) instead of a blanket "only JS/TS is parsed".
+- Python accuracy benchmark: 7 labelled Flask/Django/FastAPI projects under `tests/benchmark/python/`; `node scripts/bench-py.mjs` reports detection rate and false positives so rule changes can be measured.
+
+### Fixed
+
+- **`/compact` reported success but the next turn was not actually shorter**: the history sent by the UI carries no timestamps, so nothing could be recognized as already summarized and everything was kept. It is now trimmed by matching message text; measured input for the same kind of question dropped from 18,049 to 12,684 tokens.
+- `/compact` always ended in "operation aborted" on long sessions because every summary request shared one 30-second budget; each request now has its own timeout.
+- Cross-turn memory permanently lost round 1, session and round summaries were injected twice, and summary truncation always cut the "next step" section first.
+- The task ledger was nearly empty with no line numbers and duplicated rounds on retry; failed edits were logged as edits and are now logged as failures with the reason.
+- Searching inside a single file returned no results, and searching inside the FinalCheck repo itself errored out.
+- `edit_file` could not edit files with Windows (CRLF) line endings, forcing the model to fall back to scripts.
+- Commands containing `"\r\n"` or `"\t"` were rejected as "paths outside the project".
+- Python dependency audit counted pip-audit crashes, skipped packages and partial checks as "audited", treated single-quoted pyproject dependencies as "no dependencies", and treated a Bandit run that errored midway as a complete scan; all of these are now reported as coverage gaps.
+- The IDOR check treated "logged in" as "ownership checked" (missing the most common FastAPI IDOR), and no longer flags endpoints that touch no data, public-content queries or webhooks.
+- Webhook signature checking treated every Python route as public and flagged handlers even when they verified an HMAC.
+- `publicRoutes` in `finalcheck.config.json` had no effect on Python routes.
+- Settings: sandbox mode cards were unreadable in three columns and Chinese leaked into the English UI; the page now states what the sandbox really blocks, and the default project directory is cleaned up.
+
+### Improved
+
+- Bandit results are graded by Bandit's own severity and confidence: reminders such as `assert` or "imports subprocess" are listed but no longer count toward the verdict, and a line reported by both a FinalCheck rule and Bandit is merged into one finding.
+- `md5(..., usedforsecurity=False)` used for ETags is no longer flagged as password hashing, and `app.config["SECRET_KEY"] = "..."` is recognized as a hardcoded secret.
+- Measured: detection on the labelled benchmark went from 63.9% to 100% and false positives on safe look-alikes from 2/28 to 0/49; the "no login guard" false positives in PyGoat's main app are essentially gone. The last blind set, run before any tuning, scored 55.6%, so unfamiliar code patterns can still be missed — the benchmark is how this keeps improving.
+
 ## [0.20.0] - 2026-11-17
 
 ### Improved

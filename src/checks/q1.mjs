@@ -17,6 +17,57 @@ async function npmTest(projectDir) {
   return runProcess(process.execPath, [npmCli, 'test'], { cwd: projectDir, timeoutMs: 180000 });
 }
 
+// Python 测试入口（2026-11-17，解除纯 Python 仓的 Q1 语言缺口）。
+//
+// 判定顺序与 npm 侧同构：有测试目录才跑，跑了看退出码，不跑就记缺口（绝不默认通过）。
+//   · pytest 优先（现代 Python 项目事实标准；`python -m pytest` 不依赖 PATH 上的 pytest 脚本）
+//   · 退回落 `python -m unittest discover`（标准库自带，零安装）
+// 明确不做：tox/nox 的组合矩阵（那是有意为之的多环境，跑哪一套要用户点名）。
+const PY_TEST_DIR_RE = /^(?:tests?|__tests__)$/i;
+const PY_TEST_FILE_RE = /^(?:test_.*\.py|.*_test\.py|conftest\.py)$/i;
+
+function pyInterpreter() {
+  for (const bin of ['python', 'python3', 'py']) {
+    if (findBinarySafe(bin)) return bin;
+  }
+  return null;
+}
+function findBinarySafe(name) {
+  // 只判「PATH 上能不能找到」：真跑失败会在退出码里体现，不在这里冒充可用
+  const exts = process.platform === 'win32' ? (process.env.PATHEXT || '.EXE;.CMD;.BAT').split(';') : [''];
+  for (const dir of String(process.env.PATH || '').split(path.delimiter)) {
+    if (!dir) continue;
+    for (const ext of [''].concat(exts.map((e) => e.toLowerCase())) ) {
+      if (existsSync(path.join(dir, name + ext))) return path.join(dir, name + ext);
+    }
+  }
+  return null;
+}
+
+/** 仓库里有没有 Python 测试（只看测试目录/测试文件名，不猜） */
+async function hasPythonTests(projectDir, excludes) {
+  const { files } = await listTextFiles(projectDir, excludes, { includeFixtures: false });
+  return files.some((f) => {
+    const rel = String(f).replace(/\\/g, '/');
+    const segs = rel.split('/');
+    if (segs.some((s) => PY_TEST_DIR_RE.test(s))) return rel.endsWith('.py');
+    return PY_TEST_FILE_RE.test(segs[segs.length - 1] || '');
+  });
+}
+
+async function runPythonTests(projectDir) {
+  const bin = pyInterpreter();
+  if (!bin) return { error: new Error('未找到 python 解释器') };
+  const r = await runProcess(bin, ['-m', 'pytest', '-q'], { cwd: projectDir, timeoutMs: 300000 });
+  // pytest 不存在（exit 4 + "No module named pytest"）→ 退回标准库 unittest
+  const stderr = String(r.stderr || '');
+  if (r.status === 4 && /No module named pytest|No module named 'pytest'/i.test(stderr)) {
+    const r2 = await runProcess(bin, ['-m', 'unittest', 'discover', '-q'], { cwd: projectDir, timeoutMs: 300000 });
+    return { ...r2, runner: 'unittest（pytest 未安装，已退回标准库）' };
+  }
+  return { ...r, runner: 'pytest' };
+}
+
 // 发现所有 coverage-summary.json（c8/nyc 的 json-summary reporter 产物）。
 // 根 coverage/ 优先，其次浅层目录（monorepo 的 desktop/coverage/...）。
 export async function findCoverageSummaries(projectDir, { maxDepth = 6 } = {}) {
@@ -96,6 +147,7 @@ export async function checkQ1(projectDir, { tier, excludes = [], routeResult = n
   const findings = [];
   const warnings = [];
   const force = tier === 'L1' ? 'tip' : 'card';
+  let usePyRunner = false; // Python 仓走 pytest 分支（下面统一切换 runner 与文案）
   try {
     const pkg = JSON.parse(readFileSync(path.join(projectDir, 'package.json'), 'utf8'));
     if (!pkg.scripts?.test) {
@@ -103,8 +155,15 @@ export async function checkQ1(projectDir, { tier, excludes = [], routeResult = n
       return { checkId: 'Q1', findings, coverageGap: null, warnings };
     }
   } catch {
-    // 没有 package.json = 本机没东西可跑（能力缺失），不是「用户没点头」
-    return { checkId: 'Q1', findings, coverageGap: '无 package.json，Q1 跳过', warnings };
+    // 2026-11-17：没有 package.json 时先看是不是 Python 仓——旧实现直接记「无 package.json，Q1 跳过」，
+    // 纯 Python 仓（fastapi/tradingagents）因此被判覆盖不足，整份结论压成「无法验收」。
+    const pyTests = await hasPythonTests(projectDir, excludes).catch(() => false);
+    if (!pyTests) {
+      // 真的没有可跑的东西（能力缺失），不是「用户没点头」
+      return { checkId: 'Q1', findings, coverageGap: '无 package.json，且未发现 Python 测试（tests/ 或 test_*.py），Q1 跳过', warnings };
+    }
+    usePyRunner = true;
+    warnings.push('Q1：未找到 package.json，按 Python 项目走 pytest / unittest discover');
   }
   // §7：外部项目禁跑被审代码的测试 → 记缺口，绝不因为「没跑」而当成通过
   // gapKind=unauthorized：只是等授权，别把整份结论压成「无法验收」/「拦」
@@ -112,25 +171,35 @@ export async function checkQ1(projectDir, { tier, excludes = [], routeResult = n
 
   const previousCoverage = new Map();
   if (tier === 'L3') for (const rel of await findCoverageSummaries(projectDir)) previousCoverage.set(rel, coverageStamp(path.join(projectDir, rel)));
-  const runRes = await testRunner(projectDir);
+  const runnerName = usePyRunner ? 'Python 测试' : 'npm test';
+  const runRes = usePyRunner ? await runPythonTests(projectDir) : await testRunner(projectDir);
+  if (usePyRunner && runRes.runner) warnings.push(`Q1：Python 测试入口 = ${runRes.runner}`);
   if (runRes.error) {
-    warnings.push(`npm test 运行失败：${runRes.error.code || 'error'}（计覆盖不足）`);
-    return { checkId: 'Q1', findings, coverageGap: 'npm test 无法运行', warnings };
+    warnings.push(`${runnerName} 运行失败：${runRes.error.code || 'error'}（计覆盖不足）`);
+    return { checkId: 'Q1', findings, coverageGap: `${runnerName} 无法运行`, warnings };
   }
   if (runRes.status !== 0) {
     const tail = String(runRes.stderr || runRes.stdout || '').trim().split('\n').slice(-5).join(' | ').slice(0, 280);
-    findings.push({ checkId: 'Q1', severity: 'medium', force, file: '(npm test)', line: 0, rule: 'Q1.tests-fail', snippet: `npm test 退出码 ${runRes.status}：${tail}`, message: '测试未全绿', source: 'program' });
+    findings.push({ checkId: 'Q1', severity: 'medium', force, file: `(${runnerName})`, line: 0, rule: 'Q1.tests-fail', snippet: `${runnerName} 退出码 ${runRes.status}：${tail}`, message: '测试未全绿', source: 'program' });
   }
 
   // L2 写接口（POST/PUT/PATCH/DELETE）必须在测试文件中有引用
   if (tier !== 'L1' && routeResult?.routes?.length) {
     const { files } = await listTextFiles(projectDir, excludes, { includeFixtures });
-    const testFiles = files.filter((f) => /\.(test|spec)\.[cm]?jsx?$/i.test(f) || /[\\/](tests?|__tests__)[\\/]/i.test(f));
+    // 2026-11-17：Python 测试文件名是 test_*.py / *_test.py，旧正则只认 *.test.js / tests/ 目录；
+    // 后者靠目录名能命中一部分，但 test_auth.py 这种纯文件名形式会漏。
+    const testFiles = files.filter((f) => /\.(test|spec)\.[cm]?jsx?$/i.test(f)
+      || /[\\/](tests?|__tests__)[\\/]/i.test(f)
+      || /[\\/](?:test_[^\\/]*\.py|[^\\/]*_test\.py|conftest\.py)$/i.test(f));
     let corpus = '';
     for (const f of testFiles) { try { corpus += readFileSync(f, 'utf8') + '\n'; } catch { /* 忽略不可读 */ } }
     for (const r of routeResult.routes) {
       if (!['post', 'put', 'patch', 'delete'].includes(r.method)) continue;
-      const literal = r.path.replace(/:[^/]+/g, '').replace(/\/{2,}/g, '/'); // 双斜杠归一 + 根路径跳过（三轮 P2#11）
+      // Python 路由的路径参数是 {user_id}，要一起剥掉，否则永远匹配不上测试里写的真实路径
+      const literal = String(r.path || '')
+        .replace(/:[^/]+/g, '')
+        .replace(/\{[^/}]+\}/g, '')
+        .replace(/\/{2,}/g, '/'); // 双斜杠归一 + 根路径跳过（三轮 P2#11）
       if (literal && literal !== '/' && !corpus.includes(literal)) {
         findings.push({ checkId: 'Q1', severity: 'medium', force, file: r.file, line: r.line, rule: 'Q1.write-route-untested', snippet: `${r.method.toUpperCase()} ${r.path}`, message: '写接口在测试文件中零引用——若无请补测试，若有请反馈误报', source: 'program' });
       }

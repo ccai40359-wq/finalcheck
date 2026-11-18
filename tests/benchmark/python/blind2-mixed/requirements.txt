@@ -1,0 +1,6 @@
+Flask==3.0.3
+Flask-Login==0.6.3
+Flask-SQLAlchemy==3.1.1
+aiohttp==3.10.10
+PyJWT==2.10.1
+requests==2.32.4

@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { applyAgentEvent } from '../../renderer/lib/process-events.mjs';
 import { readFile } from 'node:fs/promises';
 import * as sessions from '../sessions.mjs';
+import { keepAfterCompactCut } from '../compact-cut.mjs';
 import * as permissions from '../permissions.mjs';
 import { recordAudit, projectContext, extractPaths } from '../memory.mjs';
 import { readProjectMemory } from '../project-memory.mjs';
@@ -299,7 +300,7 @@ export function registerAgentIpc({
     let liveFallbackWarned = false; // 回退 warning 每回合最多一条，不刷屏
     // LLM 总结回调（超预算时由 agent-service 调用）：非流式，失败由 context.mjs 静默回退抽取式。
     // 用当前生效的供应商（运行中切换后别再拿旧 key 去请求）
-    const summarize = (text) => store.summarizeWithProvider(liveModels.current()?.provider || prov, text);
+    const summarize = (text) => store.summarizeWithProvider(liveModels.current()?.provider || prov, text, { model: liveModels.current()?.model || model });
     // 手动 /compact 之后：带「摘要 + 摘要之后新增的全部消息」。
     //
     // 2026-11-17（规格 §4 步 4）：旧实现是 `...contextMessages.slice(-6)`，一旦执行过
@@ -307,19 +308,17 @@ export function registerAgentIpc({
     // 那 6 条永远到不了压缩阈值，层级 2/3/4 全部失效（规格缺陷 D2）。
     // 现在用 summaryAt（写摘要的时间戳）切：只裁掉「摘要已覆盖的那部分」，
     // summaryAt 之后新增的消息全部保留，历史能正常累积。
+    let sessionSummaryAt = 0; // 会话级 /compact 摘要的切分点，下面轮摘要注入要用同一个口径
     if (sessionId) {
       try {
         const s = await sessions.loadSession(sessionId);
         if (s.summary) {
           const cutAt = Number(s.summaryAt) || 0;
-          // 保留 summaryAt 之后的消息（含边界：at >= cutAt）。没有 summaryAt 时退回只带最近 6 条，
-          // 避免把已经写进摘要的老消息重复喂一遍。
-          const after = cutAt > 0
-            ? contextMessages.filter((m) => {
-              const at = Number(m?.at);
-              return !Number.isFinite(at) || at >= cutAt;
-            })
-            : contextMessages.slice(-6);
+          sessionSummaryAt = cutAt;
+          // 保留摘要覆盖范围之后的消息。没有 summaryAt 时退回只带最近 6 条。
+          // 前端历史不带 at，按库里消息的时间戳 + 原文对齐（见 compact-cut.mjs）。
+          const { kept: after, matched } = keepAfterCompactCut(contextMessages, s.messages, cutAt);
+          if (!matched) console.warn('[compact] 摘要覆盖边界没在前端历史里对上，本轮保留全部历史');
           contextMessages = [{ role: 'system', content: '[此前对话摘要]\n' + s.summary }, ...after];
         }
       } catch { /* 无摘要时按原样 */ }
@@ -329,10 +328,15 @@ export function registerAgentIpc({
     // 带到下一轮。放在 compact 摘要之后、hook 之前，且不受 slice 裁剪影响。
     if (sessionId) {
       try {
+        const { renderRoundSummaries, dropRoundSummariesCoveredBy, awaitPendingRoundSummary } = await import(engineUrl('desktop/src/main/round-summary-wire.mjs'));
+        // 上一轮的摘要还在写（用户紧接着发了下一句）：先等它落盘再读，否则这一轮恰好
+        // 拿不到上一轮的记忆。最多等 15 秒，超时就照常继续（不让慢摘要卡住回合）。
+        await awaitPendingRoundSummary(sessionId, { timeoutMs: 15000 });
         const list = await sessions.loadRoundSummaries(sessionId).catch(() => []);
         if (Array.isArray(list) && list.length) {
-          const { renderRoundSummaries } = await import(engineUrl('desktop/src/main/round-summary-wire.mjs'));
-          const rendered = renderRoundSummaries(list);
+          // 2026-11-17 P1：已经被会话级摘要覆盖的那几轮别再进一次（同一段历史双份 = 白占预算）
+          const kept = dropRoundSummariesCoveredBy(list, sessionSummaryAt);
+          const rendered = renderRoundSummaries(kept);
           if (rendered) {
             contextMessages = [
               ...contextMessages,
@@ -884,16 +888,24 @@ export function registerAgentIpc({
     // （part 表的 tool part 不会出现在 messages），所以第 2 轮模型完全不知道第 1 轮
     // 读过什么。这里在回合结束后写一份 6 段摘要，下次回合开头注入。
     // 不 await：摘要失败不该拖慢/影响用户看到回答；失败只记录不抛。
+    const roundEndedAt = Date.now();
     if (sessionId && !out.cancelled && !out.error && typeof out.answer === 'string' && out.answer.trim()) {
       void (async () => {
         try {
           const { writeRoundSummary } = await import(engineUrl('desktop/src/main/round-summary-wire.mjs'));
           const r = await writeRoundSummary({
             sessionId,
+            // 稳定回合 id：同一回合重放/重试不会生成第二份摘要
+            roundId: chatAbort.snapshot?.runId || null,
+            at: roundEndedAt,
             userMessage: userMsg,
             trace: out.trace || [],
             answer: out.answer,
-            summarize: (prompt) => store.summarizeWithProvider(liveModels.current()?.provider || prov, prompt, { maxTokens: 5120 }),
+            // raw：提示词（6 段模板 + 工具清单）原样发送，不再被包一层「压缩以下对话历史」；
+            // model：用这一轮实际在用的模型，不是供应商列表里的第一个
+            summarize: (prompt) => store.summarizeWithProvider(liveModels.current()?.provider || prov, prompt, {
+              maxTokens: 5120, raw: true, model: liveModels.current()?.model || model
+            }),
             sessions
           });
           if (!r.ok) console.warn('[round-summary] ' + (r.error || '未生成'));
@@ -915,7 +927,7 @@ export function registerAgentIpc({
           // 轮号由 appendRoundToLedger 自己数（避免两套计数器漂移）
           await appendRoundToLedger({
             projectRoot: turnProjectPath,
-            round: { at: nowStamp(), title: userMsg, lines: entries }
+            round: { id: chatAbort.snapshot?.runId || '', at: nowStamp(), title: userMsg, lines: entries }
           });
         } catch (e) {
           console.warn('[ledger] 写账本失败（已忽略）：' + (e?.message || e));
