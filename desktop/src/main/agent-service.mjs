@@ -1631,8 +1631,8 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
             continue;
           }
           onEvent?.({ kind: 'turn-end', ms: Date.now() - turnStart, error: true });
-          if (res.status === 402) return { error: t('网关连接失败：{err}。{hint}。', { err: lastErr, hint: BILLING_HINT }), trace, warnings };
-          return { error: t('网关连接失败：{err}{retry}。{checklist}', { err: lastErr, retry: attempt > 1 ? t('（已重试 {n} 次）', { n: attempt - 1 }) : '', checklist: CHECKLIST }), trace, warnings };
+          if (res.status === 402) return { error: t('网关连接失败：{err}。{hint}。', { err: lastErr, hint: BILLING_HINT }), trace, warnings, reasoning: reasoningAll || undefined, workedMs: Date.now() - turnStart };
+          return { error: t('网关连接失败：{err}{retry}。{checklist}', { err: lastErr, retry: attempt > 1 ? t('（已重试 {n} 次）', { n: attempt - 1 }) : '', checklist: CHECKLIST }), trace, warnings, reasoning: reasoningAll || undefined, workedMs: Date.now() - turnStart };
         }
       } catch (e) {
         if (signal?.aborted) { onEvent?.({ kind: 'turn-end', ms: Date.now() - turnStart, interrupted: true }); return { cancelled: true, interrupted: true, partialContent: '', answer: '', trace, reasoning: reasoningAll || undefined, usage: lastUsage || undefined }; }
@@ -1655,16 +1655,16 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
         }
         onEvent?.({ kind: 'turn-end', ms: Date.now() - turnStart, error: true });
         // 静默重试用尽：不返回栈，只给人话（网关一个字节都不回 ≠ 活干得久）
-        if (silenceHit) return { error: t('{reason}（已重试 {n} 次）。{checklist}', { reason: SILENCE_REASON, n: MAX_ATTEMPTS, checklist: CHECKLIST }), trace, warnings };
-        return { error: t('网关连接失败：{reason}（已重试 {n} 次）。{checklist}', { reason: retryReason, n: MAX_ATTEMPTS, checklist: CHECKLIST }), trace, warnings };
+        if (silenceHit) return { error: t('{reason}（已重试 {n} 次）。{checklist}', { reason: SILENCE_REASON, n: MAX_ATTEMPTS, checklist: CHECKLIST }), trace, warnings, reasoning: reasoningAll || undefined, workedMs: Date.now() - turnStart };
+        return { error: t('网关连接失败：{reason}（已重试 {n} 次）。{checklist}', { reason: retryReason, n: MAX_ATTEMPTS, checklist: CHECKLIST }), trace, warnings, reasoning: reasoningAll || undefined, workedMs: Date.now() - turnStart };
       }
       // 防御性兜底：既没拿到流也没失败原因（正常不可达）
       onEvent?.({ kind: 'turn-end', ms: Date.now() - turnStart, error: true });
-      return { error: t('网关连接失败：{err}。{checklist}', { err: lastErr || t('未知错误'), checklist: CHECKLIST }), trace, warnings };
+      return { error: t('网关连接失败：{err}。{checklist}', { err: lastErr || t('未知错误'), checklist: CHECKLIST }), trace, warnings, reasoning: reasoningAll || undefined, workedMs: Date.now() - turnStart };
     }
     if (!streamOut) {
       onEvent?.({ kind: 'turn-end', ms: Date.now() - turnStart, error: true });
-      return { error: t('网关连接失败：{err}。{checklist}', { err: lastErr || t('未知错误'), checklist: CHECKLIST }), trace, warnings };
+      return { error: t('网关连接失败：{err}。{checklist}', { err: lastErr || t('未知错误'), checklist: CHECKLIST }), trace, warnings, reasoning: reasoningAll || undefined, workedMs: Date.now() - turnStart };
     }
     let { content, reasoning, toolCalls, repetitive, aborted, usage, finishReason } = streamOut;
     if (usage) lastUsage = usage;
@@ -1674,6 +1674,7 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
     if (aborted || signal?.aborted) {
       // dsh 语义：中断≠删除——已流出的内容原样返回并落盘，正文标记「已中断」
       const partial = content || '';
+      if (reasoning) reasoningAll += (reasoningAll ? String.fromCharCode(10) : '') + reasoning; // 停止前这一轮的思考也要留下（以前在合并之前就 return 了）
       onEvent?.({ kind: 'turn-end', ms: Date.now() - turnStart, interrupted: true });
       return { cancelled: true, interrupted: true, partialContent: partial, answer: partial, reasoning: reasoningAll || undefined, trace, workedMs: Date.now() - turnStart, roundsUsed: turnsUsed, usage: usage || lastUsage || undefined };
     }
@@ -1833,13 +1834,33 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
     }
     const repairedByIndex = new Map(inspected.repaired.map((x) => [x.index, x]));
     const toolStartedAt = Date.now();
+    // 这一轮的思考与工具前说的话：随本轮第一个工具的「开始」事件一起交给落库层（立即写盘），
+    // 中途关 app / 进程挂掉也不丢；回合正常收尾时再挂到 trace 上（2026-11-19 用户实测：281 步的回合
+    // 没正常收尾，库里工具全在、模型说过的话 0 字）。
+    const roundThought = String(reasoning || '').trim();
+    const roundSay = String(content || '').trim();
+    let roundNote = (roundThought || roundSay) ? { thought: roundThought.slice(0, 4000), say: roundSay.slice(0, 2000) } : null;
+    const lifecycleWithNote = typeof onToolLifecycle === 'function'
+      ? (ev) => {
+        if (roundNote && ev?.phase === 'start') {
+          const note = roundNote;
+          roundNote = null;
+          return onToolLifecycle({ ...ev, ...(note.thought ? { thought: note.thought } : {}), ...(note.say ? { say: note.say } : {}) });
+        }
+        return onToolLifecycle(ev);
+      }
+      : onToolLifecycle;
     const toolResults = inspected.invalid.length
       ? await runToolCallsGuarded(toolCalls, inspected.invalid, {
-        tools, onEvent, toolConcurrency: config.toolConcurrency, signal, onToolLifecycle,
+        tools, onEvent, toolConcurrency: config.toolConcurrency, signal, onToolLifecycle: lifecycleWithNote,
         code: ARGS_INVALID_JSON_CODE
       })
-      : await runToolCalls(toolCalls, { tools, onEvent, toolConcurrency: config.toolConcurrency, signal, onToolLifecycle });
+      : await runToolCalls(toolCalls, { tools, onEvent, toolConcurrency: config.toolConcurrency, signal, onToolLifecycle: lifecycleWithNote });
     toolWaitMs += Date.now() - toolStartedAt;
+    if (toolResults[0]?.trace && (roundThought || roundSay)) {
+      if (roundThought) toolResults[0].trace.thought = roundThought.slice(0, 4000);
+      if (roundSay) toolResults[0].trace.say = roundSay.slice(0, 2000);
+    }
     toolResults.forEach((r, index) => {
       const rep = repairedByIndex.get(index);
       if (rep) r.trace.repaired = rep.repairs;

@@ -40,8 +40,14 @@ export function interruptedTurnDigest(m) {
   const text = String(m?.content || '').trim();
   if (!trace.length && !text) return null;
   const mins = m?.workedMs ? Math.max(1, Math.round(m.workedMs / 60000)) : null;
-  const head = `[上一轮在执行中被中断（${oneLine(m?.error || '未知原因', 120)}）${mins ? `，已工作约 ${mins} 分钟` : ''}，共调用工具 ${trace.length} 次。以下是中断前已经完成的工作，接着做，不要从头重来；已确认的结论不必重查，没做完的接着做。]`;
-  const items = trace.slice(-MAX_ITEMS).map((x, i) => `${trace.length - Math.min(trace.length, MAX_ITEMS) + i + 1}. ${x.tool}(${argSummary(x.args)}) → ${resultSummary(x.result)}`);
+  const why = m?.error ? `被中断（${oneLine(m.error, 120)}）` : '被用户手动停止';
+  const head = `[上一轮在执行中${why}${mins ? `，已工作约 ${mins} 分钟` : ''}，共调用工具 ${trace.length} 次。以下是停下前已经完成的工作（含你当时的思路），用户说继续时就从这里接着做，不要从头重来；已确认的结论不必重查。]`;
+  const items = trace.slice(-MAX_ITEMS).map((x, i) => {
+    const line = `${trace.length - Math.min(trace.length, MAX_ITEMS) + i + 1}. ${x.tool}(${argSummary(x.args)}) → ${resultSummary(x.result)}`;
+    const note = oneLine(x.say || x.thought || '', 160);
+    return note ? `   （当时的思路：${note}）
+${line}` : line;
+  });
   const skipped = trace.length > MAX_ITEMS ? [`（更早的 ${trace.length - MAX_ITEMS} 次调用略）`] : [];
   const body = [head, ...skipped, ...items, ...(text ? ['中断前已输出的正文：', text.slice(0, 1500)] : [])].join('\n');
   return body.length > MAX_CHARS ? body.slice(0, MAX_CHARS) + '…' : body;
@@ -54,10 +60,14 @@ export function interruptedTurnDigest(m) {
 export function buildSendHistory(baseMessages) {
   const kept = (Array.isArray(baseMessages) ? baseMessages : [])
     .filter((m) => !m.local && !m.steer && (m.role === 'user' || m.role === 'assistant'))
-    .map((m) => { const { streaming, events, startedAt, ...rest } = m; return rest; });
+    // 只剥流式瞬态字段；已完成消息的 events（含每轮思考）必须保留——以前一起剥掉，
+    // 发下一条消息后上一轮的模型输出从界面消失，只剩工具（用户实测）
+    .map((m) => { const { streaming, startedAt, ...rest } = m; if (streaming) delete rest.events; return rest; });
   const wire = [];
   for (const m of kept) {
-    if (m.error) {
+    // 出错中断 / 手动停止且已经干了活的回合：都换成进展摘要（停止的回合以前只带已流出的半句正文，AI 不知道做过什么）
+    const stoppedWithWork = m.role === 'assistant' && m.interrupted && Array.isArray(m.trace) && m.trace.length > 0;
+    if (m.error || stoppedWithWork) {
       if (m.role !== 'assistant') continue;
       const digest = interruptedTurnDigest(m);
       if (digest) wire.push({ role: 'assistant', content: digest });

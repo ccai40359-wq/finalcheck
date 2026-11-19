@@ -769,3 +769,16 @@ test('agent: Cloudflare 524（源站超时）按网关抖动重试，不直接�
   assert.match(out.answer, /重试后拿到了/);
   assert.ok(events.some((e) => e.kind === 'retry'));
 });
+
+test('agent: 网关出错结束的回合也带回已累计的思考（以前 error 返回不带 reasoning，落库 0 字）', async () => {
+  let calls = 0;
+  const mockFetch = async () => {
+    calls += 1;
+    if (calls === 1) return sse([{ choices: [{ delta: { reasoning_content: '第一轮：先看目录' } }] }, { choices: [{ delta: { tool_calls: [{ index: 0, id: 'c1', function: { name: 'fake_tool', arguments: '{}' } }] } }] }]);
+    throw new TypeError('fetch failed');
+  };
+  const out = await runAgentTurn({ config: cfg(), messages: [{ role: 'user', content: '跑' }], tools: { fake_tool: async () => ({ ok: true }) }, fetchImpl: mockFetch, retryBaseMs: 1 });
+  assert.match(out.error, /网关连接失败/);
+  assert.match(out.reasoning || '', /第一轮：先看目录/);
+  assert.equal(out.trace[0].thought, '第一轮：先看目录');
+});

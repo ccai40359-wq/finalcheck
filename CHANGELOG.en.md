@@ -6,6 +6,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.23.0] - 2026-11-19
+
+The "continue" release: after a task is interrupted, saying "continue" lets the AI pick up where it left off, the way Claude Code does, instead of exploring from scratch; what the model says and thinks is saved with every step, so closing the app midway no longer loses it.
+
+### Added
+
+- **"Continue" after an interruption picks up right where it stopped**: when the previous turn did not finish because of a network drop, a manual stop or the app being closed, saying "continue" hands the AI that turn's full tool history as it happened (every call, its real result and what the model said at the time), keeping the most recent steps verbatim and condensing older ones into a summary. Tested on a promo-video task interrupted after 281 steps: the old version re-ran ls, re-read the source and re-viewed the screenshots after "continue"; the new version went straight to checking the rendered output and audio and moved on to the final compositing step. The cost is extra tokens for that one "continue" (about 60k in this example); normal conversation is unaffected.
+
+### Fixed
+
+- **When a turn did not end normally, everything the model said and thought was lost**: tool records were saved step by step, but the reply and reasoning were only written when the turn ended normally, so closing the app or a process exit left only the tools (in a real 281-step turn, the stored reply and reasoning were both empty). Each round's reasoning and the text before its tools are now saved immediately with that round's first tool and still show in the timeline after reopening the session.
+- After sending the next message, the reasoning in the previous turn's timeline disappeared from the screen, leaving only the tool list.
+- A manual stop discarded the last round's reasoning, and turns that ended in a gateway error saved no reasoning at all.
+- Cross-turn context compaction could fold a tool call into the summary while keeping its result, leaving a tool result with no matching call that the gateway rejects outright; calls and results are now always kept together.
+
 ## [0.22.0] - 2026-11-18
 
 The multi-language and real-model acceptance release: Go / Java / PHP projects get injection checks for the first time, and Go / Java / PHP / Rust / Ruby / .NET dependencies plus Dockerfile / K8s configuration are checked through Trivy. The full AI acceptance flow was run with a real model (deepseek-v4.1-flash-eco) on 6 real repositories, and the problems it surfaced are fixed. The right-hand preview now plays videos and shows PPT / Word / PDF page by page.

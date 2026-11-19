@@ -153,6 +153,10 @@ export function mergeTraceIntoEvents(events, trace, workedMs = null, { completed
     });
   }
   let previous = null;
+  // 从库里恢复（没有实时 events 里的思考条目）时，用落在 trace 上的每轮思考 / 工具前说的话重建「Thought」条目
+  // （2026-11-18 用户实测：发下一条消息 / 重开会话后，工具还在、模型说过的话全没了）
+  const rebuildNotes = !out.some((e) => e.type === 'thought');
+  const notes = [];
   traces.forEach((tr, ti) => {
     let entry = matched.get(ti);
     if (!entry) {
@@ -176,7 +180,12 @@ export function mergeTraceIntoEvents(events, trace, workedMs = null, { completed
       if (entry.status !== 'fail') entry.status = 'ok';
     } else if (!entry.status) entry.status = completed ? (interrupted || tr.status === 'running' ? 'fail' : 'ok') : 'running';
     previous = entry;
+    if (rebuildNotes && (tr.thought || tr.say)) notes.push([entry, [tr.thought, tr.say].filter(Boolean).join('\n\n')]);
   });
+  for (const [entry, text] of notes) {
+    const at = out.indexOf(entry);
+    if (at >= 0) out.splice(at, 0, { type: 'thought', text, live: false, ms: null });
+  }
   if (completed) {
     for (const entry of out) {
       if (entry.type === 'tool' && entry.status === 'running') entry.status = 'fail';

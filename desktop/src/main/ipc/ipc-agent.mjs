@@ -323,6 +323,20 @@ export function registerAgentIpc({
         }
       } catch { /* 无摘要时按原样 */ }
     }
+    // 中断后「继续」（2026-11-19 用户定案，对齐 Claude Code）：上一轮被中断且跑过工具 → 把它的完整工具过程
+    // （调用 + 真实结果 + 当时说的话）原样放回上下文，AI 直接接着做，不用从头 ls / 读文件。
+    // 从库里读：重启 app 之后、渲染层没有内存记录时也成立。
+    if (sessionId) {
+      try {
+        const { replayInterruptedTurn } = await import('../interrupted-replay.mjs');
+        const s = await sessions.loadSession(sessionId);
+        const r = replayInterruptedTurn(contextMessages, s.messages);
+        if (r.replay) {
+          contextMessages = r.messages;
+          console.log(`[resume] 接上中断的上一轮：原样回放 ${r.replay.replayed} 步${r.replay.summarized ? `，更早 ${r.replay.summarized} 步为摘要` : ''}（约 ${r.replay.chars} 字符）`);
+        }
+      } catch (e) { console.warn('[resume] 中断回放失败，按普通历史继续：' + (e?.message || e)); }
+    }
     // 每轮任务摘要库（2026-11-17 规格 §4 步 6）：最近 10 轮原文 + 1 份古老合并摘要。
     // 这是「跨轮记忆」的真正载体——工具结果不进历史，靠它把「读过什么/改过什么/报什么错」
     // 带到下一轮。放在 compact 摘要之后、hook 之前，且不受 slice 裁剪影响。
@@ -737,7 +751,7 @@ export function registerAgentIpc({
         if (!ev) return;
         const base = { callId: ev.id ?? null, name: ev.name ?? '', args: ev.args ?? '' };
         if (ev.phase === 'start') {
-          void sessions.appendToolStart(sessionId, base).catch(() => { /* 落库失败不阻断对话 */ });
+          void sessions.appendToolStart(sessionId, { ...base, thought: ev.thought, say: ev.say }).catch(() => { /* 落库失败不阻断对话 */ });
         } else if (ev.phase === 'end') {
           void sessions.appendToolEnd(sessionId, {
             ...base,

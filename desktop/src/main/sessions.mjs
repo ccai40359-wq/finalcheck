@@ -403,6 +403,9 @@ function traceToData(tr) {
     error: obj.error === undefined ? null : obj.error,
     ms: obj.ms === undefined ? null : obj.ms,
     ...(obj.callId != null ? { callId: String(obj.callId) } : {}),
+    // 本轮思考 / 工具前说的话（2026-11-18）：以前白名单不含，挂在 trace 上也会在落库时被丢掉
+    ...(obj.thought ? { thought: String(obj.thought) } : {}),
+    ...(obj.say ? { say: String(obj.say) } : {}),
   };
 }
 
@@ -424,7 +427,9 @@ function dataToTrace(data) {
     ...(typeof data.status === 'string' && data.status !== 'success' ? { status: data.status } : {}),
     ...(data.error != null ? { error: String(data.error) } : {}),
     ...(data.callId != null ? { callId: String(data.callId) } : {}),
-    ...(data.ms != null ? { ms: data.ms } : {})
+    ...(data.ms != null ? { ms: data.ms } : {}),
+    ...(data.thought ? { thought: String(data.thought) } : {}),
+    ...(data.say ? { say: String(data.say) } : {})
   };
 }
 
@@ -869,6 +874,9 @@ async function sqliteAppendToolStart(id, tool = {}) {
         error: null,
         ms: null,
         startedAt: now,
+        // 工具一开始就落库：这一轮的思考跟着一起写，中途关 app / 崩溃也不丢
+        ...(tool.thought ? { thought: String(tool.thought).slice(0, 4000) } : {}),
+        ...(tool.say ? { say: String(tool.say).slice(0, 2000) } : {}),
       }));
       db.prepare(SQL.touch).run(now, id);
       return { messageId: pending.id, partId, seq: partSeq };
@@ -903,6 +911,8 @@ async function sqliteAppendToolEnd(id, tool = {}) {
         error: tool.error == null ? null : String(tool.error),
         ms: Number.isFinite(Number(tool.ms)) ? Number(tool.ms) : null,
         startedAt: prev.startedAt ?? null,
+        ...(prev.thought ? { thought: prev.thought } : {}),
+        ...(prev.say ? { say: prev.say } : {}),
       }), hit.row.id);
       db.prepare(SQL.touch).run(now, id);
     });
@@ -1007,6 +1017,9 @@ async function sqliteAppendWorkflowToolStart(id, params = {}) {
         error: null,
         ms: null,
         startedAt: now,
+        // 工具一开始就落库：这一轮的思考跟着一起写，中途关 app / 崩溃也不丢
+        ...(tool.thought ? { thought: String(tool.thought).slice(0, 4000) } : {}),
+        ...(tool.say ? { say: String(tool.say).slice(0, 2000) } : {}),
       }));
       db.prepare(SQL.touch).run(now, id);
       return { messageId, partId, seq: partSeq, status: 'running' };
@@ -1043,6 +1056,8 @@ async function sqliteAppendWorkflowToolEnd(id, params = {}) {
         error: tool.error == null ? null : String(tool.error),
         ms: Number.isFinite(Number(tool.ms)) ? Number(tool.ms) : null,
         startedAt: prev.startedAt ?? null,
+        ...(prev.thought ? { thought: prev.thought } : {}),
+        ...(prev.say ? { say: prev.say } : {}),
       }), hit.row.id);
       db.prepare(SQL.touch).run(now, id);
     });

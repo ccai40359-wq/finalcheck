@@ -104,3 +104,16 @@ test('view_image 端到端：图片作为 image_url 发给模型，工具 JSON �
   assert.ok(imgMsg, '下一次请求里应带 image_url');
   assert.match(imgMsg.content.find((p) => p.type === 'image_url').image_url.url, /^data:image\/png;base64,/);
 });
+
+test('每轮思考与工具前说的话挂到本轮第一条工具记录上（落盘后可恢复）', async () => {
+  let calls = 0;
+  const sse = (chunks) => new Response(chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`).join('') + 'data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } });
+  const fetchImpl = async () => {
+    calls++;
+    if (calls === 1) return sse([{ choices: [{ delta: { reasoning_content: '先确认目录结构' } }] }, { choices: [{ delta: { content: '我先看看目录。' } }] }, { choices: [{ delta: { tool_calls: [{ index: 0, id: 't1', function: { name: 'noop', arguments: '{}' } }] } }] }]);
+    return sse([{ choices: [{ delta: { content: '完成' } }] }]);
+  };
+  const out = await runAgentTurn({ config: { baseUrl: 'https://mock/v1', apiKey: 'k', model: 'm' }, messages: [{ role: 'user', content: 'x' }], tools: { noop: async () => ({ ok: true }) }, fetchImpl });
+  assert.equal(out.trace[0].thought, '先确认目录结构');
+  assert.equal(out.trace[0].say, '我先看看目录。');
+});

@@ -454,3 +454,33 @@ test('reload and database reopen retain same-name call identity, failure details
     assert.equal(entries[1].result.error, 'permission denied');
   }
 });
+
+test('每轮思考随「工具开始」落库：中途关 app（没写收尾）重开后，思考与工具前说的话仍在时间线里（2026-11-18 用户实测丢失）', async (t) => {
+  await freshDir(t, 'fc-toolparts-thought-');
+  const s = await sessions.newSession('思考落库');
+  await sessions.appendUserMessage(s.id, '做宣传片');
+  await sessions.appendToolStart(s.id, { callId: 'c1', name: 'read_file', args: '{"path":"Gap.tsx"}', thought: '先看 Gap 场景为什么文字重叠', say: '我先读一下 Gap.tsx。' });
+  await sessions.appendToolEnd(s.id, { callId: 'c1', name: 'read_file', args: '{"path":"Gap.tsx"}', status: 'ok', result: { totalLines: 120 }, ms: 3 });
+  await sessions.appendToolStart(s.id, { callId: 'c2', name: 'view_image', args: '{"path":"s1180.png"}' });
+  // 模拟中途关 app：不写 appendAssistantMessage，直接关库重开
+  sessions.closeAllSessionDatabases();
+  const reopened = await sessions.loadSession(s.id);
+  const msg = reopened.messages[1];
+  assert.equal(msg.trace[0].thought, '先看 Gap 场景为什么文字重叠');
+  assert.equal(msg.trace[0].say, '我先读一下 Gap.tsx。');
+  const entries = timelineEntries({ ...msg, interrupted: true });
+  assert.equal(entries[0].type, 'thought');
+  assert.match(entries[0].text, /先看 Gap 场景为什么文字重叠\n\n我先读一下 Gap\.tsx。/);
+  assert.deepEqual(entries.filter((e) => e.type === 'tool').map((e) => e.name), ['read_file', 'view_image']);
+});
+
+test('回合正常收尾时 trace 上的 thought / say 不被落库白名单丢掉', async (t) => {
+  await freshDir(t, 'fc-toolparts-thought2-');
+  const s = await sessions.newSession('思考收尾');
+  await sessions.appendUserMessage(s.id, 'x');
+  await sessions.appendAssistantMessage(s.id, { content: '好了', reasoning: '总思考', trace: [{ tool: 'read_file', args: '{}', result: { ok: 1 }, thought: '第一轮思考', say: '第一轮说明' }] });
+  sessions.closeAllSessionDatabases();
+  const tr = (await sessions.loadSession(s.id)).messages[1].trace[0];
+  assert.equal(tr.thought, '第一轮思考');
+  assert.equal(tr.say, '第一轮说明');
+});

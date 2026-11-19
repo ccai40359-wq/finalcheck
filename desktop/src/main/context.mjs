@@ -77,6 +77,9 @@ export async function assembleContext(messages, { budgetTokens, budgetChars = 80
     keptChars += c;
     keepFrom = i;
   }
+  // 保留区不能以 tool 结果开头：它对应的 assistant(tool_calls) 被压进摘要会留下悬空结果，网关直接 400。
+  // 跨轮历史以前没有 tool 消息所以从没遇到；中断回放（interrupted-replay）把工具过程带回来后就会出现。
+  while (keepFrom > 0 && keepFrom < list.length && list[keepFrom]?.role === 'tool') keepFrom--;
   const zone = list.slice(0, keepFrom);
   const kept = list.slice(keepFrom);
 

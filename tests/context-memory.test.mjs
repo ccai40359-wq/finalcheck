@@ -64,7 +64,9 @@ test('context: summarize 抛错走抽取式（user 前 60 字 + 工具调用名�
   assert.ok(head.content.startsWith('[历史摘要]\n'));
   assert.ok(head.content.includes('- 用户：' + 'Q'.repeat(60))); // 前 60 字
   assert.ok(!head.content.includes('Q'.repeat(70))); // 不超 60 字
-  assert.ok(head.content.includes('- 助手调用工具：audit_project')); // 工具调用名列表
+  // 2026-11-19：保留区不能以 tool 结果开头——audit_project 的调用和结果一起留在保留区（不再被压进摘要后留下悬空结果）
+  const keptCall = out.messages.findIndex((m) => (m.tool_calls || []).some((c) => c.id === 'c1'));
+  assert.ok(keptCall > 0 && out.messages[keptCall + 1]?.tool_call_id === 'c1');
 });
 
 test('context: 保留区 role=tool 长消息截为头 1200 字 + 截断标注，短 tool 原样', async () => {
@@ -151,7 +153,7 @@ test('context: token 预算模式——summarize 失败退抽取式，保留区 
     summarize: async () => { throw new Error('网关挂了'); }
   });
   assert.equal(out.compacted, true);
-  assert.equal(out.messages.length, 6); // 2026-11-17 步 9：摘要 + 4 条保留 + 任务包
+  assert.equal(out.messages.length, 7); // 摘要 + 5 条保留（tool 前面那条 assistant 一起保留，2026-11-19）+ 任务包
   assert.ok(out.messages[0].content.startsWith('[历史摘要]\n'));
   assert.ok(out.messages[0].content.includes('- 用户：' + 'Q'.repeat(60)));
   const tool = out.messages.find((m) => m.role === 'tool' && m.tool_call_id === 't1');
