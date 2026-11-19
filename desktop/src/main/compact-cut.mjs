@@ -42,5 +42,17 @@ export function keepAfterCompactCut(contextMessages, dbMessages, cutAt) {
     // 前面注入的 system 消息（项目档案、任务包等）不属于对话历史，原样保留
     if (ok) return { kept: [...list.slice(0, idx[j] + 1).filter((m) => !isChat(m)), ...list.slice(idx[j] + 1)], matched: true };
   }
+  // 0.27 兜底：原文对不上（中断回合在前端是「进展摘要」，和库里的正文不同）时按「第几条用户消息」对齐。
+  // 摘要覆盖了 n 条用户消息：最后覆盖的是用户消息 → 从前端第 n 条用户消息之后保留；是助手回答 → 从第 n+1 条用户消息起保留。
+  const isUser = (m) => m?.role === 'user' && !String(typeof m.content === 'string' ? m.content : '').startsWith('[历史摘要]');
+  const n = covered.filter(isUser).length;
+  const userIdx = [];
+  for (let i = 0; i < list.length - 1; i++) if (isUser(list[i])) userIdx.push(i);
+  const lastCovered = covered[covered.length - 1];
+  const from = lastCovered?.role === 'user' ? (userIdx[n - 1] ?? -1) + 1 : (userIdx[n] ?? list.length - 1);
+  // 用户消息不会被改写成摘要：按位置对上的那条用户消息原文也得一样，才信这个计数（否则宁可重复，不丢）
+  const lastCoveredUser = covered.filter(isUser).at(-1);
+  const sameUser = n > 0 && userIdx[n - 1] != null && same(list[userIdx[n - 1]], lastCoveredUser);
+  if (sameUser && from > 0) return { kept: [...list.slice(0, from).filter((m) => !isChat(m)), ...list.slice(from)], matched: true, byCount: true };
   return { kept: list, matched: false };
 }

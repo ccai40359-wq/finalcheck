@@ -4,7 +4,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { resolveModel, modelIdsOf, pickUsableProvider } from '../model-config.mjs';
 import { setLanguage, resolveLanguage, t } from '../../renderer/i18n/core.mjs';
 import { testProviderConnection } from '../provider-test.mjs';
-import { summarizeChunked, requestSignal, DEFAULT_REQUEST_TIMEOUT_MS } from '../summarize-core.mjs';
+import { summarizeChunked, requestSignal, readChatText, DEFAULT_REQUEST_TIMEOUT_MS } from '../summarize-core.mjs';
 
 // 配置 schema v2：{ providers: [{ id, name, baseUrl, apiFormat, apiKey, models, enabled }], activeProviderId }
 // 兼容旧单供应商形状 { baseUrl, apiKey, model } → 映射为一个 provider
@@ -141,13 +141,14 @@ export function createConfigStore({ app, getDataRoot, engineUrl }) {
             model: modelId,
             messages: [{ role: 'user', content: prompt }],
             max_tokens: maxTokens,
-            stream: false
+            // 0.27：流式（和主对话一样）。真模型实测：思考型模型非流式时，部分网关只回 reasoning、choices 为空（「空摘要」），
+            // 长摘要非流式也容易撞上网关的整段超时。readChatText 对普通 JSON 响应同样兼容。
+            stream: true
           }),
           signal: rs.signal
         });
         if (!res.ok) throw new Error('HTTP ' + res.status);
-        const j = await res.json();
-        const s = j.choices?.[0]?.message?.content;
+        const s = await readChatText(res);
         if (!s || !String(s).trim()) throw new Error(t('空摘要'));
         return String(s).trim();
       } catch (e) {

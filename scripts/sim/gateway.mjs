@@ -14,6 +14,11 @@ export function classifyRequest(body) {
   const msgs = Array.isArray(body?.messages) ? body.messages : [];
   const sys = String(msgs.find((m) => m?.role === 'system')?.content ?? '');
   if (body?.stream !== true) return /起标题/.test(sys) ? 'title' : 'summary';
+  // 0.27：压缩摘要复用主对话前缀（流式），最后一条 user 消息以「[压缩上下文]」开头
+  const last = msgs[msgs.length - 1];
+  if (last?.role === 'user' && String(last.content ?? '').startsWith('[压缩上下文]')) return 'summary';
+  // 摘要请求（0.27 起也是流式）：没有 system、没有工具定义
+  if (!sys && !(Array.isArray(body?.tools) && body.tools.length)) return 'summary';
   if (/^你是 FinalCheck (工作流中的)?子代理/.test(sys)) return 'subagent';
   return 'main';
 }
@@ -228,7 +233,7 @@ function rec_error(res, e) {
 
 function defaultReply(kind) {
   if (kind === 'title') return { content: '模拟会话' };
-  if (kind === 'summary') return { content: '## 用户要求\n（模拟摘要）\n## 当前进度\n进行中' };
+  if (kind === 'summary') return { content: '<analysis>（模拟：先过一遍全过程，这段会被丢掉）</analysis>\n<summary>\n## 1. 主要请求与意图\n（模拟摘要）\n## 7. 当前工作\n进行中\n</summary>' };
   return { content: '（剧本没有为这次请求准备回复）' };
 }
 

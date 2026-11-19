@@ -16,6 +16,28 @@
 //      现在 raw=true 时原样发送、不切块。
 
 export const DEFAULT_REQUEST_TIMEOUT_MS = 120000;
+
+/** 读完一次 chat/completions 响应的正文（流式 SSE 或普通 JSON 都行）。 */
+export async function readChatText(res) {
+  const raw = await res.text();
+  if (!/^\s*data:/m.test(raw)) {
+    try { const j = JSON.parse(raw); return String(j?.choices?.[0]?.message?.content ?? ''); } catch { return ''; }
+  }
+  let out = '';
+  for (const line of raw.split('\n')) {
+    const l = line.trim();
+    if (!l.startsWith('data:')) continue;
+    const d = l.slice(5).trim();
+    if (!d || d === '[DONE]') continue;
+    try {
+      const j = JSON.parse(d);
+      const c = j?.choices?.[0]?.delta?.content ?? j?.choices?.[0]?.message?.content;
+      if (typeof c === 'string') out += c;
+    } catch { /* 心跳 / 非 JSON 行 */ }
+  }
+  return out;
+}
+
 const MAX_MERGE_LEVELS = 6; // 每层把分组数缩小到 1/k，6 层足以覆盖任何实际长度
 
 const CHUNK_PROMPT = '请把以下对话历史压缩成要点摘要，使用与对话相同的语言，保留关键结论、路径与数字，直接输出摘要本身：\n\n';

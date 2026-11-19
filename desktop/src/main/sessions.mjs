@@ -638,7 +638,7 @@ function insertRawPartRow(db, row) {
 }
 
 function metaKeysOf(sessionId) {
-  return ['usage:' + sessionId, 'summary:' + sessionId, 'summaryAt:' + sessionId, 'flags:' + sessionId, 'turns:' + sessionId, pendingKeyOf(sessionId)];
+  return ['usage:' + sessionId, 'summary:' + sessionId, 'summaryAt:' + sessionId, 'summaryKeep:' + sessionId, 'flags:' + sessionId, 'turns:' + sessionId, pendingKeyOf(sessionId)];
 }
 
 async function migrateLegacy(entry) {
@@ -774,6 +774,8 @@ async function sqliteLoadSession(id) {
   if (summary != null) {
     out.summary = summary;
     out.summaryAt = Number(getMeta(db, 'summaryAt:' + id)) || 0;
+    const keep = getMeta(db, 'summaryKeep:' + id);
+    if (keep) out.summaryKeep = keep;
   }
   return out;
 }
@@ -1185,8 +1187,13 @@ async function sqliteRewindToUserTurn(id, keepUserTurns) {
     const title = kept === 0 ? t('新会话') : row.title;
     const pending = getPending(db, id);
     const pendingCut = pending && cutSeq != null && pending.seq >= cutSeq;
+    // 0.27：压缩摘要覆盖到了被回退删掉的消息 → 摘要里有用户已经撤回的内容，整份作废（下一轮按原文重新累积）
+    const cutRow = cutSeq != null ? messages.find((m) => m.seq === cutSeq) : null;
+    const summaryAt = Number(getMeta(db, 'summaryAt:' + id)) || 0;
+    const summaryStale = !!cutRow && summaryAt > 0 && summaryAt > Number(cutRow.created_at || 0);
     const tx = db.transaction(() => {
       if (pendingCut) delMeta(db, pendingKeyOf(id)); // 进行中行被回退删掉：meta 不能留脏指向
+      if (summaryStale) for (const k of ['summary:', 'summaryAt:', 'summaryKeep:']) delMeta(db, k + id);
       if (cutSeq != null) {
         db.prepare(SQL.deletePartBySessionFromSeq).run(id, cutSeq);
         db.prepare(SQL.deleteMessageFromSeq).run(id, cutSeq);
@@ -1216,6 +1223,8 @@ async function sqliteSaveSummary(id, summary, opts = {}) {
     const tx = db.transaction(() => {
       setMeta(db, 'summary:' + id, String(summary || ''));
       setMeta(db, 'summaryAt:' + id, String(cut));
+      // 0.27：回合内压缩的边界落在一轮中间——记下「从哪一步工具调用起原样保留」（空 = 不裁）
+      setMeta(db, 'summaryKeep:' + id, String(opts?.keepFromCallId || ''));
       db.prepare(SQL.touch).run(now, id);
     });
     tx();
@@ -1583,6 +1592,10 @@ async function jsonRewindToUserTurn(id, keepUserTurns) {
       }
       out.push(m);
     }
+    const removed = (s.messages || [])[out.length];
+    if (removed && Number(s.summaryAt) > 0 && Number(s.summaryAt) > Number(removed.at || 0)) {
+      delete s.summary; delete s.summaryAt; delete s.summaryKeep; // 摘要覆盖了被回退的消息：作废
+    }
     s.messages = out;
     if (!out.length) s.title = t('新会话');
     s.updatedAt = Date.now();
@@ -1596,6 +1609,7 @@ async function jsonSaveSummary(id, summary, opts = {}) {
     const s = await jsonLoadSession(id);
     s.summary = String(summary || '');
     s.summaryAt = summaryCutOf(opts);
+    if (opts?.keepFromCallId) s.summaryKeep = String(opts.keepFromCallId); else delete s.summaryKeep;
     s.updatedAt = Date.now();
     await atomicWrite(fileOf(s.id), JSON.stringify(s));
     return { id: s.id, summaryAt: s.summaryAt };

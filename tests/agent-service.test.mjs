@@ -621,10 +621,16 @@ test('agent: 轮次到 80% 时只发一次 budget-warning（不刷屏）', async
   assert.ok(warnings[0].tokensLeft > 0);
 });
 
-test('agent: config 透传的跨轮 token 预算生效（摘要 + 最近 4 条原文）', async () => {
+test('agent: config 透传的跨轮 token 预算生效（0.27：压缩成一条边界 + 最近一轮原文）', async () => {
   const bodies = [];
+  const compactReqs = [];
   const mockFetch = async (url, opts) => {
-    bodies.push(JSON.parse(opts.body));
+    const body = JSON.parse(opts.body);
+    if (String(body.messages.at(-1)?.content || '').startsWith('[压缩上下文]')) {
+      compactReqs.push(body);
+      return sse([{ choices: [{ delta: { content: '<summary>跨轮摘要</summary>' } }] }]);
+    }
+    bodies.push(body);
     return sse([{ choices: [{ delta: { content: '完成' } }] }]);
   };
   const messages = [0, 1, 2, 3, 4, 5].map((i) => ({
@@ -639,15 +645,19 @@ test('agent: config 透传的跨轮 token 预算生效（摘要 + 最近 4 条�
     tools: {}
   });
   assert.equal(out.answer, '完成');
+  assert.equal(compactReqs.length, 1, '压缩只请求一次');
+  // 压缩请求复用主对话前缀：system + 本轮用户消息之前的全部历史，最后加压缩指令
+  assert.equal(compactReqs[0].messages[0].role, 'system');
+  assert.equal(compactReqs[0].messages[1].content, messages[0].content);
   const sent = bodies[0].messages;
   assert.equal(sent[0].role, 'system');
-  assert.deepEqual(sent[1], { role: 'user', content: '[历史摘要]\n跨轮摘要' });
-  // 2026-11-17 步 9：多一条【当前任务】包（规格 §3.3 硬规则）
-  assert.equal(sent.length, 7, 'system + 摘要 + 最近 4 条 + 任务包');
-  assert.equal(sent[2].content, messages[2].content);
-  assert.equal(sent[5].content, messages[5].content);
-  assert.equal(sent[6].role, 'system', '末尾是任务包');
-  assert.match(sent[6].content, /m4-/, '任务包引用最后一条 user');
+  assert.equal(sent[1].role, 'user');
+  assert.match(sent[1].content, /^\[历史摘要\]/);
+  assert.match(sent[1].content, /跨轮摘要/);
+  assert.ok(sent[1].content.includes(messages[0].content) && sent[1].content.includes(messages[2].content), '被压缩的用户原话原样保留');
+  assert.equal(sent.length, 4, 'system + 边界 + 最近一轮（m4、m5）');
+  assert.equal(sent[2].content, messages[4].content);
+  assert.equal(sent[3].content, messages[5].content);
 });
 
 test('agent: HTTP 402 给账单说明，不再让人去查 Base URL', async () => {

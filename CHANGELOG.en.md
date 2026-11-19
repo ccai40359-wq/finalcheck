@@ -6,6 +6,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.27.0] - 2026-11-19
+
+Context compaction now fully matches Claude Code: when the context is nearly full it is compacted once and saved, and every later turn just appends after it. Handoff summaries are more complete, and the user's own words, the files at compaction time, and the full transcript all have a deterministic fallback. This release also fixes 7 issues found with the simulated-client harness and real-model runs.
+
+### Added
+
+- **Re-read the working state when compacting**: at the moment of compaction, the files recently read or edited are re-attached with their current contents from disk (not the AI's recollection), along with git status and the current checklist. The full transcript being compacted away is written to a file the AI can read when it needs earlier details (full command output, the full conversation) instead of guessing from the summary.
+- **Compaction scenarios in the test harness**: a scripted-gateway scenario covers in-turn compaction, compaction at turn start, continuing after an app restart, manual /compact, and the user's words surviving three compactions; a real-model scenario checks that after compaction the AI can still answer concrete values it read before, without re-reading files.
+
+### Fixed
+
+- **Once over the limit, every turn compacted again**: compaction used to change only what was sent to the model for that turn and was never saved. Once past the limit, every turn started with an extra summary request, and the whole prefix changed every turn so the gateway cache never hit. Compaction is now saved in the session once, and every later turn sends the same summary plus the messages after it; in the harness, the same 6 turns went from 8 summary requests to 2 and cache hits from 60% to 81%, and it carries over an app restart.
+- **Auto-compaction chopped up its own instructions**: the summary request was split into 30k-character chunks that were summarized separately and then merged (a summary of summaries), and the "write a sectioned handoff" instruction only landed in the first chunk. It is now one request with no chunking.
+- **Manual /compact only saw the final answers**: which files were read and what commands printed were missing from the material. It now includes each turn's full tool history.
+- **Summaries said "read the file" without saying what was in it**: in a real-model run, after compaction the AI could not say what b.js's timeout was, because the summary only said "successfully got the first-line comment". The summary now has a dedicated "key facts and data" section that must state concrete values; the same questions are now answered correctly.
+- **Manual compaction with thinking models failed with "empty summary"**: some gateways return only the reasoning and no content for non-streaming requests. Summary requests now stream, like the main conversation.
+- **Rewinding to before the compaction point kept the old summary**: after editing and resending an earlier message, the summary still contained content that had been taken back. The summary is now discarded in that case and the history rebuilds from the original messages.
+- **A stopped turn could make the compaction boundary misalign**: a stopped turn shows up in the UI as a progress digest that differs from what is stored, which made the whole history get sent again after compaction (and immediately exceed the limit). When the text doesn't match, it now aligns by user-message count, and keeps everything only if the user's own words don't match either.
+
+### Improved
+
+- **Compaction reuses the conversation cache**: compaction sends the current conversation plus one compaction instruction, so everything before it is identical to the previous request and hits the gateway cache (25k of 33k tokens in a real-model run) — hundreds of thousands of tokens of history don't need to be recomputed. If it doesn't fit or the gateway refuses, it falls back to sending a written-out transcript.
+- **Handoff summaries use Claude Code's format**: 9 sections (main requests and the status of each, key facts and data, technical concepts, files and code, errors and fixes including where you corrected the AI, problem solving, pending tasks, current work, next step). The model drafts first and then writes the final version; the draft never enters the context. Your own words are still kept verbatim and survive multiple compactions.
+- **The recent steps kept after compaction are sized, not counted**: it used to keep the last 8 messages regardless of size, so with large tool results the context could come out longer and compact again right away; it now keeps the last few steps up to a quarter of the limit, and always at least the last step.
+
 ## [0.26.0] - 2026-11-19
 
 Three things: Claude Code–style lightweight sub-agents; workflows unified into a single "flowchart" format; and a simulated-client test harness that runs the full app pipeline in the background the way a real person uses it — which already caught and fixed 5 real bugs.

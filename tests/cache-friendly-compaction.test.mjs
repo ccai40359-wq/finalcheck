@@ -6,6 +6,8 @@ import { microcompact, INDEX_COLLAPSE_TO } from '../desktop/src/main/context.mjs
 import { modelFullCompact } from '../desktop/src/main/in-turn-compact.mjs';
 
 const sse = (chunks) => new Response(chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`).join('') + 'data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } });
+// 0.27：压缩摘要先走「对话前缀 + 压缩指令」（同一个网关，复用前缀缓存）；最后一条 user 以 [压缩上下文] 开头
+const isCompactReq = (init) => { const m = JSON.parse(init.body).messages; return String(m.at(-1)?.content || '').startsWith('[压缩上下文]'); };
 
 // 相邻两次请求之间，上一次已发送的消息有没有被改动（被改 = 网关前缀缓存从该处失效）
 function prefixBreaks(bodies) {
@@ -112,6 +114,7 @@ test('回合内：折完工具结果仍贴着上限（正文太长）→ 调用�
   const prompts = [];
   const bodies = [];
   const fetchImpl = async (_u, init) => {
+    if (isCompactReq(init)) { prompts.push(JSON.parse(init.body).messages.at(-1).content); return sse([{ choices: [{ delta: { content: '<analysis>想一想</analysis><summary>## 当前进度\n已改到第 5 页</summary>' } }] }]); }
     bodies.push(JSON.parse(init.body));
     calls++;
     if (calls <= 14) return sse([{ choices: [{ delta: { content: '我的分析：' + longText(calls) } }] }, { choices: [{ delta: { tool_calls: [{ index: 0, id: `r${calls}`, function: { name: 'noop', arguments: JSON.stringify({ step: calls }) } }] } }] }]);
@@ -133,6 +136,8 @@ test('回合内：折完工具结果仍贴着上限（正文太长）→ 调用�
   assert.ok(sum, '有交接摘要');
   assert.ok(sum.content.includes(task), '用户原话在摘要里原样保留');
   assert.match(sum.content, /已改到第 5 页/);
+  assert.ok(!sum.content.includes('想一想'), '<analysis> 草稿不进摘要');
+  assert.ok(bodies.every((b) => !String(b.messages.at(-1)?.content || '').startsWith('[压缩上下文]')), '压缩请求不算主请求');
 });
 
 // ───────── 2026-11-19 真实事故回归：图片 base64 被当成文字估 token → 每隔几步就失忆
@@ -182,7 +187,8 @@ test('视觉迭代长回合：频繁看大图也不触发折叠/摘要，模型�
 test('兜底：速度上限触发的模型摘要之间至少隔 20 次请求', async () => {
   let calls = 0;
   let summaries = 0;
-  const fetchImpl = async () => {
+  const fetchImpl = async (_u, init) => {
+    if (isCompactReq(init)) { summaries++; return sse([{ choices: [{ delta: { content: '## 当前进度\nx' } }] }]); }
     calls++;
     if (calls <= 30) return sse([{ choices: [{ delta: { content: longText(calls) } }] }, { choices: [{ delta: { tool_calls: [{ index: 0, id: `r${calls}`, function: { name: 'noop', arguments: JSON.stringify({ s: calls }) } }] } }] }]);
     return sse([{ choices: [{ delta: { content: '完成' } }] }]);

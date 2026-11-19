@@ -71,6 +71,32 @@ export async function checkTurn(turn, ex, { projectDir, sim }) {
     const p = prefixReport(main);
     add('本轮内前缀不断开', p.breaks === 0, `断开 ${p.breaks} 次（请求 ${p.at.join('、')}）`);
   }
+  // 跨轮缓存：本轮第一次主请求有多少能命中之前请求的前缀（上一轮 / 重启前）
+  if (ex.firstCacheRatioMin != null) {
+    const f = main[0];
+    const ratio = f ? (f.estCachedTokens || 0) / Math.max(1, f.estPromptTokens || 0) : 0;
+    add(`本轮第一次请求缓存命中 ≥ ${Math.round(ex.firstCacheRatioMin * 100)}%`, ratio >= ex.firstCacheRatioMin, `实际 ${Math.round(ratio * 100)}%（${f?.estCachedTokens}/${f?.estPromptTokens}）`);
+  }
+  if (ex.prefixBreaksMax != null) {
+    const p = prefixReport(main);
+    add(`本轮内前缀断开 ≤ ${ex.prefixBreaksMax} 次`, p.breaks <= ex.prefixBreaksMax, `断开 ${p.breaks} 次（请求 ${p.at.join('、')}）`);
+  }
+  // 0.27 压缩：本轮发了几次摘要请求、摘要请求有没有复用对话前缀（缓存命中）、边界有没有落库
+  const sums = turn.requests.filter((r) => r.kind === 'summary');
+  if (ex.summaryRequests != null) add(`摘要请求 = ${ex.summaryRequests} 次`, sums.length === ex.summaryRequests, `实际 ${sums.length}`);
+  if (ex.summaryCacheHit) {
+    const ok = sums.length > 0 && sums.every((r) => (r.estCachedTokens || 0) >= (r.estPromptTokens || 1) * 0.5);
+    add('摘要请求复用了对话前缀（缓存命中过半）', ok, sums.map((r) => `${r.estCachedTokens}/${r.estPromptTokens}`).join('，') || '没有摘要请求');
+  }
+  if (ex.dbSummary) {
+    const s = await sim.loadSession(turn.sessionId);
+    const sum = String(s.summary || '');
+    if (ex.dbSummary.exists === false) add('库里没有压缩边界', !sum, `有：${sum.slice(0, 80)}`);
+    else add('压缩边界已落库', !!sum, '没有');
+    for (const c of [].concat(ex.dbSummary.contains || [])) add(`边界里有 /${c}/`, re(c).test(sum), `边界：${sum.slice(0, 200)}`);
+    for (const c of [].concat(ex.dbSummary.notContains || [])) add(`边界里没有 /${c}/`, !re(c).test(sum), '有');
+    if (ex.dbSummary.trim != null) add(`边界${ex.dbSummary.trim ? '带' : '不带'}本轮裁剪点`, !!s.summaryKeep === !!ex.dbSummary.trim, `summaryKeep=${s.summaryKeep || ''}`);
+  }
   for (const k of ex.eventsInclude || []) add(`界面收到 ${k} 事件`, turn.events.some((e) => e.kind === k), `事件种类：${[...new Set(turn.events.map((e) => e.kind))].join(', ')}`);
   for (const [rel, rule] of Object.entries(ex.files || {})) {
     let text = null;

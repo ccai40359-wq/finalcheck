@@ -133,6 +133,25 @@ const t0 = Date.now();
 for (const [i, step] of (sc.turns || []).entries()) {
   if (step.restart) { await sim.restart(); if (sid) await sim.open(sid); results.push({ i, restart: true }); continue; }
   if (step.newSession || !sid) sid = await sim.newSession();
+  // 手动 /compact：和渲染层一样调 IPC，成功后重新打开会话
+  if (step.compact) {
+    const reqBefore = gw.requests.length;
+    sim.log.human('▶ 用户：/compact');
+    const r = await sim.invoke('finalcheck:compact-session', sid);
+    await sim.open(sid);
+    const reqs = gw.requests.slice(reqBefore);
+    const s = await sim.loadSession(sid);
+    const checks = [{ name: '手动压缩成功', ok: !!r?.ok, detail: JSON.stringify(r).slice(0, 300) }];
+    if (step.expect?.summaryRequests != null) checks.push({ name: `摘要请求 = ${step.expect.summaryRequests} 次`, ok: reqs.filter((q) => q.kind === 'summary').length === step.expect.summaryRequests, detail: `实际 ${reqs.filter((q) => q.kind === 'summary').length}` });
+    for (const c of [].concat(step.expect?.dbSummaryContains || [])) checks.push({ name: `边界里有 /${c}/`, ok: new RegExp(c).test(String(s.summary || '')), detail: String(s.summary || '').slice(0, 200) });
+    for (const c of [].concat(step.expect?.summaryRequestIncludes || [])) {
+      const hay = JSON.stringify(reqs.filter((q) => q.kind === 'summary').map((q) => q.messages));
+      checks.push({ name: `摘要材料里有 /${c}/`, ok: new RegExp(c).test(hay), detail: '没找到' });
+    }
+    results.push({ i, compact: r, checks });
+    for (const c of checks) sim.log.human(`  ${c.ok ? '✓' : '✗'} ${c.name}${c.ok ? '' : '：' + c.detail}`);
+    continue;
+  }
   if (!step.send) continue;
   const cancelAfterTool = step.cancelAfterTool || null;
   let seenTools = 0;
@@ -173,6 +192,7 @@ const lines = [
   '|---|---|---|---|---|---|',
   ...results.map((r) => r.restart
     ? `| ${r.i} | （重启应用） | | | | |`
+    : r.compact ? `| ${r.i} | /compact | | | | ${r.checks.every((c) => c.ok) ? '✓' : '✗ ' + r.checks.filter((c) => !c.ok).map((c) => c.name).join('；')} |`
     : `| ${r.i} | ${String(r.send).slice(0, 40).replace(/\|/g, '/')} | ${r.turn.tools.join(', ').slice(0, 80)} | ${r.turn.requests.length} | ${(r.turn.ms / 1000).toFixed(1)}s | ${r.checks.every((c) => c.ok) ? '✓' : '✗ ' + r.checks.filter((c) => !c.ok).map((c) => c.name).join('；')} |`),
   '',
   failed.length ? '## 未通过\n\n' + failed.map((f) => `- 第 ${f.turn} 步 · ${f.name}：${f.detail}`).join('\n') : '全部断言通过。'

@@ -5,6 +5,7 @@ import { spawnAgentStepId } from '../../renderer/lib/spawn-agent.mjs';
 import { readFile } from 'node:fs/promises';
 import * as sessions from '../sessions.mjs';
 import { keepAfterCompactCut } from '../compact-cut.mjs';
+import { BOUNDARY_HEAD, trimAfterBoundary, isRealUserText } from '../compact.mjs';
 import * as permissions from '../permissions.mjs';
 import { recordAudit, projectContext, extractPaths } from '../memory.mjs';
 import { readProjectMemory } from '../project-memory.mjs';
@@ -212,7 +213,33 @@ export function registerAgentIpc({
       const seq = ++chatAbort.snapshot.seq;
       getWin()?.webContents.send('finalcheck:agent-token', { sessionId, text, runId: chatAbort.snapshot.runId, seq });
     };
+    // 0.27：自动压缩一旦发生就落库成边界（和手动 /compact 同一份存储），之后每轮「同一份边界 + 之后的原文」只追加。
+    //   回合内压缩：边界覆盖到本轮用户消息为止，再记下本轮从哪一步工具调用起原样保留；
+    //   回合开始压缩：边界覆盖到「保留的最早那一轮」的用户消息之前。
+    let boundarySaved = Promise.resolve(); // 按发生顺序依次落库（同一回合可能先后压缩两次）
+    const saveCompactBoundary = async (sid, ev) => {
+      if (!sid || !ev?.content) return;
+      try {
+        const s = await sessions.loadSession(sid);
+        const users = (s.messages || []).filter((m) => isRealUserText(m) && Number.isFinite(Number(m.at)));
+        let cutAt = 0;
+        let keepFromCallId = '';
+        if (ev.scope === 'in-turn') {
+          const cur = users[users.length - 1];
+          if (cur) { cutAt = Number(cur.at) + 1; keepFromCallId = String(ev.trimThrough || ''); }
+        } else {
+          const k = Number(ev.keptUserTurns) || 0;
+          const first = k > 0 ? users[users.length - k] : null;
+          if (first) cutAt = Number(first.at);
+        }
+        if (!(cutAt > 0)) { console.warn('[compact] 没找到边界在库里的位置，这次压缩只对本轮生效'); return; }
+        await sessions.saveSummary(sid, ev.content, { cutAt, keepFromCallId });
+        console.log(`[compact] 自动压缩已落库（${ev.scope}，摘要来自 ${ev.via}${ev.transcriptFile ? `，完整记录 ${ev.transcriptFile}` : ''}）`);
+      } catch (e) { console.warn('[compact] 压缩边界落库失败：' + (e?.message || e)); }
+    };
     const sendEvent = (ev) => {
+      // 0.27：压缩边界只落库，不推给界面（内容很大，界面靠 compact-start/end 显示）
+      if (ev?.kind === 'compact-boundary') { boundarySaved = boundarySaved.then(() => saveCompactBoundary(sessionId, ev)); return; }
       chatAbort.snapshot = { ...applyAgentEvent(chatAbort.snapshot, ev), seq: chatAbort.snapshot.seq + 1 };
       getWin()?.webContents.send('finalcheck:agent-event', { sessionId, ev, runId: chatAbort.snapshot.runId, seq: chatAbort.snapshot.seq });
     };
@@ -310,6 +337,7 @@ export function registerAgentIpc({
     // 现在用 summaryAt（写摘要的时间戳）切：只裁掉「摘要已覆盖的那部分」，
     // summaryAt 之后新增的消息全部保留，历史能正常累积。
     let sessionSummaryAt = 0; // 会话级 /compact 摘要的切分点，下面轮摘要注入要用同一个口径
+    let summaryKeep = ''; // 回合内压缩边界：那一轮从哪一步工具调用起原样保留
     if (sessionId) {
       try {
         const s = await sessions.loadSession(sessionId);
@@ -320,7 +348,13 @@ export function registerAgentIpc({
           // 前端历史不带 at，按库里消息的时间戳 + 原文对齐（见 compact-cut.mjs）。
           const { kept: after, matched } = keepAfterCompactCut(contextMessages, s.messages, cutAt);
           if (!matched) console.warn('[compact] 摘要覆盖边界没在前端历史里对上，本轮保留全部历史');
-          contextMessages = [{ role: 'system', content: '[此前对话摘要]\n' + s.summary }, ...after];
+          // 0.27 起的边界（自动压缩 / 新版 /compact）是一条完整的 user 消息，原样发——和压缩那一刻发出去的逐字节相同；
+          // 老会话里的旧摘要仍按旧格式（system）注入。
+          const summaryText = String(s.summary);
+          contextMessages = [summaryText.startsWith(BOUNDARY_HEAD)
+            ? { role: 'user', content: summaryText }
+            : { role: 'system', content: '[此前对话摘要]\n' + summaryText }, ...after];
+          summaryKeep = s.summaryKeep || '';
         }
       } catch { /* 无摘要时按原样 */ }
     }
@@ -338,10 +372,18 @@ export function registerAgentIpc({
         // 0.26：被中断的回合也在这里统一展开（不论是上一轮还是更早）。以前只有「紧接着的那一轮」原样回放，
         // 再下一轮又变回一段摘要 → 前缀从那里断开、模型也看不到当时的原始结果（模拟客户端测出来的）。
         const { expandToolHistory } = await import('../full-history.mjs');
-        const ex = expandToolHistory(contextMessages, s.messages);
+        // 有压缩边界时只拿边界之后的库消息来对齐（中断回合按顺序配对，边界之前的不能算进去）
+        const dbAfterCut = sessionSummaryAt > 0 ? (s.messages || []).filter((m) => !(Number(m?.at) < sessionSummaryAt)) : s.messages;
+        const ex = expandToolHistory(contextMessages, dbAfterCut);
         if (ex.expanded || ex.replayed) {
           contextMessages = ex.messages;
           console.log(`[history] 带上之前 ${ex.expanded + ex.replayed} 轮的完整工具过程（${ex.steps} 步${ex.replayed ? `，其中 ${ex.replayed} 轮是中断的` : ''}）`);
+        }
+        // 0.27：回合内压缩的边界落在那一轮中间——那一轮里已经进了摘要的工具步骤去掉，只从压缩时保留的那一步开始
+        if (summaryKeep) {
+          const tr = trimAfterBoundary(contextMessages, summaryKeep);
+          contextMessages = tr.messages;
+          if (!tr.trimmed) console.warn('[compact] 回合内压缩的保留起点没找到，本轮保留全部工具过程');
         }
       } catch (e) { console.warn('[history] 展开历史失败，按普通历史继续：' + (e?.message || e)); }
     }
@@ -753,6 +795,12 @@ export function registerAgentIpc({
       },
       messages: contextMessages,
       summarize,
+      // 0.27 压缩摘要：「转写 + 指令」原样一条发出（不分块、不再套一层「请压缩」的提示词）
+      summarizeRaw: (prompt) => store.summarizeWithProvider(liveModels.current()?.provider || prov, prompt, {
+        model: liveModels.current()?.model || model, raw: true, maxTokens: 16000, requestTimeoutMs: 240000, signal: chatAbort.signal
+      }),
+      // 压缩时重新读取的现场：本会话的项目目录（重读最近碰过的文件、git status）和本回合的验收单
+      compactContext: () => ({ projectPath: turnProjectPath, todos: sessionId ? todos.list(sessionId) : [] }),
       signal: chatAbort.signal,
       // 运行中改模型/供应商：每次模型请求前重新解析（已流式输出的那一条不换，下一次请求起用新值）
       resolveConfig: async () => {
@@ -1053,6 +1101,7 @@ export function registerAgentIpc({
       // model 落库：回放时据此在消息流里画「模型切换」分隔线（round9，对齐 ZCode 的模型切换提示）
       const turnModelLabel = `${prov?.id || prov?.name || '?'}/${model || '?'}`;
       out.model = turnModelLabel;
+      await boundarySaved; // 边界先落库，再写本轮回答（回答的时间戳要晚于切分点）
       try { out.persisted = await sessions.appendAssistantMessage(sessionId, { content: out.answer ?? '', error: out.cancelled ? null : (out.error ?? null), interrupted: !!out.interrupted, reasoning: out.reasoning ?? '', trace: out.trace ?? [], workedMs: out.workedMs ?? null, model: turnModelLabel }); } catch { /* 会话落盘失败不影响回答 */ }
       // 回合上下文快照（④，pi 显式会话口径）：当时的配置事实落成 JSONL——复盘「当时为什么这么判」有账可查
       if (turnProjectPath && sessionId) {

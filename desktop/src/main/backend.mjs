@@ -14,6 +14,7 @@ import { getSessionDir, scanSessionsDir, projectRootOfSessionsDir } from './sess
 import { planProjectSwitch } from './project-switch.mjs';
 import { registerSessionIpc } from './ipc/ipc-sessions.mjs';
 import { registerAgentIpc } from './ipc/ipc-agent.mjs';
+import { registerCompactIpc } from './ipc/ipc-compact.mjs';
 import { registerSystemIpc } from './ipc/ipc-system.mjs';
 
 export const IMAGE_MIME = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml', '.bmp': 'image/bmp' };
@@ -106,6 +107,7 @@ export function createBackend({ ipcMain, getWin, getDataRoot, engineUrl, repoRoo
   function registerCoreIpc() {
     registerSystemIpc({ ipcMain, getWin, engineUrl, store, getHooksConfig: () => hooksConfig, sessionProjectPathOf, sessionUsage: state.sessionUsage });
     registerSessionIpc({ ipcMain, state, sessionProjectPathOf, runSessionStart });
+    registerCompactIpc({ ipcMain, getWin, store, sessionProjectPathOf });
     registerAgentIpc({
       ipcMain,
       getWin,

@@ -61,7 +61,8 @@ npm run sim:trigger
     { "send": "帮我修 a.js", "expect": { "toolsInclude": ["edit_file"], "files": { "src/a.js": { "contains": "a + b" } } } },
     { "send": "跑一下检查", "cancelAfterTool": "run_command", "expect": { "cancelled": true } },
     { "restart": true },
-    { "send": "继续", "expect": { "requestIncludes": "node --check" } }
+    { "send": "继续", "expect": { "requestIncludes": "node --check" } },
+    { "compact": true, "expect": { "summaryRequests": 1, "dbSummaryContains": ["帮我修 a.js"] } }
   ],
   "mock": {
     "replies": [ { "content": "…", "toolCalls": [ { "name": "read_file", "args": { "path": "{{project}}/src/a.js" } } ] } ],
@@ -73,6 +74,8 @@ npm run sim:trigger
 - `project`：`files` 是现场写出来的文件；也可以用 `copyFrom` 复制一个已有的目录（会排除 node_modules / .git）
 - `mock.replies`：按顺序给主 agent 用。加了 `match`（正则）的那条，只在最后一条用户消息匹配时才用
 - `mock.subagentReplies`：给子代理用，`match` 匹配的是子代理收到的任务原文
+- `{"compact": true}`：模拟用户发 `/compact`（手动压缩），可检查 `summaryRequests`、`dbSummaryContains`、`summaryRequestIncludes`
+- `providerExtra`：供应商额外字段，比如把 `contextWindow` 压小来触发自动压缩（见 `compact.json`）
 - `{{project}}`：会被替换成临时项目的路径
 - 没有 `mock` 的剧本只能用 `--live` 跑真模型
 
@@ -85,7 +88,8 @@ npm run sim:trigger
 - **上下文**：
   - `requestIncludes`：本轮第一次请求里有没有这段内容（检查跨轮记忆）
   - `lastMainIncludes` / `lastMainExcludes`：主 agent 最后一次请求里有没有某段内容（检查子代理报告进来了、原文没有漏进来）
-- **缓存前缀**：`prefixStable`（本轮内前缀没有断开）
+- **缓存前缀**：`prefixStable`（本轮内前缀没有断开）、`prefixBreaksMax`（本轮最多断几次，压缩那一轮会断一次）、`firstCacheRatioMin`（本轮第一次请求有多少命中了之前的前缀，检查跨轮 / 重启后上下文是否一致）
+- **压缩**：`summaryRequests`（本轮摘要请求次数）、`summaryCacheHit`（摘要请求复用了对话前缀）、`dbSummary`（压缩边界已落库：`contains` / `notContains` / `trim`）
 - **子代理**：`subagentRequestsMin`、`parallelSubagents`（子代理是否真的并行跑）
 - **界面事件**：`eventsInclude`
 - **文件**：`files`（`contains` / `notContains` / `exists`）

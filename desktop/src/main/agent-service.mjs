@@ -5,7 +5,10 @@ import { fileURLToPath } from 'node:url';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { assembleContext, estimateTokens, estimateMessagesTokens, microcompact, planFold, fullCompact, contextBudget, needsCompaction } from './context.mjs';
-import { modelFullCompact } from './in-turn-compact.mjs';
+import { KEEP_RECENT_MODEL_COMPACT } from './in-turn-compact.mjs';
+import { readChatText } from './summarize-core.mjs';
+export { readChatText };
+import { compactZone, splitByTurns, lastCoveredCallIdOf, isRealUserText, isPinnedSystem } from './compact.mjs';
 import { crossTurnBudgetTokens } from './model-config.mjs';
 import { GREP_CODE_SCHEMA, TODO_CC_RULES_TEXT } from './agent-tools.mjs';
 // token 估算/两级压缩原语实现放在 context.mjs（与上下文视图同源）；这里重新导出，单测可直接从 agent-service 取
@@ -197,6 +200,10 @@ const TOOL_KEEP_RECENT = 4; // 旧 pruneConvo 口径：最近 4 条工具结果�
 // 覆盖真实会话的步距分布；同时保留「只有踩到 token 阈值才折叠」的硬约束，不会无限膨胀。
 const MICRO_KEEP_RECENT_IN_TURN = 12;
 const STREAM_USAGE = process.env.FINALCHECK_STREAM_USAGE !== '0'; // 请求流式 usage；个别网关不认该字段时按 4xx 降级
+// 0.27 压缩：摘要请求的超时（几十万 token 的历史 + 思考，给足时间）；回合开始压缩时最近几轮原样保留的预算占比
+const COMPACT_SUMMARY_TIMEOUT_MS = 240000;
+const CROSS_TURN_KEEP_RATIO = 0.3;
+
 const spillDir = () => process.env.FINALCHECK_SPILL_DIR || path.resolve(__dirname, '..', '..', 'spill');
 
 /* ---------- Windows 路径的 JSON 转义（第二道防线，不是并行调用粘连的根因） ----------
@@ -1318,7 +1325,7 @@ async function runToolCallsGuarded(toolCalls, invalid, { tools, onEvent, toolCon
   return results;
 }
 
-export async function runAgentTurn({ config, messages, confirmedHosts = [], onToken, onEvent, onToolLifecycle = null, onUsage = null, tools, toolsSchema = null, systemPrompt: systemPromptOverride = null, roleMode = 'audit', forceFirstToolChoice = false, fetchImpl = fetch, summarize, signal, maxTurns = DEFAULT_MAX_TURNS, maxTurnMs: maxTurnMsOpt, maxTurnTokens: maxTurnTokensOpt, retryBaseMs = 600, noLimits = false, hooksConfig = null, hooksRunner = null, sessionId = null, drainSteer = null, resolveConfig = null, cwd = process.cwd() }) {
+export async function runAgentTurn({ config, messages, confirmedHosts = [], onToken, onEvent, onToolLifecycle = null, onUsage = null, tools, toolsSchema = null, systemPrompt: systemPromptOverride = null, roleMode = 'audit', forceFirstToolChoice = false, fetchImpl = fetch, summarize, summarizeRaw = null, compactContext = null, signal, maxTurns = DEFAULT_MAX_TURNS, maxTurnMs: maxTurnMsOpt, maxTurnTokens: maxTurnTokensOpt, retryBaseMs = 600, noLimits = false, hooksConfig = null, hooksRunner = null, sessionId = null, drainSteer = null, resolveConfig = null, cwd = process.cwd() }) {
   if (signal?.aborted) return { cancelled: true, interrupted: true, partialContent: '', answer: '', trace: [] };
   if (!config?.baseUrl || !config?.apiKey) {
     return { error: t('尚未配置网关：请到左下角「模型设置」添加供应商（Base URL / API Key / 模型）并启用'), trace: [] };
@@ -1394,17 +1401,82 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
   const willCompact = needsCompaction(messages, compactOpts);
   const beforeTokens = willCompact ? estimateMessagesTokens(messages) : 0;
   if (willCompact) onEvent?.({ kind: 'compact-start', scope: 'auto', before: beforeTokens });
+  const systemText = String(systemPromptOverride != null ? systemPromptOverride : await getSystemPrompt(roleMode));
+  // 0.27 压缩摘要的两条请求路径（compact.mjs）：
+  //   ① 「对话前缀 + 压缩指令」原样发给当前模型——前缀和上一次请求逐字节相同，网关前缀缓存命中，
+  //      几十万 token 的历史不用重新算一遍（对齐 Claude Code：压缩请求复用主对话的缓存）；
+  //   ② 放不下 / 网关拒绝时，退到「转写 + 指令」一条消息（summarizeRaw，不分块）。
+  const summarizeText = typeof summarizeRaw === 'function' ? summarizeRaw : (typeof summarize === 'function' ? summarize : null);
+  const windowTokens = contextBudget(config).contextWindow;
+  const compactMaxTokens = Math.min(16000, Math.max(4000, Number(config?.maxOutputTokens) || 16000));
+  const transcriptTokens = Math.max(20000, Math.floor((windowTokens - compactMaxTokens - 24000) * 0.7));
+  // 压缩后重读文件的总量随窗口缩放（约占窗口 10%，最多 6 万字符）：小窗口模型不能一压缩就又塞满
+  const restoreChars = Math.min(60000, Math.max(8000, Math.floor(windowTokens * 0.4)));
+  const convoSummarizer = (prefix) => async (instruction) => {
+    const ctl = new AbortController();
+    const onAbort = () => ctl.abort();
+    signal?.addEventListener('abort', onAbort, { once: true });
+    const timer = setTimeout(() => ctl.abort(), COMPACT_SUMMARY_TIMEOUT_MS);
+    try {
+      // 和主请求同一份工具定义、同样不带 tool_choice：真模型实测带 tool_choice:'none' 时网关换了渲染方式，
+      // 33k 的前缀只命中 2k。「不要调用工具」写在指令里；模型真调了工具（正文为空）就退到转写模式。
+      const res = await fetchImpl(liveChatUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: 'Bearer ' + liveConfig.apiKey },
+        body: JSON.stringify({
+          model: liveConfig.model,
+          messages: [...prefix, { role: 'user', content: instruction }],
+          tools: toolsSchema || AGENT_TOOLS_SCHEMA,
+          stream: true,
+          max_tokens: compactMaxTokens,
+          ...effortParam(liveConfig.reasoningEffort)
+        }),
+        signal: ctl.signal
+      });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const text = await readChatText(res);
+      if (!text.trim()) throw new Error(t('空摘要'));
+      return text;
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+    }
+  };
+  const compactExtras = async () => {
+    try { return (typeof compactContext === 'function' ? await compactContext() : null) || {}; } catch { return {}; }
+  };
   try {
-    viewMessages = (await assembleContext(messages, {
-      summarize,
-      ...compactOpts
-    })).messages;
+    if (willCompact && crossTurnBudget) {
+      // 0.27：回合开始时历史已超预算 → 压缩一次并落库成边界（ipc-agent 收到 compact-boundary 后保存），
+      // 之后每轮都是「同一份边界 + 之后的原文」只追加；旧实现每轮从完整历史重新派生、重新摘要。
+      const { pinned, zone, kept, keptUserTurns } = splitByTurns(messages, {
+        keepTokens: Math.floor(crossTurnBudget * CROSS_TURN_KEEP_RATIO),
+        costOf: (m) => estimateMessagesTokens([m])
+      });
+      if (zone.length) {
+        const lastUserIdx = messages.map((m) => isRealUserText(m)).lastIndexOf(true);
+        const prefix = [{ role: 'system', content: systemText }, ...messages.slice(0, lastUserIdx < 0 ? messages.length : lastUserIdx)];
+        const extras = await compactExtras();
+        const r = await compactZone({
+          zone, kept, summarizeConvo: convoSummarizer(prefix), summarizeText,
+          projectPath: extras.projectPath || '', todos: extras.todos || null, spillDir: spillDir(), transcriptTokens, restoreChars
+        });
+        viewMessages = [{ role: 'user', content: r.content }, ...pinned, ...kept];
+        if (r.via === 'local') onEvent?.({ kind: 'warning', message: t('模型摘要失败，改用本地摘要：{error}', { error: r.error || '' }) });
+        onEvent?.({ kind: 'compact-boundary', scope: 'cross-turn', content: r.content, keptUserTurns, via: r.via, transcriptFile: r.transcriptFile });
+      }
+    } else {
+      viewMessages = (await assembleContext(messages, {
+        summarize,
+        ...compactOpts
+      })).messages;
+    }
     if (willCompact) onEvent?.({ kind: 'compact-end', scope: 'auto', before: beforeTokens, after: estimateMessagesTokens(viewMessages) });
   } catch (e) {
     if (willCompact) onEvent?.({ kind: 'compact-end', scope: 'auto', before: beforeTokens, error: e?.message || String(e) });
     /* 压缩失败不阻断对话 */
   }
-  const convo = [{ role: 'system', content: String(systemPromptOverride != null ? systemPromptOverride : await getSystemPrompt(roleMode)) }, ...viewMessages];
+  const convo = [{ role: 'system', content: systemText }, ...viewMessages];
   // Steer：回合进行中用户从界面注入的消息。每次发起模型请求前 drain，追加为一条 user 消息
   // （不重置已完成的工具结果，直接计入本轮上下文），并推送给渲染层画「已注入」气泡。
   const applySteer = () => {
@@ -1524,6 +1596,44 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
   const MIN_REQUESTS_BETWEEN_SUMMARY = 20;
   let compactCalls = 0;
   let lastStuckSummaryAt = -Infinity;
+  // 回合内压缩（0.27，compact.mjs）：最近几步原样保留，其余换成一条边界消息；system 消息（项目记忆等）不压，放在边界之后。
+  // 保留区按 token 算（最多 KEEP_RECENT_MODEL_COMPACT 条、不超过阈值的 1/4，至少留最后一步）：
+  //   真模型实测——单个工具结果很大时固定留 8 条 = 几乎全留，压缩完反而更长、紧接着又压（33k → 42k）。
+  // 保留区只在本轮之内：落库的边界切在本轮用户消息之后，下一轮从库里重建时才和这里同形（前缀缓存不断）。
+  // 边界通过 compact-boundary 事件交给 ipc-agent 落库（带「裁到哪一步」），下一轮从库里重建时同形。
+  const compactInTurn = async () => {
+    const curUser = convo.map((m) => isRealUserText(m)).lastIndexOf(true);
+    const floor = Math.max(1, curUser + 1);
+    const keepBudget = Math.floor(Math.min(tokenBudget.compactThreshold, speedThreshold) * 0.25);
+    let keepFrom = convo.length;
+    let used = 0;
+    while (keepFrom - 1 >= floor && convo.length - keepFrom < KEEP_RECENT_MODEL_COMPACT) {
+      const c = estimateMessagesTokens([convo[keepFrom - 1]]);
+      if (keepFrom < convo.length && convo[keepFrom]?.role !== 'tool' && used + c > keepBudget) break;
+      used += c;
+      keepFrom--;
+    }
+    while (keepFrom > floor && convo[keepFrom]?.role === 'tool') keepFrom--; // 不从 tool 结果开头（配对完整）
+    // 本轮还没有任何步骤（刚开始就超线）：本轮用户消息原样留着，等同于「回合开始时压缩」
+    const atTurnStart = curUser >= 1 && keepFrom >= convo.length;
+    if (atTurnStart) keepFrom = curUser;
+    if (keepFrom <= 1) return { ok: false };
+    const region = convo.slice(1, keepFrom);
+    const pinned = region.filter(isPinnedSystem);
+    const zone = region.filter((m) => !isPinnedSystem(m));
+    const kept = convo.slice(keepFrom);
+    const extras = await compactExtras();
+    const r = await compactZone({
+      zone, kept, summarizeConvo: convoSummarizer(convo.slice()), summarizeText,
+      projectPath: extras.projectPath || '', todos: extras.todos || null, spillDir: spillDir(), transcriptTokens, inTurn: !atTurnStart,
+      restoreChars
+    });
+    convo.splice(1, keepFrom - 1, { role: 'user', content: r.content }, ...pinned);
+    onEvent?.(atTurnStart
+      ? { kind: 'compact-boundary', scope: 'cross-turn', content: r.content, keptUserTurns: 1, via: r.via, transcriptFile: r.transcriptFile }
+      : { kind: 'compact-boundary', scope: 'in-turn', content: r.content, trimThrough: lastCoveredCallIdOf(curUser >= 0 ? region.slice(curUser) : region), via: r.via, transcriptFile: r.transcriptFile });
+    return { ok: true, via: r.via, error: r.error };
+  };
   const compactNow = async () => {
     if (compactFails >= 3) return; // 熔断后不再尝试
     // 进行中状态：事件只用来让界面在需要时点亮「压缩中」（渲染层有 120ms 延迟出现，瞬时压缩不会闪一下）；
@@ -1556,11 +1666,12 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
         before = tokens;
         announced = true;
         onEvent?.({ kind: 'compact-start', scope: 'auto', before });
-        microcompact(convo, { keepRecentTool: MICRO_KEEP_RECENT_IN_TURN });
+        // 0.27：不再先把工具结果折成索引行——压缩请求要和上一次主请求前缀一致才能命中缓存，
+        // 摘要也要看到原始结果才写得准。压缩区整段被边界替换，折不折对之后的上下文没有区别。
         if (foldStuck) lastStuckSummaryAt = compactCalls;
-        const r = await modelFullCompact(convo, { summarize });
+        const r = await compactInTurn();
         measured = null;
-        if (r.error) onEvent?.({ kind: 'warning', message: t('模型摘要失败，改用本地摘要：{error}', { error: r.error }) });
+        if (r.ok && r.via === 'local') onEvent?.({ kind: 'warning', message: t('模型摘要失败，改用本地摘要：{error}', { error: r.error || '' }) });
         nextFoldAt = Math.max(speedThreshold, estimateMessagesTokens(convo) + Math.floor(speedThreshold * FOLD_REARM_RATIO));
       }
       compactFails = 0; // 成功一次即重置「连续失败」计数
