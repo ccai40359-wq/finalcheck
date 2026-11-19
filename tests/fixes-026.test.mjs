@@ -73,3 +73,18 @@ test('中断的回合：紧接着的下一轮和更后面的轮次，都还原�
   assert.deepEqual(ex3.messages.slice(0, prefix2.length), prefix2, '中断回合在后续轮次的表示与上一轮完全一致');
   assert.ok(JSON.stringify(ex3.messages).includes('FAIL a.test.js'), '更后面的轮次仍看得到当时的原始结果');
 });
+
+test('落盘目录的登记写法和真实路径不同（8.3 短文件名 / 目录联接）时，读落盘文件仍放行', async () => {
+  const fs = await import('node:fs');
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'fc-junc-026-'));
+  const realSpill = path.join(base, 'real', 'AppData', 'Roaming', 'FinalCheck', 'spill');
+  fs.mkdirSync(realSpill, { recursive: true });
+  fs.writeFileSync(path.join(realSpill, 'x.json'), '{}');
+  fs.writeFileSync(path.join(base, 'real', 'AppData', 'Roaming', 'FinalCheck', 'config.json'), '{}');
+  const link = path.join(base, 'link');
+  fs.symlinkSync(path.join(base, 'real'), link, 'junction');
+  const spill = path.join(link, 'AppData', 'Roaming', 'FinalCheck', 'spill');
+  const policy = createPolicy({ projectPath: path.join(base, 'proj'), mode: 'workspace', env: { APPDATA: path.join(link, 'AppData', 'Roaming'), FINALCHECK_SPILL_DIR: spill, USERPROFILE: base } });
+  assert.equal(assertPathAllowed(policy, path.join(spill, 'x.json')).ok, true);
+  assert.equal(assertPathAllowed(policy, path.join(spill, '..', 'config.json')).ok, false, '配置仍拒绝');
+});

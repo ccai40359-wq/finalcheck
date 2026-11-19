@@ -308,8 +308,10 @@ function canonicalPath(value, platform) {
 }
 
 /** 是否落在只读例外目录（工具结果落盘目录）里 */
-function inReadableDir(policy, normalized) {
-  const dirs = Array.isArray(policy?.readableDirs) ? policy.readableDirs : [];
+function inReadableDir(policy, normalized, { real = false } = {}) {
+  let dirs = Array.isArray(policy?.readableDirs) ? policy.readableDirs : [];
+  // 比较真实路径时，例外目录本身也要解析成真实路径（8.3 短文件名 RUNNER~1、目录联接、符号链接都会让两边写法不同）
+  if (real) dirs = dirs.map((d) => { try { return canonicalPath(d, policy.platform); } catch { return d; } });
   if (!dirs.length || typeof normalized !== 'string') return false;
   const pathApi = pathApiFor(policy.platform);
   const ci = isWinPlatform(policy.platform);
@@ -336,7 +338,7 @@ export function assertPathAllowed(policy, absPath, { write = false, tool = DEFAU
   if (!write && inReadableDir(policy, normalized)) {
     let real;
     try { real = canonicalPath(normalized, policy.platform); } catch { return deny(tool, normalized, t('路径无法安全解析')); }
-    if (inReadableDir(policy, real)) return { ok: true, path: real };
+    if (inReadableDir(policy, real, { real: true })) return { ok: true, path: real };
   }
 
   const sensitive = detectSensitive(policy, normalized);
