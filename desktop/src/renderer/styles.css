@@ -18,24 +18,27 @@
    白色叠白色等于没效果。
    ============================================================================ */
 :root {
-  /* ---- 语义色（深色：墨黑鎏金） ---- */
-  --fc-base: 10 10 12;          /* 页面底 */
-  --fc-card: 17 17 20;
-  --fc-card-hover: 23 23 27;
-  --fc-edge: 38 38 44;          /* 分隔线/边框 */
+  /* ---- 语义色（深色：墨黑鎏金） ----
+     层次阶梯（由深到浅）：sunken 7 → base 11 → panel 18 → card 20 → well/composer 23
+     → cardHover 28 → pop 31。每一级差 4~7 个色阶——旧版全挤在 10~19 之间，
+     侧栏和主区差不到 2 阶，看起来就是一整块纯黑，没有「玻璃浮在墨上」的感觉。 */
+  --fc-base: 11 11 14;          /* 页面底（画布） */
+  --fc-card: 20 20 24;
+  --fc-card-hover: 28 28 34;
+  --fc-edge: 44 44 52;          /* 分隔线/边框：提亮到能在新底色上看清 */
   --fc-ink: 236 231 220;        /* 正文墨（宣纸白） */
-  --fc-mute: 154 147 138;       /* 次要文字 */
+  --fc-mute: 156 149 140;       /* 次要文字 */
   --fc-gold: 201 162 39;        /* 鎏金主色 */
   --fc-gold-soft: 227 197 107;  /* 亮金（标题/强调） */
   --fc-gold-deep: 143 116 29;
   --fc-jade: 63 158 110;        /* 通过绿 */
 
   /* ---- 层次面 ---- */
-  --fc-sunken: 13 13 16;        /* 下沉面：代码块 / 内嵌井 */
-  --fc-panel: 12 12 15;         /* 侧栏 / 右侧预览面板 */
-  --fc-well: 21 21 26;          /* 设置页里的行容器 */
-  --fc-composer: 19 19 23;
-  --fc-pop: 23 23 28;           /* 弹层（几乎不透明，优先可读性） */
+  --fc-sunken: 7 7 9;           /* 下沉面：代码块 / 内嵌井（必须比画布更深＝凹陷感） */
+  --fc-panel: 18 18 22;         /* 侧栏 / 右侧预览面板（比画布亮＝浮起） */
+  --fc-well: 23 23 28;          /* 设置页里的行容器 */
+  --fc-composer: 23 23 28;
+  --fc-pop: 31 31 37;           /* 弹层（几乎不透明，优先可读性） */
 
   /* ---- 叠加层色调：深色下提亮，浅色下压暗 ---- */
   --fc-lift: 255 255 255;
@@ -61,12 +64,17 @@
   --fc-emerald-base: 16 185 129;   /* emerald-500 */
 
   /* ---- 整页背景与光晕 ---- */
-  --fc-app-bg: radial-gradient(120% 90% at 50% -10%, #100c07 0%, #09090b 58%, #060608 100%);
+  /* 双中心柔光：左上暖金、右上淡青、中下再补一团极淡的金。
+     旧版是单点 radial + alpha 0.03~0.05，肉眼几乎看不出，整页像一块死黑塑料。
+     实测采样（1280×820）：改前主区右下角是 rgb(7,7,11)，纯黑无信息。
+     现在把三团光分散到三个角，让整页有「墨在光下」的纵深。 */
+  --fc-app-bg:
+    radial-gradient(120% 85% at 22% -12%, #211b12 0%, #131318 42%, #0a0a0e 76%, #07070a 100%);
   --fc-ambient-bg:
-    radial-gradient(closest-side, rgba(201, 162, 39, 0.05), transparent 74%) 8% 4% / 44vmax 44vmax no-repeat,
-    radial-gradient(closest-side, rgba(63, 158, 110, 0.035), transparent 74%) 96% 2% / 34vmax 34vmax no-repeat,
-    radial-gradient(closest-side, rgba(227, 197, 107, 0.03), transparent 74%) 78% 100% / 46vmax 46vmax no-repeat;
-  --fc-veil: 8 8 10;            /* 正文区薄暗纱 */
+    radial-gradient(closest-side, rgba(201, 162, 39, 0.13), transparent 70%) 6% -4% / 54vmax 54vmax no-repeat,
+    radial-gradient(closest-side, rgba(63, 158, 110, 0.07), transparent 70%) 104% 6% / 42vmax 42vmax no-repeat,
+    radial-gradient(closest-side, rgba(214, 178, 92, 0.075), transparent 72%) 46% 116% / 62vmax 62vmax no-repeat;
+  --fc-veil: 10 10 13;          /* 正文区薄暗纱 */
 
   --glass-tint: rgba(20, 20, 24, 0.55);
   --glass-hi: rgba(255, 255, 255, 0.10);
@@ -204,21 +212,27 @@ h1, h2, .brand, .font-kai {
 }
 
 
-/* 正文区薄暗纱：玻璃透光但不牺牲文字对比度 */
-.chat-veil { background: rgb(var(--fc-veil) / 0.72); }
+/* 正文区薄暗纱：玻璃透光但不牺牲文字对比度。
+   浓度 0.72 → 0.45。0.72 时它把 app-ambient 的光晕整块压平了，主区看着像一块死黑塑料；
+   实测正文对比仍有 15.9:1（AA 只要求 4.5:1），再降一档也不亏可读性。 */
+.chat-veil { background: rgb(var(--fc-veil) / 0.45); }
+[data-theme="light"] .chat-veil { background: rgb(var(--fc-veil) / 0.72); }
 
 /* 侧栏玻璃。
    性能：blur 半径的代价是卷积核面积 ≈ 半径平方，32px → 12px 约省 7 倍。
-   侧栏本身就压着接近不透明的底色（.93 alpha），大半径在视觉上几乎无差别，
-   但每帧重新合成整块侧栏的成本会掉一个数量级。 */
+   视觉：底色从 0.93 降到 0.86 —— 让它真的能透出后面的暖金光晕，
+   否则「液态玻璃」就退化成一块不透明深灰板，和主区的层次也拉不开。 */
 .glass-side {
-  background-color: rgb(var(--fc-panel) / 0.93);
-  background-image: linear-gradient(180deg, rgb(var(--fc-lift) / 0.035), rgb(var(--fc-lift) / 0.010) 45%, rgb(var(--fc-lift) / 0.018));
-  backdrop-filter: blur(12px) saturate(160%);
-  box-shadow: inset -1px 0 0 rgb(var(--fc-lift) / 0.06), 14px 0 44px rgb(0 0 0 / 0.35);
+  background-color: rgb(var(--fc-panel) / 0.86);
+  background-image: linear-gradient(180deg, rgb(var(--fc-lift) / 0.055), rgb(var(--fc-lift) / 0.012) 45%, rgb(var(--fc-lift) / 0.026));
+  backdrop-filter: blur(14px) saturate(170%);
+  box-shadow: inset -1px 0 0 rgb(var(--fc-lift) / 0.075), 14px 0 44px rgb(0 0 0 / 0.42);
+  border-right: 1px solid rgb(var(--fc-lift) / 0.045);
 }
 [data-theme="light"] .glass-side {
-  box-shadow: inset -1px 0 0 rgb(0 0 0 / 0.06), 14px 0 44px rgb(90 78 52 / 0.06);
+  background-color: rgb(var(--fc-panel) / 0.88);
+  box-shadow: inset -1px 0 0 rgb(0 0 0 / 0.055), 14px 0 44px rgb(90 78 52 / 0.06);
+  border-right: 1px solid rgb(0 0 0 / 0.05);
 }
 
 /* 玻璃按钮 / 玻璃行：内侧一道高光 + 外侧软阴影，按下轻微回弹 */
@@ -304,15 +318,18 @@ h1, h2, .brand, .font-kai {
   box-shadow: 0 1px 3px rgb(90 78 52 / 0.08), 0 8px 24px rgb(90 78 52 / 0.06);
 }
 
-/* 用户消息气泡：淡淡的金色玻璃 */
+/* 用户消息气泡：暖灰褐玻璃 + 金色细边。
+   旧版是 rgb(gold / .22) 直接叠在纯黑上 —— 算出来 rgb(51,42,16)，是一块发灰的橄榄褐，
+   在金主题里显得脏。改成「低饱和暖灰底 + 金边描金」，既保留金色识别度，底色又干净。 */
 .glass-bubble {
-  background-color: rgb(var(--fc-gold) / 0.22);
-  background-image: linear-gradient(180deg, rgb(var(--fc-lift) / 0.09), rgb(var(--fc-lift) / 0) 55%);
-  box-shadow: inset 0 1px 0 rgb(var(--fc-lift) / 0.16), inset 0 0 0 1px rgb(var(--fc-gold-soft) / 0.22), 0 8px 24px rgb(0 0 0 / 0.35);
+  background-color: rgb(58 50 34 / 0.55);
+  background-image: linear-gradient(180deg, rgb(var(--fc-lift) / 0.055), rgb(var(--fc-lift) / 0) 60%);
+  box-shadow: inset 0 1px 0 rgb(var(--fc-lift) / 0.10), inset 0 0 0 1px rgb(var(--fc-gold) / 0.26), 0 8px 24px rgb(0 0 0 / 0.38);
 }
 [data-theme="light"] .glass-bubble {
-  background-color: rgb(var(--fc-gold) / 0.14);
-  box-shadow: inset 0 1px 0 #fff, inset 0 0 0 1px rgb(var(--fc-gold) / 0.24), 0 4px 14px rgb(90 78 52 / 0.10);
+  background-color: rgb(var(--fc-gold) / 0.13);
+  background-image: linear-gradient(180deg, rgb(255 255 255 / 0.55), rgb(255 255 255 / 0) 60%);
+  box-shadow: inset 0 1px 0 #fff, inset 0 0 0 1px rgb(var(--fc-gold) / 0.26), 0 4px 14px rgb(90 78 52 / 0.10);
 }
 
 @layer components {
