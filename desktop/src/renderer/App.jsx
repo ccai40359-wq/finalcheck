@@ -1659,8 +1659,10 @@ export default function App() {
         onSettings={() => setPage('settings')}
       />}
 
-      {/* ---- 主区 + 右侧产物预览 ---- */}
-      <div className="flex-1 min-w-0 flex min-h-0">
+      {/* ---- 主区 + 右侧产物预览 ----
+          relative 是必需的：窗口不够宽时右栏降级为浮层（absolute right-0），
+          浮层相对这块定位，不再把正文压没。 */}
+      <div className="relative flex-1 min-w-0 flex min-h-0">
       <main className="chat-veil flex-1 min-w-0 flex flex-col">
         {!y && (
           <div className="m-4 mb-0 rounded-lg bg-amber-500/10 border border-amber-500/40 text-amber-300 text-sm px-4 py-3 transition-all duration-200">

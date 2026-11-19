@@ -7,6 +7,8 @@ import { isProgramStep } from '../lib/step-view.mjs';
 import { t } from '../i18n/core.mjs';
 import { ProcessTimeline, WorkingStatus } from './ProcessTimeline.jsx';
 import { SwarmResult } from './SwarmResult.jsx';
+import { planPanelLayout, clampPanelWidth } from '../lib/panel-layout.mjs';
+import { useWindowWidth } from '../lib/use-window-width.mjs';
 
 // ProcessTimeline 行内只露「工具名 + 具体对象」：这些工具它自己能抽出 path / command / URL，
 // 所以原样传全量 args（展开面板才看得到完整命令与 diff）。其余工具只传一行摘要，
@@ -112,6 +114,12 @@ export function SubagentPanel({ target, onClose }) {
   const widthRef = useRef(width);
   useEffect(() => { widthRef.current = width; }, [width]);
 
+  // 布局档位：窗口够宽就并排，不够就改浮层（正文不再被压没）
+  const winW = useWindowWidth();
+  const layout = planPanelLayout({ windowWidth: winW, desiredWidth: width });
+  const isSheet = layout.mode === 'sheet';
+  const panelW = isSheet ? layout.width : Math.min(width, layout.maxRail || width);
+
   // gate / aggregate 是确定性程序节点，没有子代理对话：直接说明，不要去轮询
   // 判定收口在 lib/step-view.mjs（DSL 用 op，旧卡片用 opType/kind），并有单测
   const isProgramNode = isProgramStep(target);
@@ -149,11 +157,11 @@ export function SubagentPanel({ target, onClose }) {
     e.preventDefault();
     const startX = e.clientX;
     const startW = widthRef.current;
-    const max = Math.round(window.innerWidth * 0.72);
     const move = (ev) => {
-      const next = Math.min(max, Math.max(0, startW + (startX - ev.clientX)));
-      if (next < 260) { cleanup(); onClose?.(); return; }
-      setWidth(next);
+      const raw = Math.max(0, startW + (startX - ev.clientX));
+      // 并排时拖到头（<260）才关闭；浮层不挤压正文，收到最小宽为止
+      if (!isSheet && raw < 260) { cleanup(); onClose?.(); return; }
+      setWidth(clampPanelWidth({ windowWidth: winW, width: raw, mode: layout.mode }));
     };
     const cleanup = () => {
       window.removeEventListener('mousemove', move);
@@ -199,7 +207,24 @@ export function SubagentPanel({ target, onClose }) {
   };
 
   return (
-    <aside style={{ width }} className="shrink-0 border-l border-lift/[0.07] bg-panel flex flex-col min-h-0 relative">
+    <>
+      {isSheet && (
+        <div
+          onClick={() => onClose?.()}
+          data-panel-scrim="1"
+          className="absolute inset-0 z-20 bg-black/60 backdrop-blur-[2px] animate-[fadeIn_.15s_ease]"
+          aria-hidden="true"
+        />
+      )}
+      <aside
+        style={{ width: panelW }}
+        data-panel-mode={layout.mode}
+        className={
+          isSheet
+            ? 'absolute right-0 top-2 bottom-2 z-30 border border-gold/25 rounded-l-2xl bg-panel flex flex-col min-h-0 shadow-[-32px_0_80px_rgba(0,0,0,0.7)] animate-[fadeIn_.18s_ease]'
+            : 'shrink-0 border-l border-lift/[0.07] bg-panel flex flex-col min-h-0 relative'
+        }
+      >
       <div onMouseDown={startDrag} onDoubleClick={() => setWidth(620)} title={t('拖动调整宽度（拖到头关闭，双击复位）')}
         className="group absolute left-0 top-0 h-full w-2 -ml-1 cursor-col-resize z-10">
         <div className="w-px h-full mx-auto bg-lift/[0.08] group-hover:bg-gold/60 transition-colors" />
@@ -260,5 +285,6 @@ export function SubagentPanel({ target, onClose }) {
         ) : null}
       </div>
     </aside>
+    </>
   );
 }
