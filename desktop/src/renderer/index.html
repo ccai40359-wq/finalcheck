@@ -6,6 +6,16 @@
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' fc-media:; worker-src 'self' blob:; frame-src 'self' data:" />
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='12' fill='%230a0a0c'/><text x='32' y='46' font-size='40' text-anchor='middle' fill='%23c9a227' font-family='KaiTi,STKaiti,serif'>%E9%AA%8C</text></svg>" />
     <title>FinalCheck</title>
+    <script>
+      // 首屏防闪：React 挂载前先把主题落到 <html>，否则深色用户会看到一帧白屏。
+      // key 与 renderer/lib/theme.mjs 的 THEME_STORAGE_KEY 必须一致。
+      // 这里读的是上次的本地缓存；config.json 才是权威值，React 挂载后会再纠正一次。
+      try {
+        var t = localStorage.getItem('fc.theme') === 'light' ? 'light' : 'dark';
+        document.documentElement.dataset.theme = t;
+        document.documentElement.style.colorScheme = t;
+      } catch (e) { /* localStorage 不可用：交给默认深色 */ }
+    </script>
   </head>
   <body class="bg-base text-ink">
     <div id="root"></div>

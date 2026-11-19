@@ -62,7 +62,7 @@ function UserAttachments({ files, onOpen }) {
     <div className="mt-1.5 flex flex-wrap justify-end gap-1.5">
       {files.map((p) => loaded[p] ? (
         <button key={p} onClick={() => onOpen?.(p)} title={p}
-          className="w-28 h-20 rounded-lg overflow-hidden border border-gold/30 hover:border-gold/70 bg-[#0d0d10] transition-colors">
+          className="w-28 h-20 rounded-lg overflow-hidden border border-gold/30 hover:border-gold/70 bg-sunken transition-colors">
           <img src={loaded[p]} alt={baseName(p)} className="w-full h-full object-cover" onError={() => handleImgError(p)} />
         </button>
       ) : (
@@ -79,7 +79,7 @@ function UserAttachments({ files, onOpen }) {
 function PastedTextBlock({ text }) {
   return (
     <pre data-testid="pasted-text-block"
-      className="mt-1.5 max-h-[280px] overflow-auto whitespace-pre-wrap break-words rounded-lg border border-edge bg-[#0a0a0c] px-3 py-2 font-mono text-[12px] leading-6 text-ink/80 select-text">
+      className="mt-1.5 max-h-[280px] overflow-auto whitespace-pre-wrap break-words rounded-lg border border-edge bg-base px-3 py-2 font-mono text-[12px] leading-6 text-ink/80 select-text">
       {String(text || '')}
     </pre>
   );
@@ -208,10 +208,10 @@ export default function MessageList({
                   {wf ? (
                     <button title={openWorkflowRaw === i ? t('收起原始指令') : t('查看原始指令')}
                       onClick={() => setOpenWorkflowRaw((v) => (v === i ? null : i))}
-                      className="p-1.5 rounded-md text-mute/55 hover:text-goldSoft hover:bg-white/5 transition-colors"><IconChevron /></button>
+                      className="p-1.5 rounded-md text-mute/55 hover:text-goldSoft hover:bg-lift/5 transition-colors"><IconChevron /></button>
                   ) : null}
                   <button title={t('复制')} onClick={() => y?.copyText?.(restoreText)}
-                    className="p-1.5 rounded-md text-mute/55 hover:text-goldSoft hover:bg-white/5 transition-colors"><IconCopy /></button>
+                    className="p-1.5 rounded-md text-mute/55 hover:text-goldSoft hover:bg-lift/5 transition-colors"><IconCopy /></button>
                   <button title={t('编辑并从这条重开')}
                     onClick={() => {
                       if (m.pasted?.length) {
@@ -220,7 +220,7 @@ export default function MessageList({
                         onEditMessage(i, restoreText, keepTurns, u.files, null);
                       }
                     }}
-                    className="p-1.5 rounded-md text-mute/55 hover:text-goldSoft hover:bg-white/5 transition-colors"><IconEdit /></button>
+                    className="p-1.5 rounded-md text-mute/55 hover:text-goldSoft hover:bg-lift/5 transition-colors"><IconEdit /></button>
                 </div>
               </div>
             );
@@ -274,7 +274,7 @@ export default function MessageList({
       {/* 不在底部时：底部居中的回到底部箭头（不挡输入框、不压 WorkingStatus） */}
       {showJump && (
         <button type="button" data-testid="scroll-bottom" onClick={jumpToBottom} title={t('回到底部')}
-          className="absolute bottom-2 left-1/2 z-20 flex h-[30px] w-[30px] -translate-x-1/2 items-center justify-center rounded-full border border-gold/45 bg-[#141210]/80 text-goldSoft shadow-lg backdrop-blur-md transition-all duration-200 motion-reduce:transition-none hover:border-gold hover:bg-gold/20 hover:text-ink">
+          className="absolute bottom-2 left-1/2 z-20 flex h-[30px] w-[30px] -translate-x-1/2 items-center justify-center rounded-full border border-gold/45 bg-cardHover/80 text-goldSoft shadow-lg backdrop-blur-md transition-all duration-200 motion-reduce:transition-none hover:border-gold hover:bg-gold/20 hover:text-ink">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12l7 7 7-7" /></svg>
         </button>
       )}

@@ -108,9 +108,9 @@ export function PdfPager({ y, artifact }) {
         <div className="shrink-0 border-t border-edge/70">
           <div className="flex items-center justify-center gap-3 py-1.5 text-[11px] text-mute">
             <button onClick={() => go(1)} disabled={page <= 1} className="px-1.5 disabled:opacity-30 hover:text-goldSoft">«</button>
-            <button onClick={() => go((p) => p - 1)} disabled={page <= 1} className="px-2 py-0.5 rounded disabled:opacity-30 hover:bg-white/5 hover:text-goldSoft">{t('上一页')}</button>
+            <button onClick={() => go((p) => p - 1)} disabled={page <= 1} className="px-2 py-0.5 rounded disabled:opacity-30 hover:bg-lift/5 hover:text-goldSoft">{t('上一页')}</button>
             <span className="font-mono text-ink/80">{page} / {total}</span>
-            <button onClick={() => go((p) => p + 1)} disabled={page >= total} className="px-2 py-0.5 rounded disabled:opacity-30 hover:bg-white/5 hover:text-goldSoft">{t('下一页')}</button>
+            <button onClick={() => go((p) => p + 1)} disabled={page >= total} className="px-2 py-0.5 rounded disabled:opacity-30 hover:bg-lift/5 hover:text-goldSoft">{t('下一页')}</button>
             <button onClick={() => go(total)} disabled={page >= total} className="px-1.5 disabled:opacity-30 hover:text-goldSoft">»</button>
           </div>
           {total > 1 ? (

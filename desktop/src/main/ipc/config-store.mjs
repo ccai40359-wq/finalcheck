@@ -62,6 +62,9 @@ export function createConfigStore({ app, getDataRoot, engineUrl }) {
     out.permissionMode = cfg.permissionMode === 'full' ? 'full' : 'ask'; // 权限模式（仿 ZCode Full access）
     // 界面语言只有 zh / en；旧配置的 auto 或缺失先保留为 auto，读取时按系统语言落成实际值（见 loadConfig）
     out.language = cfg.language === 'en' || cfg.language === 'zh' ? cfg.language : 'auto';
+    // 界面主题：只认 dark / light，未知值回落深色。
+    // 默认必须是 dark——0.23.0 之前只有这一套皮肤，老用户升级后界面不该突然变白。
+    out.theme = cfg.theme === 'light' ? 'light' : 'dark';
     out.activeModel = typeof cfg.activeModel === 'string' ? cfg.activeModel : '';
     out.thinkingEffort = ['low', 'medium', 'high', 'max', 'default'].includes(cfg.thinkingEffort) ? cfg.thinkingEffort : 'max';
     delete out.baseUrl; delete out.apiKey; delete out.model; // 旧形状已迁移进 providers

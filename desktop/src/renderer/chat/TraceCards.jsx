@@ -48,14 +48,14 @@ function ToolHeader({ icon, title, subtitle, repeatLabel = null }) {
     <div className="flex items-center gap-2.5 min-w-0">
       <span className="badge shrink-0 bg-gold/12 text-goldSoft text-[11px]">{icon} {title}</span>
       {subtitle ? <span className="text-xs text-mute font-mono truncate min-w-0">{subtitle}</span> : null}
-      {repeatLabel ? <span className="shrink-0 badge bg-white/[0.06] text-mute/80 text-[10px]">{repeatLabel}</span> : null}
+      {repeatLabel ? <span className="shrink-0 badge bg-lift/[0.06] text-mute/80 text-[10px]">{repeatLabel}</span> : null}
     </div>
   );
 }
 
 /** 卡片外壳：墨黑 + 金边 */
 function ToolShell({ children }) {
-  return <div className="mt-2.5 rounded-xl border border-gold/30 bg-[#0d0d10] overflow-hidden animate-[fadeIn_.2s_ease]">{children}</div>;
+  return <div className="mt-2.5 rounded-xl border border-gold/30 bg-sunken overflow-hidden animate-[fadeIn_.2s_ease]">{children}</div>;
 }
 
 /* 原始文本折叠块：默认收起；只留一行灰色文字按钮，展开是浅底，不再套边框。 */
@@ -71,7 +71,7 @@ function FoldedRaw({ text, label = t('查看详情'), hint = '', maxH = 'max-h-5
         {hint ? <span className="truncate min-w-0 text-[10px] font-mono text-mute/45">{hint}</span> : null}
       </button>
       {open && (
-        <pre className={`mt-1 rounded-md bg-white/[0.02] px-3 py-2 font-mono text-[11px] leading-relaxed text-ink/75 whitespace-pre-wrap break-all ${maxH} overflow-y-auto animate-[fadeIn_.18s_ease]`}>{String(text)}</pre>
+        <pre className={`mt-1 rounded-md bg-lift/[0.02] px-3 py-2 font-mono text-[11px] leading-relaxed text-ink/75 whitespace-pre-wrap break-all ${maxH} overflow-y-auto animate-[fadeIn_.18s_ease]`}>{String(text)}</pre>
       )}
     </div>
   );
@@ -89,10 +89,10 @@ function ReportFindings({ findings }) {
   const sorted = [...(findings || [])].sort((a, b) => (SEV_ORDER[a.severity] ?? 9) - (SEV_ORDER[b.severity] ?? 9));
   if (!sorted.length) return <div className="text-xs text-emerald-400/90 py-1">{t('没有发现，全净')}</div>;
   return (
-    <div className="rounded-lg bg-white/[0.022] divide-y divide-white/[0.06] overflow-hidden">
+    <div className="rounded-lg bg-lift/[0.022] divide-y divide-lift/[0.06] overflow-hidden">
       {sorted.map((f, i) => (
         <div key={i}>
-          <button className="w-full text-left px-3 py-2 flex items-start gap-2 hover:bg-white/[0.03] transition-colors duration-200" onClick={() => setOpenIdx(openIdx === i ? null : i)}>
+          <button className="w-full text-left px-3 py-2 flex items-start gap-2 hover:bg-lift/[0.03] transition-colors duration-200" onClick={() => setOpenIdx(openIdx === i ? null : i)}>
             <span className={`badge mt-0.5 shrink-0 text-[11px] ${SEV_BADGE[f.severity] || SEV_BADGE.low}`}>{t(sevLabel[f.severity] || f.severity)}</span>
             <span className="flex-1 min-w-0 text-xs text-ink/90">
               <span className="font-mono text-goldSoft mr-1.5">{f.checkId}</span>{f.message || f.rule || t('(无描述)')}
@@ -134,11 +134,11 @@ export function ReportCard({ args, result, repeatLabel = null }) {
 
   return (
     <ToolShell>
-      <button onClick={() => setOpen(!open)} className="w-full flex items-center gap-2 px-4 py-2.5 text-left hover:bg-white/[0.02] transition-colors duration-200">
+      <button onClick={() => setOpen(!open)} className="w-full flex items-center gap-2 px-4 py-2.5 text-left hover:bg-lift/[0.02] transition-colors duration-200">
         <span className="badge shrink-0 bg-gold/12 text-goldSoft text-[11px]">{t('🩺 体检报告')}</span>
         <span className="text-xs font-mono text-mute/80 truncate min-w-0">{a.dir || ''}</span>
         {vs && <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] ${vs.cls}`}>{t(verdict)}</span>}
-        {repeatLabel ? <span className="shrink-0 badge bg-white/[0.06] text-mute/80 text-[10px]">{repeatLabel}</span> : null}
+        {repeatLabel ? <span className="shrink-0 badge bg-lift/[0.06] text-mute/80 text-[10px]">{repeatLabel}</span> : null}
         {counts ? <span className="shrink-0 text-[10px] text-mute/45">{counts}</span> : null}
         <span className="ml-auto shrink-0"><Chevron open={open} /></span>
       </button>
@@ -170,7 +170,7 @@ export function ReportCard({ args, result, repeatLabel = null }) {
                 <Chevron open={rawOpen} /> {t('报告全文')}
               </button>
               {rawOpen && (
-                <pre className="mt-2 rounded-md bg-white/[0.02] p-3 text-[11px] font-mono text-ink/80 whitespace-pre-wrap max-h-72 overflow-y-auto">{String(r)}</pre>
+                <pre className="mt-2 rounded-md bg-lift/[0.02] p-3 text-[11px] font-mono text-ink/80 whitespace-pre-wrap max-h-72 overflow-y-auto">{String(r)}</pre>
               )}
             </div>
           )}
@@ -193,7 +193,7 @@ export function ProbeCard({ args, result, repeatLabel = null }) {
         <ToolHeader icon="🛡️" title={t('渗透探测')} subtitle={r?.target || a.url || ''} repeatLabel={repeatLabel} />
       </div>
       <div className="px-4 py-3 space-y-2.5">
-        <div className="rounded-lg bg-white/[0.022] overflow-hidden">
+        <div className="rounded-lg bg-lift/[0.022] overflow-hidden">
           <table className="w-full text-xs">
             <thead>
               <tr className="text-left text-mute">
@@ -202,7 +202,7 @@ export function ProbeCard({ args, result, repeatLabel = null }) {
                 <th className="px-3 py-2 font-medium">{t('复现')}</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-white/[0.06]">
+            <tbody className="divide-y divide-lift/[0.06]">
               {rows.length ? rows.map((row, i) => (
                 <tr key={i}>
                   <td className="px-3 py-1.5 font-mono">
@@ -252,7 +252,7 @@ export function ProbeCard({ args, result, repeatLabel = null }) {
 /* ---------- 压测统计卡（stress_target） ---------- */
 function StressStat({ label, value, unit, tone = 'text-ink' }) {
   return (
-    <div className="rounded-md bg-white/[0.025] px-3 py-2.5">
+    <div className="rounded-md bg-lift/[0.025] px-3 py-2.5">
       <div className="text-[11px] text-mute mb-0.5">{label}</div>
       <div className={`text-lg font-bold tabular-nums ${tone}`}>
         {value}{unit && <span className="text-[11px] font-normal text-mute ml-1">{unit}</span>}
@@ -497,7 +497,7 @@ function PhaseLane({
                   <span className="shrink-0 text-[10px] tabular-nums text-mute/50">{phDone}/{list.length}</span>
                   {!isLast && (
                     <span aria-hidden className="pointer-events-none absolute right-0 top-1/2 -translate-y-1/2 flex items-center">
-                      <span className={`h-px w-3.5 ${nextRunning ? 'bg-goldSoft/40' : 'bg-white/[0.12]'}`} />
+                      <span className={`h-px w-3.5 ${nextRunning ? 'bg-goldSoft/40' : 'bg-lift/[0.12]'}`} />
                     </span>
                   )}
                 </div>
@@ -568,14 +568,14 @@ function PhaseLane({
                     );
                     return (
                       <button key={s.id} onClick={() => onOpenStep?.(s)} title={tip}
-                        className={`w-full text-left rounded-lg px-2 py-1.5 min-w-0 transition-colors hover:bg-white/[0.09] ${s.status === 'running' ? 'bg-gold/[0.10]' : 'bg-white/[0.045]'}`}>
+                        className={`w-full text-left rounded-lg px-2 py-1.5 min-w-0 transition-colors hover:bg-lift/[0.09] ${s.status === 'running' ? 'bg-gold/[0.10]' : 'bg-lift/[0.045]'}`}>
                         {inner}
                       </button>
                     );
                   })}
                   {list.length > PHASE_STEP_PREVIEW ? (
                     <button onClick={() => togglePhase(pi)} aria-expanded={!folded}
-                      className="w-full text-left rounded-lg px-2 py-1 text-[10px] text-mute/60 hover:text-goldSoft hover:bg-white/[0.07] transition-colors">
+                      className="w-full text-left rounded-lg px-2 py-1 text-[10px] text-mute/60 hover:text-goldSoft hover:bg-lift/[0.07] transition-colors">
                       {folded
                         ? t('Show more（还有 {n} 个）', { n: hidden })
                         : t('收起')}
@@ -651,7 +651,7 @@ export function WorkflowLiveCard({ data, sessionId = null, providers = [], onOpe
       <div className="px-3.5 pt-2.5 flex items-center gap-2 min-w-0">
         <button onClick={() => setExpanded((v) => !v)} aria-expanded={expanded}
           title={expanded ? t('收起工作流') : t('展开工作流')}
-          className="shrink-0 -ml-1 h-6 w-6 rounded-md text-mute/60 hover:text-goldSoft hover:bg-white/[0.07] flex items-center justify-center transition-colors">
+          className="shrink-0 -ml-1 h-6 w-6 rounded-md text-mute/60 hover:text-goldSoft hover:bg-lift/[0.07] flex items-center justify-center transition-colors">
           <Chevron open={expanded} />
         </button>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-goldSoft">
@@ -680,7 +680,7 @@ export function WorkflowLiveCard({ data, sessionId = null, providers = [], onOpe
       )}
 
       {/* 底栏：进度 / 总耗时 + 暂停继续 / 停止 / 设置（行为与原实现一致） */}
-      <div aria-hidden className="h-px bg-white/[0.06]" />
+      <div aria-hidden className="h-px bg-lift/[0.06]" />
       <div className="px-3.5 pb-2.5 pt-2 flex items-center gap-3 text-[10px] text-mute/40">
         <span className="tabular-nums">{t('{done}/{total} 完成', { done, total })}</span>
         {running > 0 ? <span className="text-goldSoft/70 tabular-nums">{t('{n} 运行中', { n: running })}</span> : null}
@@ -695,7 +695,7 @@ export function WorkflowLiveCard({ data, sessionId = null, providers = [], onOpe
         {data.running && (
           <>
             <button onClick={togglePause} title={paused ? t('继续') : t('暂停（不再起新的子代理）')}
-              className="shrink-0 h-6 w-6 rounded-md text-mute/70 hover:text-goldSoft hover:bg-white/[0.07] flex items-center justify-center transition-colors">
+              className="shrink-0 h-6 w-6 rounded-md text-mute/70 hover:text-goldSoft hover:bg-lift/[0.07] flex items-center justify-center transition-colors">
               {paused
                 ? <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>
                 : <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1" /><rect x="14" y="5" width="4" height="14" rx="1" /></svg>}
@@ -719,7 +719,7 @@ export function WorkflowLiveCard({ data, sessionId = null, providers = [], onOpe
           }
           setCfgOpen((v) => !v);
         }} title={t('工作流设置（子代理模型 / 最大并发）')}
-          className={`shrink-0 h-6 w-6 rounded-md flex items-center justify-center transition-colors ${cfgOpen ? 'text-goldSoft bg-white/[0.08]' : 'text-mute/70 hover:text-goldSoft hover:bg-white/[0.07]'}`}>
+          className={`shrink-0 h-6 w-6 rounded-md flex items-center justify-center transition-colors ${cfgOpen ? 'text-goldSoft bg-lift/[0.08]' : 'text-mute/70 hover:text-goldSoft hover:bg-lift/[0.07]'}`}>
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
             <path d="M4 7h10M18 7h2M4 17h4M12 17h8" /><circle cx="16" cy="7" r="2" /><circle cx="10" cy="17" r="2" />
           </svg>
@@ -735,7 +735,7 @@ export function WorkflowLiveCard({ data, sessionId = null, providers = [], onOpe
             <div className="text-[11px] text-ink/85 mb-1.5">Subagent model</div>
             <div className="max-h-40 overflow-y-auto rounded-lg bg-black/25 p-1 space-y-0.5">
               <button onClick={() => setSel(null)}
-                className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-[11px] transition-colors ${sel == null ? 'bg-gold/12 text-goldSoft' : 'text-ink/75 hover:bg-white/5'}`}>
+                className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-[11px] transition-colors ${sel == null ? 'bg-gold/12 text-goldSoft' : 'text-ink/75 hover:bg-lift/5'}`}>
                 <span className="truncate">{t('跟随会话模型')}</span>
                 {sel == null ? <span className="ml-auto text-jade">✓</span> : null}
               </button>
@@ -746,7 +746,7 @@ export function WorkflowLiveCard({ data, sessionId = null, providers = [], onOpe
                   const picked = sel && sel.providerId === p.id && sel.model === mid;
                   return (
                     <button key={p.id + '/' + mid} onClick={() => setSel({ providerId: p.id, model: mid })}
-                      className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-[11px] font-mono transition-colors ${picked ? 'bg-gold/12 text-goldSoft' : 'text-ink/75 hover:bg-white/5'}`}>
+                      className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-[11px] font-mono transition-colors ${picked ? 'bg-gold/12 text-goldSoft' : 'text-ink/75 hover:bg-lift/5'}`}>
                       <span className="truncate">{p.name}/{mid}</span>
                       {picked ? <span className="ml-auto text-jade">✓</span> : null}
                     </button>
@@ -756,9 +756,9 @@ export function WorkflowLiveCard({ data, sessionId = null, providers = [], onOpe
             <div className="mt-3 flex items-center justify-between text-[11px] text-ink/85">
               <span>Max concurrency</span>
               <div className="flex items-center gap-1.5">
-                <button onClick={() => setMaxConc((v) => Math.max(1, v - 1))} className="h-6 w-6 rounded-md bg-white/[0.06] hover:bg-white/[0.12] text-ink/80">−</button>
+                <button onClick={() => setMaxConc((v) => Math.max(1, v - 1))} className="h-6 w-6 rounded-md bg-lift/[0.06] hover:bg-lift/[0.12] text-ink/80">−</button>
                 <span className="w-6 text-center tabular-nums text-ink">{maxConc}</span>
-                <button onClick={() => setMaxConc((v) => Math.min(14, v + 1))} className="h-6 w-6 rounded-md bg-white/[0.06] hover:bg-white/[0.12] text-ink/80">+</button>
+                <button onClick={() => setMaxConc((v) => Math.min(14, v + 1))} className="h-6 w-6 rounded-md bg-lift/[0.06] hover:bg-lift/[0.12] text-ink/80">+</button>
                 <span className="text-[10px] text-mute/40">= default {data.concurrency}</span>
               </div>
             </div>
@@ -853,7 +853,7 @@ export function WorkflowCard({ args, result, onOpenStep = null, onRecover = null
       <div className="px-3.5 pt-2.5 flex items-center gap-2 min-w-0">
         <button onClick={() => setExpanded((v) => !v)} aria-expanded={expanded}
           title={expanded ? t('收起工作流') : t('展开工作流')}
-          className="shrink-0 -ml-1 h-6 w-6 rounded-md text-mute/60 hover:text-goldSoft hover:bg-white/[0.07] flex items-center justify-center transition-colors">
+          className="shrink-0 -ml-1 h-6 w-6 rounded-md text-mute/60 hover:text-goldSoft hover:bg-lift/[0.07] flex items-center justify-center transition-colors">
           <Chevron open={expanded} />
         </button>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-goldSoft">
@@ -876,7 +876,7 @@ export function WorkflowCard({ args, result, onOpenStep = null, onRecover = null
         <PhaseLane phases={phases} stepsById={byId} allClaims={r.claims} running={false} onOpenStep={onOpenStep} />
       )}
       {/* 底栏：成功/失败聚合 + 总耗时（完成态不出现运行控制） */}
-      <div aria-hidden className="h-px bg-white/[0.06]" />
+      <div aria-hidden className="h-px bg-lift/[0.06]" />
       <div className="px-3.5 pb-2.5 pt-2 flex items-center gap-3 text-[10px] text-mute/40">
         <span className="tabular-nums">
           {t('{done}/{total} 成功', { done: okCount, total: steps.length })}
@@ -907,7 +907,7 @@ function CmdOutBlock({ label, text, tone }) {
   return (
     <div>
       <div className="text-[11px] text-mute mb-1 font-mono">{t('{label} · {n} 行', { label, n: lines.length })}</div>
-      <pre className={`rounded-md bg-[#111114] px-3 py-2 text-[11px] font-mono leading-relaxed overflow-x-auto whitespace-pre-wrap break-words ${tone}`}>
+      <pre className={`rounded-md bg-sunken px-3 py-2 text-[11px] font-mono leading-relaxed overflow-x-auto whitespace-pre-wrap break-words ${tone}`}>
         {shown.join('\n')}
       </pre>
       {over && (
@@ -946,7 +946,7 @@ export function CommandDetail({ args, result }) {
   };
   return (
     <div className="space-y-2 text-xs">
-      <div className="flex items-start gap-2 rounded-md bg-white/[0.03] px-3 py-2">
+      <div className="flex items-start gap-2 rounded-md bg-lift/[0.03] px-3 py-2">
         <span className="shrink-0 select-none font-mono text-xs font-bold text-goldDeep leading-5">$</span>
         <code className="flex-1 min-w-0 font-mono text-xs text-goldSoft whitespace-pre-wrap break-all leading-5">{cmd || t('(空命令)')}</code>
         <button onClick={copy} title={t('复制命令')}
@@ -1019,7 +1019,7 @@ export function GenericToolDetail({ name = '', args, result, running }) {
     <div className="space-y-2 text-[11px]">
       <div>
         <div className="text-mute mb-1 font-mono">{t('参数')}</div>
-        <div className="rounded-md bg-white/[0.025] px-2.5 py-2 space-y-1.5">
+        <div className="rounded-md bg-lift/[0.025] px-2.5 py-2 space-y-1.5">
           {argLines.length ? argLines.map((line, i) => (
             <div key={i} className="flex items-start gap-2 min-w-0">
               {line.label ? (

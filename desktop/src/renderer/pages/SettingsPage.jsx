@@ -9,6 +9,8 @@ import UsagePage from './UsagePage.jsx';
 // 双语：界面语言开关（auto 跟随系统 / zh / en）；applyLanguage 立即生效，保存后写入 config
 import { t, setLanguage as applyLanguage, resolveLanguage } from '../i18n/core.mjs';
 import { useLanguage } from '../i18n/index.jsx';
+// 主题：外观节的两个选项（dark 墨黑鎏金 / light 宣纸暖白）
+import { THEMES, normalizeTheme, readCachedTheme, writeCachedTheme, applyThemeToDocument } from '../lib/theme.mjs';
 
 const API_FORMATS = [
   { value: 'chat-completions', label: 'chat-completions（OpenAI 兼容）' },
@@ -30,7 +32,12 @@ export const LANGUAGE_MODES = [
   { value: 'zh', label: '中文', desc: '界面文案用中文；AI 回复与报告跟随你的提问语言。' },
   { value: 'en', label: 'English', desc: '界面文案用英文；AI 回复与报告跟随你的提问语言。' }
 ];
-const SECTIONS = ['models', 'language', 'runtime', 'usage', 'about'];
+const SECTIONS = ['models', 'appearance', 'language', 'runtime', 'usage', 'about'];
+// 外观：主题只有两套（深色是 0.23.0 之前的唯一皮肤，保持默认）
+export const THEME_MODES = [
+  { value: 'dark', label: '深色', desc: '墨黑鎏金：暗底金字，长时间看不刺眼。' },
+  { value: 'light', label: '浅色', desc: '宣纸暖白：亮底深字，白天或投影时更清楚。' }
+];
 // 更新详情三段（label 是界面中文原文，t() 负责英文）
 const CHANGELOG_SECTIONS = [['added', '新增'], ['fixed', '修复'], ['improved', '优化']];
 const newId = () => `p-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
@@ -169,7 +176,7 @@ export function toModelObjects(models) {
   });
 }
 
-export default function SettingsPage({ onBack, initialSection = 'models', running = false }) {
+export default function SettingsPage({ onBack, initialSection = 'models', running = false, theme: controlledTheme, onThemeChange }) {
   const y = api();
   const lang = useLanguage(); // 切换语言后本页跟着重渲染（t() 读的是模块级语言状态）
   const [providers, setProviders] = useState([]);   // 草稿（保存前仅在本地）
@@ -187,6 +194,7 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
   const [sandboxMode, setSandboxMode] = useState('workspace');
   const [toolConc, setToolConc] = useState(DEFAULT_TOOL_CONCURRENCY);
   const [language, setLanguageChoice] = useState(() => resolveLanguage(undefined, navigator.language)); // 界面语言：zh / en（旧配置 auto 读取时落成实际值）
+  const [theme, setThemeChoice] = useState(() => readCachedTheme(typeof localStorage !== 'undefined' ? localStorage : null)); // 界面主题：dark / light
   const [section, setSection] = useState(() => (SECTIONS.includes(initialSection) ? initialSection : 'models')); // 设置页内分节：models / runtime / usage / about（仿 ZCode 左侧分组导航）
   const [update, setUpdate] = useState(initialUpdateState); // 更新状态机（纯函数见 lib/updater-state.mjs）
   const [appVersion, setAppVersion] = useState('');
@@ -217,6 +225,7 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
         setToolConc(Number.isFinite(conc) && conc > 0 ? Math.min(16, Math.max(1, Math.trunc(conc))) : DEFAULT_TOOL_CONCURRENCY);
         // 兼容旧配置：language 缺失或为 'auto' 时按系统语言落成实际值，UI 上选中对应项
         setLanguageChoice(resolveLanguage(c?.language, navigator.language));
+        setThemeChoice(normalizeTheme(c?.theme));
         setSelectedId(list[0]?.id ?? null);
         setLoaded(true);
       })
@@ -401,6 +410,7 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
         sandboxMode: mode,
         toolConcurrency: conc,
         language: language === 'en' ? 'en' : 'zh',
+        theme: normalizeTheme(themeValue),
         providers: clean,
         activeProviderId: clean.some((p) => p.id === activeId) ? activeId : (clean[0]?.id ?? null)
       };
@@ -411,6 +421,9 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
       setToolConc(conc);
       // 语言立即生效：只切界面文案；agent / 报告不再跟随界面语言（AI 按用户提问语言输出）
       applyLanguage(nextCfg.language);
+      // 主题同样立即生效并写本地缓存（设置页内选完就已经落 DOM 了，这里再对齐一次）
+      applyThemeToDocument(document, nextCfg.theme);
+      writeCachedTheme(typeof localStorage !== 'undefined' ? localStorage : null, nextCfg.theme);
       setDirty(false);
       setSaved(true);
       setTimeout(() => setSaved(false), 2500);
@@ -430,6 +443,62 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
     } finally { setTesting(false); }
   };
 
+  // 外观：主题两套（受控组件——状态由 App 持有，设置页与标题栏共用一份，
+  // 否则「标题栏切了、外观页还显示旧的已选」这种双源 bug 必然复发）。
+  // 没传 props 时（单独渲染/测试）退回本地状态，仍可用。
+  const themeValue = controlledTheme ?? theme;
+  const onPickTheme = (value) => {
+    setThemeChoice(value);
+    // 主题是即时生效 + 当场落盘的（走 App 的 onThemeChange），不参与「未保存修改」计数：
+    // 再调 touch() 会让底部的「保存」一直亮着，暗示还有东西没存，属于假信号。
+    applyThemeToDocument(document, value);
+    writeCachedTheme(typeof localStorage !== 'undefined' ? localStorage : null, value);
+    onThemeChange?.(value);
+  };
+  const appearanceCard = (
+    <Card className="p-5 space-y-4">
+      <div className="grid grid-cols-2 gap-2">
+        {THEME_MODES.map((m) => {
+          const on = themeValue === m.value;
+          return (
+            <button key={m.value} type="button" role="radio" aria-checked={on}
+              onClick={() => onPickTheme(m.value)} disabled={!y}
+              className={`relative rounded-lg border px-4 py-3 text-left transition-colors disabled:opacity-50 ${on ? 'border-gold/45 bg-gold/10' : 'border-edge bg-well hover:bg-cardHover'}`}>
+              <div className="text-sm text-ink flex items-center gap-2">
+                {t(m.label)}
+                {on && <span className="text-[10px] text-goldSoft border border-gold/30 rounded px-1 leading-tight">{t('已选')}</span>}
+              </div>
+              <div className="text-xs text-mute mt-1 leading-snug">{t(m.desc)}</div>
+              {/* 一小块配色预览：底 / 面 / 字 / 金 四个色块，一眼看出这套主题长什么样。
+                  每块都带一圈描边，否则深色卡的墨底与浅色卡的白面在同类卡片上会「消失」。 */}
+              <div className="mt-2.5 flex gap-1.5" aria-hidden="true">
+                {(m.value === 'light'
+                  ? ['#f7f5f0', '#ffffff', '#1f1c18', '#a8811a']
+                  : ['#0a0a0c', '#17171c', '#ece7dc', '#c9a227']
+                ).map((c, i) => (
+                  <span key={i} className="h-4 w-4 rounded-full ring-1 ring-inset ring-lift/25"
+                    style={{ background: c }} />
+                ))}
+                <span className="ml-0.5 self-center text-[10px] text-mute/70">{t('底 · 面 · 字 · 金')}</span>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="text-xs text-mute leading-relaxed rounded-lg bg-well border border-edge px-3.5 py-2.5">
+        {t('主题只影响界面配色，不改动任何代码、报告与导出的文件内容。标题栏右上角的 ☀/☾ 也能随时切换。')}
+      </div>
+
+      <div className="flex items-center gap-3 pt-2 border-t border-edge/60">
+        <button className="btn-primary min-w-[92px]" onClick={save} disabled={!y || !loaded}>{t('保存')}</button>
+        {saved && !dirty && (
+          <span className="text-xs text-jade">{t('已保存')}</span>
+        )}
+      </div>
+    </Card>
+  );
+
   // 界面语言：只切界面文案，独立成节（切换立即生效，保存时写入 cfg.language = 'zh' | 'en'）
   const languageCard = (
     <Card className="p-5 space-y-4">
@@ -439,7 +508,7 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
           return (
             <button key={m.value} type="button" role="radio" aria-checked={on}
               onClick={() => { setLanguageChoice(m.value); touch(); applyLanguage(m.value); }} disabled={!y}
-              className={`relative rounded-lg border px-4 py-3 text-left transition-colors disabled:opacity-50 ${on ? 'border-gold/45 bg-gold/10' : 'border-edge bg-[#15151a] hover:bg-cardHover'}`}>
+              className={`relative rounded-lg border px-4 py-3 text-left transition-colors disabled:opacity-50 ${on ? 'border-gold/45 bg-gold/10' : 'border-edge bg-well hover:bg-cardHover'}`}>
               <div className="text-sm text-ink flex items-center gap-2">
                 {m.label}
                 {on && <span className="text-[10px] text-goldSoft border border-gold/30 rounded px-1 leading-tight">{t('已选')}</span>}
@@ -450,7 +519,7 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
         })}
       </div>
 
-      <div className="text-xs text-mute leading-relaxed rounded-lg bg-[#15151a] border border-edge px-3.5 py-2.5">
+      <div className="text-xs text-mute leading-relaxed rounded-lg bg-well border border-edge px-3.5 py-2.5">
         {t('这里只影响按钮、菜单、表单与提示等界面文案；AI 回复和报告使用你提问时的语言，不随这里切换。')}
       </div>
 
@@ -485,7 +554,7 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
             const on = sandboxMode === m.value;
             return (
               <button key={m.value} type="button" onClick={() => { setSandboxMode(m.value); touch(); }} disabled={!y}
-                className={`rounded-lg border px-3 py-2.5 text-left transition-colors disabled:opacity-50 ${on ? 'border-gold/45 bg-gold/10' : 'border-edge bg-[#15151a] hover:bg-cardHover'}`}>
+                className={`rounded-lg border px-3 py-2.5 text-left transition-colors disabled:opacity-50 ${on ? 'border-gold/45 bg-gold/10' : 'border-edge bg-well hover:bg-cardHover'}`}>
                 <div className={`text-xs font-mono ${on ? 'text-goldSoft' : 'text-ink/85'}`}>{m.label}</div>
                 <div className="text-[11px] text-mute/80 mt-1 leading-relaxed">{t(m.desc)}</div>
               </button>
@@ -503,13 +572,13 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
       <Field label={t('工具并发')} hint={t('同时执行的工具调用数，1–16，默认 8')}>
         <div className="flex items-center gap-1.5">
           <button type="button" onClick={() => { setToolConc((v) => Math.max(1, (Math.trunc(Number(v)) || DEFAULT_TOOL_CONCURRENCY) - 1)); touch(); }} disabled={!y}
-            className="h-8 w-8 rounded-md bg-white/[0.06] hover:bg-white/[0.12] text-ink/80 disabled:opacity-40">−</button>
+            className="h-8 w-8 rounded-md bg-lift/[0.06] hover:bg-lift/[0.12] text-ink/80 disabled:opacity-40">−</button>
           <input type="number" min="1" max="16" step="1" value={toolConc}
             onChange={(e) => { setToolConc(e.target.value); touch(); }}
             onBlur={() => setToolConc((v) => Math.min(16, Math.max(1, Math.trunc(Number(v)) || DEFAULT_TOOL_CONCURRENCY)))}
             className="input font-mono !w-20 text-center" disabled={!y} />
           <button type="button" onClick={() => { setToolConc((v) => Math.min(16, (Math.trunc(Number(v)) || DEFAULT_TOOL_CONCURRENCY) + 1)); touch(); }} disabled={!y}
-            className="h-8 w-8 rounded-md bg-white/[0.06] hover:bg-white/[0.12] text-ink/80 disabled:opacity-40">+</button>
+            className="h-8 w-8 rounded-md bg-lift/[0.06] hover:bg-lift/[0.12] text-ink/80 disabled:opacity-40">+</button>
           <span className="text-xs text-mute/50">1–16</span>
         </div>
       </Field>
@@ -585,7 +654,7 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
         <div className="text-xs text-mute mt-0.5">{t('从 GitHub Release 检查新版本。发现后由你确认下载，重启完成安装；版本与下载地址均由更新模块读取。')}</div>
       </div>
 
-      <div className="flex items-center justify-between gap-3 rounded-lg bg-[#15151a] border border-edge px-4 py-3">
+      <div className="flex items-center justify-between gap-3 rounded-lg bg-well border border-edge px-4 py-3">
         <div>
           <div className="text-sm text-ink">{t('当前版本')}</div>
           <div className="text-xs text-mute mt-0.5">{t('仅安装版检查更新；开发模式不联网。')}</div>
@@ -600,7 +669,7 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
           <div className={`text-sm leading-relaxed ${updateToneClass[updateView.tone] || 'text-mute'}`}>{updateStatusText}</div>
         )}
         {updateView.phase === 'downloading' && (
-          <div className="mt-2 h-1 rounded-full bg-white/10 overflow-hidden">
+          <div className="mt-2 h-1 rounded-full bg-lift/10 overflow-hidden">
             <div className="h-full rounded-full bg-goldSoft transition-[width] duration-200" style={{ width: `${updateView.progress ?? 0}%` }} />
           </div>
         )}
@@ -684,6 +753,7 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
         <div className="flex-1 min-h-0 overflow-y-auto px-2.5 pb-4 space-y-5">
           <NavGroup label={t('基础')}>
             <NavRow label={t('模型设置')} active={section === 'models'} onClick={() => setSection('models')} icon={<IconLayers />} />
+            <NavRow label={t('外观')} active={section === 'appearance'} onClick={() => setSection('appearance')} icon={<IconPalette />} />
           </NavGroup>
           <NavGroup label="Agent">
             <NavRow label={t('语言')} active={section === 'language'} onClick={() => setSection('language')} icon={<IconGlobe />} />
@@ -709,12 +779,14 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
         <div className="shrink-0 px-8 pt-6 pb-5 flex items-start justify-between gap-4">
           <div className="min-w-0">
             <h1 className="font-kai text-[22px] leading-tight text-goldSoft">
-              {section === 'models' ? t('模型设置') : section === 'language' ? t('语言') : section === 'runtime' ? t('运行时') : t('关于')}
+              {section === 'models' ? t('模型设置') : section === 'appearance' ? t('外观') : section === 'language' ? t('语言') : section === 'runtime' ? t('运行时') : t('关于')}
             </h1>
             <p className="text-[12px] text-mute mt-1.5 leading-relaxed">
               {section === 'models'
                 ? t('管理自定义模型供应商。配置好后可在对话里选择使用。')
-                : section === 'language'
+                : section === 'appearance'
+                  ? t('深色（墨黑鎏金）与浅色（宣纸暖白）两套主题；切换立即生效。')
+                  : section === 'language'
                   ? t('只切换界面文案（按钮、菜单、表单、提示）；立即生效。AI 回复与报告跟随你的提问语言。')
                   : section === 'runtime'
                     ? t('沙箱与工具并发：对所有供应商生效，与权限模式（Full access）独立。')
@@ -843,14 +915,14 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
                         : '上下文窗口 {window} tokens（继承供应商）',
                         { window: v.window.toLocaleString('en-US') });
                     return (
-                      <div key={`${idx}-${v.id}`} className="flex items-center justify-between gap-2 rounded-lg bg-[#15151a] border border-edge px-3 py-2 group">
+                      <div key={`${idx}-${v.id}`} className="flex items-center justify-between gap-2 rounded-lg bg-well border border-edge px-3 py-2 group">
                         <span className="font-mono text-sm truncate min-w-0">{v.id || t('（空模型名）')}</span>
                         <div className="flex items-center gap-1.5 shrink-0">
                           <span title={windowTitle}
                             className={`badge !text-[10px] !px-1.5 !py-0.5 font-mono border ${
                               v.windowSource === 'model'
                                 ? 'bg-gold/10 text-goldSoft border-gold/30'
-                                : 'bg-white/[0.05] text-mute border-edge'
+                                : 'bg-lift/[0.05] text-mute border-edge'
                             }`}>
                             {t(formatWindowBadge(v.window))}
                           </span>
@@ -890,7 +962,7 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
                 </div>
                 <button role="switch" aria-checked={selected.enabled} aria-label={t('启用供应商')} onClick={() => patchSelected({ enabled: !selected.enabled })}
                   className={`relative w-11 h-6 rounded-full transition-colors duration-200 shrink-0 ${selected.enabled ? 'bg-jade' : 'bg-edge'}`}>
-                  <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-[#ece7dc] shadow transition-all duration-200 ${selected.enabled ? 'left-[22px]' : 'left-0.5'}`} />
+                  <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-ink shadow transition-all duration-200 ${selected.enabled ? 'left-[22px]' : 'left-0.5'}`} />
                 </button>
               </div>
 
@@ -955,6 +1027,10 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
             <div className="flex-1 min-w-0 overflow-y-auto">
               <div className="max-w-2xl px-6 py-6">{aboutCard}</div>
             </div>
+          ) : section === 'appearance' ? (
+            <div className="flex-1 min-w-0 overflow-y-auto">
+              <div className="max-w-2xl px-6 py-6">{appearanceCard}</div>
+            </div>
           ) : section === 'language' ? (
             <div className="flex-1 min-w-0 overflow-y-auto">
               <div className="max-w-2xl px-6 py-6">{languageCard}</div>
@@ -1008,7 +1084,7 @@ function Switch({ checked, onChange, label }) {
   return (
     <button type="button" role="switch" aria-checked={!!checked} aria-label={label} onClick={() => onChange(!checked)}
       className={`relative w-11 h-6 rounded-full transition-colors duration-200 shrink-0 ${checked ? 'bg-jade' : 'bg-edge'}`}>
-      <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-[#ece7dc] shadow transition-all duration-200 ${checked ? 'left-[22px]' : 'left-0.5'}`} />
+      <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-ink shadow transition-all duration-200 ${checked ? 'left-[22px]' : 'left-0.5'}`} />
     </button>
   );
 }
@@ -1144,7 +1220,7 @@ function ModelEditorDialog({ provider, isNew, initialEntry, otherIds, onSave, on
             <h3 id={titleId} className="font-kai text-base text-goldSoft">{isNew ? t('添加模型') : t('编辑模型设置')}</h3>
             <div className="text-[11px] text-mute/60 mt-0.5">{isNew ? t('新增模型；留空字段继承供应商') : t('修改模型参数')}</div>
           </div>
-          <button type="button" className="p-1.5 -mr-1 rounded-md text-mute/60 hover:text-ink hover:bg-white/[0.06] transition-colors shrink-0"
+          <button type="button" className="p-1.5 -mr-1 rounded-md text-mute/60 hover:text-ink hover:bg-lift/[0.06] transition-colors shrink-0"
             aria-label={t('关闭')} onClick={onClose}>
             <IconX />
           </button>
@@ -1152,7 +1228,7 @@ function ModelEditorDialog({ provider, isNew, initialEntry, otherIds, onSave, on
 
         <div className="px-5 py-4 space-y-4">
           {/* Smart configuration */}
-          <div className="flex items-start justify-between gap-3 rounded-lg bg-[#15151a] border border-edge px-3 py-2.5">
+          <div className="flex items-start justify-between gap-3 rounded-lg bg-well border border-edge px-3 py-2.5">
             <div className="min-w-0">
               <div className="text-sm text-ink">{t('智能配置')}</div>
               <div className="text-[11px] text-mute/70 mt-0.5 leading-snug">{t('按模型名自动识别上下文窗口（如 128k / 200k / 1m）；关闭后手动填写。')}</div>
@@ -1206,7 +1282,7 @@ function ModelEditorDialog({ provider, isNew, initialEntry, otherIds, onSave, on
               {t('高级设置')}
             </button>
             {advanced && (
-              <div className="mt-2.5 rounded-lg border border-edge bg-[#15151a] px-3 py-2.5">
+              <div className="mt-2.5 rounded-lg border border-edge bg-well px-3 py-2.5">
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <div className="text-sm text-ink">Vision</div>
@@ -1291,6 +1367,16 @@ function IconGlobe() {
     </svg>
   );
 }
+function IconPalette() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 3a9 9 0 1 0 0 18h1.5a2 2 0 0 0 0-4H12a2 2 0 0 1 0-4h3a5.5 5.5 0 0 0 5.5-5.5C20.5 5 16.6 3 12 3Z" />
+      <circle cx="7.5" cy="10" r="1.1" fill="currentColor" stroke="none" />
+      <circle cx="10" cy="6.5" r="1.1" fill="currentColor" stroke="none" />
+      <circle cx="14.5" cy="6.5" r="1.1" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
 function IconSliders() {
   return (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -1313,7 +1399,7 @@ function NavRow({ label, icon, active = false, onClick, disabled = false, traili
   return (
     <button onClick={onClick} disabled={disabled} aria-current={active ? 'page' : undefined}
       className={`w-full flex items-center gap-2 rounded-lg px-3 py-2 text-[12.5px] transition-colors duration-150 disabled:opacity-40 ${
-        active ? 'bg-gold/10 text-goldSoft border border-gold/30' : 'border border-transparent text-ink/85 hover:bg-white/[0.045] hover:text-ink'}`}>
+        active ? 'bg-gold/10 text-goldSoft border border-gold/30' : 'border border-transparent text-ink/85 hover:bg-lift/[0.045] hover:text-ink'}`}>
       <span className={active ? 'text-goldSoft' : 'text-mute/70'}>{icon}</span>
       <span className="truncate">{label}</span>
       {trailing ? <span className="ml-auto text-[10px] text-mute/40 shrink-0">{trailing}</span> : null}

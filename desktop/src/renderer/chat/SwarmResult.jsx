@@ -31,7 +31,7 @@ const stringifyJson = (v) => {
 const SEV_CLS = {
   high: 'bg-red-500/15 text-red-400 border border-red-500/30',
   medium: 'bg-gold/15 text-goldSoft border border-gold/30',
-  low: 'bg-white/[0.06] text-mute/70 border border-white/[0.12]'
+  low: 'bg-lift/[0.06] text-mute/70 border border-lift/[0.12]'
 };
 
 /** 裁决徽标：confirmed 玉色 / rejected 红 / uncertain 琥珀 */
@@ -261,7 +261,7 @@ function FindingRow({ item }) {
     <div>
       <button type="button" disabled={!canOpen} aria-expanded={canOpen ? open : undefined}
         onClick={() => { if (canOpen) setOpen((v) => !v); }}
-        className={`w-full text-left px-3.5 py-2.5 flex items-start gap-2 transition-colors ${canOpen ? 'hover:bg-white/[0.03]' : 'cursor-default'}`}>
+        className={`w-full text-left px-3.5 py-2.5 flex items-start gap-2 transition-colors ${canOpen ? 'hover:bg-lift/[0.03]' : 'cursor-default'}`}>
         <span className={`badge shrink-0 mt-px text-[10px] ${SEV_CLS[sev] || SEV_CLS.low}`}>{sev}</span>
         <span className="min-w-0 flex-1">
           <span className="block text-xs leading-relaxed text-ink/90 break-words">{claim || t('(无结论)')}</span>
@@ -273,7 +273,7 @@ function FindingRow({ item }) {
         {canOpen ? <span className="mt-0.5 shrink-0"><Chevron open={open} /></span> : null}
       </button>
       {open && canOpen ? (
-        <pre className="border-t border-white/[0.06] bg-black/20 px-3.5 py-2 text-[11px] font-mono leading-relaxed text-mute/75 whitespace-pre-wrap break-words max-h-56 overflow-y-auto">{evidence}</pre>
+        <pre className="border-t border-lift/[0.06] bg-black/20 px-3.5 py-2 text-[11px] font-mono leading-relaxed text-mute/75 whitespace-pre-wrap break-words max-h-56 overflow-y-auto">{evidence}</pre>
       ) : null}
     </div>
   );
@@ -291,7 +291,7 @@ function VerdictRow({ item }) {
         <span className="font-mono text-[11px] text-goldSoft/80 truncate">{claimId || t('(缺少条目编号)')}</span>
       </div>
       {evidence ? (
-        <pre className="mt-1.5 rounded-lg bg-black/20 border border-white/[0.05] px-2.5 py-1.5 text-[10.5px] font-mono leading-relaxed text-mute/70 whitespace-pre-wrap break-words max-h-48 overflow-y-auto">{evidence}</pre>
+        <pre className="mt-1.5 rounded-lg bg-black/20 border border-lift/[0.05] px-2.5 py-1.5 text-[10.5px] font-mono leading-relaxed text-mute/70 whitespace-pre-wrap break-words max-h-48 overflow-y-auto">{evidence}</pre>
       ) : null}
       {note ? <div className="mt-1 text-[10.5px] leading-relaxed text-mute/45 break-words">{note}</div> : null}
     </div>
@@ -322,14 +322,14 @@ function RawOutput({ text, label = t('查看原始输出') }) {
   const [open, setOpen] = useState(false);
   const body = useMemo(() => (typeof text === 'string' ? text : stringifyJson(text)), [text]);
   return (
-    <div className="border-t border-white/[0.06] px-3.5 py-1.5">
+    <div className="border-t border-lift/[0.06] px-3.5 py-1.5">
       <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open}
         className="flex items-center gap-1.5 text-[11px] text-mute/50 hover:text-goldSoft transition-colors duration-150">
         <span>{label}</span>
         <Chevron open={open} />
       </button>
       {open ? (
-        <pre className="mt-1.5 rounded-lg bg-black/25 border border-white/[0.06] px-3 py-2 text-[11px] font-mono leading-relaxed text-mute/70 whitespace-pre-wrap break-all max-h-72 overflow-y-auto animate-[fadeIn_.18s_ease]">{body}</pre>
+        <pre className="mt-1.5 rounded-lg bg-black/25 border border-lift/[0.06] px-3 py-2 text-[11px] font-mono leading-relaxed text-mute/70 whitespace-pre-wrap break-all max-h-72 overflow-y-auto animate-[fadeIn_.18s_ease]">{body}</pre>
       ) : null}
     </div>
   );
@@ -338,19 +338,19 @@ function RawOutput({ text, label = t('查看原始输出') }) {
 function SwarmCards({ sections, rawText }) {
   const keys = Object.keys(SECTION_META).filter((key) => Array.isArray(sections[key]));
   return (
-    <div className="mt-2.5 rounded-xl border border-gold/30 bg-[#0d0d10] overflow-hidden animate-[fadeIn_.2s_ease]">
+    <div className="mt-2.5 rounded-xl border border-gold/30 bg-sunken overflow-hidden animate-[fadeIn_.2s_ease]">
       {keys.map((key, si) => {
         const meta = SECTION_META[key];
         const list = sections[key];
         const Row = meta.Row;
         return (
-          <section key={key} className={si ? 'border-t border-white/[0.06]' : ''}>
+          <section key={key} className={si ? 'border-t border-lift/[0.06]' : ''}>
             <div className="px-3.5 pt-2.5 pb-1.5 flex items-center gap-2 min-w-0">
               <span className="badge shrink-0 bg-gold/15 text-goldSoft border border-gold/35 text-[11px]">{meta.icon} {t(meta.label)}</span>
               <span className="text-[11px] tabular-nums text-mute/55">{t(meta.count, { n: list.length })}</span>
             </div>
             {list.length ? (
-              <div className="divide-y divide-white/[0.06] border-t border-white/[0.06]">
+              <div className="divide-y divide-lift/[0.06] border-t border-lift/[0.06]">
                 {list.map((item, i) => <Row key={i} item={item} />)}
               </div>
             ) : (
@@ -377,7 +377,7 @@ function TruncatedAnswer({ sections, count, text }) {
       {hasRows ? (
         <SwarmCards sections={sections} rawText={text} />
       ) : (
-        <div className="mt-2 rounded-xl border border-white/[0.09] bg-[#0d0d10] overflow-hidden">
+        <div className="mt-2 rounded-xl border border-lift/[0.09] bg-sunken overflow-hidden">
           <RawOutput text={text} />
         </div>
       )}
@@ -388,7 +388,7 @@ function TruncatedAnswer({ sections, count, text }) {
 /** 能 parse 但认不出 swarm 形状的 JSON：只留折叠原始输出，不铺开 */
 function UnknownJson({ text }) {
   return (
-    <div className="mt-2.5 rounded-xl border border-white/[0.09] bg-[#0d0d10] overflow-hidden">
+    <div className="mt-2.5 rounded-xl border border-lift/[0.09] bg-sunken overflow-hidden">
       <div className="px-3.5 pt-2 pb-1 text-[11px] text-mute/50">{t('JSON 输出（结构未识别）')}</div>
       <RawOutput text={text} />
     </div>
@@ -411,7 +411,7 @@ function MarkdownAnswer({ text, hasJson = false }) {
         <div className="text-[11px] text-mute/50">{t('（正文只有 JSON，已收进原始输出）')}</div>
       )}
       {showRaw ? (
-        <div className="mt-2 rounded-xl border border-white/[0.09] bg-[#0d0d10] overflow-hidden">
+        <div className="mt-2 rounded-xl border border-lift/[0.09] bg-sunken overflow-hidden">
           <RawOutput text={rawText} />
         </div>
       ) : null}

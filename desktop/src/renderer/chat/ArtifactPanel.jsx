@@ -48,7 +48,7 @@ export function ArtifactChips({ artifacts, activePath, onOpen }) {
         const isImg = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp'].includes(ext);
         return (
           <button key={a.path} onClick={() => onOpen(a.path)} title={a.path}
-            className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[11px] font-mono transition-colors ${activePath === a.path ? 'bg-gold/12 text-goldSoft' : 'bg-white/[0.035] text-mute hover:bg-white/[0.06] hover:text-goldSoft'}`}>
+            className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[11px] font-mono transition-colors ${activePath === a.path ? 'bg-gold/12 text-goldSoft' : 'bg-lift/[0.035] text-mute hover:bg-lift/[0.06] hover:text-goldSoft'}`}>
             <span className="text-goldDeep">{isImg ? '▣' : ext === '.html' || ext === '.htm' ? '◇' : VIDEO_RE.test(ext) ? '▶' : SLIDES_RE.test(ext) ? '▦' : '▤'}</span>
             <span className="max-w-[220px] truncate text-ink/85">{a.name}</span>
             {a.added != null ? <span className="text-jade">+{a.added}</span> : null}
@@ -92,7 +92,7 @@ export function ArtifactPanel({ y, artifact, loading, error, onClose, onReload, 
     window.addEventListener('mouseup', up);
   };
   return (
-    <aside style={{ width }} className="shrink-0 border-l border-edge bg-[#0b0b0e] flex flex-col min-h-0 relative">
+    <aside style={{ width }} className="shrink-0 border-l border-edge bg-panel flex flex-col min-h-0 relative">
       <div onMouseDown={startDrag} onDoubleClick={() => setWidth(560)} title={t('拖动调整宽度（拖到头关闭，双击复位）')}
         className="group absolute left-0 top-0 h-full w-2 -ml-1 cursor-col-resize z-10">
         <div className="w-px h-full mx-auto bg-edge/70 group-hover:bg-gold/60 transition-colors" />
@@ -106,16 +106,16 @@ export function ArtifactPanel({ y, artifact, loading, error, onClose, onReload, 
         {a?.path ? (
           <>
             <button onClick={() => onReload?.(a.path)} title={t('重新读取')}
-              className="rounded-md px-2 py-1 text-[11px] text-mute hover:bg-white/[0.04] hover:text-goldSoft transition-colors">{t('刷新')}</button>
+              className="rounded-md px-2 py-1 text-[11px] text-mute hover:bg-lift/[0.04] hover:text-goldSoft transition-colors">{t('刷新')}</button>
             <button onClick={() => onOpen?.(a.path)} title={t('用系统程序打开')}
-              className="rounded-md px-2 py-1 text-[11px] text-mute hover:bg-white/[0.04] hover:text-goldSoft transition-colors">{t('外部打开')}</button>
+              className="rounded-md px-2 py-1 text-[11px] text-mute hover:bg-lift/[0.04] hover:text-goldSoft transition-colors">{t('外部打开')}</button>
           </>
         ) : null}
         <button onClick={onClose} title={t('关闭预览')}
-          className="h-7 w-7 rounded-md text-mute hover:text-ink hover:bg-white/5 transition-colors">✕</button>
+          className="h-7 w-7 rounded-md text-mute hover:text-ink hover:bg-lift/5 transition-colors">✕</button>
       </div>
       <div aria-hidden className="h-px shrink-0 bg-edge/70" />
-      <div className="flex-1 min-h-0 overflow-hidden bg-[#0a0a0c]">
+      <div className="flex-1 min-h-0 overflow-hidden bg-base">
         {loading ? <div className="p-4 text-xs text-mute animate-pulse">{t('读取中…')}</div>
           : error ? <div className="p-4 text-xs text-red-300 whitespace-pre-wrap">{error}</div>
             : !a ? null
