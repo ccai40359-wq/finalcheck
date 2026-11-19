@@ -8,7 +8,7 @@ Keep each item to one sentence, describe what users actually notice, and avoid i
 
 ## [0.26.0] - 2026-11-19
 
-Three things: Claude Code–style lightweight sub-agents; workflows unified into a single "flowchart" format; and a simulated-client test harness that runs the full app pipeline in the background the way a real person uses it — which already caught and fixed 4 real bugs.
+Three things: Claude Code–style lightweight sub-agents; workflows unified into a single "flowchart" format; and a simulated-client test harness that runs the full app pipeline in the background the way a real person uses it — which already caught and fixed 5 real bugs.
 
 ### Added
 
@@ -21,6 +21,7 @@ Three things: Claude Code–style lightweight sub-agents; workflows unified into
 - **The end of long command output was silently dropped**: command output used to keep only the first 8,000 characters and silently drop the rest — where test results and error summaries usually are. Now the beginning and the end are kept with a note saying how much was omitted, and the full output is saved to a file the AI can search.
 - **The AI couldn't read the saved full output of long results**: long tool results are saved to a file and the AI is told to look there, but that folder lives under `%APPDATA%\FinalCheck` and the safety gate blocked all of it. That folder is now read-only accessible to the AI; config files stay off-limits and nothing in it can be deleted.
 - **A stopped turn lost its raw results one turn later**: a turn you stopped was carried over in full when you said "continue", but one turn after that it was swapped back to a short summary — breaking the prompt cache at that point and hiding the original output from the AI. It now stays the same full record however many turns later. Long results likewise: what's carried into the next turn is exactly what the AI saw (previously only the first 2,000 characters).
+- **Rollback couldn't find the snapshot when the project path involved a junction or short (8.3) name**: the AI snapshots a file before editing it, but if rollback was given the path written differently from when the snapshot was taken (e.g. a project inside a directory junction), it reported "no snapshot to roll back". Both sides now use the resolved real path.
 
 ### Improved
 

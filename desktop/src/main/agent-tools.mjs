@@ -751,11 +751,13 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
 
     // 修复回路（③）：回滚到 edit/write 前的快照（主 agent 专属；快照由 fs-tools 写盘前自动留）
     repair_rollback: async (args) => {
-      const a = args || {};
+      let a = args || {};
       if (!a.path || typeof a.path !== 'string') return { error: 'path 必填' };
       if (policy) {
         const check = assertPathAllowed(policy, a.path, { write: true, tool: 'repair_rollback' });
         if (!check.ok) return policyDenyResult(check);
+        // 和 edit_file / write_file 留快照时同一个真实路径：模型给的写法（8.3 短文件名、目录联接）不同也能找到快照
+        a = { ...a, path: check.path };
       }
       const { rollbackFile, listSnapshots } = await import('../../../src/repair-loop.mjs');
       if (a.list) return { snapshots: await listSnapshots(path.resolve(a.path)) };

@@ -88,3 +88,29 @@ test('落盘目录的登记写法和真实路径不同（8.3 短文件名 / 目�
   assert.equal(assertPathAllowed(policy, path.join(spill, 'x.json')).ok, true);
   assert.equal(assertPathAllowed(policy, path.join(spill, '..', 'config.json')).ok, false, '配置仍拒绝');
 });
+
+test('项目在目录联接（或 8.3 短路径）下：edit_file 留的快照，repair_rollback 用同一个写法能找到', async () => {
+  const fs = await import('node:fs');
+  const { createAgentTools } = await import('../desktop/src/main/agent-tools.mjs');
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'fc-rb-026-'));
+  const real = path.join(base, 'real');
+  fs.mkdirSync(real);
+  fs.writeFileSync(path.join(real, 'a.js'), 'x = 1;\n');
+  const link = path.join(base, 'link');
+  fs.symlinkSync(real, link, 'junction');
+  const prevSnap = process.env.FINALCHECK_SNAPSHOTS_DIR;
+  process.env.FINALCHECK_SNAPSHOTS_DIR = path.join(base, 'snaps');
+  try {
+    const policy = createPolicy({ projectPath: link, mode: 'workspace' });
+    const permissions = { noteTarget() {}, sessionAllowed: () => true, commandPrefix: (c) => String(c).split(/\s+/)[0], requestApproval: async () => 'allowed-once', getMode: () => 'full' };
+    const tools = createAgentTools({ repoRoot: process.cwd(), permissions, projectPath: link, policy });
+    const f = path.join(link, 'a.js');
+    const e = await tools.edit_file({ path: f, old_string: 'x = 1', new_string: 'x = 2' });
+    assert.ok(!e.error, e.error);
+    const r = await tools.repair_rollback({ path: f });
+    assert.ok(!r.error, r.error);
+    assert.equal(fs.readFileSync(path.join(real, 'a.js'), 'utf8'), 'x = 1;\n');
+  } finally {
+    if (prevSnap === undefined) delete process.env.FINALCHECK_SNAPSHOTS_DIR; else process.env.FINALCHECK_SNAPSHOTS_DIR = prevSnap;
+  }
+});
