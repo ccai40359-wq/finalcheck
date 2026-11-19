@@ -4,6 +4,8 @@ import React, { useEffect, useRef, useState } from 'react';
 import { t } from '../i18n/core.mjs';
 import { renderMarkdown } from './md.jsx';
 import { PdfPager } from './PdfPager.jsx';
+import { planPanelLayout, clampPanelWidth, shouldClosePanel } from '../lib/panel-layout.mjs';
+import { useWindowWidth } from '../lib/use-window-width.mjs';
 
 export const PREVIEW_EXTS = new Set([
   '.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp',
@@ -60,7 +62,7 @@ export function ArtifactChips({ artifacts, activePath, onOpen }) {
   );
 }
 
-export function ArtifactPanel({ y, artifact, loading, error, onClose, onReload, onOpen }) {
+export function ArtifactPanel({ y, artifact, loading, error, onClose, onReload, onOpen, sidebarWidth = 212 }) {
   const a = artifact;
   // 拖左边缘调宽度；拖到头（<220px）直接关闭。宽度记在本机。
   const [width, setWidth] = useState(() => {
@@ -69,15 +71,21 @@ export function ArtifactPanel({ y, artifact, loading, error, onClose, onReload, 
   });
   const widthRef = useRef(width);
   useEffect(() => { widthRef.current = width; }, [width]);
+
+  // 宽度策略：始终并排，但右栏给正文让出位置（不再有浮层/遮罩）。
+  // 旧逻辑上限是「窗口 72%」，1010px 窗口下右栏能占 727px、正文只剩 71px。
+  const winW = useWindowWidth();
+  const layout = planPanelLayout({ windowWidth: winW, desiredWidth: width, sidebar: sidebarWidth });
+  const panelW = layout.width;
+
   const startDrag = (e) => {
     e.preventDefault();
     const startX = e.clientX;
     const startW = widthRef.current;
-    const max = Math.round(window.innerWidth * 0.72);
     const move = (ev) => {
-      const next = Math.min(max, Math.max(0, startW + (startX - ev.clientX)));
-      if (next < 220) { cleanup(); onClose?.(); return; } // 拉到头 = 关上
-      setWidth(next);
+      const raw = Math.max(0, startW + (startX - ev.clientX));
+      if (shouldClosePanel(raw)) { cleanup(); onClose?.(); return; } // 拖到头 = 关上
+      setWidth(clampPanelWidth({ windowWidth: winW, width: raw, sidebar: sidebarWidth }));
     };
     const cleanup = () => {
       window.removeEventListener('mousemove', move);
@@ -92,7 +100,11 @@ export function ArtifactPanel({ y, artifact, loading, error, onClose, onReload, 
     window.addEventListener('mouseup', up);
   };
   return (
-    <aside style={{ width }} className="shrink-0 border-l border-edge bg-panel flex flex-col min-h-0 relative">
+    <aside
+      style={{ width: panelW }}
+      data-panel-mode="rail"
+      className="shrink-0 border-l border-edge bg-panel flex flex-col min-h-0 relative"
+    >
       <div onMouseDown={startDrag} onDoubleClick={() => setWidth(560)} title={t('拖动调整宽度（拖到头关闭，双击复位）')}
         className="group absolute left-0 top-0 h-full w-2 -ml-1 cursor-col-resize z-10">
         <div className="w-px h-full mx-auto bg-edge/70 group-hover:bg-gold/60 transition-colors" />

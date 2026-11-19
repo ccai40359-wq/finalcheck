@@ -7,6 +7,8 @@ import { isProgramStep } from '../lib/step-view.mjs';
 import { t } from '../i18n/core.mjs';
 import { ProcessTimeline, WorkingStatus } from './ProcessTimeline.jsx';
 import { SwarmResult } from './SwarmResult.jsx';
+import { planPanelLayout, clampPanelWidth, shouldClosePanel } from '../lib/panel-layout.mjs';
+import { useWindowWidth } from '../lib/use-window-width.mjs';
 
 // ProcessTimeline 行内只露「工具名 + 具体对象」：这些工具它自己能抽出 path / command / URL，
 // 所以原样传全量 args（展开面板才看得到完整命令与 diff）。其余工具只传一行摘要，
@@ -101,7 +103,7 @@ function SystemPrompt({ text }) {
   );
 }
 
-export function SubagentPanel({ target, onClose }) {
+export function SubagentPanel({ target, onClose, sidebarWidth = 212 }) {
   const y = api();
   const [data, setData] = useState(null);
   const [err, setErr] = useState('');
@@ -111,6 +113,11 @@ export function SubagentPanel({ target, onClose }) {
   });
   const widthRef = useRef(width);
   useEffect(() => { widthRef.current = width; }, [width]);
+
+  // 宽度策略：始终并排，但右栏给正文让出位置（不再有浮层/遮罩）
+  const winW = useWindowWidth();
+  const layout = planPanelLayout({ windowWidth: winW, desiredWidth: width, sidebar: sidebarWidth });
+  const panelW = layout.width;
 
   // gate / aggregate 是确定性程序节点，没有子代理对话：直接说明，不要去轮询
   // 判定收口在 lib/step-view.mjs（DSL 用 op，旧卡片用 opType/kind），并有单测
@@ -149,11 +156,10 @@ export function SubagentPanel({ target, onClose }) {
     e.preventDefault();
     const startX = e.clientX;
     const startW = widthRef.current;
-    const max = Math.round(window.innerWidth * 0.72);
     const move = (ev) => {
-      const next = Math.min(max, Math.max(0, startW + (startX - ev.clientX)));
-      if (next < 260) { cleanup(); onClose?.(); return; }
-      setWidth(next);
+      const raw = Math.max(0, startW + (startX - ev.clientX));
+      if (shouldClosePanel(raw)) { cleanup(); onClose?.(); return; } // 拖到头 = 关上
+      setWidth(clampPanelWidth({ windowWidth: winW, width: raw, sidebar: sidebarWidth }));
     };
     const cleanup = () => {
       window.removeEventListener('mousemove', move);
@@ -199,7 +205,11 @@ export function SubagentPanel({ target, onClose }) {
   };
 
   return (
-    <aside style={{ width }} className="shrink-0 border-l border-lift/[0.07] bg-panel flex flex-col min-h-0 relative">
+      <aside
+        style={{ width: panelW }}
+        data-panel-mode="rail"
+        className="shrink-0 border-l border-lift/[0.07] bg-panel flex flex-col min-h-0 relative"
+      >
       <div onMouseDown={startDrag} onDoubleClick={() => setWidth(620)} title={t('拖动调整宽度（拖到头关闭，双击复位）')}
         className="group absolute left-0 top-0 h-full w-2 -ml-1 cursor-col-resize z-10">
         <div className="w-px h-full mx-auto bg-lift/[0.08] group-hover:bg-gold/60 transition-colors" />
