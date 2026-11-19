@@ -62,7 +62,7 @@ export function ArtifactChips({ artifacts, activePath, onOpen }) {
   );
 }
 
-export function ArtifactPanel({ y, artifact, loading, error, onClose, onReload, onOpen }) {
+export function ArtifactPanel({ y, artifact, loading, error, onClose, onReload, onOpen, sidebarWidth = 212 }) {
   const a = artifact;
   // 拖左边缘调宽度；拖到头（<220px）直接关闭。宽度记在本机。
   const [width, setWidth] = useState(() => {
@@ -75,7 +75,7 @@ export function ArtifactPanel({ y, artifact, loading, error, onClose, onReload, 
   // 宽度策略：始终并排，但右栏给正文让出位置（不再有浮层/遮罩）。
   // 旧逻辑上限是「窗口 72%」，1010px 窗口下右栏能占 727px、正文只剩 71px。
   const winW = useWindowWidth();
-  const layout = planPanelLayout({ windowWidth: winW, desiredWidth: width });
+  const layout = planPanelLayout({ windowWidth: winW, desiredWidth: width, sidebar: sidebarWidth });
   const panelW = layout.width;
 
   const startDrag = (e) => {
@@ -85,7 +85,7 @@ export function ArtifactPanel({ y, artifact, loading, error, onClose, onReload, 
     const move = (ev) => {
       const raw = Math.max(0, startW + (startX - ev.clientX));
       if (shouldClosePanel(raw)) { cleanup(); onClose?.(); return; } // 拖到头 = 关上
-      setWidth(clampPanelWidth({ windowWidth: winW, width: raw }));
+      setWidth(clampPanelWidth({ windowWidth: winW, width: raw, sidebar: sidebarWidth }));
     };
     const cleanup = () => {
       window.removeEventListener('mousemove', move);

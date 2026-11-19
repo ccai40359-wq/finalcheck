@@ -129,6 +129,16 @@ export default function App() {
   const y = api(); // window.finalcheck（浏览器直开时为空 → 仅壳）
   useLanguage(); // 订阅语言状态：设置页切换语言后整棵界面重渲染（t() 读的是最新语言）
   const [page, setPage] = useState('chat');
+  // 会话侧栏折叠：开关做在标题栏的 FC logo 上（悬停显示侧栏图标，点一下收起/展开）。
+  // 状态记在 localStorage，重启保持；侧栏收起后正文拿回 212px。
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try { return localStorage.getItem('fc.sidebarCollapsed') === '1'; } catch { return false; }
+  });
+  const toggleSidebar = () => setSidebarCollapsed((v) => {
+    const next = !v;
+    try { localStorage.setItem('fc.sidebarCollapsed', next ? '1' : '0'); } catch { /* 忽略 */ }
+    return next;
+  });
   const [sessions, setSessions] = useState([]);       // 当前项目的会话 [{id,title,updatedAt,turns}]
   const [projects, setProjects] = useState([]);       // [{id,name,path,isDefault,sessionCount}]
   const [activeProjectId, setActiveProjectId] = useState(null);
@@ -1643,10 +1653,11 @@ export default function App() {
     <div className="app-root h-full flex flex-col bg-base text-ink">
       {/* 液态玻璃的底：两团极暗的金色/青色光晕（玻璃要有东西可以折射） */}
       <div className="app-ambient" aria-hidden="true" />
-      <TitleBar y={y} theme={theme} onToggleTheme={toggleTheme} />
+      <TitleBar y={y} theme={theme} onToggleTheme={toggleTheme}
+        sidebarCollapsed={sidebarCollapsed} onToggleSidebar={toggleSidebar} />
       <div className="relative z-[1] flex-1 min-h-0 flex text-ink">
       {/* ---- 左栏（液态玻璃）：设置/用量页改全屏布局，不露会话侧栏 ---- */}
-      {page === 'chat' && <Sidebar
+      {page === 'chat' && !sidebarCollapsed && <Sidebar
         y={y} booted={booted} page={page} projects={projects} activeProjectId={activeProjectId}
         activeId={activeId} sessions={sessions} projectSessions={projectSessions}
         showAllSessions={showAllSessions} showArchived={showArchived}
@@ -1746,7 +1757,7 @@ export default function App() {
         )}
       </main>
       {showStepPanel ? (
-        <SubagentPanel target={stepView} onClose={() => setStepView(null)} />
+        <SubagentPanel target={stepView} onClose={() => setStepView(null)} sidebarWidth={sidebarCollapsed ? 0 : 212} />
       ) : showArtifactPanel && (
         <ArtifactPanel
           y={y}
@@ -1756,6 +1767,7 @@ export default function App() {
           onClose={closeArtifact}
           onReload={openArtifact}
           onOpen={(p) => y?.artifactOpen?.(p)}
+          sidebarWidth={sidebarCollapsed ? 0 : 212}
         />
       )}
       </div>

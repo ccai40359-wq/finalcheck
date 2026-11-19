@@ -103,7 +103,7 @@ function SystemPrompt({ text }) {
   );
 }
 
-export function SubagentPanel({ target, onClose }) {
+export function SubagentPanel({ target, onClose, sidebarWidth = 212 }) {
   const y = api();
   const [data, setData] = useState(null);
   const [err, setErr] = useState('');
@@ -116,7 +116,7 @@ export function SubagentPanel({ target, onClose }) {
 
   // 宽度策略：始终并排，但右栏给正文让出位置（不再有浮层/遮罩）
   const winW = useWindowWidth();
-  const layout = planPanelLayout({ windowWidth: winW, desiredWidth: width });
+  const layout = planPanelLayout({ windowWidth: winW, desiredWidth: width, sidebar: sidebarWidth });
   const panelW = layout.width;
 
   // gate / aggregate 是确定性程序节点，没有子代理对话：直接说明，不要去轮询
@@ -159,7 +159,7 @@ export function SubagentPanel({ target, onClose }) {
     const move = (ev) => {
       const raw = Math.max(0, startW + (startX - ev.clientX));
       if (shouldClosePanel(raw)) { cleanup(); onClose?.(); return; } // 拖到头 = 关上
-      setWidth(clampPanelWidth({ windowWidth: winW, width: raw }));
+      setWidth(clampPanelWidth({ windowWidth: winW, width: raw, sidebar: sidebarWidth }));
     };
     const cleanup = () => {
       window.removeEventListener('mousemove', move);

@@ -122,6 +122,8 @@ export const EN_APP = {
   '完全权限（点击切换）': 'Full access (click to switch)',
   '标准审批（点击切换）': 'Standard approval (click to switch)',
   '模型与思考强度': 'Model and thinking effort',
+  '收起会话侧栏': 'Hide the session sidebar',
+  '展开会话侧栏': 'Show the session sidebar',
   '执行命令前每次确认（默认）': 'Confirm every command (default)',
   '不再询问；灾难命令仍会被拦截': 'Never ask again; destructive commands are still blocked',
   '压缩中…': 'Compacting…',
