@@ -6,6 +6,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.27.1] - 2026-11-19
+
+Interface release: the session sidebar can now be collapsed, the preview panel no longer squeezes the conversation away, and the composer keeps its shape at any width.
+
+### Added
+
+- **Collapsible session sidebar**: the FC mark at the very top-left of the title bar is the switch — hover over it and it turns into a sidebar icon; click once and the sidebar slides away, giving the conversation 212px more room, click again and it slides back. The choice is remembered across restarts.
+- **It slides instead of jumping**: a 220ms width transition, with the conversation widening alongside it.
+
+### Fixed
+
+- **Opening the preview panel used to squeeze the conversation away**: in a 1010px window the panel could take up to 727px (72% of the window) and the sidebar another 212px, leaving the conversation just 71px — the middle vanished and the composer was crushed into a strip at the bottom. The panel width is now computed as "window − sidebar − at least 420px of conversation", so there is always room for the conversation.
+- **The composer toolbar used to wrap at narrow widths**: once squeezed, "Full access" and "Type / for skills" broke into two or three lines and the toolbar grew from 36px to 50px. All labels now stay on one line, and the hint that burst in tight spaces is gone.
+- **The model name collapsed into an ellipsis**: the full model name and thinking effort now show by default; only when the composer is genuinely too narrow to fit the name does it shrink to a cube icon.
+
+### Improved
+
+- **Collapsing the sidebar no longer slows the interface down**: the sidebar is frosted glass, and changing its width forced the glass to be re-blurred every frame. The blur is now switched off only during the 0.2s slide (barely noticeable, since the sidebar is nearly opaque) and restored the moment it ends. Measured frame interval stays at a steady 4ms, with no stutter.
+
 ## [0.27.0] - 2026-11-19
 
 Context compaction now fully matches Claude Code: when the context is nearly full it is compacted once and saved, and every later turn just appends after it. Handoff summaries are more complete, and the user's own words, the files at compaction time, and the full transcript all have a deterministic fallback. This release also fixes 7 issues found with the simulated-client harness and real-model runs.
