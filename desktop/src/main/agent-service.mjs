@@ -1200,7 +1200,7 @@ async function runToolCall(tc, tools, onEvent, signal = null, onToolLifecycle = 
     cancelled: !!result?.cancelled,
     at: Date.now(),
   });
-  return { id: tc?.id, trace: { tool: name, args: argsText, result: traceResult }, modelContent, ...(images?.length ? { images } : {}) };
+  return { id: tc?.id, trace: { tool: name, args: argsText, result: traceResult, ...(tc?.id ? { callId: String(tc.id) } : {}) }, modelContent, ...(images?.length ? { images } : {}) };
 }
 
 const MAX_LIVE_IMAGE_MESSAGES = 4; // 带图消息最多同时 4 条；超了一次收回到 IMAGE_TRIM_TO 条（成批改，保护前缀缓存）
@@ -1396,6 +1396,9 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
   const trace = [];
   let reasoningAll = '';
   let lastUsage = null;
+  // 网关报回的真实 prompt token（0.25，对齐 Claude Code）：判断上下文用量以它为准，本地估算只算「之后新增的消息」。
+  // len = 发出那次请求时 convo 的长度；压缩改写了前面的消息后作废（置 null），回落纯估算。
+  let measured = null;
   let lastFinishReason = null; // 供上层判定 truncated（finish_reason=length）
   // 累计用量：一轮可能发多次请求，lastUsage 只是最后一次；子代理/工作流账本按这里记账
   const usageTotal = { prompt: null, completion: null, cached: null, requests: 0 };
@@ -1450,7 +1453,9 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
   // 不回到以前「几步就忘」的激进折叠：16 万足够容纳几十个文件；config.inTurnTokenCap 可调，0 = 关闭上限。
   // 注意只做「工具结果压索引行」这一步（microcompact），不触发 fullCompact——后者会把最近 6 条以外
   // （包括用户最初的任务要求）整段换成摘要，频繁触发就是「读完就忘」。fullCompact 仍只在真正逼近窗口时跑。
-  const inTurnCap = config.inTurnTokenCap === 0 ? Infinity : positiveNum(config.inTurnTokenCap, 160000);
+  // 0.25（对齐 Claude Code）：默认不设速度上限——大窗口模型平时什么都不删，只往后追加，靠前缀缓存保证速度；
+  // 真正逼近窗口才压缩。config.inTurnTokenCap 给了正数才启用（想省 token 的用户可以自己设）。
+  const inTurnCap = positiveNum(config.inTurnTokenCap, Infinity);
   const speedThreshold = Math.min(tokenBudget.compactThreshold, inTurnCap);
   let turnTokens = 0;
   let toolWaitMs = 0; // 工具执行时间不计入模型预算：工作流可能跑 30-50 分钟，算进去等于必超
@@ -1459,8 +1464,6 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
   // 压缩熔断：连续 3 次失败就不再压，只发一次 compact-warning（未知事件 UI 会忽略）
   let compactFails = 0;
   let compactWarned = false;
-  // 回合内折叠提示只发一次：microcompact 每步都会跑，第一次真正清掉旧结果时通知，之后不再刷屏
-  let microNoticeSent = false;
   const warnings = [];
   let toolChoiceUnsupported = false; // 网关拒绝 tool_choice 后不再带该字段
   let retriedForTools = false; // 首轮空转提醒只重试一次
@@ -1502,7 +1505,10 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
     let announced = false;
     let before = 0;
     try {
-      let tokens = estimateMessagesTokens(convo);
+      const currentTokens = () => (measured && measured.len <= convo.length
+        ? measured.prompt + estimateMessagesTokens(convo.slice(measured.len))
+        : estimateMessagesTokens(convo));
+      let tokens = currentTokens();
       // ① 速度上限：成批折叠旧工具结果（最近 MICRO_KEEP_RECENT_IN_TURN 条原文不动、对话正文不动）
       compactCalls++;
       let foldStuck = false; // 折完仍贴着速度上限：剩下的是对话正文/模型自己写的长内容，折工具结果已经没用
@@ -1510,12 +1516,11 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
         const target = Math.floor(speedThreshold * FOLD_TARGET_RATIO);
         const plan = planFold(convo, { keepRecentTool: MICRO_KEEP_RECENT_IN_TURN, targetTokens: target, tokensNow: tokens });
         if (plan.count > 0 && microcompact(convo, { keepRecentTool: MICRO_KEEP_RECENT_IN_TURN, maxFold: plan.count })) {
-          if (!microNoticeSent) {
-            microNoticeSent = true; // 同一回合只提示一次
-            onEvent?.({ kind: 'notice', message: t('上下文折叠：已清理 {n} 条旧工具结果（原文可重跑获取）', { n: plan.count }) });
-          }
+          measured = null; // 前面的消息被改写，真实用量作废
+          // 每次折叠都告诉用户（0.25：以前一轮只提示一次，反复折叠用户完全看不到）
+          onEvent?.({ kind: 'notice', message: t('上下文折叠：已把 {n} 条较早的工具结果收成索引行（原文可重跑获取）', { n: plan.count }) });
         }
-        tokens = estimateMessagesTokens(convo);
+        tokens = currentTokens();
         foldStuck = tokens >= speedThreshold * 0.9 && compactCalls - lastStuckSummaryAt >= MIN_REQUESTS_BETWEEN_SUMMARY;
         nextFoldAt = Math.max(speedThreshold, tokens + Math.floor(speedThreshold * FOLD_REARM_RATIO));
       }
@@ -1528,6 +1533,7 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
         microcompact(convo, { keepRecentTool: MICRO_KEEP_RECENT_IN_TURN });
         if (foldStuck) lastStuckSummaryAt = compactCalls;
         const r = await modelFullCompact(convo, { summarize });
+        measured = null;
         if (r.error) onEvent?.({ kind: 'warning', message: t('模型摘要失败，改用本地摘要：{error}', { error: r.error }) });
         nextFoldAt = Math.max(speedThreshold, estimateMessagesTokens(convo) + Math.floor(speedThreshold * FOLD_REARM_RATIO));
       }
@@ -1572,6 +1578,7 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
     applySteer(); // 用户中途注入（Steer）：先并入本轮上下文，再发起下一次请求
     await refreshLiveConfig(); // 下一次模型请求前重新解析：运行中改模型/供应商从这里开始生效（已输出的内容不重跑）
     await compactNow(); // 每轮请求前按 token 做两级压缩，防 40 轮把网关上下文撑爆
+    const sentLen = convo.length;
     if (signal?.aborted) { onEvent?.({ kind: 'turn-end', ms: Date.now() - turnStart, interrupted: true }); return { cancelled: true, interrupted: true, partialContent: '', answer: '', trace, reasoning: reasoningAll || undefined, usage: lastUsage || undefined }; }
     let lastErr = '';
     let streamOut = null; // 成功消费完的流结果（重试循环里赋值；失败/静默时保持 null）
@@ -1709,7 +1716,11 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
       return { error: t('网关连接失败：{err}。{checklist}', { err: lastErr || t('未知错误'), checklist: CHECKLIST }), trace, warnings, reasoning: reasoningAll || undefined, workedMs: Date.now() - turnStart };
     }
     let { content, reasoning, toolCalls, repetitive, aborted, usage, finishReason } = streamOut;
-    if (usage) lastUsage = usage;
+    if (usage) {
+      lastUsage = usage;
+      const pt = Number(usage.prompt_tokens ?? usage.input_tokens);
+      if (Number.isFinite(pt) && pt > 0) measured = { prompt: pt, len: sentLen };
+    }
     addUsage(usage); // 累计（供工作流子代理按步记账）
     addTurnTokens(usage, content); // 软预算累计（prompt+completion）
     if (finishReason) lastFinishReason = finishReason;
@@ -1884,12 +1895,13 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
     let roundNote = (roundThought || roundSay) ? { thought: roundThought.slice(0, 4000), say: roundSay.slice(0, 2000) } : null;
     const lifecycleWithNote = typeof onToolLifecycle === 'function'
       ? (ev) => {
+        // round：同一次模型回复里的多个调用同属一轮，跨轮还原历史时据此合成一条 assistant(tool_calls)
         if (roundNote && ev?.phase === 'start') {
           const note = roundNote;
           roundNote = null;
-          return onToolLifecycle({ ...ev, ...(note.thought ? { thought: note.thought } : {}), ...(note.say ? { say: note.say } : {}) });
+          return onToolLifecycle({ ...ev, round: turn, ...(note.thought ? { thought: note.thought } : {}), ...(note.say ? { say: note.say } : {}) });
         }
-        return onToolLifecycle(ev);
+        return onToolLifecycle(ev?.phase === 'start' ? { ...ev, round: turn } : ev);
       }
       : onToolLifecycle;
     const toolResults = inspected.invalid.length
@@ -1906,6 +1918,7 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
     toolResults.forEach((r, index) => {
       const rep = repairedByIndex.get(index);
       if (rep) r.trace.repaired = rep.repairs;
+      if (r.trace) r.trace.round = turn;
       trace.push(r.trace);
       convo.push({ role: 'tool', tool_call_id: r.id, content: r.modelContent });
     });

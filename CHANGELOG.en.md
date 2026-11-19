@@ -6,6 +6,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.25.0] - 2026-11-19
+
+The memory overhaul: the context mechanism now fully matches Claude Code. Within a session, the AI sees everything it did in earlier turns; 1M-context models no longer drop anything early and only compact when the context is genuinely almost full.
+
+### Added
+
+- **Full memory across turns**: previously, after each turn only the AI's final answer and a background summary were carried into the next one, so the files it had read, the commands it had run and the results it had seen were all gone and had to be fetched again. Every turn's tool calls and results now stay in the conversation and are usable right away in the next turn, just like Claude Code. The carried history is byte-for-byte identical to what was actually sent to the model last turn, so the gateway's prompt cache keeps hitting across turns.
+- **Context size is judged by the gateway's real usage**: context size used to be a local estimate (0.24's estimate got images wrong, which made the AI keep losing its memory). The actual token count the gateway returns with each response is now the source of truth; the local estimate only covers the few messages added since.
+
+### Improved
+
+- **Large-window models no longer drop things early**: the default 160k-token speed cap is gone. A 1M-context model now only appends and never deletes anything during normal work, relying on the cache to keep each step fast, and the AI writes a handoff summary only when the context window is genuinely close to full. If you want to save tokens, you can still set a cap in the config (`inTurnTokenCap`).
+- **No extra model call per turn for a summary**: the full history is already in context, so the background summary is no longer needed; each turn makes one less model call, saving time and money.
+- **More reliable compaction across turns**: when compaction is actually needed, the material handed to the AI for its summary includes the full tool history, your own words are kept verbatim, and the most recent tool results stay intact instead of being truncated.
+- **Every context cleanup is shown**: previously you saw only one notice per turn and nothing for later folds; now every fold shows a notice, and compaction shows "Compacting context".
+
 ## [0.24.2] - 2026-11-19
 
 Hotfix: in 0.24.0 / 0.24.1, during tasks that look at images over and over, such as making videos or decks, the AI forgot what it had done every few steps and went in circles.

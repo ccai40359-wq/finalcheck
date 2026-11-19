@@ -406,6 +406,8 @@ function traceToData(tr) {
     // 本轮思考 / 工具前说的话（2026-11-18）：以前白名单不含，挂在 trace 上也会在落库时被丢掉
     ...(obj.thought ? { thought: String(obj.thought) } : {}),
     ...(obj.say ? { say: String(obj.say) } : {}),
+    // 0.25：同一次模型回复的调用同属一轮——跨轮还原完整历史时据此合成一条 assistant(tool_calls)
+    ...(Number.isInteger(obj.round) ? { round: obj.round } : {}),
   };
 }
 
@@ -429,7 +431,8 @@ function dataToTrace(data) {
     ...(data.callId != null ? { callId: String(data.callId) } : {}),
     ...(data.ms != null ? { ms: data.ms } : {}),
     ...(data.thought ? { thought: String(data.thought) } : {}),
-    ...(data.say ? { say: String(data.say) } : {})
+    ...(data.say ? { say: String(data.say) } : {}),
+    ...(Number.isInteger(data.round) ? { round: data.round } : {})
   };
 }
 
@@ -877,6 +880,7 @@ async function sqliteAppendToolStart(id, tool = {}) {
         // 工具一开始就落库：这一轮的思考跟着一起写，中途关 app / 崩溃也不丢
         ...(tool.thought ? { thought: String(tool.thought).slice(0, 4000) } : {}),
         ...(tool.say ? { say: String(tool.say).slice(0, 2000) } : {}),
+        ...(Number.isInteger(tool.round) ? { round: tool.round } : {}),
       }));
       db.prepare(SQL.touch).run(now, id);
       return { messageId: pending.id, partId, seq: partSeq };
@@ -913,6 +917,7 @@ async function sqliteAppendToolEnd(id, tool = {}) {
         startedAt: prev.startedAt ?? null,
         ...(prev.thought ? { thought: prev.thought } : {}),
         ...(prev.say ? { say: prev.say } : {}),
+        ...(Number.isInteger(prev.round) ? { round: prev.round } : {}),
       }), hit.row.id);
       db.prepare(SQL.touch).run(now, id);
     });
@@ -1020,6 +1025,7 @@ async function sqliteAppendWorkflowToolStart(id, params = {}) {
         // 工具一开始就落库：这一轮的思考跟着一起写，中途关 app / 崩溃也不丢
         ...(tool.thought ? { thought: String(tool.thought).slice(0, 4000) } : {}),
         ...(tool.say ? { say: String(tool.say).slice(0, 2000) } : {}),
+        ...(Number.isInteger(tool.round) ? { round: tool.round } : {}),
       }));
       db.prepare(SQL.touch).run(now, id);
       return { messageId, partId, seq: partSeq, status: 'running' };
@@ -1058,6 +1064,7 @@ async function sqliteAppendWorkflowToolEnd(id, params = {}) {
         startedAt: prev.startedAt ?? null,
         ...(prev.thought ? { thought: prev.thought } : {}),
         ...(prev.say ? { say: prev.say } : {}),
+        ...(Number.isInteger(prev.round) ? { round: prev.round } : {}),
       }), hit.row.id);
       db.prepare(SQL.touch).run(now, id);
     });

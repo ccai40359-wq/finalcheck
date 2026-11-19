@@ -270,7 +270,7 @@ test('端到端（模拟 index 接线）：工具事件按队列落库，回合�
     fetchImpl: mockFetch,
     onToolLifecycle: (ev) => {
       const base = { callId: ev.id ?? null, name: ev.name ?? '', args: ev.args ?? '' };
-      if (ev.phase === 'start') void sessions.appendToolStart(s.id, base);
+      if (ev.phase === 'start') void sessions.appendToolStart(s.id, { ...base, round: ev.round }); // 与 ipc-agent 同样带上 round
       else if (ev.phase === 'end') void sessions.appendToolEnd(s.id, {
         ...base, status: ev.status, result: ev.result, error: ev.error, ms: ev.ms,
       });
@@ -282,7 +282,11 @@ test('端到端（模拟 index 接线）：工具事件按队列落库，回合�
   });
   const loaded = await sessions.loadSession(s.id);
   assert.equal(loaded.messages.length, 2, '端到端只产生 user + assistant 两条消息');
-  assert.deepEqual(loaded.messages[1].trace.map(({ tool, args, result }) => ({ tool, args, result })), out.trace, 'trace 与实际工具结果一致');
+  const core = ({ tool, args, result }) => ({ tool, args, result });
+  assert.deepEqual(loaded.messages[1].trace.map(core), out.trace.map(core), 'trace 与实际工具结果一致');
+  // 0.25：调用 id 与轮次随 trace 落库（跨轮还原完整历史要用）
+  assert.equal(loaded.messages[1].trace[0].callId, 'e2e-1');
+  assert.equal(loaded.messages[1].trace[0].round, 0);
   assert.equal(loaded.messages[1].trace[0].callId, 'e2e-1');
   assert.equal(loaded.messages[1].trace[0].status, 'ok');
   assert.ok(Number.isFinite(loaded.messages[1].trace[0].ms));

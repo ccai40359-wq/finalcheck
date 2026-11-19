@@ -2,6 +2,7 @@
 // 模型可见历史在"发给模型的时刻"派生——压缩只改本次请求的视图，不改存储的历史（审计可回放）。
 // replace 语义：被压缩区由一条 [历史摘要] 消息顶替，仅影响发给模型的内容。
 import { t } from '../renderer/i18n/core.mjs';
+import { transcriptOf, isRealUserText } from './in-turn-compact.mjs';
 
 const KEEP_RECENT = 4; // 最近 N 条永远原文保留
 const TOOL_INLINE_LIMIT = 1500; // 保留区 tool 消息超过此长度才截
@@ -56,6 +57,8 @@ function measureContext(messages, { budgetTokens, budgetChars = 80000 } = {}) {
   return { total, limit, useTokens };
 }
 
+const hasToolsIn = (zone) => zone.some((m) => m?.role === 'tool' || Array.isArray(m?.tool_calls));
+
 export async function assembleContext(messages, { budgetTokens, budgetChars = 80000, summarize } = {}) {
   const list = Array.isArray(messages) ? messages : [];
   // 传了正数 budgetTokens 就按 token 估（长上下文模型），否则沿用旧的 80k 字符口径
@@ -85,7 +88,10 @@ export async function assembleContext(messages, { budgetTokens, budgetChars = 80
 
   let summaryText = null;
   if (zone.length) {
-    const raw = zone.map((m) => `[${m?.role ?? 'unknown'}] ${String(m?.content ?? '')}`).join('\n');
+    // 0.25：历史里带着完整工具过程，压缩材料要包含「调用了什么、结果是什么」，不能只拼正文
+    const raw = hasToolsIn(zone)
+      ? transcriptOf(zone)
+      : zone.map((m) => `[${m?.role ?? 'unknown'}] ${String(m?.content ?? '')}`).join('\n');
     if (typeof summarize === 'function') {
       try { summaryText = await summarize(raw); } catch { /* 总结失败静默回退抽取式 */ }
     }
@@ -101,11 +107,18 @@ export async function assembleContext(messages, { budgetTokens, budgetChars = 80
 
   // 若最后一条 user 已被压进 zone，用原文补回来（放在摘要之后的保留区开头）
   const keptWithUser = (!lastUserInKept && lastUser)
-    ? [lastUser, ...kept.map(truncateTool)]
-    : kept.map(truncateTool);
+    ? [lastUser, ...(useTokens ? kept : kept.map(truncateTool))]
+    : (useTokens ? kept : kept.map(truncateTool)); // token 口径（长上下文模型）：保留区工具结果保持原文，对齐 Claude Code
 
+  // 0.25：被压缩区里用户亲口说的话原样保留（不靠摘要转述）——只在带工具过程的长上下文历史里加
+  let userBlock = '';
+  if (useTokens && hasToolsIn(zone)) {
+    const userTexts = zone.filter((m) => isRealUserText(m) && m !== lastUser).map((m) => String(m.content ?? '').trim()).filter(Boolean);
+    userBlock = userTexts.join('\n---\n');
+    if (userBlock.length > 8000) userBlock = userBlock.slice(0, 4000) + '\n…\n' + userBlock.slice(-4000);
+  }
   let view = summaryText != null
-    ? [{ role: 'user', content: '[历史摘要]\n' + summaryText }, ...keptWithUser]
+    ? [{ role: 'user', content: '[历史摘要]\n' + summaryText + (userBlock ? `\n\n【用户原话（原样保留）】\n${userBlock}` : '') }, ...keptWithUser]
     : keptWithUser; // 压缩区为空（如仅末尾几条就超预算）也要做保留区截断
 
   // ==== 硬规则二：当前任务包置底（规格 §3.3 第 3 步）====

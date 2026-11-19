@@ -338,12 +338,22 @@ export function registerAgentIpc({
           contextMessages = r.messages;
           console.log(`[resume] 接上中断的上一轮：原样回放 ${r.replay.replayed} 步${r.replay.summarized ? `，更早 ${r.replay.summarized} 步为摘要` : ''}（约 ${r.replay.chars} 字符）`);
         }
+        // 0.25（对齐 Claude Code）：之前每一轮的工具调用与结果原样带上——不再只带最终回答 + 后台摘要。
+        // 逼近窗口时由 assembleContext 统一压缩（模型写摘要），平时什么都不删、只往后追加，前缀缓存跨轮接着命中。
+        const { expandToolHistory } = await import('../full-history.mjs');
+        const ex = expandToolHistory(contextMessages, s.messages);
+        if (ex.expanded) {
+          contextMessages = ex.messages;
+          console.log(`[history] 带上之前 ${ex.expanded} 轮的完整工具过程（${ex.steps} 步）`);
+        }
       } catch (e) { console.warn('[resume] 中断回放失败，按普通历史继续：' + (e?.message || e)); }
     }
     // 每轮任务摘要库（2026-11-17 规格 §4 步 6）：最近 10 轮原文 + 1 份古老合并摘要。
     // 这是「跨轮记忆」的真正载体——工具结果不进历史，靠它把「读过什么/改过什么/报什么错」
     // 带到下一轮。放在 compact 摘要之后、hook 之前，且不受 slice 裁剪影响。
-    if (sessionId) {
+    // 0.25：历史里已经有完整工具过程，不再注入每轮摘要（它插在末尾、到下一轮又被拿掉，会让前缀缓存从上一轮断开）。
+    // 旧行为保留为开关：config.legacyRoundSummaries === true。
+    if (sessionId && cfg?.legacyRoundSummaries === true) {
       try {
         const { renderRoundSummaries, dropRoundSummariesCoveredBy, awaitPendingRoundSummary } = await import(engineUrl('desktop/src/main/round-summary-wire.mjs'));
         // 上一轮的摘要还在写（用户紧接着发了下一句）：先等它落盘再读，否则这一轮恰好
@@ -365,7 +375,8 @@ export function registerAgentIpc({
     }
     // 程序账本索引（规格 §3.2 载体②）：只注入最近几轮的标题行（约 50-150 token），
     // 全文留在 .finalcheck/ledger.md 里让模型用 read_file 按需读——账本可能很长，不能全塞。
-    if (turnProjectPath) {
+    // 0.25：历史已带完整工具过程，默认不再注入（同样会让前缀缓存从上一轮断开）；账本文件照常写。
+    if (turnProjectPath && cfg?.legacyRoundSummaries === true) {
       try {
         const { readLedgerIndex } = await import(engineUrl('desktop/src/main/ledger.mjs'));
         const idx = await readLedgerIndex(turnProjectPath, { maxRounds: 8 });
@@ -754,7 +765,7 @@ export function registerAgentIpc({
         if (!ev) return;
         const base = { callId: ev.id ?? null, name: ev.name ?? '', args: ev.args ?? '' };
         if (ev.phase === 'start') {
-          void sessions.appendToolStart(sessionId, { ...base, thought: ev.thought, say: ev.say }).catch(() => { /* 落库失败不阻断对话 */ });
+          void sessions.appendToolStart(sessionId, { ...base, thought: ev.thought, say: ev.say, round: ev.round }).catch(() => { /* 落库失败不阻断对话 */ });
         } else if (ev.phase === 'end') {
           void sessions.appendToolEnd(sessionId, {
             ...base,
@@ -911,7 +922,8 @@ export function registerAgentIpc({
     // 读过什么。这里在回合结束后写一份 6 段摘要，下次回合开头注入。
     // 不 await：摘要失败不该拖慢/影响用户看到回答；失败只记录不抛。
     const roundEndedAt = Date.now();
-    if (sessionId && !out.cancelled && !out.error && typeof out.answer === 'string' && out.answer.trim()) {
+    // 0.25：完整历史已在上下文里，每轮额外一次模型调用写摘要不再需要（省时省钱）；旧行为见 legacyRoundSummaries。
+    if (cfg?.legacyRoundSummaries === true && sessionId && !out.cancelled && !out.error && typeof out.answer === 'string' && out.answer.trim()) {
       void (async () => {
         try {
           const { writeRoundSummary } = await import(engineUrl('desktop/src/main/round-summary-wire.mjs'));

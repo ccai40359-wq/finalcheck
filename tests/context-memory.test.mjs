@@ -139,7 +139,7 @@ test('context: token 预算模式——预算内原样返回，budgetChars 被�
   assert.equal(called, 0);
 });
 
-test('context: token 预算模式——summarize 失败退抽取式，保留区 tool 仍截断', async () => {
+test('context: token 预算模式——summarize 失败退抽取式，保留区 tool 保持原文（0.25 对齐 Claude Code）', async () => {
   const messages = [
     { role: 'user', content: 'Q'.repeat(100) },
     { role: 'assistant', content: 'A'.repeat(100) },
@@ -157,7 +157,7 @@ test('context: token 预算模式——summarize 失败退抽取式，保留区 
   assert.ok(out.messages[0].content.startsWith('[历史摘要]\n'));
   assert.ok(out.messages[0].content.includes('- 用户：' + 'Q'.repeat(60)));
   const tool = out.messages.find((m) => m.role === 'tool' && m.tool_call_id === 't1');
-  assert.equal(tool.content, 'T'.repeat(1200) + '…[截断 800 字符]');
+  assert.equal(tool.content, 'T'.repeat(2000));
 });
 
 test('context: runAgentTurn 集成——发给网关的是压缩视图，存储历史不受影响', async () => {
