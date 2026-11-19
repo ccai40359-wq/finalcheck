@@ -256,7 +256,7 @@ export default function Composer({
           </div>
         )}
         <div
-          className={`glass-composer relative z-30 rounded-[20px] ${dragging ? 'fc-drag' : ''}`}
+          className={`glass-composer relative z-30 rounded-[20px] fc-composer-box ${dragging ? 'fc-drag' : ''}`}
           onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
           onDragLeave={() => setDragging(false)}
           onDrop={async (e) => { e.preventDefault(); setDragging(false); await addFiles(e.dataTransfer?.files); }}
@@ -435,15 +435,23 @@ export default function Composer({
                 )}
               </div>
               <div className="relative" ref={modelMenuRef}>
-                {/* 模型入口只显示图标（立方体），不显示模型名——模型名在悬浮菜单里看/切换。
-                    这样输入框再窄，工具条也不会因为长模型名变形。 */}
+                {/* 模型入口：默认显示「模型名 + 思考强度」；只有输入框窄到装不下名字时，
+                    才整块缩成一个立方体图标（见 styles.css 的 fc-model-full / fc-model-icon 容器查询）。
+                    不是一开始就只给图标——那样用户看不出当前在用哪个模型。 */}
                 <button onClick={() => { setMenu(menu === 'model' ? null : 'model'); setProviderMenu(false); }}
                   title={`${activeModel || t('未配置模型')} · ${effortLabel}`}
                   aria-label={t('模型与思考强度')}
                   data-ui="model-menu-trigger"
-                  className="h-7 w-7 shrink-0 rounded-lg flex items-center justify-center text-mute hover:text-goldSoft hover:bg-lift/[0.06] transition-colors duration-200 relative">
-                  <IconCube />
-                  {/* 运行中/压缩中用一个极小的绿点代替文字提示（原「输入 / 选技能」那个位置） */}
+                  className="shrink-0 rounded-lg flex items-center justify-center text-[11px] text-mute hover:text-goldSoft hover:bg-lift/[0.06] transition-colors duration-200 relative h-7 px-1.5 fc-model-btn">
+                  {/* 宽态：名字 + effort + 箭头 */}
+                  <span className="fc-model-full inline-flex items-center gap-1.5 whitespace-nowrap min-w-0">
+                    <span className="truncate min-w-0">{activeModel || t('未配置模型')}</span>
+                    <span className="text-mute/45 shrink-0">{effortLabel}</span>
+                    <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="shrink-0"><path d="M6 9l6 6 6-6" /></svg>
+                  </span>
+                  {/* 窄态：只剩立方体 */}
+                  <span className="fc-model-icon items-center justify-center" aria-hidden="true"><IconCube /></span>
+                  {/* 压缩中用极小的绿点提示（两种形态共用） */}
                   {compacting && <span aria-hidden="true" className="absolute -top-0.5 -right-0.5 h-1.5 w-1.5 rounded-full bg-jade fc-compact-dot" />}
                 </button>
                 {menu === 'model' && (

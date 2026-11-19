@@ -545,11 +545,27 @@ button, [role="button"] {
   }
 }
 
-/* ============ 输入框工具条：只放图标，窄宽度不换行 ============
-   问题（用户 2026-11-19 截图）：输入框变窄时 "Full access" 被拆成两行、
-   "Type / for skills" 被拆成三行，工具条从 36px 涨到 50px，输入框变形。
-   定案：工具条只保留图标（+ / 盾牌 / 圆环 / 立方体 / 发送），文字全部收进悬浮菜单，
-   所以不再需要按宽度收口文字——这也顺带解决了挤压问题（用户指定的做法）。 */
+/* ============ 输入框工具条：宽时显示模型名，窄才缩成方块 ============
+   背景（用户 2026-11-19）：输入框变窄时 "Full access" 被拆成两行、
+   "Type / for skills" 被拆成三行，工具条从 36px 涨到 50px。
+   用户定案：模型名默认要看得见；只有窄到装不下名字时才退化成方块图标。
+   （不显示模型名 → 用户不知道自己在用哪个模型，所以不能一上来就只给图标。）
+
+   实现：用容器查询按「输入框自身宽度」判断——同一个窗口里，右栏展开与否
+   输入框宽度差很多，按窗口宽度判断会失效。
+     默认：显示 名字 + effort + 箭头（fc-model-full），隐藏方块（fc-model-icon）
+     ≤ 520px：反过来，方块显示、名字收起
+   其他图标（+ / 盾牌 / 圆环 / 发送）在任何宽度都只占固定尺寸，不会折行。 */
+.fc-composer-box { container-type: inline-size; }
 .fc-composer-bar { flex-wrap: nowrap; min-width: 0; }
 .fc-composer-bar > * { flex-shrink: 0; min-width: 0; }
 .fc-composer-bar .fc-right-group { flex-shrink: 0; }
+
+/* 模型按钮两态：默认宽态 */
+.fc-composer-bar .fc-model-icon { display: none; }
+.fc-composer-bar .fc-model-btn { max-width: 280px; }
+@container (max-width: 520px) {
+  .fc-composer-bar .fc-model-full { display: none; }
+  .fc-composer-bar .fc-model-icon { display: inline-flex; }
+  .fc-composer-bar .fc-model-btn { width: 28px; padding-left: 0; padding-right: 0; }
+}
