@@ -72,13 +72,18 @@ export function buildReplayMessages(turn, { budgetChars = DEFAULT_BUDGET } = {})
     messages.push({ role: 'assistant', content, tool_calls: [{ id, type: 'function', function: { name: String(tr.tool || tr.name), arguments: argsJson(tr.args) } }] });
     messages.push({ role: 'tool', tool_call_id: id, content: resultText(tr) });
   }
+  messages.push(replayNote(turn, { summarized: cut > 0 }));
+  return { messages, replayed: full.length, summarized: cut, chars: used };
+}
+
+/** 回放末尾那条说明：这一轮在哪里、为什么中断（full-history 跨轮展开时也用同一条，保证前后轮字节一致） */
+export function replayNote(turn, { summarized = false } = {}) {
   const why = turn?.error ? `因为「${oneLine(turn.error, 120)}」中断` : '被中断（手动停止，或软件中途关闭）';
   const partial = String(turn?.content || '').trim();
-  messages.push({
+  return {
     role: 'assistant',
-    content: `[上一轮在这里${why}。以上是中断前的${cut > 0 ? '全部工具调用（较早部分为摘要）' : '全部工具调用'}与真实结果。用户说「继续」时直接从这里接着做：已经读过、跑过、确认过的不要重做。]${partial ? `\n中断前已输出的正文：${partial.slice(0, 2000)}` : ''}`,
-  });
-  return { messages, replayed: full.length, summarized: cut, chars: used };
+    content: `[上一轮在这里${why}。以上是中断前的${summarized ? '全部工具调用（较早部分为摘要）' : '全部工具调用'}与真实结果。用户说「继续」时直接从这里接着做：已经读过、跑过、确认过的不要重做。]${partial ? `\n中断前已输出的正文：${partial.slice(0, 2000)}` : ''}`,
+  };
 }
 
 /**

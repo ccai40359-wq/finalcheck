@@ -123,6 +123,27 @@ export function planRunningPings(elapsedMs, startMs = RUNNING_PING_START_MS, eve
   return { due, nextAt: due + every };
 }
 
+// 命令输出的收集上限：超过就保留头尾、省略中间（报错/测试汇总往往在末尾，不能只留开头）。
+// 给模型时由 agent-service 统一处理：≤2 万字符原样给；更长的全文落盘、上下文里放头 + 尾 + 落盘路径。
+// 0.26 以前这里是 slice(0, 8000)：只留前 8000 字符、末尾整段丢掉、也不提示被截（模拟客户端工具层测试抓到的）。
+export const COMMAND_STDOUT_CAP = 400000;
+export const COMMAND_STDERR_CAP = 100000;
+
+/** 头尾保留的增量拼接：返回新串与累计省略字符数 */
+export function appendKeepEnds(cur, chunk, cap, dropped = 0) {
+  const next = cur + chunk;
+  if (next.length <= cap) return { text: next, dropped };
+  const half = Math.floor(cap / 2);
+  return { text: next.slice(0, half) + next.slice(next.length - (cap - half)), dropped: dropped + (next.length - cap) };
+}
+
+/** 有省略时在头尾交界处标注省略了多少 */
+export function markOmitted(text, dropped, cap) {
+  if (!dropped) return text;
+  const half = Math.floor(cap / 2);
+  return text.slice(0, half) + `\n…[输出过长，中间省略 ${dropped} 字符]…\n` + text.slice(half);
+}
+
 export function runCommandWithSignal(command, {
   cwd, timeoutMs, idleMs = DEFAULT_COMMAND_IDLE_MS, background = false, env: envInput, signal = null,
   sandbox = null, shellAppRoot = null,
@@ -160,6 +181,7 @@ export function runCommandWithSignal(command, {
     }
     if (sandbox?.env && typeof sandbox.env === 'object') Object.assign(env, sandbox.env);
     let out = '', err = '', settled = false, proc = null, timer = null, idleTimer = null, pingTimer = null;
+    let outDropped = 0, errDropped = 0;
     const t0 = Date.now();
     let nextPingAt = Math.max(0, Number(pingStartMs) || 0); // 下一次活动提示的「已运行毫秒」
     const cleanup = () => {
@@ -176,7 +198,14 @@ export function runCommandWithSignal(command, {
       if (sandbox && !value?.background) {
         try { setTimeout(() => sandbox.cleanup?.(), 300).unref?.(); } catch { /* ignore */ }
       }
-      resolve({ ...value, sandbox: sandbox ? sandbox.mode : 'none', stdout: String(value.stdout ?? out).slice(0, 8000), stderr: String(value.stderr ?? err).slice(0, 4000) });
+      const so = value.stdout ?? out;
+      const se = value.stderr ?? err;
+      resolve({
+        ...value,
+        sandbox: sandbox ? sandbox.mode : 'none',
+        stdout: so === out ? markOmitted(out, outDropped, COMMAND_STDOUT_CAP) : String(so),
+        stderr: se === err ? markOmitted(err, errDropped, COMMAND_STDERR_CAP) : String(se)
+      });
     };
     // 「仍在运行 Ns」活动提示：只报耗时，不带 stdout/stderr。
     // 目的：idle_ms:0 或超长命令时，UI 上看得见它在动，而不是像卡死。
@@ -270,11 +299,11 @@ export function runCommandWithSignal(command, {
       }, timeout);
     }
     proc.stdout?.on('data', (d) => {
-      if (out.length < 200000) out += d.toString();
+      ({ text: out, dropped: outDropped } = appendKeepEnds(out, d.toString(), COMMAND_STDOUT_CAP, outDropped));
       armIdle(); // 有输出就重新计时：只要 stdout/stderr 还在滚，就永远不因空闲转后台
     });
     proc.stderr?.on('data', (d) => {
-      if (err.length < 100000) err += d.toString();
+      ({ text: err, dropped: errDropped } = appendKeepEnds(err, d.toString(), COMMAND_STDERR_CAP, errDropped));
       armIdle();
     });
     proc.on('close', (c) => finish({ blocked: false, code: c ?? 0, stdout: out, stderr: err }));
@@ -442,7 +471,7 @@ export const GREP_CODE_SCHEMA = {
 // todo_write 的 CC 式三条规则（并轨时追加到 AGENT_ONLY_TOOLS_SCHEMA 里 todo_write 的 description 末尾）
 export const TODO_CC_RULES_TEXT = 'CC 式规则：① 同一时间恰好一个 in_progress（工具层会自动把多余的 running 降回 pending 并提示）；② 测试失败/实现不全/有未解决错误时禁止标 done——保持 running，并新建一条写清「需要解决什么」；③ 做完一条立刻调用 todo_write 更新状态，不要攒批';
 
-export function createAgentTools({ repoRoot, permissions, recordAudit = async () => {}, playbookRoot, runWorkflow = null, projectPath = null, policy = null, hooksConfig = null, hooksRunner = null, sessionId = null, cwd = null, signal = null, commandIdleMs = DEFAULT_COMMAND_IDLE_MS, askUser = null, todoWrite = null, onActivity = null, requireAuditIntent = null, shellAppRoot = null, aclSandbox = undefined, userStatedTier = null } = {}) {
+export function createAgentTools({ repoRoot, permissions, recordAudit = async () => {}, playbookRoot, runWorkflow = null, projectPath = null, policy = null, hooksConfig = null, hooksRunner = null, sessionId = null, cwd = null, signal = null, commandIdleMs = DEFAULT_COMMAND_IDLE_MS, askUser = null, todoWrite = null, spawnAgent = null, onActivity = null, requireAuditIntent = null, shellAppRoot = null, aclSandbox = undefined, userStatedTier = null } = {}) {
   let askedThisTurn = false; // 本回合已经通过 ask_user 问过用户（验收前置闸据此放行）
   if (!repoRoot) throw new Error('createAgentTools 需要 repoRoot');
   const engineUrl = (rel) => pathToFileURL(path.join(repoRoot, rel)).href;
@@ -937,6 +966,31 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
       if (typeof runWorkflow !== 'function') return { error: '当前通道不支持工作流（需要在桌面端运行）' };
       // 确定性兜底：模型没给 steps 也没给 script 时，不退化成「steps 不能为空」，
       // 而是把「先判断任务形状再选表示」的判定口径原样回给模型，让它带着参数重试。
+      // 0.26 统一写法：nodes（一张流程图，depends_on 决定先后，互不依赖的一起跑）。
+      // 编译后交给原引擎：全是普通节点 → DAG 引擎；含扇出/闸/循环等 → DSL 引擎按依赖图并行。
+      const rawNodes = args?.nodes;
+      const hasNodes = rawNodes != null && !(Array.isArray(rawNodes) && rawNodes.length === 0) && !(typeof rawNodes === 'string' && !rawNodes.trim());
+      if (hasNodes) {
+        const { compileNodes } = await import('./workflow-nodes.mjs');
+        const c = compileNodes(rawNodes);
+        if ('error' in c) return { error: t('工作流节点有问题：{error}。改好 nodes 后重新调用 run_workflow。', { error: c.error }) };
+        const payload = c.mode === 'steps'
+          ? { goal: args?.goal, steps: c.steps }
+          : { goal: args?.goal, script: c.script, dag: c.dag };
+        if (args?.concurrency != null) payload.concurrency = args.concurrency;
+        const r = await runWorkflow(payload);
+        if (!r || r.error || !Array.isArray(r.results)) return r;
+        const per = Math.max(800, Math.min(3000, Math.floor(14000 / Math.max(1, r.results.length))));
+        return {
+          ...r,
+          results: r.results.map((x) => ({
+            ...x,
+            content: String(x.content || '').slice(0, per),
+            ...(String(x.content || '').length > per ? { contentTruncated: true } : {})
+          }))
+        };
+      }
+      // 旧写法（steps / script）照常可用：老会话、老提示词里写的都还能跑
       const filledSteps = Array.isArray(args?.steps) && args.steps.length > 0;
       const rawScript = args?.script;
       const hasScript = rawScript != null
@@ -944,7 +998,7 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
         && !(typeof rawScript === 'string' && !rawScript.trim());
       if (!filledSteps && !hasScript) {
         return {
-          error: t('你没有给 steps，也没有给 script。先判断任务形状：步骤数量固定、只是并行/串行 → 用 steps；数量由上游结果决定（按列表扇出、循环、条件分支、递归、纯计算汇总）→ 用 script；判断不了 → 用 steps。判断完带上 steps 或 script 重新调用 run_workflow，不要问用户用哪种。')
+          error: t('没有给 nodes。用 nodes 画一张流程图再调用 run_workflow：每个节点 {id, name, prompt, depends_on}，互不依赖的写 depends_on: [] 会一起跑；要按上游清单分身用 type:"fanout"（over 写上游节点 id）。')
         };
       }
       // steps / script 互斥透传：以前这里把 steps 强制成 [] 并丢掉 script，导致 script 模式永远走 steps 分支
@@ -1073,6 +1127,19 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
       const r = await askUser(args || {}, ctx);
       if (r && !r.error) askedThisTurn = true;
       return r;
+    };
+  }
+
+  // 轻量子代理（0.26，对齐 Claude Code 的 Agent 工具）：只给主 agent（spawnAgent 由 ipc-agent 注入，
+  // 子代理 schema 不含该工具，不会套娃）。这里只做参数校验，派活与 transcript 由 ipc-agent 负责。
+  if (typeof spawnAgent === 'function') {
+    tools.spawn_agent = async (args, ctx) => {
+      const a = args || {};
+      const prompt = String(a.prompt ?? '').trim();
+      if (!prompt) return { error: t('spawn_agent 缺少 prompt：写清子代理要做什么、范围、交回什么') };
+      const type = ['explore', 'general', 'verify'].includes(a.type) ? a.type : 'explore';
+      const description = String(a.description ?? '').trim().slice(0, 40) || prompt.replace(/\s+/g, ' ').slice(0, 16);
+      return spawnAgent({ description, prompt, type }, ctx || {});
     };
   }
 

@@ -6,6 +6,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.26.0] - 2026-11-19
+
+Three things: Claude Code–style lightweight sub-agents; workflows unified into a single "flowchart" format; and a simulated-client test harness that runs the full app pipeline in the background the way a real person uses it — which already caught and fixed 4 real bugs.
+
+### Added
+
+- **Lightweight sub-agents (spawn_agent)**: the AI can hand off a self-contained job — searching a whole repo for a kind of code, figuring out how a module works — to a sub-agent. The sub-agent starts with a blank context and its own tools, and hands back only its report, so the many files it reads never fill up the main conversation. Spawning several in one reply runs them in parallel. Three kinds: read-only investigation (default), allowed to edit files, and independent review (ignores the original reasoning and re-gathers its own evidence). Click "Open sub-agent transcript" in the timeline to see every step it took.
+- **Simulated-client test harness**: with no window and no mouse or keyboard, it runs the full pipeline in the background the way a real person uses the app — sending messages, multi-turn chats, stopping midway and continuing, restarting the app and picking up again, sub-agents, workflows — through exactly the same backend code as the desktop app, and checks what was saved, the UI events, whether the prompt-cache prefix broke, and whether files were changed correctly. Three layers: tools only (no model), scripted fake gateway (seconds, now part of npm test), and real model (which also records a replayable cassette). There is also a "trigger eval" that checks with a real model whether the AI actually uses sub-agents / workflows when it should, and leaves them alone when it shouldn't.
+
+### Fixed
+
+- **Every request failed when thinking effort was set to "Default"**: "Default (follow the model)" sent `reasoning_effort: default` to the gateway as-is, and some gateways reject it with HTTP 400. Default now omits the parameter.
+- **The end of long command output was silently dropped**: command output used to keep only the first 8,000 characters and silently drop the rest — where test results and error summaries usually are. Now the beginning and the end are kept with a note saying how much was omitted, and the full output is saved to a file the AI can search.
+- **The AI couldn't read the saved full output of long results**: long tool results are saved to a file and the AI is told to look there, but that folder lives under `%APPDATA%\FinalCheck` and the safety gate blocked all of it. That folder is now read-only accessible to the AI; config files stay off-limits and nothing in it can be deleted.
+- **A stopped turn lost its raw results one turn later**: a turn you stopped was carried over in full when you said "continue", but one turn after that it was swapped back to a short summary — breaking the prompt cache at that point and hiding the original output from the AI. It now stays the same full record however many turns later. Long results likewise: what's carried into the next turn is exactly what the AI saw (previously only the first 2,000 characters).
+
+### Improved
+
+- **Workflows are now one flowchart**: there used to be two formats (DAG and DSL); the AI had to classify the task first and pick one, and `depends_on` meant different things in each, which confused people and the AI alike. Now there is only one: each node is a sub-agent by default, `depends_on` decides what waits for what, and independent nodes run together; when the count depends on upstream results (fan out over a list, loops, branches), you use special nodes in the same chart. Bad references and dependency cycles are reported before anything runs. Workflow cards now just say "Flowchart". Old-format workflows in existing sessions still run.
+
 ## [0.25.0] - 2026-11-19
 
 The memory overhaul: the context mechanism now fully matches Claude Code. Within a session, the AI sees everything it did in earlier turns; 1M-context models no longer drop anything early and only compact when the context is genuinely almost full.

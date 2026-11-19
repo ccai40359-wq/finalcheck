@@ -1391,12 +1391,16 @@ export async function runScriptWorkflow({
   runId = null,
   startedAt = Date.now(),
   verifyTimeoutMs = null,
+  dag = null,
 } = {}) {
   const goalText = text(goal);
   if (!goalText) return { error: t('goal 不能为空（整个工作流要达成的目标）') };
   const norm = normalizeScript(script);
   if (norm.error) return { error: norm.error };
-  const modeReason = describeScriptMode(norm);
+  // dag 模式（统一 nodes 写法）：顶层按依赖并行，说明里不能再写「按指令顺序执行」
+  const modeReason = dag
+    ? [describeScriptMode(norm).replace(t('{n} 个脚本节点按指令顺序执行', { n: (norm?.nodes || []).length }), '').trim(), t('按依赖并行')].filter(Boolean).join(' · ')
+    : describeScriptMode(norm);
 
   const ctl = control && typeof control === 'object' ? control : {};
   // 盲验节点的硬截止（默认 60 分钟；0 = 显式关闭）。其他节点仍不限时。
@@ -1409,6 +1413,23 @@ export async function runScriptWorkflow({
     const n = Number.isFinite(base) && base > 0 ? Math.trunc(base) : SCRIPT_DEFAULT_CONCURRENCY;
     return Math.min(SCRIPT_MAX_CONCURRENCY, Math.max(1, n));
   };
+  // dag 模式（0.26 统一 nodes 写法编译而来）：顶层节点按依赖图并行，所有子代理调用共用一个并发闸。
+  // 扇出自己的并发上限照旧；每个子代理调用再占一个全局名额 → 同时在跑的子代理总数不超过上限。
+  if (dag && typeof callStep === 'function') {
+    const inner = callStep;
+    let running = 0;
+    const waiters = [];
+    const release = () => {
+      running--;
+      const next = waiters.shift();
+      if (next) next();
+    };
+    callStep = async (...a) => {
+      while (running >= limitOf()) await new Promise((r) => waiters.push(r));
+      running++;
+      try { return await inner(...a); } finally { release(); }
+    };
+  }
   const allNodes = norm.nodes.slice();
   // 哪些节点的输出会被后面的 fanout/recurse 当 over 列表消费：这些节点的 prompt 要写清
   // 「必须只输出 JSON 字符串数组」，没做到时为它纠正重试一次（2026-11-11 实测的停机根因）。
@@ -2394,8 +2415,49 @@ export async function runScriptWorkflow({
 
   let fatal = null;
   notify(true);
+  // 顶层一项（节点 / 扇出 / 分支）跑完整：失败降级为洞，不拖垮整条 run
+  const runTopItem = async (item) => {
+    const phaseIds = [];
+    phases.push(phaseIds);
+    try {
+      await runItem(item, phaseIds, {});
+    } catch (e) {
+      // 与顺序模式一致：运行期错误一律降级为洞，其他分支照常跑
+      const target = item.kind === 'node' ? item.node : item;
+      degradeToHole(target, { error: e?.message || t('节点执行失败'), errorCode: 'STEP_FAIL', phaseIds });
+    }
+    if (!phaseIds.length) {
+      const at = phases.indexOf(phaseIds);
+      if (at >= 0) phases.splice(at, 1);
+    }
+  };
+  // dag 模式：每个顶层项等它依赖的项跑完就开跑。依赖 = 编译期给的（depends_on / over / from / when 引用）
+  // ∪ 节点自身 depends_on（含引擎自动补的复核 / 报告依赖）；引擎自动插入的项没有编译期依赖，等它前面所有项。
+  const topIdOf = (item) => (item.kind === 'node' ? item.node.id : item.id);
+  const runDagTop = async (items) => {
+    const ids = items.map(topIdOf);
+    const owner = (ref) => {
+      const r = String(ref || '');
+      const i = ids.findIndex((id) => r === id || r.startsWith(id + '#') || r.startsWith(id + '.'));
+      return i;
+    };
+    const done = [];
+    items.forEach((item, i) => {
+      const deps = new Set();
+      const given = dag.deps && Object.prototype.hasOwnProperty.call(dag.deps, ids[i]) ? dag.deps[ids[i]] : null;
+      if (!given) { for (let k = 0; k < i; k++) deps.add(k); }
+      else for (const d of given) { const k = owner(d); if (k >= 0 && k < i) deps.add(k); }
+      if (item.kind === 'node') for (const d of item.node.depends_on || []) { const k = owner(d); if (k >= 0 && k < i) deps.add(k); }
+      done[i] = Promise.all([...deps].map((k) => done[k])).then(async () => {
+        if (stopped || ctl.aborted) { stopped = true; return; }
+        await runTopItem(item);
+      });
+    });
+    await Promise.all(done);
+  };
   try {
-    for (const item of norm.items) {
+    if (dag) await runDagTop(norm.items);
+    else for (const item of norm.items) {
       if (ctl.aborted) {
         stopped = true;
         break;

@@ -1,0 +1,42 @@
+{
+  "name": "workflow-nodes",
+  "description": "统一工作流写法：先侦察出接口清单，再按清单扇出审查员（数量运行时才知道），同时并行跑一个依赖审查员，最后出报告。全链路走真实 IPC → 工作流引擎 → 子代理 → 工具。",
+  "project": {
+    "files": {
+      "routes.js": "app.get('/login', login);\napp.get('/admin', admin);\n",
+      "package.json": "{ \"name\": \"demo\", \"dependencies\": { \"left-pad\": \"1.0.0\" } }\n"
+    }
+  },
+  "turns": [
+    {
+      "send": "用工作流审查这个项目：先列出所有接口，每个接口派一个审查员，同时查一下依赖，最后汇总",
+      "expect": { "toolsInclude": ["run_workflow"], "workflow": true, "subagentRequestsMin": 6, "answerMatches": "汇总" }
+    }
+  ],
+  "mock": {
+    "replies": [
+      { "content": "画一张流程图：侦察 → 按接口扇出；依赖审查同时跑；最后报告。", "toolCalls": [
+        { "name": "run_workflow", "args": { "goal": "审查接口与依赖", "nodes": [
+          { "id": "list", "name": "接口侦察员", "prompt": "读 {{project}}/routes.js，列出所有路由，只输出 JSON 字符串数组", "depends_on": [] },
+          { "id": "deps", "name": "依赖审查员", "prompt": "读 {{project}}/package.json，检查依赖风险", "depends_on": [] },
+          { "id": "each", "type": "fanout", "name": "接口审查员", "over": "list", "as": "route", "step": { "prompt": "审查 {{project}}/routes.js 里 ${route} 的鉴权" } },
+          { "id": "rep", "type": "report", "name": "交付报告主编", "from": ["each", "deps"] }
+        ] } }
+      ] },
+      { "content": "工作流跑完了，汇总如下：两个接口都缺鉴权，left-pad 版本过旧。" }
+    ],
+    "subagentReplies": [
+      { "match": "列出所有路由", "delayMs": 120, "toolCalls": [{ "name": "read_file", "args": { "path": "{{project}}/routes.js" } }] },
+      { "match": "列出所有路由", "content": "[\"/login\", \"/admin\"]" },
+      { "match": "检查依赖风险", "delayMs": 120, "toolCalls": [{ "name": "read_file", "args": { "path": "{{project}}/package.json" } }] },
+      { "match": "检查依赖风险", "content": "left-pad 1.0.0 过旧（证据 package.json:1）" },
+      { "match": "/login", "toolCalls": [{ "name": "read_file", "args": { "path": "{{project}}/routes.js" } }] },
+      { "match": "/login", "content": "/login 没有鉴权中间件（证据 routes.js:1）" },
+      { "match": "/admin", "toolCalls": [{ "name": "read_file", "args": { "path": "{{project}}/routes.js" } }] },
+      { "match": "/admin", "content": "/admin 没有鉴权中间件（证据 routes.js:2）" },
+      { "match": "复核|verify|核实", "toolCalls": [{ "name": "read_file", "args": { "path": "{{project}}/routes.js" } }] },
+      { "match": "复核|verify|核实", "content": "{\"verdicts\":[]}" },
+      { "match": "报告|汇总", "content": "## Conclusion\n两个接口缺鉴权，依赖过旧。\n## Findings\n- /login、/admin 无鉴权（routes.js:1-2）\n- left-pad 过旧（package.json:1）\n## Verified\nNone\n## Not covered\nNone\n## Skipped\nNone" }
+    ]
+  }
+}

@@ -98,11 +98,14 @@ export const baseName = (p) => String(p || '').split(/[\\/]/).pop();
 
 // /workflow 会展开成一段工程指令发给模型；聊天里只显示「Workflow + 任务」，原始指令折叠可查
 // 新文案先让模型判断任务形状；旧会话仍以老前缀开头，解析时两种都要认（否则历史消息标题/正文露指令原文）
-export const WF_PROMPT_PREFIX = '先判断任务形状，再决定表示方式（二选一，互斥）';
+// 0.26：统一成一张流程图（nodes），不再让模型在 steps / script 里二选一；0.25 及以前的两种前缀照样认
+export const WF_PROMPT_PREFIX = '用 run_workflow 画一张流程图（nodes）来做';
+export const WF_PROMPT_PREFIX_V025 = '先判断任务形状，再决定表示方式（二选一，互斥）';
 export const WF_PROMPT_PREFIX_LEGACY = '请用 run_workflow 组织一次多 agent 工作流';
+const isWorkflowPrompt = (s) => s.startsWith(WF_PROMPT_PREFIX) || s.startsWith(WF_PROMPT_PREFIX_V025) || s.startsWith(WF_PROMPT_PREFIX_LEGACY);
 export const parseWorkflowPrompt = (content) => {
   const s = String(content || '');
-  if (!s.startsWith(WF_PROMPT_PREFIX) && !s.startsWith(WF_PROMPT_PREFIX_LEGACY)) return null;
+  if (!isWorkflowPrompt(s)) return null;
   const m = s.match(/\n任务：([\s\S]*)$/);
   return { task: (m?.[1] || '').trim() };
 };
@@ -112,7 +115,7 @@ export const prettyTitle = (text) => {
   const s = String(text || '').replace(/\n\n\[附件\][\s\S]*$/, '').trim();
   const skill = s.match(/^\[技能\]\s*([^（(]+)/);
   if (skill) return `✦ ${skill[1].trim().slice(0, 24)}`;
-  if (s.startsWith(WF_PROMPT_PREFIX)) {
+  if (s.startsWith(WF_PROMPT_PREFIX) || s.startsWith(WF_PROMPT_PREFIX_V025)) {
     const task = s.match(/\n任务：([^\n]+)/);
     return `Workflow · ${(task?.[1] || t('多 agent 工作流')).trim().slice(0, 24)}`;
   }
@@ -208,12 +211,11 @@ export const expandSkill = (text, skills) => {
   // /workflow 出现在任意位置都生效：把命令本身拿掉，剩下的全文当任务
   if (/(^|\s)\/workflow(?=\s|$)/i.test(raw)) {
     const task = raw.replace(/(^|\s)\/workflow(?=\s|$)/gi, ' ').replace(/\s+/g, ' ').trim();
-    return `先判断任务形状，再决定表示方式（二选一，互斥），不要问用户用哪种，你自己判断，用 run_workflow 执行：
-- 步骤数量固定、方向并列/串行 → 用 steps（DAG）：设计 2-8 个步骤（id/name/role/prompt/depends_on），互不依赖的步骤会并行执行；每步 prompt 必须自包含（要做什么、输入是什么、交付什么），上游结果引擎会自动附上。
-- 步骤数量由上游结果决定（按列表逐个处理、循环到满足条件、按类型递归、条件分支、纯计算汇总）→ 用 script（受限 JSON 指令）：step/fanout/if/gate/verify/report/loop/recurse/aggregate，只解释执行、不运行代码。
-- 判断不了 → 默认 steps。
-- 每个步骤/节点都要给 name，且必须是职位名（4-10 字，如「SQL 注入审查员」「依赖供应链专员」「交付报告主编」）；不许写「步骤 1」「分析」「检查」这种序号名或泛词。
-拿到各步结果后再汇总成一份结论——不要只列计划，也不要用文字模拟并行；最后用一句话说明本次用了哪种、为什么。${task ? `\n任务：${task}` : ''}`;
+    return `${WF_PROMPT_PREFIX}，不要问用户怎么拆，你自己判断：
+- 每个节点默认是一个独立上下文的子代理：id / name / role / prompt / depends_on。只有一条规则：depends_on 决定谁等谁——互不依赖的写 depends_on: [] 会同时跑，上游结果引擎会自动附进下游的 prompt。每个 prompt 必须自包含（要做什么、输入是什么、交付什么）。
+- 数量要等上游结果才知道时（按清单逐个处理、循环到满足条件、条件分支、纯计算汇总），在同一张图里用特殊节点：type=fanout（over 写上游节点 id）/ loop / if / aggregate / gate / verify / report。
+- 每个节点都要给 name，且必须是职位名（4-10 字，如「SQL 注入审查员」「依赖供应链专员」「交付报告主编」）；不许写「步骤 1」「分析」「检查」这种序号名或泛词。
+拿到各节点结果后再汇总成一份结论——不要只列计划，也不要用文字模拟并行。${task ? `\n任务：${task}` : ''}`;
   }
   // 技能 token 可以嵌在正文里：逐个展开成 read_playbook 指令，保留其它文字
   return raw.replace(/(^|\s)\/([a-z0-9][a-z0-9-]*)(?=\s|$)/gi, (full, space, name) => {

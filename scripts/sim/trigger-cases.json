@@ -1,0 +1,23 @@
+{
+  "description": "工具触发评测用例：真人会怎么说 → 期望模型用哪个工具。expect 可以是一个工具名、none（都不该用），或数组（任选其一都算对）。",
+  "cases": [
+    { "id": "spawn-wide-search", "project": "D:/fc-e2e/DVWA", "expect": "spawn_agent",
+      "prompt": "这个项目里所有拼 SQL 查数据库的地方都在哪？分别有没有做参数化或转义？给我一个总结" },
+    { "id": "spawn-two-parallel", "project": "D:/fc-e2e/requests", "expect": "spawn_agent",
+      "prompt": "帮我弄清楚两件事：requests 的重试机制是怎么实现的；超时是怎么传到底层连接的。这两件事互不相关，可以同时查" },
+    { "id": "spawn-explain-arch", "project": "D:/fc-e2e/DVWA", "expect": "spawn_agent",
+      "prompt": "我刚接手这个项目，帮我摸清楚它的登录和会话管理是怎么做的、CSRF 防护又是怎么实现的，我只要结论" },
+    { "id": "wf-l2-audit", "project": "D:/fc-e2e/DVWA", "expect": "run_workflow",
+      "prompt": "对这个项目做一次 L2 安全验收：SQL 注入、XSS、命令注入、文件上传、鉴权这几路分开并行查，最后出一份交付报告" },
+    { "id": "wf-fanout-modules", "project": "D:/fc-e2e/DVWA", "expect": "run_workflow",
+      "prompt": "vulnerabilities 目录下的每个漏洞模块都分别审查一遍（每个模块派一个人看它的 high 和 impossible 级别有没有真修好），最后汇总成一张表" },
+    { "id": "wf-slash", "project": "D:/fc-e2e/DVWA", "expect": "run_workflow",
+      "prompt": "/workflow 检查 vulnerabilities 下 sqli、xss_r、exec 三个模块的 impossible 级别是否真的安全" },
+    { "id": "none-small-read", "project": "D:/fc-e2e/requests", "expect": "none",
+      "prompt": "src/requests/__version__.py 里的版本号是多少？" },
+    { "id": "none-small-edit", "project": "D:/fc-e2e/DVWA", "expect": "none",
+      "prompt": "把 README.md 第一行的标题改成 # DVWA 测试版" },
+    { "id": "none-concept", "project": "D:/fc-e2e/requests", "expect": "none",
+      "prompt": "用两句话解释一下什么是 CSRF" }
+  ]
+}

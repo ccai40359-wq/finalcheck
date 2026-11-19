@@ -224,65 +224,53 @@ export const TOOLS_SCHEMA = [
     type: 'function',
     function: {
       name: 'run_workflow',
-      description: '多 agent 工作流。第一步先判断任务形状，再二选一（互斥，只给一个）：步骤数量固定、方向并列/串行 → steps（自己设计 2-14 个步骤，每步一个独立子代理，引擎按 depends_on 拓扑排序、互不依赖的步骤并行执行，上游结果自动注入下游；互不依赖的步骤请用空 depends_on []，不要为了「看起来有顺序」串成链）；步骤数量由上游结果决定（按列表扇出/循环到满足条件/条件分支/递归/纯计算汇总）→ script（受限 JSON 指令 step/fanout/if/gate/verify/report/loop/recurse/aggregate，只解释执行，不运行代码）；判断不了 → 默认 steps。不要问用户用哪种，自己判断，最后用一句话说明用了哪种、为什么。每个步骤/节点都必须给 name：写成人名化职位名（4-10 字，如「SQL 注入审查员」「依赖供应链专员」「交付报告主编」），不许写「步骤 1」「分析」「检查」这种序号名或泛词。不要自己串行假装并行',
+      description: '多 agent 工作流：画一张流程图（nodes），每个节点默认是一个独立上下文的子代理。只有一条规则：depends_on 决定谁等谁——互不依赖的节点写 depends_on: [] 会同时跑；写了依赖就等上游跑完，上游结果自动附进它的 prompt。不要为了「看起来有顺序」串成链，也不要自己串行假装并行。'
+        + '特殊节点用 type：fanout 按清单分身（over 写字符串数组，或写上游节点 id = 用它输出的清单；每项一个子代理，step.prompt 里用 ${as 的变量名}）；gate 程序闸（tool: audit_project / quality_gate / review_diff，不调模型）；verify 盲验复核（from: 要复核的节点）；report 交付报告（from）；aggregate 纯计算汇总（from, by）；loop 循环（body 是节点数组，until 结束条件，maxRounds 必填）；if 条件分支（when: {ref, test}，then / else 是节点数组）。分支和循环体内部按顺序执行。'
+        + '每个节点 name 写职位名（4-10 字，如「SQL 注入审查员」「交付报告主编」），不许写「步骤 1」「分析」这种序号名或泛词。'
+        + '例 1（几路并行再汇总）：[{id:"sql",name:"SQL 注入审查员",prompt:"只看 includes/ 的 SQL 拼接…",depends_on:[]},{id:"auth",name:"鉴权审查员",prompt:"…",depends_on:[]},{id:"sum",name:"交付报告主编",prompt:"汇总两路发现",depends_on:["sql","auth"]}]。'
+        + '例 2（先侦察出清单，再每项派一个）：[{id:"list",name:"接口侦察员",prompt:"列出所有 API 路由，只输出 JSON 字符串数组",depends_on:[]},{id:"each",type:"fanout",name:"接口审查员",over:"list",as:"route",step:{prompt:"审查 ${route} 的鉴权与越权"}},{id:"rep",type:"report",from:["each"]}]',
       parameters: {
         type: 'object',
         properties: {
           goal: { type: 'string', description: '整个工作流要达成的总目标（一句话）' },
-          steps: {
+          nodes: {
             type: 'array',
-            description: '步骤列表（1-14 个；与 script 互斥，二选一）',
+            description: '流程图的节点（1-14 个普通节点；含 fanout 时总数可更多）',
             items: {
               type: 'object',
               properties: {
-                id: { type: 'string', description: '步骤 id（字母数字-_，唯一）' },
-                name: { type: 'string', description: '步骤职位名（展示用，必填）：4-10 字的人名化职位，如「SQL 注入审查员」「依赖供应链专员」「交付报告主编」；不许写「步骤 1」「分析」「检查」这种序号名或泛词' },
-                role: { type: 'string', description: '子代理角色，如「SQL 注入专家」「代码审查员」' },
+                id: { type: 'string', description: '节点 id（字母数字-_，唯一）' },
+                type: { type: 'string', enum: ['agent', 'fanout', 'gate', 'verify', 'report', 'aggregate', 'loop', 'if'], description: '默认 agent（一个子代理）；其余见工具说明' },
+                name: { type: 'string', description: '职位名（展示用，必填）：4-10 字，如「SQL 注入审查员」' },
+                role: { type: 'string', description: '子代理角色，如「SQL 注入专家」' },
                 prompt: { type: 'string', description: '交给子代理的具体任务；要自包含（输入、要产出什么），上游结果会自动附上' },
-                depends_on: { type: 'array', items: { type: 'string' }, description: '依赖的步骤 id 列表；不需要上游结果就写空数组 []（=可立即并行），只有确实要消费上游产出才写依赖' },
-                kind: { type: 'string', enum: ['recon', 'find', 'verify', 'arbitrate', 'report'], description: '可选：对抗验证协议角色；find 取证、verify/arbitrate 复核' },
-                model: { type: 'string', description: '可选：本步使用的模型，必须在该供应商的 models 列表里（否则回退全局子代理模型）' },
-                providerId: { type: 'string', description: '可选：本步使用的供应商 id；verify/arbitrate 建议换成与 find 不同家族的供应商' },
-                blind: { type: 'boolean', description: '可选：verify/arbitrate 默认盲验（只给 claim 与证据指针）' }
+                depends_on: { type: 'array', items: { type: 'string' }, description: '要等哪些节点跑完（并拿到它们的结果）；不需要就写 [] = 立刻并行' },
+                kind: { type: 'string', enum: ['recon', 'find', 'verify', 'arbitrate', 'report'], description: '可选：对抗验证协议角色（find 取证、verify/arbitrate 复核）' },
+                blind: { type: 'boolean', description: '可选：verify/arbitrate 默认盲验（只给 claim 与证据指针）' },
+                model: { type: 'string', description: '可选：本节点用的模型（必须在该供应商的模型列表里）' },
+                providerId: { type: 'string', description: '可选：本节点用的供应商 id；复核建议换不同家族' },
+                over: { description: 'fanout：字符串数组，或上游节点 id（用它输出的 JSON 字符串数组）', anyOf: [{ type: 'array', items: { type: 'string' } }, { type: 'string' }] },
+                as: { type: 'string', description: 'fanout：当前项的变量名，step.prompt 里用 ${名}' },
+                limit: { type: 'number', description: 'fanout：最多跑前几项（默认 20，上限 50）' },
+                step: { type: 'object', description: 'fanout 每一项的子代理 {name?, role?, prompt}', properties: { name: { type: 'string' }, role: { type: 'string' }, prompt: { type: 'string' } }, required: ['prompt'] },
+                tool: { type: 'string', enum: ['audit_project', 'quality_gate', 'review_diff'], description: 'gate：直接执行的程序工具（不调模型）' },
+                args: { type: 'object', description: 'gate：工具参数（如 {dir, tier, base}）' },
+                from: { description: 'verify / report / aggregate：上游节点（字符串或数组）', anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }] },
+                ask: { type: 'string', description: 'report：汇总要求' },
+                by: { type: 'string', enum: ['severity', 'rule', 'file', 'status'], description: 'aggregate：聚合键' },
+                top: { type: 'number', description: 'aggregate：返回前 N 组（1-20）' },
+                when: { type: 'object', description: 'if：条件 {ref: 节点 id, test: {contains? | equals? | notEmpty?}}' },
+                then: { type: 'array', items: { type: 'object' }, description: 'if：命中时执行的节点数组' },
+                else: { type: 'array', items: { type: 'object' }, description: 'if：不命中时执行的节点数组' },
+                body: { type: 'array', items: { type: 'object' }, description: 'loop：每轮执行的节点数组' },
+                until: { type: 'object', description: 'loop：结束条件 {ref, test}' },
+                maxRounds: { type: 'number', description: 'loop：最多几轮（1-20，必填）' }
               },
-              required: ['id', 'prompt']
-            }
-          },
-          script: {
-            type: 'array',
-            description: '受限脚本 DSL（与 steps 互斥）：按数组顺序解释执行，只支持 step/fanout/if/gate/verify/report/loop/recurse/aggregate；未知 op 直接报错。上限：总节点 200、fanout 50 项、if 嵌套 8 层、loop 20 轮、recurse 4 层',
-            items: {
-              type: 'object',
-              properties: {
-                op: { type: 'string', enum: ['step', 'fanout', 'if', 'gate', 'verify', 'report', 'loop', 'recurse', 'aggregate'], description: '指令类型' },
-                id: { type: 'string', description: '指令/节点 id（字母数字-_，唯一）' },
-                name: { type: 'string', description: '可选：展示用职位名（4-10 字，如「鉴权与越权审查员」）；fanout 的 step.name 是子节点职位名，会与扇出项拼成「/api/login 鉴权与越权审查员」' },
-                role: { type: 'string', description: '可选：子代理角色' },
-                prompt: { type: 'string', description: 'step 的任务；fanout/recurse 的 prompt 支持 ${变量} 插值' },
-                depends_on: { type: 'array', items: { type: 'string' }, description: '可选：只影响上游结果注入，不改变执行顺序' },
-                over: { description: 'fanout/recurse 的字符串数组，或已执行节点的引用', anyOf: [{ type: 'array', items: { type: 'string' } }, { type: 'string' }] },
-                as: { type: 'string', description: 'fanout/recurse 变量名；prompt 里用 ${名} 引用当前项' },
-                step: { type: 'object', description: 'fanout 的子步骤 {name?, role?, prompt}', properties: { name: { type: 'string' }, role: { type: 'string' }, prompt: { type: 'string' } }, required: ['prompt'] },
-                when: { type: 'object', description: 'if 条件 {ref, test:{contains?, equals?, notEmpty?}}' },
-                then: { type: 'array', items: { type: 'object' }, description: 'if 命中时执行的 op 数组（递归）' },
-                else: { type: 'array', items: { type: 'object' }, description: 'if 不命中时执行的 op 数组（递归）' },
-                tool: { type: 'string', enum: ['audit_project', 'quality_gate', 'review_diff'], description: 'gate 直接执行的程序工具（不调模型）' },
-                args: { type: 'object', description: 'gate 工具参数（如 {dir, tier, base}）' },
-                from: { description: 'verify/report/aggregate 的上游节点引用（字符串或字符串数组）', anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }] },
-                ask: { type: 'string', description: 'report 的汇总要求' },
-                maxRounds: { type: 'number', description: 'loop 必填：最大轮次 1..20' },
-                body: { type: 'array', items: { type: 'object' }, description: 'loop/recurse 的 body op 数组（递归）' },
-                until: { type: 'object', description: 'loop 结束条件 {ref, test}' },
-                maxDepth: { type: 'number', description: 'recurse 必填：最大深度 1..4' },
-                stopWhen: { type: 'object', description: 'recurse 某分支停止条件 {ref, test}' },
-                by: { type: 'string', enum: ['severity', 'rule', 'file', 'status'], description: 'aggregate 聚合键' },
-                top: { type: 'number', description: 'aggregate 返回前 N 组 1..20（默认 10）' }
-              },
-              required: ['op', 'id']
+              required: ['id']
             }
           }
         },
-        required: ['goal']
+        required: ['goal', 'nodes']
       }
     }
   },
@@ -295,7 +283,32 @@ export const TOOLS_SCHEMA = [
 // review_diff：只读 git 改动审查。单列一份而不是塞进 TOOLS_SCHEMA：
 // TOOLS_SCHEMA 同时是 MCP 通道的 SSOT（src/mcp/server.mjs 照抄并精确断言工具表），
 // MCP 通道没有 review_diff 的实现，放进去会让 tools/list 暴露一个调不通的工具。
+// 轻量子代理（0.26，对齐 Claude Code 的 Agent 工具）：派一个空白上下文的子代理去做一件独立的事，
+// 只把最终报告交回来。和 run_workflow 的分工：这个是随手派一个（或同一回复里并行派几个）；
+// 要多路分工 + 依赖 + 盲验复核的确定性任务才画工作流。
+export const SPAWN_AGENT_SCHEMA = {
+  type: 'function',
+  function: {
+    name: 'spawn_agent',
+    description: '派一个子代理去做一件独立的事：它从空白上下文开始，有自己的工具，做完只把最终报告交回给你——它中间读了多少文件、试了多少命令都不会占你的上下文。'
+      + '适合：① 大范围搜索 / 通读很多文件只为得到一个结论（例如「找出所有调用 X 的地方并说明用法」「这个仓库的鉴权是怎么做的」）；② 和你手头的事互不依赖、可以同时进行的调查——同一次回复里调用多次 = 多个子代理并行。'
+      + '不适合：一两次 read_file / grep_code 就能搞定的事（自己做更快）；需要和用户来回确认的事；要多路分工 + 依赖 + 复核的大任务（用 run_workflow）。'
+      + '子代理看不到对话历史：prompt 要自包含，写清目标、范围（目录 / 文件）、要交回什么（结论 + 证据 文件:行）。'
+      + 'type：explore 只读调查（默认）；general 可以改文件；verify 独立复核——把要核实的结论和证据写进 prompt，它不看你的推理、自己重新取证，给出 confirmed / rejected / uncertain。',
+    parameters: {
+      type: 'object',
+      properties: {
+        description: { type: 'string', description: '3-12 字的任务标题（界面显示），如「查鉴权实现」' },
+        prompt: { type: 'string', description: '交给子代理的完整任务（自包含：目标、范围、交付物）' },
+        type: { type: 'string', enum: ['explore', 'general', 'verify'], description: 'explore=只读调查（默认）；general=可改文件；verify=独立复核结论' }
+      },
+      required: ['description', 'prompt']
+    }
+  }
+};
+
 export const AGENT_ONLY_TOOLS_SCHEMA = [
+  SPAWN_AGENT_SCHEMA,
   // 修复回路（③）：回滚到 edit_file/write_file 改动前的快照（主 agent 专属，子代理不给）
   { type: 'function', function: { name: 'repair_rollback', description: '把文件回滚到本次编辑前的快照（edit_file/write_file 每次覆盖已存在文件都会自动留一份快照）。改坏了就用它恢复，不要手工拼回原文', parameters: { type: 'object', properties: { path: { type: 'string', description: '文件绝对路径（与 edit 时一致）。' + PATH_JSON_HINT }, snapshotId: { type: 'string', description: '可选：edit_file 结果里返回的 snapshotId；不给就恢复到最新一次改动前' } }, required: ['path'] } } },
   { type: 'function', function: { name: 'review_diff', description: '只读审查 git 改动（默认对比 HEAD，也可 HEAD~1 / 分支名）：返回改动文件与 +/- 行数，并标出新增 SQL 拼接 / 命令执行 / 密钥字面量、删除的鉴权中间件、被改的 .env/.gitignore。不执行被审项目代码，不做 add/commit/checkout', parameters: { type: 'object', properties: { dir: { type: 'string', description: '项目绝对路径。' + PATH_JSON_HINT }, base: { type: 'string', description: '可选：对比基线，默认 HEAD（也可 HEAD~1 或分支名）' } }, required: ['dir'] } } },
@@ -336,10 +349,11 @@ const SYSTEM_BASE = [
   '修代码：先 read_file 看清原文，再用 edit_file 做最小替换（old_string 必须唯一）；新建文件用 write_file。改完明确告诉用户「改了哪个文件、+几行/-几行、为什么」。',
   '路径参数转义（硬规则）：JSON 参数里的 Windows 路径一律优先写正斜杠（D:/Projects/demo）；必须用反斜杠时一律双写（D:\\\\Projects\\\\demo）；写成单反斜杠会让参数不是合法 JSON，工具不会执行。',
   '产出可预览文件（html / png / pdf / mp4 / pptx / md 等）后，调用 present_artifact(path) 登记；用户在聊天里点一下就出现在右侧预览面板（视频可直接播放，PDF/PPT/Word 分页展示）。',
-  '多 agent 工作流（第一步先判断任务形状，再二选一；不要问用户用哪种，你自己判断，最后用一句话说明用了哪种、为什么）：步骤数量固定、方向并列/串行 → 用 steps（每步一个独立子代理：角色 + 自包含任务 + depends_on，引擎按依赖并行；拿到各步结果后汇总成一份结论）；步骤数量由上游结果决定（按列表扇出、循环到满足条件、按类型递归、条件分支、纯计算汇总）→ 用 script（受限 JSON 指令 step/fanout/if/gate/verify/report/loop/recurse/aggregate，只解释执行、不运行代码）；判断不了 → 默认 steps。不要用「我要开始第 1 步」的文字模拟并行。每步 name 必须是职位名（4-10 字，如「SQL 注入审查员」「依赖供应链专员」），不许写「步骤 1」「分析」这种。',
-  '拆步铁律（写 depends_on 前先自问）：每写完一步先问「这一步真的需要上一步的结果吗」——不需要就写 depends_on: []（空数组 = 可立即并行，多路同时跑）；只有确实要消费上游产出（读到它的结论、复用它的清单）才写依赖。为了「看起来有顺序」把步骤串成链，会让子代理排队、总耗时按步数翻倍。最小示例（3 步、2 步并行）：[{id:"s1",prompt:"查 A 的证据",depends_on:[]},{id:"s2",prompt:"查 B 的证据",depends_on:[]},{id:"s3",prompt:"汇总 s1 与 s2 的结论",depends_on:["s1","s2"]}] — s1 与 s2 同时跑，s3 等两者都完成；不要写成 s2 依赖 s1。',
+  '多 agent 工作流（run_workflow）：画一张流程图 nodes，每个节点默认是一个独立上下文的子代理（角色 + 自包含任务 + depends_on），引擎按依赖并行，拿到各节点结果后你再汇总成一份结论。数量要等上游结果才知道时（按清单逐个处理、循环到满足条件、条件分支、纯计算汇总），用特殊节点 type=fanout / loop / if / aggregate，同一张图里混着用，不需要另选一种写法。不要用「我要开始第 1 步」的文字模拟并行。每个节点 name 必须是职位名（4-10 字，如「SQL 注入审查员」「依赖供应链专员」），不许写「步骤 1」「分析」这种。',
+  '拆图铁律（写 depends_on 前先自问）：每写完一个节点先问「它真的需要上一个节点的结果吗」——不需要就写 depends_on: []（空数组 = 可立即并行，多路同时跑）；只有确实要消费上游产出（读到它的结论、复用它的清单）才写依赖。为了「看起来有顺序」把步骤串成链，会让子代理排队、总耗时按步数翻倍。最小示例（3 步、2 步并行）：nodes: [{id:"s1",prompt:"查 A 的证据",depends_on:[]},{id:"s2",prompt:"查 B 的证据",depends_on:[]},{id:"s3",prompt:"汇总 s1 与 s2 的结论",depends_on:["s1","s2"]}] — s1 与 s2 同时跑，s3 等两者都完成；不要写成 s2 依赖 s1。',
   '复杂项目要主动开工作流：当项目较大（约 ≥2000 行 / 多语言 / 多服务）且任务能拆成互不依赖的几路（体检、下载闸、依赖供应链、鉴权越权、动态探测）时，直接调用 run_workflow 并行分头查，不必等用户说「用工作流」；步骤 3-8 个（特别大的项目可到 14 个），每步限定目录或类目（例如「只看 includes/ 的 SQL 与 nonce」），不要把「通读整个仓库」丢给一个子代理。小任务（单文件、单问题、顺手看一眼）不要用工作流，自己查更快。',
-  '子代理是有工具的：它们能调用 read_file / run_command / audit_project / download_gate / probe_target / stress_target / list_playbooks / read_playbook（不能改文件、不能再起工作流）。所以每步 prompt 要写成「用哪个工具对什么跑什么、产出什么证据」的可执行任务（例：「用 audit_project 对 D:\\x 跑 L2，列出高危项」），让几个子代理并行跑不同测试，别把活全留给自己。',
+  '轻量子代理（spawn_agent）的判断标准：预计要搜 / 读 5 个以上文件才能回答的调查型问题（「X 都在哪」「Y 是怎么实现的」「帮我摸清某个模块」「所有用到 Z 的地方」），不要自己一个个翻——第一步就派 spawn_agent 去查，只拿结论回来，你自己的上下文保持干净；问题能拆成几个互不相关的方向时（例如「登录怎么做的」和「CSRF 怎么防的」），在同一次回复里各派一个，它们会并行。只有一两次 read_file / grep_code 就能搞定的小问题才自己做。要多路分工、互相依赖、需要盲验复核的验收 / 审计大任务用 run_workflow。重要结论想再确认一遍时，可以派 type=verify 的子代理独立复核（把结论和证据写进 prompt）。',
+  '子代理是有工具的：它们能调用 read_file / run_command / audit_project / download_gate / probe_target / stress_target / list_playbooks / read_playbook（也能 read_file / edit_file / write_file / grep_code；不能再起工作流、不能写项目记忆）。所以每步 prompt 要写成「用哪个工具对什么跑什么、产出什么证据」的可执行任务（例：「用 audit_project 对 D:\\x 跑 L2，列出高危项」），让几个子代理并行跑不同测试，别把活全留给自己。',
   '项目记忆：项目根的 AGENTS.md 是该项目的「宪法」，每轮会自动注入。用户说「记住 / 以后都这样 / 记到项目里」时，或你摸清了下次一定用得上的长期事实（怎么构建/测试、源码与产物在哪、项目禁忌）时，用 remember_project 按 kind 分节写一条；任务过程、产物清单、数量、进度一律不写（会被拒绝）；旧条目过时就传 replace 就地更新；AGENTS.md 里已有的约定优先遵守；没有 AGENTS.md 时不要主动创建，除非用户要求。⚠️ 记忆跟**目录**走：你在 A 项目里改 B 项目的代码，记忆要写进 B（remember_project 传 dir=B 的路径），不要写进 A。',
   '跨目录工作：允许在项目目录之外读写（默认放开边界）。用户让你改另一个项目的 bug 时直接改，不要拒绝、不要要求切换会话；但要记住「改的是哪个项目」——记忆（AGENTS.md）写进被改的那个项目根，结论汇报时点名你动了哪个目录。敏感路径（~/.ssh、~/.aws、~/.gnupg、私钥）与灾难命令（rm -rf / 等）仍然会被拒绝，这是刻意保留的底线。',
   '质量命令闸：项目根若有 finalcheck.quality.json，调用 quality_gate 会跑里面声明的 lint / typecheck / test / bench 并给出 exit、耗时、是否超阈值、覆盖率（执行前会要用户授权）。用户问「可读性 / 性能 / 稳定性 / 能不能转接」时：先看有没有这份配置；有就跑它拿可测量证据，没有就明说「没有量化闸，只能代码审查」，再用 read_file 逐文件给结论+文件:行，不要编造分数（没有 profiler，就没有 p95）。',
@@ -361,6 +375,7 @@ const SYSTEM_DEV_BASE = [
   '修审计发现时按技能修：audit_project 报出的每类问题（S3 密钥轮换 / S1 路由鉴权 / S2 注入 / S4 依赖 / A1 权限收敛 / A2 提示注入 / A3 沙箱限额 / A4 数据脱敏 / H1 交接 / O1 运维）先 read_playbook(topic=对应编号 41-50) 读修复技能，按其「修复步骤」执行、按其「验证」段重跑对应 gate 确认归零。',
   '多条独立发现并行修：≥3 条互不依赖的审计发现（不同文件/不同规则）→ run_workflow 扇出修复——每条发现一个独立子代理（prompt 写明「先 read_playbook(topic=对应编号) 读修复技能再动手」），depends_on 全部空数组并行；最后一步汇总「各发现修没修好 + 重跑 gate 的结果」。修复失败的发现如实列「未修好 + 原因」，不许为了结论好看硬说修完。',
   '需要并行查证/多路改造时用 run_workflow 分头跑（步骤 3-8 个，每步一个独立子代理；不需要上游结果就写 depends_on: [] 并行）；单文件小改动不要用工作流，自己直接做更快。每步 name 用职位名（4-10 字），不许写「步骤 1」。',
+  '轻量子代理（spawn_agent）的判断标准：预计要搜 / 读 5 个以上文件才能回答的调查型问题（「X 都在哪」「Y 是怎么实现的」「帮我摸清某个模块」「所有用到 Z 的地方」），不要自己一个个翻——第一步就派 spawn_agent 去查，只拿结论回来，你自己的上下文保持干净；问题能拆成几个互不相关的方向时（例如「登录怎么做的」和「CSRF 怎么防的」），在同一次回复里各派一个，它们会并行。只有一两次 read_file / grep_code 就能搞定的小问题才自己做。要多路分工、互相依赖、需要盲验复核的验收 / 审计大任务用 run_workflow。重要结论想再确认一遍时，可以派 type=verify 的子代理独立复核（把结论和证据写进 prompt）。',
   '长任务提速（2026-11-19 实测：做一个宣传片 529 步、109 分钟，其中 99 分钟在等模型、353 次回复只调了 1 个工具）：① 互不依赖的读文件 / 查看 / 命令放在同一次回复里一起发（读文件 / 搜索 / 看图 / 截图会并发执行；多条互不依赖的命令可以合并进一次 run_command），不要一次只调一个；② 视觉迭代要成批——一条命令里循环渲染或截取多帧（或用脚本拼成一张总览图），一次 view_image 看完（每次最多 4 张），把看到的问题列全、一次改完，再整体验证一次；不要「改一处 → 渲染一帧 → 裁图 → 看一眼」反复循环；③ 已经确认没问题的部分不要重复检查。',
   '看图与截图：做 PPT / 网页 / 视频 / 海报 / 图表这类视觉产物时，生成后必须用 capture_screenshot 逐页（或关键帧）看实际效果，文字溢出、重叠、错位、配色不对就改，改完再截一次确认；不要只看代码就说「应该没问题」。用户或项目里的图片用 view_image 直接看。截图只在桌面端可用。',
   '需要用户拍板的事（砍功能/动线上数据/花钱的 API）用 ask_user 问一次就动手；其余决策自己定。一次回合最多问 3 次。',
@@ -734,7 +749,16 @@ export function pruneConvo(list, config) {
 // 这类调用大部分时间在等 IO（让出事件循环），凑一批并发能显著缩短一轮耗时。
 // 其余全部串行：run_command / edit_file / write_file 有写顺序依赖；audit_project / download_gate / quality_gate /
 // get_report / run_workflow 是主线程 CPU 或子进程任务，并行只会堵事件循环，甚至让 UI 卡住。
-const PARALLEL_TOOLS = new Set(['read_file', 'read_playbook', 'probe_target', 'stress_target', 'review_diff', 'grep_code', 'view_image', 'capture_screenshot']);
+// spawn_agent（0.26）：一次回复里的多个子代理同时跑（对齐 Claude Code 的 Agent 工具）
+const PARALLEL_TOOLS = new Set(['read_file', 'read_playbook', 'probe_target', 'stress_target', 'review_diff', 'grep_code', 'view_image', 'capture_screenshot', 'spawn_agent']);
+
+// 思考强度 → 请求参数。界面上的「Default（跟随模型默认）」= 不发这个参数；
+// 0.26 以前会把 reasoning_effort: 'default' 原样发出去，有的网关直接回 HTTP 400（模拟客户端真模型评测抓到的）。
+export function effortParam(effort) {
+  const e = String(effort ?? '').trim().toLowerCase();
+  if (!e || e === 'default' || e === 'auto') return {};
+  return { reasoning_effort: e };
+}
 
 export function classifyTool(name) {
   return PARALLEL_TOOLS.has(String(name ?? '')) ? 'parallel' : 'serial';
@@ -1124,7 +1148,7 @@ async function skipToolCall(tc, code, notice, { onEvent, onToolLifecycle, detail
 
 // 执行单个工具调用：自带 tool-start/tool-end 事件，失败只返回自己的 {error}，不影响同批其它调用
 // onToolLifecycle（可选）：给持久化层用的「开始/结束」钩子（不推渲染层，避免结果大对象进 IPC）。
-async function runToolCall(tc, tools, onEvent, signal = null, onToolLifecycle = null) {
+export async function runToolCall(tc, tools, onEvent, signal = null, onToolLifecycle = null) {
   const name = String(tc?.function?.name || 'unknown');
   const argsText = String(tc?.function?.arguments || '');
   const callId = tc?.id == null ? null : String(tc.id);
@@ -1157,7 +1181,7 @@ async function runToolCall(tc, tools, onEvent, signal = null, onToolLifecycle = 
     const fn = tools?.[name];
     if (typeof fn !== 'function') result = { error: t('未知工具: {name}', { name }) };
     else if (signal?.aborted) result = cancelledToolResult(); // 解析参数期间被停止
-    else result = await awaitWithAbort(Promise.resolve().then(() => fn(args, { signal })), signal);
+    else result = await awaitWithAbort(Promise.resolve().then(() => fn(args, { signal, callId })), signal);
   } catch (e) {
     result = { error: e?.message || String(e) };
   }
@@ -1181,8 +1205,10 @@ async function runToolCall(tc, tools, onEvent, signal = null, onToolLifecycle = 
       const spillFile = await spillResult(name, tc?.id, resultStr);
       const head = resultStr.slice(0, 12000);
       const tail = resultStr.slice(-4000);
-      modelContent = `[结果过长 ${resultStr.length} 字符，已完整落盘]\n完整输出: ${spillFile || '(落盘失败)'}\n可用 run_command 在该文件上检索（findstr / Select-String），或用更小的参数重跑。\n--- 前 12000 字符 ---\n${head}\n--- 后 4000 字符 ---\n${tail}`;
-      traceResult = { truncated: true, spillFile, chars: resultStr.length, preview: resultStr.slice(0, 2000) };
+      modelContent = `[结果过长 ${resultStr.length} 字符，已完整落盘]\n完整输出: ${spillFile || '(落盘失败)'}\n需要中间内容：用 read_file 分段读（offset/limit），或 run_command 用 grep -n / sed -n 在该文件上检索；也可以用更小的参数重跑。\n--- 前 12000 字符 ---\n${head}\n--- 后 4000 字符 ---\n${tail}`;
+      // inline：当轮发给模型的原文。下一轮从库里还原历史时原样用它（full-history.toolContentOf），
+      // 前后两轮逐字节一致 → 前缀缓存不断；以前只存 2000 字符预览，下一轮模型看到的比当轮少、缓存也从这里断。
+      traceResult = { truncated: true, spillFile, chars: resultStr.length, preview: resultStr.slice(0, 2000), inline: modelContent };
     }
   } catch (e) {
     modelContent = JSON.stringify({ error: t('工具结果无法序列化：{error}', { error: e?.message || e }) });
@@ -1607,7 +1633,7 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
           stream: true,
           ...(toolChoiceMode ? { tool_choice: toolChoiceMode } : {}),
           ...(withUsage ? { stream_options: { include_usage: true } } : {}),
-          ...(liveConfig.reasoningEffort ? { reasoning_effort: liveConfig.reasoningEffort } : {})
+          ...effortParam(liveConfig.reasoningEffort)
         });
         const send = (withUsage, toolChoiceMode = null) => fetchImpl(liveChatUrl, {
           method: 'POST',
@@ -1977,7 +2003,7 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
     messages: [...convo, wrap],
     stream: true,
     ...(withUsage ? { stream_options: { include_usage: true } } : {}),
-    ...(liveConfig.reasoningEffort ? { reasoning_effort: liveConfig.reasoningEffort } : {})
+    ...effortParam(liveConfig.reasoningEffort)
   }); // 不带 tools：强制收尾
   const fsend = (withUsage, sig) => fetchImpl(liveChatUrl, {
     method: 'POST',

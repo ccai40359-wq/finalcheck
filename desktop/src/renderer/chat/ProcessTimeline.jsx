@@ -10,6 +10,7 @@ import { t } from '../i18n/core.mjs';
 import { timelineEntries } from '../lib/process-events.mjs';
 import { planTimelineWindow } from '../lib/timeline-window.mjs';
 import { useLanguage } from '../i18n/index.jsx';
+import { spawnAgentStepId, requestOpenStep } from '../lib/spawn-agent.mjs';
 
 // 时长进位：60s → 1m，60m → 1h（不再出现 Working 152s / 3900s）
 const fmtDur = (ms) => {
@@ -145,12 +146,35 @@ function toolMeta(e) {
       return { icon: 'stress', label: 'Stress', detail: `${oneLine(a.url || '', 160)}${a.duration ? ` · ${a.duration}s` : ''}`, mono: true };
     case 'download_gate':
       return { icon: 'download', label: 'Download gate', detail: oneLine(a.dir || '', 200), mono: true };
+    case 'spawn_agent':
+      // 轻量子代理（0.26）：行内只露任务标题；报告与「打开子代理过程」在展开面板里
+      return { icon: 'tool', label: 'Agent', detail: oneLine(a.description || a.prompt || '', 120), extra: r?.toolCount ? t('{n} 次工具', { n: r.toolCount }) : '' };
     case 'run_workflow':
       // 工作流：同样紧凑——行内只露 "Workflow"，步数/目标收进展开面板
       return { icon: 'tool', label: 'Workflow', detail: '' };
     default:
       return { icon: 'tool', label: e.name, detail: summarizeToolArgs(e.name, e.args), mono: true };
   }
+}
+
+/* 轻量子代理：任务 + 报告 + 打开右侧子代理面板看完整过程 */
+function SpawnAgentDetail({ e }) {
+  let a = {};
+  try { a = typeof e.args === 'string' ? JSON.parse(e.args) : (e.args || {}); } catch { /* 参数还在流式写入 */ }
+  const r = e.result || {};
+  const stepId = r.agentId || spawnAgentStepId(e.id ?? e.callId);
+  const typeLabel = a.type === 'verify' ? t('独立复核') : a.type === 'general' ? t('子代理') : t('只读调查');
+  return (
+    <div className="space-y-2 text-[11px]">
+      <div className="flex items-center gap-2 text-mute/60">
+        <span className="badge text-[9px] bg-gold/10 text-goldSoft">{typeLabel}</span>
+        <button type="button" className="text-goldSoft hover:underline" onClick={() => requestOpenStep({ id: stepId, name: a.description || 'Agent', role: typeLabel })}>{t('打开子代理过程')}</button>
+      </div>
+      {a.prompt ? <div className="text-ink/60 whitespace-pre-wrap break-words max-h-24 overflow-y-auto">{a.prompt}</div> : null}
+      {r.error ? <div className="text-red-400/80">{humanizeToolError(r.error)}</div> : null}
+      {r.report ? <pre className="rounded-md bg-sunken px-2.5 py-2 text-ink/75 whitespace-pre-wrap break-words max-h-72 overflow-y-auto font-sans">{r.report}</pre> : null}
+    </div>
+  );
 }
 
 function ReadDetail({ result }) {
@@ -237,6 +261,7 @@ function ToolEntry({ e, cardInBody }) {
   const isDiff = e.name === 'edit_file' || e.name === 'write_file';
   const isRead = e.name === 'read_file';
   const isPlaybook = e.name === 'read_playbook';
+  const isAgent = e.name === 'spawn_agent';
   // Skill / Workflow 走 ZCode 式紧凑壳：行内只有 图标 + 名称 + 细竖线，细节点开才看
   const isCompact = isPlaybook || e.name === 'run_workflow';
   const showCardHint = cardInBody && !running && BODY_CARD_TOOLS.has(e.name);
@@ -274,6 +299,8 @@ function ToolEntry({ e, cardInBody }) {
             <ReadDetail result={e.result} />
           ) : isPlaybook ? (
             <PlaybookDetail result={e.result} />
+          ) : isAgent ? (
+            <SpawnAgentDetail e={e} />
           ) : showCardHint ? (
             <div className="space-y-2 text-[11px]">
               <div className="text-ink/80 break-words">{detailText}</div>

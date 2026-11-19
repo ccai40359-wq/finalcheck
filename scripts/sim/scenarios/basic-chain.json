@@ -1,0 +1,46 @@
+{
+  "name": "basic-chain",
+  "description": "真人最常见的一条链：改文件 → 追问刚才改了什么（跨轮记忆）→ 跑命令时停止 → 说继续 → 重启应用后接着聊。全程检查落库、前缀缓存不断。",
+  "project": {
+    "files": {
+      "src/calc.js": "export function add(a, b) {\n  return a - b;\n}\n",
+      "package.json": "{ \"name\": \"demo\", \"type\": \"module\" }\n"
+    }
+  },
+  "turns": [
+    {
+      "send": "src/calc.js 的 add 算错了，帮我修一下",
+      "expect": { "toolsInclude": ["read_file", "edit_file"], "files": { "src/calc.js": { "contains": "a + b" } }, "answerMatches": "修好", "prefixStable": true, "dbMessages": 2, "dbLastTraceMin": 2 }
+    },
+    {
+      "send": "你刚才改了哪一行？",
+      "expect": { "requestIncludes": "return a - b", "maxTools": 0, "answerMatches": "第 2 行" }
+    },
+    {
+      "send": "跑一下检查",
+      "cancelAfterTool": "run_command",
+      "expect": { "cancelled": true }
+    },
+    {
+      "send": "继续",
+      "expect": { "requestIncludes": "node --check", "answerMatches": "检查通过" }
+    },
+    { "restart": true },
+    {
+      "send": "总结一下今天做了什么",
+      "expect": { "requestIncludes": "return a - b", "answerMatches": "add", "dbMessages": 10 }
+    }
+  ],
+  "mock": {
+    "replies": [
+      { "content": "我先看一下文件。", "toolCalls": [{ "name": "read_file", "args": { "path": "{{project}}/src/calc.js" } }] },
+      { "toolCalls": [{ "name": "edit_file", "args": { "path": "{{project}}/src/calc.js", "old_string": "return a - b;", "new_string": "return a + b;" } }] },
+      { "content": "修好了：第 2 行把 `a - b` 改成了 `a + b`。" },
+      { "match": "改了哪一行", "content": "改的是第 2 行：`return a - b;` → `return a + b;`。" },
+      { "match": "跑一下检查", "content": "先做语法检查。", "toolCalls": [{ "name": "run_command", "args": { "command": "node --check src/calc.js", "cwd": "{{project}}" } }] },
+      { "match": "跑一下检查", "toolCalls": [{ "name": "run_command", "args": { "command": "echo should-not-run" } }] },
+      { "match": "继续", "content": "接着上次：node --check 已经跑过，检查通过。" },
+      { "match": "总结", "content": "今天修了 src/calc.js 的 add（a - b → a + b），并做了语法检查。" }
+    ]
+  }
+}

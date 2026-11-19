@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { applyAgentEvent } from '../../renderer/lib/process-events.mjs';
+import { spawnAgentStepId } from '../../renderer/lib/spawn-agent.mjs';
 import { readFile } from 'node:fs/promises';
 import * as sessions from '../sessions.mjs';
 import { keepAfterCompactCut } from '../compact-cut.mjs';
@@ -329,24 +330,20 @@ export function registerAgentIpc({
     let sessionTierAnswered = false; // 本会话之前通过提问卡答过 L1/L2/L3（验收前置闸据此不重复问）
     if (sessionId) {
       try {
-        const { replayInterruptedTurn } = await import('../interrupted-replay.mjs');
         const s = await sessions.loadSession(sessionId);
         sessionTierAnswered = (s.messages || []).some((m) => (m.trace || []).some((x) => (x?.tool || x?.name) === 'ask_user'
           && /(^|[^A-Za-z0-9])L\s*[123](?![0-9])/i.test(String(x?.result?.answer ?? (typeof x?.result === 'string' ? x.result : '')))));
-        const r = replayInterruptedTurn(contextMessages, s.messages);
-        if (r.replay) {
-          contextMessages = r.messages;
-          console.log(`[resume] 接上中断的上一轮：原样回放 ${r.replay.replayed} 步${r.replay.summarized ? `，更早 ${r.replay.summarized} 步为摘要` : ''}（约 ${r.replay.chars} 字符）`);
-        }
         // 0.25（对齐 Claude Code）：之前每一轮的工具调用与结果原样带上——不再只带最终回答 + 后台摘要。
         // 逼近窗口时由 assembleContext 统一压缩（模型写摘要），平时什么都不删、只往后追加，前缀缓存跨轮接着命中。
+        // 0.26：被中断的回合也在这里统一展开（不论是上一轮还是更早）。以前只有「紧接着的那一轮」原样回放，
+        // 再下一轮又变回一段摘要 → 前缀从那里断开、模型也看不到当时的原始结果（模拟客户端测出来的）。
         const { expandToolHistory } = await import('../full-history.mjs');
         const ex = expandToolHistory(contextMessages, s.messages);
-        if (ex.expanded) {
+        if (ex.expanded || ex.replayed) {
           contextMessages = ex.messages;
-          console.log(`[history] 带上之前 ${ex.expanded} 轮的完整工具过程（${ex.steps} 步）`);
+          console.log(`[history] 带上之前 ${ex.expanded + ex.replayed} 轮的完整工具过程（${ex.steps} 步${ex.replayed ? `，其中 ${ex.replayed} 轮是中断的` : ''}）`);
         }
-      } catch (e) { console.warn('[resume] 中断回放失败，按普通历史继续：' + (e?.message || e)); }
+      } catch (e) { console.warn('[history] 展开历史失败，按普通历史继续：' + (e?.message || e)); }
     }
     // 每轮任务摘要库（2026-11-17 规格 §4 步 6）：最近 10 轮原文 + 1 份古老合并摘要。
     // 这是「跨轮记忆」的真正载体——工具结果不进历史，靠它把「读过什么/改过什么/报什么错」
@@ -448,7 +445,8 @@ export function registerAgentIpc({
     // 工作流子代理：与主 agent 同一套引擎（agent-service.runSubagentTurn → runAgentTurn：
     // SSE 流式 / 两级压缩 / 默认 40 轮 / usage）；这里只做工具装配、transcript 落盘与按请求记账。
     // override：工作流面板里改过「子代理模型」时传入（baseUrl/apiKey/model），否则用会话模型
-    const callSubagent = async ({ id, name, role, prompt, kind, originalName = null, runId = null, signal: stepSignal = null } = {}, override = null) => {
+    // spawn（0.26 轻量子代理）：{ systemPrompt, toolNames, requireTools } 覆盖工作流子代理的默认提示词 / 工具集 / 取证要求
+    const callSubagent = async ({ id, name, role, prompt, kind, originalName = null, runId = null, signal: stepSignal = null, spawn = null } = {}, override = null) => {
       const P = override?.baseUrl ? override : { baseUrl: prov.baseUrl, apiKey: prov.apiKey, model, providerId: prov.id };
       let transcript = [];
       let salvage = null; // subagent-salvage 的确定性拼接函数（catch 分支兜底用）
@@ -532,11 +530,13 @@ export function registerAgentIpc({
           commandIdleMs: cfg.commandIdleMs,
           shellAppRoot
         });
-        const systemPrompt = `你是 FinalCheck 工作流中的子代理${role ? `（角色：${role}）` : ''}。你可以调用工具（读文件 / 跑命令 / 体检 / 下载闸 / 探测 / 压测 / 读方法论 / 改代码）：需要证据就自己去跑，不要凭空断言。规则：任务里提到工具或路径时，第一条回复必须是真的工具调用，禁止用「我现在开始…」「我将运行…」这类话代替调用；拿到结果后再给交付物（结论/清单/证据），不要寒暄、不要复述任务。改文件前先 read_file，改完在交付里说明改了哪些文件。\n\n${DELIVERY_DISCIPLINE}`;
+        // 只读子代理：工具实现层也拿掉写工具（不只是不给 schema），模型硬调也调不到
+        if (spawn?.toolNames) for (const k of Object.keys(tools)) if (!spawn.toolNames.includes(k)) delete tools[k];
+        const systemPrompt = spawn?.systemPrompt || `你是 FinalCheck 工作流中的子代理${role ? `（角色：${role}）` : ''}。你可以调用工具（读文件 / 跑命令 / 体检 / 下载闸 / 探测 / 压测 / 读方法论 / 改代码）：需要证据就自己去跑，不要凭空断言。规则：任务里提到工具或路径时，第一条回复必须是真的工具调用，禁止用「我现在开始…」「我将运行…」这类话代替调用；拿到结果后再给交付物（结论/清单/证据），不要寒暄、不要复述任务。改文件前先 read_file，改完在交付里说明改了哪些文件。\n\n${DELIVERY_DISCIPLINE}`;
         transcript = [{ role: 'system', content: systemPrompt }, { role: 'user', content: prompt }];
         saveTranscript();
         // 取证步骤：首轮强制 tool_choice=required + 空转提醒重试（与 workflow.mjs 同一份 needsEvidence）
-        const requiresEvidence = needsEvidence({
+        const requiresEvidence = spawn ? spawn.requireTools !== false : needsEvidence({
           kind: kind || null,
           name: name || '',
           role: role || '',
@@ -560,7 +560,7 @@ export function registerAgentIpc({
           role: role || '',
           tools,
           // 14 个：排除 run_workflow（禁止嵌套）/ remember_project（记忆只由主 agent 写）
-          toolsSchema: SUBAGENT_TOOLS_SCHEMA,
+          toolsSchema: spawn?.toolNames ? SUBAGENT_TOOLS_SCHEMA.filter((x) => spawn.toolNames.includes(x?.function?.name)) : SUBAGENT_TOOLS_SCHEMA,
           requiresTools: requiresEvidence,
           forceFirstToolChoice: requiresEvidence,
           signal: ctl.signal,
@@ -671,6 +671,49 @@ export function registerAgentIpc({
           }
         } catch { /* 上下文记录失败不影响执行 */ }
       }
+    };
+    // 轻量子代理（0.26，对齐 Claude Code 的 Agent 工具）：主 agent 随手派一个空白上下文的子代理，只拿最终报告。
+    // 复用 callSubagent（同一套流式引擎 / transcript 面板 / 落库 / 记账），只换提示词与工具集。
+    const SPAWN_REPORT_MAX = 12000; // 报告进主 agent 上下文后会一直留着（0.25 起跨轮完整保留），必须有上限
+    const SPAWN_READONLY_TOOLS = ['read_file', 'grep_code', 'run_command', 'read_playbook', 'list_playbooks', 'view_image', 'capture_screenshot', 'review_diff', 'audit_project', 'download_gate', 'get_report'];
+    const spawnSystemPrompt = (type) => {
+      const common = '主 agent 派你去做一件事；你从空白上下文开始，看不到之前的对话，任务里写的就是全部信息。第一条回复必须是工具调用（不要先说「我将…」）。';
+      const report = '做完只交回一份简洁报告：结论在前，然后是证据（文件:行 / 命令输出摘要），最后写没查到或没把握的部分。报告控制在 1500 字以内；不要复述任务、不要寒暄，主 agent 只看得到这份报告。';
+      if (type === 'verify') return `你是 FinalCheck 子代理（独立复核）。${common}任务里给的是别人得出的结论和证据：不要相信它的推理，自己重新取证核实。逐条给出 confirmed / rejected / uncertain，并附你自己的证据（文件:行 / 命令输出）。不要修改任何文件。\n\n${report}`;
+      if (type === 'general') return `你是 FinalCheck 子代理（可改文件）。${common}需要证据就自己去跑；改文件前先 read_file，改完自己验证（跑测试 / 语法检查）。\n\n${report}报告里写清改了哪些文件、怎么验证的。`;
+      return `你是 FinalCheck 子代理（只读调查）。${common}用工具取证（read_file / grep_code / 只读命令），不要修改任何文件。\n\n${report}`;
+    };
+    let spawnSeq = 0;
+    const spawnAgent = async ({ description, prompt, type }, ctx = {}) => {
+      spawnSeq++;
+      const id = spawnAgentStepId(ctx.callId, spawnSeq); // 界面按同一规则推出 id，点「打开子代理过程」直接对上
+      const t0 = Date.now();
+      sendEvent({ kind: 'subagent-start', id, name: description, type, callId: ctx.callId || null });
+      const r = await callSubagent({
+        id,
+        name: description,
+        role: type === 'verify' ? t('独立复核') : type === 'general' ? t('子代理') : t('只读调查'),
+        prompt,
+        runId: `spawn-${chatAbort.snapshot.runId}`,
+        signal: ctx.signal || null,
+        spawn: { systemPrompt: spawnSystemPrompt(type), toolNames: type === 'general' ? null : SPAWN_READONLY_TOOLS, requireTools: true }
+      });
+      const full = String(r?.content || '');
+      const reportText = full.length > SPAWN_REPORT_MAX
+        ? `${full.slice(0, SPAWN_REPORT_MAX)}\n…[报告过长，已截到前 ${SPAWN_REPORT_MAX} 字符；原长 ${full.length}]`
+        : full;
+      const out = {
+        agentId: id,
+        description,
+        type,
+        report: reportText,
+        toolCount: Number(r?.toolCount) || 0,
+        ms: Date.now() - t0,
+        ...(r?.error ? { error: String(r.error) } : {}),
+        ...(r?.salvaged ? { salvaged: true } : {})
+      };
+      sendEvent({ kind: 'subagent-end', id, name: description, ok: !r?.error, toolCount: out.toolCount, ms: out.ms });
+      return out;
     };
     // 发送即落盘：用户消息先写进会话（AI 回答失败/中断/关窗都不丢），回答结束再补 assistant
     if (sessionId && userMsg) {
@@ -795,15 +838,19 @@ export function registerAgentIpc({
         askUser: (args, ctx) => askUsers.ask({ ...(args || {}), sessionId, signal: ctx?.signal || chatAbort.signal }),
         // 验收单同理：todo_write 只在主 agent 工具表；台账按会话存，回合末跑报告闸
         todoWrite: (args) => todos.write(sessionId, args),
+        // 轻量子代理（spawn_agent）：只给主 agent；子代理工具表不含它（不会套娃）
+        spawnAgent,
         runWorkflow: async (args) => {
           const { runWorkflow } = await import(engineUrl('desktop/src/main/workflow.mjs'));
           // 运行中的工作流控制台：暂停/继续/停止、最大并发、子代理模型（UI 可改）
           // 默认并发按模式给：DSL（script）默认 4（fanout 子代理并发跑，避免串行把时长相加）；DAG 默认 14
+          // 0.26：统一 nodes 写法里带特殊节点的会编译成 script + dag（顶层按依赖并行），给 8
           const isScriptMode = args && typeof args === 'object' && args.script != null;
+          const isDagScript = isScriptMode && args.dag != null;
           const ctl = {
             paused: false,
             aborted: false,
-            maxConcurrency: Number(args?.concurrency) > 0 ? Math.min(14, Number(args.concurrency)) : (isScriptMode ? 4 : 14),
+            maxConcurrency: Number(args?.concurrency) > 0 ? Math.min(14, Number(args.concurrency)) : (isDagScript ? 8 : isScriptMode ? 4 : 14),
             providerId: null,
             model: null
           };

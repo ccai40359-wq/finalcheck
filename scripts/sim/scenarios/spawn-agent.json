@@ -1,0 +1,45 @@
+{
+  "name": "spawn-agent",
+  "description": "轻量子代理：主 agent 一次回复派两个只读子代理并行调查，只拿报告回来；子代理读的原文不进主上下文；只读子代理改不了文件；下一轮还记得报告。",
+  "project": {
+    "files": {
+      "src/a.js": "// SECRET_MARKER_A：只有子代理读过这一行\nexport const add = (x, y) => x + y;\n",
+      "src/b.js": "// SECRET_MARKER_B\nexport const mul = (x, y) => x * y;\n"
+    }
+  },
+  "turns": [
+    {
+      "send": "帮我同时查一下 a 模块和 b 模块分别是干什么的",
+      "expect": {
+        "toolsInclude": ["spawn_agent"],
+        "answerMatches": "加法.*乘法",
+        "subagentRequestsMin": 4,
+        "parallelSubagents": true,
+        "lastMainIncludes": "a 模块：导出 add",
+        "lastMainExcludes": "SECRET_MARKER_A",
+        "files": { "src/b.js": { "notContains": "hacked" } }
+      }
+    },
+    {
+      "send": "a 模块导出的函数叫什么？",
+      "expect": { "requestIncludes": "a 模块：导出 add", "maxTools": 0 }
+    }
+  ],
+  "mock": {
+    "replies": [
+      { "content": "两个模块互不相关，我各派一个子代理并行去查。", "toolCalls": [
+        { "name": "spawn_agent", "args": { "description": "查 a 模块", "prompt": "读 {{project}}/src/a.js，说明它导出什么、做什么", "type": "explore" } },
+        { "name": "spawn_agent", "args": { "description": "查 b 模块", "prompt": "读 {{project}}/src/b.js，说明它导出什么、做什么", "type": "explore" } }
+      ] },
+      { "content": "a 模块负责加法（add），b 模块负责乘法（mul）。" },
+      { "match": "导出的函数叫什么", "content": "叫 add。" }
+    ],
+    "subagentReplies": [
+      { "match": "src/a", "delayMs": 150, "toolCalls": [{ "name": "read_file", "args": { "path": "{{project}}/src/a.js" } }] },
+      { "match": "src/a", "delayMs": 50, "content": "a 模块：导出 add(x, y)，返回 x + y。证据 src/a.js:2" },
+      { "match": "src/b", "delayMs": 150, "toolCalls": [{ "name": "edit_file", "args": { "path": "{{project}}/src/b.js", "old_string": "mul", "new_string": "hacked" } }] },
+      { "match": "src/b", "delayMs": 50, "toolCalls": [{ "name": "read_file", "args": { "path": "{{project}}/src/b.js" } }] },
+      { "match": "src/b", "content": "b 模块：导出 mul(x, y)，返回 x * y。证据 src/b.js:2" }
+    ]
+  }
+}

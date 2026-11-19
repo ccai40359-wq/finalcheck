@@ -10,30 +10,20 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { readdir, mkdir, stat, copyFile, unlink, writeFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
-import * as sessions from './sessions.mjs';
 import * as projects from './projects.mjs';
-import { loadHooksConfig } from './hooks.mjs';
-import { getSessionDir, scanSessionsDir, projectRootOfSessionsDir } from './session-projects.mjs';
-import { planProjectSwitch } from './project-switch.mjs';
 import { createConfigStore, registerConfigIpc } from './ipc/config-store.mjs';
 import { registerProjectIpc } from './ipc/ipc-projects.mjs';
-import { registerSessionIpc } from './ipc/ipc-sessions.mjs';
 import { registerWorkspaceIpc } from './ipc/ipc-workspace.mjs';
-import { registerAgentIpc } from './ipc/ipc-agent.mjs';
-import { registerSystemIpc } from './ipc/ipc-system.mjs';
+import { createBackend, IMAGE_MIME } from './backend.mjs';
 import { registerDiagnosticsIpc } from './ipc/ipc-diagnostics.mjs';
 import { registerUpdaterIpc } from './ipc/ipc-updater.mjs';
 import { appendLogLine, installProcessGuards, installSafeIpc } from './error-guard.mjs';
-
-// 会话读写按「会话所属项目」解析目录（未登记则回退当前项目目录）
-sessions.setSessionDirResolver((id) => getSessionDir(id));
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..'); // desktop/src/main → 仓库根
 const engineUrl = (rel) => pathToFileURL(path.join(REPO_ROOT, rel)).href;
 let DATA_ROOT = path.resolve(__dirname, '..', '..'); // dev 默认 desktop/；打包后在 whenReady 改到 userData
 const getDataRoot = () => DATA_ROOT;
-const IMAGE_MIME = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml', '.bmp': 'image/bmp' };
 const APP_ICON = path.join(__dirname, '..', '..', 'build', 'icon.ico'); // 打包后 exe 也用它
 app.setName('FinalCheck'); // 进程/系统里显示 FinalCheck（不再显示 Electron）
 process.title = 'FinalCheck';
@@ -41,59 +31,19 @@ process.title = 'FinalCheck';
 // 配置 / 供应商工具（含语言、沙箱模式、摘要与标题生成）
 const configStore = createConfigStore({ app, getDataRoot, engineUrl });
 
-// 当前项目：切换时把 sessions/memory 环境变量指向 <project>/.finalcheck/ 下
-let activeProjectId = null;
-let activeProjectPath = null; // 当前项目根（项目记忆 AGENTS.md 在这里）
-let hooksConfig = null;      // hooks.json 进程内快照：启动/切换项目时读一次，工具层与回合层共用
-const hookSessionContext = new Map(); // sessionId → { messages, context }：SessionStart hook 结果（仅内存）
-// 回合运行时状态（IPC 模块共享，入口只负责创建与注入）
-const activeChats = new Map();
-const workflowControls = new Map(); // sessionId → 运行中工作流的控制台（暂停/并发/子代理模型）
-const workflowTranscripts = new Map(); // sessionId → { stepId: { name, role, ms, toolCount, messages } }（右侧子代理面板）
-const sessionUsage = new Map();      // sessionId → 最后一次请求的真实 usage（服务端口径，含工具输出）
-const steerBuffers = new Map();      // sessionId → 待注入当前回合的 Steer 文本（FIFO，每次模型请求前 drain）
-const sharedState = { activeChats, workflowControls, workflowTranscripts, sessionUsage, steerBuffers, hookSessionContext };
-
-// SessionStart：项目选择 / 会话打开·新建各跑一次。fail-open：deny 或 hook 崩溃都不影响会话可用；
-// 结果只记内存，下一轮 agent-chat 把 context 作为 system 消息注入（项目记忆之后）。
-async function runSessionStart(sessionId = null, projectPath = activeProjectPath) {
-  if (!projectPath) return null;
-  try {
-    const { runSessionStartHook } = await import(engineUrl('desktop/src/main/agent-service.mjs'));
-    const r = await runSessionStartHook({
-      sessionId,
-      cwd: projectPath,
-      projectPath,
-      hooksConfig
-    });
-    if (sessionId) hookSessionContext.set(sessionId, { messages: r.messages || [], context: r.context || '' });
-    if (r?.warnings?.length) console.warn('[hooks] ' + r.warnings.join('；'));
-    return r;
-  } catch (e) {
-    console.warn('[hooks] SessionStart 接线异常（已忽略）：' + (e?.message || e));
-    return null;
-  }
-}
-
-async function selectProjectEnv(p) {
-  const plan = planProjectSwitch(p);
-  if (!plan) return null;
-  process.env.FINALCHECK_SESSIONS_DIR = plan.sessionsDir;
-  process.env.FINALCHECK_MEMORY_DIR = plan.memoryDir;
-  await mkdir(plan.sessionsDir, { recursive: true });
-  await mkdir(plan.memoryDir, { recursive: true });
-  activeProjectId = plan.activeProjectId;
-  activeProjectPath = plan.activeProjectPath;
-  // 只重载 hooks 配置（全局 hooks.json）；不 abort 在跑的回合、不清会话级 SessionStart context：
-  // 在跑的回合开头已快照项目路径/策略/配置，切项目只影响之后新开的回合与 UI 视角。
-  if (plan.reloadHooksConfig) hooksConfig = loadHooksConfig(); // 每次启动/切换项目只读一次磁盘，后续工具调用复用快照
-  await projects.setActiveProject(p.id).catch(() => {});
-  await runSessionStart(null, plan.activeProjectPath); // 项目选择时跑一次；会话级 context 在 open/new 时按 sessionId 再记
-  return p;
-}
-
-// 会话所属项目根：登记目录反推（<p>/.finalcheck/sessions）；未登记/全局目录回退当前 UI 项目
-const sessionProjectPathOf = (sessionId) => projectRootOfSessionsDir(sessionId ? getSessionDir(sessionId) : null) || activeProjectPath;
+// 后端接线（项目/会话目录、SessionStart、会话 IPC、agent IPC）：与无头模拟客户端测试台共用 backend.mjs。
+// win / writeLog 在下面才定义，这里用箭头函数延迟取值。
+const backend = createBackend({
+  ipcMain,
+  getWin: () => win,
+  getDataRoot,
+  engineUrl,
+  repoRoot: REPO_ROOT,
+  store: configStore,
+  // 内置 Git Bash 的查找根：打包后 resources 目录的上级（resolveShell 会拼 resources/gitbash/...）
+  shellAppRoot: process.resourcesPath || null,
+  log: (line) => writeLog(line)
+});
 
 // 打包版数据目录 = userData（%APPDATA%/FinalCheck）：升级/重开不丢历史。
 // 首次升级从旧 resources/app 目录迁移 config / sessions / memory / attachments。
@@ -274,64 +224,24 @@ app.whenReady().then(async () => {
   const defaultProject = await projects.ensureDefaultProject();
   await migrateGlobalToProject(defaultProject);
   const activeProject = (await projects.getActiveProject()) || defaultProject;
-  await selectProjectEnv(activeProject);
-  // 启动扫描：登记所有已知项目的会话 → 目录映射（只读文件名，不解析内容）。
-  // 当前项目先扫；overwrite=false，避免同一会话在旧目录残留时覆盖较新的登记。
-  {
-    const known = await projects.listProjects().catch(() => []);
-    const ordered = [activeProject, ...known.filter((p) => p.id !== activeProject.id)];
-    for (const p of ordered) await scanSessionsDir(projects.sessionDirOf(p.path)).catch(() => {});
-    // 上次进程崩溃/被强杀时挂着的「运行中」工具调用：启动即标成 interrupted，
-    // 否则卡片永远转圈，工作流恢复入口也不知道该重放什么。
-    // 传会话目录（与 scanSessionsDir 同一处库）：项目根只有 <proj>/.finalcheck/finalcheck.db，
-    // 直接传 p.path 会去查 <proj>/finalcheck.db 而永远 no-op。
-    let interrupted = 0;
-    for (const p of ordered) interrupted += await sessions.markInterruptedRunningParts(projects.sessionDirOf(p.path)).catch(() => 0);
-    if (interrupted) writeLog(`启动收尾：${interrupted} 个遗留的工具调用已标记为「应用重启导致中断」`);
-  }
+  // 选中项目 + 登记会话目录 + 收尾上次崩溃遗留的运行中工具调用（见 backend.boot）
+  await backend.boot({ project: activeProject });
 
   // ---- IPC 模块接线（顺序与拆分前一致；运行时状态通过 getter / 共享 Map 注入） ----
   registerProjectIpc({
     ipcMain,
     getWin: () => win,
-    getActiveProjectId: () => activeProjectId,
-    selectProjectEnv
+    getActiveProjectId: () => backend.getActiveProjectId(),
+    selectProjectEnv: (p) => backend.selectProjectEnv(p)
   });
-  registerSystemIpc({
-    ipcMain,
-    getWin: () => win,
-    engineUrl,
-    store: configStore,
-    getHooksConfig: () => hooksConfig,
-    sessionProjectPathOf,
-    sessionUsage
-  });
+  // 系统统计 / 会话 / agent：不依赖 Electron 的那部分，桌面端与测试台同一份
+  backend.registerCoreIpc();
   registerWorkspaceIpc({
     ipcMain,
     getWin: () => win,
     getDataRoot,
     imageMime: IMAGE_MIME,
     store: configStore
-  });
-  registerSessionIpc({
-    ipcMain,
-    state: sharedState,
-    sessionProjectPathOf,
-    runSessionStart
-  });
-  registerAgentIpc({
-    ipcMain,
-    getWin: () => win,
-    getHooksConfig: () => hooksConfig,
-    getDataRoot,
-    engineUrl,
-    repoRoot: REPO_ROOT,
-    imageMime: IMAGE_MIME,
-    sessionProjectPathOf,
-    store: configStore,
-    state: sharedState,
-    // 内置 Git Bash 的查找根：打包后 resources 目录的上级（resolveShell 会拼 resources/gitbash/...）
-    shellAppRoot: process.resourcesPath || null
   });
   registerDiagnosticsIpc({
     ipcMain,

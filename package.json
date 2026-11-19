@@ -1,6 +1,6 @@
 {
   "name": "finalcheck",
-  "version": "0.25.0",
+  "version": "0.26.0",
   "description": "分级生产就绪验收：人看不懂的代码，跑之前先过闸",
   "author": "Sean (https://github.com/ccai40359-wq)",
   "type": "module",
@@ -14,7 +14,11 @@
     "lint": "eslint .",
     "typecheck": "tsc -p tsconfig.check.json",
     "smoke:agent": "node scripts/agent-live-smoke.mjs",
-    "smoke:e2e": "node scripts/e2e-smoke.mjs"
+    "smoke:e2e": "node scripts/e2e-smoke.mjs",
+    "sim": "node scripts/sim/run.mjs --all",
+    "sim:tools": "node scripts/sim/tools.mjs",
+    "sim:live": "node scripts/sim/run.mjs",
+    "sim:trigger": "node scripts/sim/trigger-eval.mjs"
   },
   "engines": {
     "node": ">=22"

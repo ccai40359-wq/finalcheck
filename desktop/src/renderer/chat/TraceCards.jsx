@@ -291,9 +291,9 @@ export function StressCard({ args, result, repeatLabel = null }) {
   );
 }
 
-/* ---------- 本次用了哪种工作流表示：只显示结论（DAG / DSL + 一句人话），不提供用户选择 ---------- */
+/* ---------- 工作流怎么跑：0.26 起统一叫「流程图」（以前分 DAG / DSL 两种，用户和模型都容易混）+ 一句人话 ---------- */
 function WorkflowModeBadge({ mode, reason }) {
-  const label = mode === 'script' ? 'DSL' : mode === 'dag' ? 'DAG' : null;
+  const label = mode === 'script' || mode === 'dag' ? t('流程图') : null;
   const why = String(reason || '').trim();
   if (!label || !why) return null;
   return (

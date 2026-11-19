@@ -1164,6 +1164,7 @@ export async function runSubagentStep({
  * @param {Function|null} [opts.runGate] 程序闸执行器（gate/aggregate 用）
  * @param {string|null} [opts.projectPath] 程序闸未显式给 dir 时的默认项目目录
  * @param {number|null} [opts.verifyTimeoutMs] 盲验节点专属墙钟上限（毫秒）；缺省 60 分钟，0 = 关闭
+ * @param {{deps?: Record<string, string[]>}|null} [opts.dag] 统一 nodes 写法编译成 script 时的依赖图（顶层按依赖并行）
  * @returns {Promise<WorkflowRunResult|{error:string}>}
  */
 export async function runWorkflow({
@@ -1180,6 +1181,7 @@ export async function runWorkflow({
   runGate = null,
   projectPath = null,
   verifyTimeoutMs = null,
+  dag = null, // 0.26：统一 nodes 写法编译成 script 时附带的依赖图（顶层按依赖并行）
 } = {}) {
   const goalText = String(goal || '').trim();
   if (!goalText) return { error: t('goal 不能为空（整个工作流要达成的目标）') };
@@ -1271,6 +1273,7 @@ export async function runWorkflow({
         concurrency: startLimit,
         onUpdate,
         verifyTimeoutMs: resolveVerifyTimeoutMs(verifyTimeoutMs),
+        dag: dag && typeof dag === 'object' ? dag : null,
       });
     } finally {
       clearInterval(stopWatch);

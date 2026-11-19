@@ -153,9 +153,9 @@ test('prompts: SYSTEM_BASE 教「先问是否需要上游」并用空 depends_on
   const parts = await getSystemPromptParts();
   assert.ok(parts.base.includes('depends_on: []'), 'SYSTEM_BASE 必须给出空 depends_on 的写法');
   assert.ok(parts.base.includes('并行'), 'SYSTEM_BASE 必须提到并行');
-  assert.ok(parts.base.includes('这一步真的需要上一步的结果吗'), 'SYSTEM_BASE 必须有先自问的硬规则');
+  assert.ok(parts.base.includes('它真的需要上一个节点的结果吗'), 'SYSTEM_BASE 必须有先自问的硬规则');
   const wf = TOOLS_SCHEMA.find((t) => t?.function?.name === 'run_workflow');
-  assert.match(wf.function.description, /空 depends_on/);
+  assert.ok(wf.function.description.includes('depends_on: []'), 'run_workflow 描述必须给出空 depends_on 的写法');
   assert.match(wf.function.description, /不要为了「看起来有顺序」/);
   assert.match(stepTimeoutText(300), /单步超时/);
 });

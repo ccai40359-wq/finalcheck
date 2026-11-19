@@ -1,0 +1,195 @@
+{
+  "name": "basic",
+  "description": "不接模型，逐个调用常用工具：读 / 搜 / 改 / 写 / 跑命令 / 越界拒绝 / 超长输出落盘 / 回滚。检查结果和「模型实际看到的文本」。",
+  "project": {
+    "files": {
+      "src/app.js": "import { add } from './calc.js';\n// TODO: 处理负数\nexport const main = () => add(1, 2);\n",
+      "src/calc.js": "export function add(a, b) {\n  return a - b;\n}\n",
+      "README.md": "# demo\n"
+    }
+  },
+  "steps": [
+    {
+      "tool": "read_file",
+      "args": {
+        "path": "{{project}}/src/calc.js"
+      },
+      "expect": {
+        "contains": "return a - b"
+      },
+      "note": "读文件带行号"
+    },
+    {
+      "tool": "grep_code",
+      "args": {
+        "pattern": "TODO",
+        "path": "{{project}}"
+      },
+      "expect": {
+        "contains": "app.js"
+      },
+      "note": "搜代码返回 文件:行"
+    },
+    {
+      "tool": "edit_file",
+      "args": {
+        "path": "{{project}}/src/calc.js",
+        "old_string": "return a - b;",
+        "new_string": "return a + b;"
+      },
+      "expect": {
+        "fileContains": {
+          "src/calc.js": "a + b"
+        }
+      },
+      "note": "精确替换"
+    },
+    {
+      "tool": "edit_file",
+      "args": {
+        "path": "{{project}}/src/calc.js",
+        "old_string": "不存在的文本",
+        "new_string": "x"
+      },
+      "expect": {
+        "ok": false
+      },
+      "note": "old_string 找不到要拒绝"
+    },
+    {
+      "tool": "write_file",
+      "args": {
+        "path": "{{project}}/src/new.js",
+        "content": "export const y = 1;\n"
+      },
+      "expect": {
+        "fileContains": {
+          "src/new.js": "y = 1"
+        }
+      },
+      "note": "新建文件"
+    },
+    {
+      "tool": "run_command",
+      "args": {
+        "command": "node --check src/calc.js && echo syntax-ok",
+        "cwd": "{{project}}"
+      },
+      "expect": {
+        "contains": "syntax-ok"
+      },
+      "note": "Git Bash 跑命令"
+    },
+    {
+      "tool": "run_command",
+      "args": {
+        "command": "for i in $(seq 1 6000); do echo line-$i-xxxxxxxxxxxxxxxxxxxxxxxx; done",
+        "cwd": "{{project}}"
+      },
+      "expect": {
+        "contains": "已完整落盘",
+        "maxChars": 25000
+      },
+      "note": "超长输出落盘，模型只看头尾"
+    },
+    {
+      "tool": "run_command",
+      "args": {
+        "command": "for i in $(seq 1 6000); do echo line-$i-xxxxxxxxxxxxxxxxxxxxxxxx; done",
+        "cwd": "{{project}}"
+      },
+      "expect": {
+        "contains": "line-6000-"
+      },
+      "note": "长输出的结尾（汇总/报错常在这里）模型要看得到"
+    },
+    {
+      "tool": "read_file",
+      "args": {
+        "path": "{{lastSpill}}",
+        "offset": 100000,
+        "limit": 2000
+      },
+      "expect": {
+        "contains": "line-"
+      },
+      "note": "落盘全文能用 read_file 分段读"
+    },
+    {
+      "tool": "run_command",
+      "args": {
+        "command": "grep -o \"line-3000-x*\" \"{{lastSpill}}\""
+      },
+      "expect": {
+        "contains": "line-3000-"
+      },
+      "note": "落盘全文能用命令检索"
+    },
+    {
+      "tool": "read_file",
+      "args": {
+        "path": "{{lastSpill}}/../../config.json"
+      },
+      "expect": {
+        "ok": false,
+        "errorMatches": "敏感路径"
+      },
+      "note": "借落盘目录 ../ 读配置要拒绝"
+    },
+    {
+      "tool": "run_command",
+      "args": {
+        "command": "rm -f \"{{lastSpill}}\""
+      },
+      "expect": {
+        "ok": false
+      },
+      "note": "落盘目录只读：删除要拒绝"
+    },
+    {
+      "tool": "read_file",
+      "args": {
+        "path": "C:/Windows/System32/drivers/etc/hosts"
+      },
+      "expect": {
+        "ok": false
+      },
+      "note": "项目外路径默认拒绝"
+    },
+    {
+      "tool": "repair_rollback",
+      "args": {
+        "path": "{{project}}/src/calc.js"
+      },
+      "expect": {
+        "fileContains": {
+          "src/calc.js": "a - b"
+        }
+      },
+      "note": "回滚到改前快照"
+    },
+    {
+      "tool": "todo_write",
+      "args": {
+        "items": [
+          {
+            "id": "s1",
+            "task": "修 add",
+            "acceptance": "测试通过"
+          },
+          {
+            "id": "s2",
+            "task": "补测试",
+            "acceptance": "有用例"
+          },
+          {
+            "id": "s3",
+            "task": "汇报",
+            "acceptance": "说明改动"
+          }
+        ]
+      },
+      "note": "验收单"
+    }
+  ]
+}

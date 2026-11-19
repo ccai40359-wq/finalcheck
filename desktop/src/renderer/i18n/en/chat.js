@@ -9,6 +9,11 @@ export const EN_CHAT = {
   '最新记录': 'Latest entries',
   '重复执行 {n} 次': 'Ran {n} times',
   '待确认': 'Needs confirmation',
+  '流程图': 'Flowchart',
+  '独立复核': 'Independent review',
+  '只读调查': 'Read-only investigation',
+  '打开子代理过程': 'Open sub-agent transcript',
+  '{n} 次工具': '{n} tool calls',
   // 基础状态（与 common 重复的几条保持原样，历史原因）
   '运行中': 'Running',
   '已完成': 'Done',

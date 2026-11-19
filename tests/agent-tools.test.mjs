@@ -434,13 +434,14 @@ test('run_workflow 空参：返回可执行的自纠错提示，不调用引擎'
     runWorkflow: async () => { calls += 1; return { results: [] }; }
   });
 
+  // 0.26：统一成 nodes 一种写法——空参时告诉模型怎么画图，而不是让它在 steps / script 里二选一
   const r = await tools.run_workflow({ goal: 'g' });
-  assert.match(r.error, /先判断任务形状/);
-  assert.match(r.error, /不要问用户用哪种/);
+  assert.match(r.error, /没有给 nodes/);
+  assert.ok(r.error.includes('depends_on: []'), '提示里要给出空 depends_on 的写法');
 
-  // steps: [] + script: [] 同样视为「都没给」，不能落到「steps 不能为空」
-  const r2 = await tools.run_workflow({ goal: 'g', steps: [], script: [] });
-  assert.match(r2.error, /先判断任务形状/);
+  // nodes: [] / steps: [] + script: [] 同样视为「都没给」，不能落到「steps 不能为空」
+  const r2 = await tools.run_workflow({ goal: 'g', nodes: [], steps: [], script: [] });
+  assert.match(r2.error, /没有给 nodes/);
   assert.equal(calls, 0, '空参不在引擎里猜语义，直接要求模型重选表示');
 });
 

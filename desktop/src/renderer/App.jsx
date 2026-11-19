@@ -30,6 +30,7 @@ import Composer from './components/Composer.jsx';
 import CompactionStatus from './components/CompactionStatus.jsx';
 import Dialogs from './components/Dialogs.jsx';
 import { IDLE as COMPACTION_IDLE, reduce as reduceCompaction } from './lib/compaction.mjs';
+import { OPEN_STEP_EVENT } from './lib/spawn-agent.mjs';
 // 兼容原来的模块出口（外部若按旧路径取这两个函数/组件仍可用）
 export { needsFirstRunSetup, formatDemoAuditSummary } from './lib/app-helpers.mjs';
 export { default as FirstRunCard } from './components/FirstRunCard.jsx';
@@ -1598,6 +1599,14 @@ export default function App() {
     }
   };
   const openStep = (s) => setStepView({ sessionId: activeId, stepId: s.id, name: s.name, role: s.role, kind: s.kind || null, opType: s.opType || s.op || null, key: Date.now() });
+  // 轻量子代理（spawn_agent）的「打开子代理过程」：时间线里用窗口事件请求打开右侧面板
+  const openStepRef = useRef(openStep);
+  openStepRef.current = openStep;
+  useEffect(() => {
+    const onOpen = (ev) => { if (ev?.detail?.id) openStepRef.current(ev.detail); };
+    window.addEventListener(OPEN_STEP_EVENT, onOpen);
+    return () => window.removeEventListener(OPEN_STEP_EVENT, onOpen);
+  }, []);
 
   const hasMsgs = messages.length > 0;
   // 草稿页横幅：New Session 清屏后，还在跑的会话要「看得见、点得回」——记录没丢，别让用户以为清屏=丢失

@@ -194,6 +194,16 @@ export function createPolicy({
   const sensitiveDirs = [];
   const sensitiveFiles = [];
 
+  // 只读例外：工具超长结果的落盘目录（FINALCHECK_SPILL_DIR）。它在 %APPDATA%FinalCheck 下，
+  // 但里面只有本应用写的工具输出——提示里让模型「去落盘文件里查」，读不到等于白给（0.26 模拟客户端测出）。
+  // 只放行读，且只放行这一个子目录；config.json / projects.json 等仍按敏感路径拒绝。
+  const readableDirs = [];
+  const spillValue = readEnv(envSnapshot, 'FINALCHECK_SPILL_DIR', false);
+  if (spillValue) {
+    const spill = normalizeRoot(pathApi, spillValue, null, homeDir);
+    if (spill) readableDirs.push(trimTrailingSep(pathApi, pathApi.normalize(spill)));
+  }
+
   // %APPDATA%\FinalCheck\**：含 config.json / projects.json / hooks.json
   const appdataValue = readEnv(envSnapshot, 'APPDATA', true);
   if (appdataValue) {
@@ -232,6 +242,7 @@ export function createPolicy({
     projectPath: project,
     allowPaths: Object.freeze(allow),
     roots: Object.freeze(roots),
+    readableDirs: Object.freeze(readableDirs),
     homeDir,
     sensitive: Object.freeze({
       dirs: Object.freeze(sensitiveDirs),
@@ -296,6 +307,15 @@ function canonicalPath(value, platform) {
   }
 }
 
+/** 是否落在只读例外目录（工具结果落盘目录）里 */
+function inReadableDir(policy, normalized) {
+  const dirs = Array.isArray(policy?.readableDirs) ? policy.readableDirs : [];
+  if (!dirs.length || typeof normalized !== 'string') return false;
+  const pathApi = pathApiFor(policy.platform);
+  const ci = isWinPlatform(policy.platform);
+  return dirs.some((d) => isInside(pathApi, d, normalized, ci));
+}
+
 export function assertPathAllowed(policy, absPath, { write = false, tool = DEFAULT_TOOL } = {}) {
   if (!policy || typeof policy !== 'object' || !POLICY_MODES.includes(policy.mode)) {
     return deny(tool, absPath, t('策略对象无效'));
@@ -311,6 +331,13 @@ export function assertPathAllowed(policy, absPath, { write = false, tool = DEFAU
     return deny(tool, absPath, t('路径无效'));
   }
   if (!normalized) return deny(tool, absPath, t('路径无效'));
+
+  // 只读例外（落盘目录）：读放行；真实路径（解析链接后）也必须仍在里面
+  if (!write && inReadableDir(policy, normalized)) {
+    let real;
+    try { real = canonicalPath(normalized, policy.platform); } catch { return deny(tool, normalized, t('路径无法安全解析')); }
+    if (inReadableDir(policy, real)) return { ok: true, path: real };
+  }
 
   const sensitive = detectSensitive(policy, normalized);
   if (sensitive) return deny(tool, normalized, t('敏感路径禁止访问（{item}）', { item: sensitive }));
@@ -687,6 +714,8 @@ export function checkCommandPaths(policy, command, cwd) {
       // `rm -rf ~/.ssh` 会因为字面量不是绝对路径而被静默跳过（2026-11-16 实测漏洞）。
       const abs = resolveCommandPath(policy, raw, base);
       if (!abs) continue;
+      // 落盘目录（只读例外）：允许命令引用（grep / tail / sed -n 查超长结果全文）
+      try { if (inReadableDir(policy, normalizeTarget(policy, abs))) continue; } catch { /* 解析失败按普通路径处理 */ }
 
       // 第 1 层：敏感路径无条件拒绝（不看 mode）
       const sens = isSensitivePath(policy, abs);
