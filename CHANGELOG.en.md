@@ -6,6 +6,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.24.1] - 2026-11-19
+
+The UI release: new dark and light themes with one-click switching, plus a reworked dark theme with clearer depth and lighting.
+
+### Added
+
+- **Dark and light themes**: switch with one click using the sun / moon button at the top right of the title bar, or in the new Appearance section in Settings; your choice is remembered. Light is a warm paper white and dark is ink black with gold. Body text contrast is above 15:1 in both, and the gold and warning red in the light theme were retuned to WCAG AA so they stay readable on white. The app opens straight in the chosen theme, with no black flash at startup.
+
+### Improved
+
+- **The dark theme has real depth**: the sidebar, main area and cards used to be almost the same black, so the whole page looked flat. They now step clearly from dark to light, code blocks sit recessed, the background has a few soft warm-gold glows, and the glass sidebar lets that light show through.
+- **Your own message bubbles look cleaner**: the muddy olive-brown fill is now a warm grey with a thin gold border.
+
 ## [0.24.0] - 2026-11-19
 
 The speed release: long-task context management is rebuilt to match Claude Code. Each step of a long task no longer gets slower and slower, and the AI no longer picks an acceptance tier without asking you.
