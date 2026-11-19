@@ -7,7 +7,7 @@ import {
   IMG_EXT_RE, previewFromPath, isLongPaste, countLines, fmtTokens, modelIdsOf, modelEntriesOf, EFFORTS, COMMANDS,
   nextPasteId, baseName, readBase64, fileToDataUrl, shrinkImageDataUrl, skillDescription, modelDisplayLabel
 } from '../lib/app-helpers.mjs';
-import { IconPlus, IconPaste, IconTrash, IconEdit, IconShield, IconSend, ContextRing } from './Icons.jsx';
+import { IconPlus, IconPaste, IconTrash, IconEdit, IconShield, IconSend, IconCube, ContextRing } from './Icons.jsx';
 
 // 输入框里的附件 chip：图片直接显示缩略图（无 preview 时按路径读），文件名 + 移除
 function AttachmentChip({ item, onRemove }) {
@@ -256,7 +256,7 @@ export default function Composer({
           </div>
         )}
         <div
-          className={`glass-composer relative z-30 rounded-[20px] fc-composer-box ${dragging ? 'fc-drag' : ''}`}
+          className={`glass-composer relative z-30 rounded-[20px] ${dragging ? 'fc-drag' : ''}`}
           onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
           onDragLeave={() => setDragging(false)}
           onDrop={async (e) => { e.preventDefault(); setDragging(false); await addFiles(e.dataTransfer?.files); }}
@@ -342,10 +342,10 @@ export default function Composer({
             </button>
             <div className="relative fc-shrink-label">
               <button onClick={() => setMenu(menu === 'perm' ? null : 'perm')}
-                className={`inline-flex items-center gap-1.5 text-[11px] rounded-lg px-2 py-1.5 transition-colors hover:bg-lift/[0.06] whitespace-nowrap ${permMode === 'full' ? 'text-goldSoft' : 'text-mute hover:text-ink'}`}>
+                title={permMode === 'full' ? t('完全权限（点击切换）') : t('标准审批（点击切换）')}
+                aria-label={permMode === 'full' ? t('完全权限') : t('标准审批')}
+                className={`inline-flex items-center justify-center rounded-lg px-2 py-1.5 transition-colors hover:bg-lift/[0.06] whitespace-nowrap ${permMode === 'full' ? 'text-goldSoft' : 'text-mute hover:text-ink'}`}>
                 <IconShield />
-                <span className="fc-perm-text">{permMode === 'full' ? t('完全权限') : t('标准审批')}</span>
-                <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="shrink-0"><path d="M6 9l6 6 6-6" /></svg>
               </button>
               {menu === 'perm' && (
                 <div className="glass-pop absolute bottom-full mb-1.5 left-0 w-60 rounded-2xl p-1.5 z-40">
@@ -359,9 +359,7 @@ export default function Composer({
               )}
             </div>
 
-            <span className="text-[10px] text-mute/35 select-none pl-1 fc-hint-line">{compacting ? t('压缩中…') : t('输入 / 选技能')}</span>
-
-            <div className="ml-auto flex items-center gap-1.5 fc-right-group">
+            <div className="ml-auto flex items-center gap-1 fc-right-group">
               <div className="relative">
                 <button
                   onMouseEnter={() => setMenu('context')}
@@ -437,11 +435,16 @@ export default function Composer({
                 )}
               </div>
               <div className="relative" ref={modelMenuRef}>
+                {/* 模型入口只显示图标（立方体），不显示模型名——模型名在悬浮菜单里看/切换。
+                    这样输入框再窄，工具条也不会因为长模型名变形。 */}
                 <button onClick={() => { setMenu(menu === 'model' ? null : 'model'); setProviderMenu(false); }}
-                  className="inline-flex items-center gap-1.5 max-w-[280px] min-w-0 text-[11px] px-1 py-1 text-mute hover:text-goldSoft transition-colors duration-200 whitespace-nowrap">
-                  <span className="truncate min-w-0">{activeModel || t('未配置模型')}</span>
-                  <span className="text-mute/45 shrink-0">{effortLabel}</span>
-                  <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="shrink-0"><path d="M6 9l6 6 6-6" /></svg>
+                  title={`${activeModel || t('未配置模型')} · ${effortLabel}`}
+                  aria-label={t('模型与思考强度')}
+                  data-ui="model-menu-trigger"
+                  className="h-7 w-7 shrink-0 rounded-lg flex items-center justify-center text-mute hover:text-goldSoft hover:bg-lift/[0.06] transition-colors duration-200 relative">
+                  <IconCube />
+                  {/* 运行中/压缩中用一个极小的绿点代替文字提示（原「输入 / 选技能」那个位置） */}
+                  {compacting && <span aria-hidden="true" className="absolute -top-0.5 -right-0.5 h-1.5 w-1.5 rounded-full bg-jade fc-compact-dot" />}
                 </button>
                 {menu === 'model' && (
                   <div className="glass-pop absolute bottom-full mb-2 right-0 w-[300px] rounded-2xl z-50 pop-in">
@@ -455,6 +458,13 @@ export default function Composer({
                     </button>
 
                     <div className="px-3 pt-2 pb-1 text-[10px] text-mute/50">Models</div>
+                    {/* 当前模型 + 思考强度：图标按钮不显示名字，所以这里必须写清楚，
+                        否则用户不知道自己在用哪个模型 */}
+                    <div className="mx-2 mb-1 rounded-lg bg-lift/[0.04] px-2.5 py-1.5 text-[11px] flex items-center gap-2">
+                      <span className="text-mute/55 shrink-0">{t('当前')}</span>
+                      <span className="font-mono text-ink/85 truncate min-w-0">{activeModel || t('未配置模型')}</span>
+                      <span className="ml-auto shrink-0 rounded border border-edge px-1.5 py-0.5 text-[10px] text-goldSoft">{effortLabel}</span>
+                    </div>
                     <div className="max-h-56 overflow-y-auto px-1.5 pb-1">
                       {activeModelEntries.map((m) => (
                         <button key={m.id} onClick={() => chooseModel(activeProv.id, m.id)}
