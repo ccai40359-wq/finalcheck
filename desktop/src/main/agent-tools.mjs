@@ -442,7 +442,8 @@ export const GREP_CODE_SCHEMA = {
 // todo_write 的 CC 式三条规则（并轨时追加到 AGENT_ONLY_TOOLS_SCHEMA 里 todo_write 的 description 末尾）
 export const TODO_CC_RULES_TEXT = 'CC 式规则：① 同一时间恰好一个 in_progress（工具层会自动把多余的 running 降回 pending 并提示）；② 测试失败/实现不全/有未解决错误时禁止标 done——保持 running，并新建一条写清「需要解决什么」；③ 做完一条立刻调用 todo_write 更新状态，不要攒批';
 
-export function createAgentTools({ repoRoot, permissions, recordAudit = async () => {}, playbookRoot, runWorkflow = null, projectPath = null, policy = null, hooksConfig = null, hooksRunner = null, sessionId = null, cwd = null, signal = null, commandIdleMs = DEFAULT_COMMAND_IDLE_MS, askUser = null, todoWrite = null, onActivity = null, requireAuditIntent = null, shellAppRoot = null, aclSandbox = undefined } = {}) {
+export function createAgentTools({ repoRoot, permissions, recordAudit = async () => {}, playbookRoot, runWorkflow = null, projectPath = null, policy = null, hooksConfig = null, hooksRunner = null, sessionId = null, cwd = null, signal = null, commandIdleMs = DEFAULT_COMMAND_IDLE_MS, askUser = null, todoWrite = null, onActivity = null, requireAuditIntent = null, shellAppRoot = null, aclSandbox = undefined, userStatedTier = null } = {}) {
+  let askedThisTurn = false; // 本回合已经通过 ask_user 问过用户（验收前置闸据此放行）
   if (!repoRoot) throw new Error('createAgentTools 需要 repoRoot');
   const engineUrl = (rel) => pathToFileURL(path.join(repoRoot, rel)).href;
   // 验收前置闸：只有「能向用户提问」的主 agent 才强制先问档位/维度。
@@ -521,10 +522,18 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
       const { profile, runtime, profileSource, explicitTier, hasProfile } = await resolveAuditPlan(dir, args);
       // fail-closed：主 agent 没拿到显式档位、项目里也没有 profile → 不猜，退回让模型先问用户。
       // 返回结构化错误（而非抛异常），模型能直接看到 needAsk/dimensions/levels 去组织提问。
-      if (askBeforeAudit && !explicitTier && !hasProfile) {
+      // 2026-11-19 用户实测：模型自己往参数里填 tier:"L2" 就绕过了这道闸，一句没问直接跑。
+      // 主 agent 场景（ipc 传了 userStatedTier）改为看「用户在对话里说没说档位」，模型自填的不算；
+      // 本回合已经通过 ask_user 问过也放行。没传 userStatedTier 的调用方（测试 / 旧接口）保持原口径。
+      const tierDecided = userStatedTier === null || userStatedTier === undefined
+        ? !!explicitTier
+        : (userStatedTier || askedThisTurn);
+      if (askBeforeAudit && !tierDecided && !hasProfile) {
         const { CORE_DIMENSION_NAMES } = await import(engineUrl('src/profile.mjs'));
         return {
-          error: t('先确认档位与维度：请用 ask_user 问清 L1/L2/L3 与要覆盖的维度，再调用 audit_project'),
+          error: explicitTier
+            ? t('用户还没说要按哪个档位验收：你在参数里自己填的 tier 不算。先用 ask_user 问清 L1/L2/L3 与要覆盖的维度，再调用 audit_project')
+            : t('先确认档位与维度：请用 ask_user 问清 L1/L2/L3 与要覆盖的维度，再调用 audit_project'),
           needAsk: true,
           dimensions: [...CORE_DIMENSION_NAMES],
           levels: ['L1', 'L2', 'L3']
@@ -1060,7 +1069,11 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
   // 回合中途提问：只有主 agent 的 createAgentTools 会传 askUser（子代理/工作流 gate 不传），
   // 工具表与 schema 两层都不给子代理，避免并行子代理同时弹多张卡。
   if (typeof askUser === 'function') {
-    tools.ask_user = async (args, ctx) => askUser(args || {}, ctx);
+    tools.ask_user = async (args, ctx) => {
+      const r = await askUser(args || {}, ctx);
+      if (r && !r.error) askedThisTurn = true;
+      return r;
+    };
   }
 
   // 验收单：同样只给主 agent（todoWrite 由 ipc-agent 注入，子代理 schema 不含该工具）。

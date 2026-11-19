@@ -130,3 +130,35 @@ test('验收前置闸：SYSTEM_BASE 在工具说明之前硬性要求先问档�
   assert.ok(base.includes('不要重复问') && base.includes('用户已经说清'), '应说明用户已说清时不重复问');
   assert.ok(base.includes('多候选不许猜'), '多候选目录必须先问，单独成句');
 });
+
+test('验收前置闸（2026-11-19 用户实测）：主 agent 场景下模型自己填 tier 不算，必须先问；问过之后放行', async (t) => {
+  const dir = await makeProject(t);
+  const archived = [];
+  const asked = [];
+  const tools = createAgentTools({
+    repoRoot,
+    permissions: fakePermissions(),
+    recordAudit: async (d, r) => { archived.push({ d, verdict: r.conclusion.verdict }); },
+    askUser: async (q) => { asked.push(q.question); return { ok: true, answer: 'L1，只看安全性' }; },
+    userStatedTier: false,
+  });
+  const blocked = await tools.audit_project({ dir, tier: 'L2' });
+  assert.equal(blocked.needAsk, true);
+  assert.match(blocked.error, /你在参数里自己填的 tier 不算/);
+  assert.equal(archived.length, 0, '没问就不许跑');
+  await tools.ask_user({ question: '按 L1/L2/L3 哪个档位？', options: [{ label: 'L1' }, { label: 'L2' }] });
+  const ok = await tools.audit_project({ dir, tier: 'L1' });
+  assert.ok(!('needAsk' in ok));
+  assert.equal(archived.length, 1);
+  assert.equal(asked.length, 1);
+});
+
+test('验收前置闸：用户在对话里说过档位（userStatedTier=true）→ 模型带 tier 直接跑，不重复问', async (t) => {
+  const dir = await makeProject(t);
+  const tools = createAgentTools({
+    repoRoot, permissions: fakePermissions(), recordAudit: async () => {},
+    askUser: async () => ({ ok: true, answer: 'x' }), userStatedTier: true,
+  });
+  const out = await tools.audit_project({ dir, tier: 'L1' });
+  assert.ok(!('needAsk' in out));
+});

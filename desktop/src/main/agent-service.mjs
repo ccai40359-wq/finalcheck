@@ -4,7 +4,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
-import { assembleContext, estimateTokens, estimateMessagesTokens, microcompact, countToolsToClean, fullCompact, contextBudget, needsCompaction } from './context.mjs';
+import { assembleContext, estimateTokens, estimateMessagesTokens, microcompact, planFold, fullCompact, contextBudget, needsCompaction } from './context.mjs';
+import { modelFullCompact } from './in-turn-compact.mjs';
 import { crossTurnBudgetTokens } from './model-config.mjs';
 import { GREP_CODE_SCHEMA, TODO_CC_RULES_TEXT } from './agent-tools.mjs';
 // token 估算/两级压缩原语实现放在 context.mjs（与上下文视图同源）；这里重新导出，单测可直接从 agent-service 取
@@ -330,6 +331,7 @@ const SYSTEM_BASE = [
   '构建/装依赖有时间预算：静态验收不需要编译通过；只有用户要求「能否构建/跑测试」时才执行 mvn/gradle/npm install/pip install/go build 这类命令，且必须带 timeout_ms（≤ 300000）。超时或依赖下载太慢 → 立刻记为「构建未验证（原因：依赖下载超时）」写进 ## Not covered，继续别的验收项；禁止用 sleep 反复轮询等它（E2E 实测：spring-petclinic 等 Maven 下载 17 分钟直到整轮超时，最终一个字的结论都没交出来）。',
   '边界：动态目标以用户在对话中的口头确认为准——用户给出目标 URL 或表示同意，即为授权，直接执行（压测默认温和参数）；结论引用工具返回的 verdict；覆盖不足要明说"没查到"。',
   '工具结果超长时会被截断为「头+尾」并完整落盘，按提示的 spill 路径用 run_command 检索，不要猜中间内容。',
+  '长任务提速（2026-11-19 实测：做一个宣传片 529 步、109 分钟，其中 99 分钟在等模型、353 次回复只调了 1 个工具）：① 互不依赖的读文件 / 查看 / 命令放在同一次回复里一起发（读文件 / 搜索 / 看图 / 截图会并发执行；多条互不依赖的命令可以合并进一次 run_command），不要一次只调一个；② 视觉迭代要成批——一条命令里循环渲染或截取多帧（或用脚本拼成一张总览图），一次 view_image 看完（每次最多 4 张），把看到的问题列全、一次改完，再整体验证一次；不要「改一处 → 渲染一帧 → 裁图 → 看一眼」反复循环；③ 已经确认没问题的部分不要重复检查。',
   '看图与截图：做 PPT / 网页 / 视频 / 海报 / 图表这类视觉产物时，生成后必须用 capture_screenshot 逐页（或关键帧）看实际效果，文字溢出、重叠、错位、配色不对就改，改完再截一次确认；不要只看代码就说「应该没问题」。用户或项目里的图片用 view_image 直接看。截图只在桌面端可用。',
   '修代码：先 read_file 看清原文，再用 edit_file 做最小替换（old_string 必须唯一）；新建文件用 write_file。改完明确告诉用户「改了哪个文件、+几行/-几行、为什么」。',
   '路径参数转义（硬规则）：JSON 参数里的 Windows 路径一律优先写正斜杠（D:/Projects/demo）；必须用反斜杠时一律双写（D:\\\\Projects\\\\demo）；写成单反斜杠会让参数不是合法 JSON，工具不会执行。',
@@ -359,6 +361,7 @@ const SYSTEM_DEV_BASE = [
   '修审计发现时按技能修：audit_project 报出的每类问题（S3 密钥轮换 / S1 路由鉴权 / S2 注入 / S4 依赖 / A1 权限收敛 / A2 提示注入 / A3 沙箱限额 / A4 数据脱敏 / H1 交接 / O1 运维）先 read_playbook(topic=对应编号 41-50) 读修复技能，按其「修复步骤」执行、按其「验证」段重跑对应 gate 确认归零。',
   '多条独立发现并行修：≥3 条互不依赖的审计发现（不同文件/不同规则）→ run_workflow 扇出修复——每条发现一个独立子代理（prompt 写明「先 read_playbook(topic=对应编号) 读修复技能再动手」），depends_on 全部空数组并行；最后一步汇总「各发现修没修好 + 重跑 gate 的结果」。修复失败的发现如实列「未修好 + 原因」，不许为了结论好看硬说修完。',
   '需要并行查证/多路改造时用 run_workflow 分头跑（步骤 3-8 个，每步一个独立子代理；不需要上游结果就写 depends_on: [] 并行）；单文件小改动不要用工作流，自己直接做更快。每步 name 用职位名（4-10 字），不许写「步骤 1」。',
+  '长任务提速（2026-11-19 实测：做一个宣传片 529 步、109 分钟，其中 99 分钟在等模型、353 次回复只调了 1 个工具）：① 互不依赖的读文件 / 查看 / 命令放在同一次回复里一起发（读文件 / 搜索 / 看图 / 截图会并发执行；多条互不依赖的命令可以合并进一次 run_command），不要一次只调一个；② 视觉迭代要成批——一条命令里循环渲染或截取多帧（或用脚本拼成一张总览图），一次 view_image 看完（每次最多 4 张），把看到的问题列全、一次改完，再整体验证一次；不要「改一处 → 渲染一帧 → 裁图 → 看一眼」反复循环；③ 已经确认没问题的部分不要重复检查。',
   '看图与截图：做 PPT / 网页 / 视频 / 海报 / 图表这类视觉产物时，生成后必须用 capture_screenshot 逐页（或关键帧）看实际效果，文字溢出、重叠、错位、配色不对就改，改完再截一次确认；不要只看代码就说「应该没问题」。用户或项目里的图片用 view_image 直接看。截图只在桌面端可用。',
   '需要用户拍板的事（砍功能/动线上数据/花钱的 API）用 ask_user 问一次就动手；其余决策自己定。一次回合最多问 3 次。',
   '路径参数转义（硬规则）：JSON 参数里的 Windows 路径一律优先写正斜杠（D:/Projects/demo）；必须用反斜杠时一律双写（D:\\\\Projects\\\\demo）；写成单反斜杠会让参数不是合法 JSON，工具不会执行。',
@@ -1200,7 +1203,8 @@ async function runToolCall(tc, tools, onEvent, signal = null, onToolLifecycle = 
   return { id: tc?.id, trace: { tool: name, args: argsText, result: traceResult }, modelContent, ...(images?.length ? { images } : {}) };
 }
 
-const MAX_LIVE_IMAGE_MESSAGES = 2;
+const MAX_LIVE_IMAGE_MESSAGES = 4; // 带图消息最多同时 4 条；超了一次收回到 IMAGE_TRIM_TO 条（成批改，保护前缀缓存）
+const IMAGE_TRIM_TO = 2;
 /**
  * 把一批工具返回的图片变成一条给模型看的消息（OpenAI 多模态 content parts）。
  * 模型未开视觉（config.vision === false）→ 只给文字说明，不发图（网关会直接拒绝整个请求）。
@@ -1215,7 +1219,8 @@ export function appendToolImages(convo, toolResults, { vision } = {}) {
     return true;
   }
   const live = convo.filter((m) => m.__fcImages);
-  for (const m of live.slice(0, Math.max(0, live.length - (MAX_LIVE_IMAGE_MESSAGES - 1)))) {
+  const trim = live.length >= MAX_LIVE_IMAGE_MESSAGES ? live.length - (IMAGE_TRIM_TO - 1) : 0;
+  for (const m of live.slice(0, Math.max(0, trim))) {
     m.content = m.content.map((p) => (p.type === 'image_url' ? { type: 'text', text: '[较早的图片已从上下文移除；需要再看就重新调用 view_image / capture_screenshot]' } : p));
     delete m.__fcImages;
   }
@@ -1439,6 +1444,14 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
   const maxTurnTokens = noLimits ? Number.POSITIVE_INFINITY : positiveNum(maxTurnTokensOpt ?? config.maxTurnTokens, Number.POSITIVE_INFINITY); // 累计 prompt+completion；默认不限
   const watchdogSec = (ms) => Math.max(1, Math.round(ms / 1000)); // 看门狗文案用：按实际配置显示秒数
   const tokenBudget = contextBudget(config); // contextWindow 默认 200000、maxOutputTokens 默认 32000
+  // 回合内「速度上限」（2026-11-19 用户实测）：1M 窗口模型要涨到 ~98 万 token 才折叠旧工具结果，
+  // 一个做视频的回合 529 步、上下文一路膨胀，每步 10~22 秒（实测：1 万 token 约 4 秒、10 万 token 7~22 秒），
+  // 109 分钟里 99 分钟在等模型。回合内超过这条线就折叠旧工具结果（最近 12 条原文保留，更早的留索引行）。
+  // 不回到以前「几步就忘」的激进折叠：16 万足够容纳几十个文件；config.inTurnTokenCap 可调，0 = 关闭上限。
+  // 注意只做「工具结果压索引行」这一步（microcompact），不触发 fullCompact——后者会把最近 6 条以外
+  // （包括用户最初的任务要求）整段换成摘要，频繁触发就是「读完就忘」。fullCompact 仍只在真正逼近窗口时跑。
+  const inTurnCap = config.inTurnTokenCap === 0 ? Infinity : positiveNum(config.inTurnTokenCap, 160000);
+  const speedThreshold = Math.min(tokenBudget.compactThreshold, inTurnCap);
   let turnTokens = 0;
   let toolWaitMs = 0; // 工具执行时间不计入模型预算：工作流可能跑 30-50 分钟，算进去等于必超
   let budgetStop = null; // 'time' | 'tokens' | null
@@ -1469,25 +1482,47 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
       turnTokens += estimateMessagesTokens(convo) + estimateTokens(content || '');
     }
   };
-  const compactNow = () => {
+  // 成批折叠的下一条触发线（2026-11-19，对齐 Claude Code「保护提示缓存」）：
+  // 模型网关按「前缀」缓存——前面的消息一字不改，每步只需处理新增部分；中间任何一条被改，之后全部重算。
+  // 所以折叠不能每步折一条（每步都改对话中部 = 每步缓存失效），而是到线时一次折到 FOLD_TARGET_RATIO，
+  // 之后只追加不改，涨回到线再成批折一次。折完仍然很高（多半是模型自己写的长内容），就把下一条线
+  // 往上抬 FOLD_REARM_RATIO，绝不出现「每步都折」。
+  const FOLD_TARGET_RATIO = 0.5;
+  const FOLD_REARM_RATIO = 0.25;
+  let nextFoldAt = speedThreshold;
+  const compactNow = async () => {
     if (compactFails >= 3) return; // 熔断后不再尝试
-    // 进行中状态：这里的压缩是本地同步的两级裁剪，事件只用来让界面在需要时点亮「压缩中」
-    // （渲染层有 120ms 延迟出现，瞬时压缩不会闪一下）；失败时同样要发 end，不能让界面一直转圈。
+    // 进行中状态：事件只用来让界面在需要时点亮「压缩中」（渲染层有 120ms 延迟出现，瞬时压缩不会闪一下）；
+    // 失败时同样要发 end，不能让界面一直转圈。
     let announced = false;
     let before = 0;
     try {
-      const tokens = estimateMessagesTokens(convo);
-      // 2026-11-17（规格 §4 步 2）：只有**一个**阈值，不再分 micro/full 两档。
-      // 到线就统一执行「工具结果压索引行 + 正文摘要」两步，顺序固定：
-      //   ① 先把旧工具结果压成索引行（便宜、信息密度高，能显著降 token）
-      //   ② 再把最老的成对 user/assistant 正文换成 [历史摘要]
-      // 旧的两档在 1M 窗口上是 881k/966k，正常会话永远到不了，等于死代码。
-      if (tokens >= tokenBudget.compactThreshold) {
+      let tokens = estimateMessagesTokens(convo);
+      // ① 速度上限：成批折叠旧工具结果（最近 MICRO_KEEP_RECENT_IN_TURN 条原文不动、对话正文不动）
+      let foldStuck = false; // 折完仍贴着速度上限：剩下的是对话正文/模型自己写的长内容，折工具结果已经没用
+      if (tokens >= nextFoldAt) {
+        const target = Math.floor(speedThreshold * FOLD_TARGET_RATIO);
+        const plan = planFold(convo, { keepRecentTool: MICRO_KEEP_RECENT_IN_TURN, targetTokens: target, tokensNow: tokens });
+        if (plan.count > 0 && microcompact(convo, { keepRecentTool: MICRO_KEEP_RECENT_IN_TURN, maxFold: plan.count })) {
+          if (!microNoticeSent) {
+            microNoticeSent = true; // 同一回合只提示一次
+            onEvent?.({ kind: 'notice', message: t('上下文折叠：已清理 {n} 条旧工具结果（原文可重跑获取）', { n: plan.count }) });
+          }
+        }
+        tokens = estimateMessagesTokens(convo);
+        foldStuck = tokens >= speedThreshold * 0.9;
+        nextFoldAt = Math.max(speedThreshold, tokens + Math.floor(speedThreshold * FOLD_REARM_RATIO));
+      }
+      // ② 模型写交接摘要（对齐 Claude Code auto-compact），失败回落本地摘要。两种情况会走到：
+      //    真正逼近窗口；或折完工具结果仍贴着速度上限（剩下的是正文，只能靠摘要降下来）。
+      if (tokens >= tokenBudget.compactThreshold || foldStuck) {
         before = tokens;
         announced = true;
         onEvent?.({ kind: 'compact-start', scope: 'auto', before });
         microcompact(convo, { keepRecentTool: MICRO_KEEP_RECENT_IN_TURN });
-        fullCompact(convo);
+        const r = await modelFullCompact(convo, { summarize });
+        if (r.error) onEvent?.({ kind: 'warning', message: t('模型摘要失败，改用本地摘要：{error}', { error: r.error }) });
+        nextFoldAt = Math.max(speedThreshold, estimateMessagesTokens(convo) + Math.floor(speedThreshold * FOLD_REARM_RATIO));
       }
       compactFails = 0; // 成功一次即重置「连续失败」计数
     } catch (e) {
@@ -1529,7 +1564,7 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
     }
     applySteer(); // 用户中途注入（Steer）：先并入本轮上下文，再发起下一次请求
     await refreshLiveConfig(); // 下一次模型请求前重新解析：运行中改模型/供应商从这里开始生效（已输出的内容不重跑）
-    compactNow(); // 每轮请求前按 token 做两级压缩，防 40 轮把网关上下文撑爆
+    await compactNow(); // 每轮请求前按 token 做两级压缩，防 40 轮把网关上下文撑爆
     if (signal?.aborted) { onEvent?.({ kind: 'turn-end', ms: Date.now() - turnStart, interrupted: true }); return { cancelled: true, interrupted: true, partialContent: '', answer: '', trace, reasoning: reasoningAll || undefined, usage: lastUsage || undefined }; }
     let lastErr = '';
     let streamOut = null; // 成功消费完的流结果（重试循环里赋值；失败/静默时保持 null）
@@ -1869,30 +1904,8 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
     });
     // 工具返回的图片：所有 tool 消息之后补一条多模态消息（tool 消息必须紧跟 assistant 的 tool_calls）
     appendToolImages(convo, toolResults, { vision: liveConfig.vision });
-    // 回合内折叠（microcompact）：**按 token 阈值触发**，不再每步无条件清。
-    //
-    // 2026-11-16 修复（真实事故）：623ab65 引入的是「每步工具结果落地就清掉最近 5 条
-    // 以外的一切」，与 token 预算完全无关。后果是模型**读完就忘**：
-    //   实测读完 lib/auth/session.ts 后，再走 5 步该内容就变成
-    //   `[旧工具结果已清理：read_file；…]`；而真实会话里同一文件两次读的步距中位数是 9，
-    //   → 想用它的时候它已经不在上下文里 → 只能再读 → 一个回合 808 次调用、594 次读 20 个文件，
-    //   同一个文件读 107 次且内容字节级完全相同。这不是模型笨，是 harness 擦了它的记忆。
-    //
-    // 现在只有估算 token 真的踩到 compactThreshold 才折叠（与 compactNow 同一口径），
-    // 且保留条数放宽；长回合仍受阈值硬约束，不会回到「无限膨胀」。
-    {
-      const tokensNow = estimateMessagesTokens(convo);
-      if (tokensNow >= tokenBudget.compactThreshold) {
-        const keepNow = MICRO_KEEP_RECENT_IN_TURN;
-        const cleanedNow = countToolsToClean(convo, { keepRecentTool: keepNow });
-        if (cleanedNow > 0 && microcompact(convo, { keepRecentTool: keepNow })) {
-          if (!microNoticeSent) {
-            microNoticeSent = true; // 同一回合只提示一次
-            onEvent?.({ kind: 'notice', message: t('上下文折叠：已清理 {n} 条旧工具结果（原文可重跑获取）', { n: cleanedNow }) });
-          }
-        }
-      }
-    }
+    // 回合内折叠统一在下一次请求前的 compactNow 里做（成批折叠，保护前缀缓存；见 nextFoldAt）。
+    // 2026-11-16 教训仍然有效：不能每步把最近几条以外全清掉（「读完就忘」，同一文件读了 107 次）。
     if (inspected.invalid.length) {
       const badNames = [...new Set(inspected.invalid.map((x) => x.name))].join('、');
       if (!argsRepaired) {
@@ -1938,7 +1951,7 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
   const wrap = { role: 'user', content: `[系统] ${stopDesc}。不要再调用任何工具，立即基于以上所有工具结果给出最终结论：已复现什么、没覆盖什么、下一步建议。` };
   applySteer(); // 收尾请求前再 drain 一次，尽量不把用户最后注入的内容留到回合外
   await refreshLiveConfig(); // 收尾请求也是一次真实请求：按最新配置解析
-  compactNow(); // 收尾请求同样守住上下文预算（token 两级压缩）
+  await compactNow(); // 收尾请求同样守住上下文预算（token 两级压缩）
   const fbody = (withUsage) => JSON.stringify({
     model: liveConfig.model,
     messages: [...convo, wrap],

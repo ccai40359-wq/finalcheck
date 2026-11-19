@@ -6,6 +6,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.24.0] - 2026-11-19
+
+The speed release: long-task context management is rebuilt to match Claude Code. Each step of a long task no longer gets slower and slower, and the AI no longer picks an acceptance tier without asking you.
+
+### Fixed
+
+- **Long tasks kept getting slower**: a promo-video task ran 529 steps over 109 minutes, 99 of them spent waiting on the model. Cleanup actions such as trimming old images and merging index lines were changing early messages on almost every step, so the gateway's prompt cache missed and the whole context had to be processed again. Measured on the real gateway with a context of about 170k tokens: a step took 4–5 s when the cache hit, 15–17 s when it missed, and 20–26 s the first time. The conversation is now append-only and cleanup happens occasionally, in batches. In a simulated 300-step task, early messages are now changed 11 times instead of on almost every step.
+- **The AI picked L1 / L2 / L3 without asking**: a tier the model fills into the tool arguments by itself no longer counts. Acceptance starts only once you have stated a tier in the conversation or the AI has asked you first.
+
+### Improved
+
+- **In-task speed cap**: once the context passes 160k tokens, older tool results are folded in one go into one-line index entries (which file was read, which command was run). The 12 most recent results and the conversation text stay verbatim. Previously, a 1M-window model only cleaned up at about 980k tokens, so every step carried the entire history.
+- **Near the context limit, the AI writes its own handoff summary** (as Claude Code does): the summary covers the requirements, what is done, key findings, current progress and next steps. Your original words are kept verbatim; previously only their first 60 characters survived. If the summary fails, a local summary is used instead and the task keeps going.
+- **The AI batches its work**: independent file reads, screenshots and commands go out together in one reply. Visual edits now render several frames, review them together and fix everything at once, instead of looping "change one thing, look at one frame". At most 4 image messages stay in context at once; past that, they are trimmed back to 2 in one go.
+
 ## [0.23.0] - 2026-11-19
 
 The "continue" release: after a task is interrupted, saying "continue" lets the AI pick up where it left off, the way Claude Code does, instead of exploring from scratch; what the model says and thinks is saved with every step, so closing the app midway no longer loses it.

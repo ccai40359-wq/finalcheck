@@ -66,17 +66,21 @@ test('auditNextSteps：高危发现指向具体方法论编号；大仓库建议
   assert.equal(auditNextSteps({ findings: [], gates: { gaps: [] } }, { codeFiles: 10 }).length, 0);
 });
 
-test('appendToolImages：未开视觉只给文字；开了就附图，且只保留最近 2 条图片消息', () => {
+test('appendToolImages：未开视觉只给文字；开了就附图，图片消息超过 4 条时一次收回到 2 条（成批改，保护前缀缓存）', () => {
   const mk = (n) => [{ trace: { tool: 'view_image' }, images: [{ mime: 'image/png', base64: 'AAA' + n, label: `img${n}` }] }];
   const off = [];
   appendToolImages(off, mk(1), { vision: false });
   assert.equal(typeof off[0].content, 'string');
   assert.match(off[0].content, /没有开启视觉/);
   const convo = [];
-  for (let i = 1; i <= 3; i++) appendToolImages(convo, mk(i), { vision: true });
-  const withImg = convo.filter((m) => Array.isArray(m.content) && m.content.some((p) => p.type === 'image_url'));
-  assert.equal(withImg.length, 2, '最早的一张图被替换成文字占位');
+  const withImg = () => convo.filter((m) => Array.isArray(m.content) && m.content.some((p) => p.type === 'image_url')).length;
+  for (let i = 1; i <= 4; i++) appendToolImages(convo, mk(i), { vision: true });
+  assert.equal(withImg(), 4, '4 条以内不改动更早的消息');
+  appendToolImages(convo, mk(5), { vision: true });
+  assert.equal(withImg(), 2, '超过上限一次收回到 2 条');
   assert.match(JSON.stringify(convo[0].content), /较早的图片已从上下文移除/);
+  appendToolImages(convo, mk(6), { vision: true });
+  assert.equal(withImg(), 3, '收回后只追加，不再每次改动');
   assert.equal(appendToolImages([], [{ trace: { tool: 'read_file' } }], { vision: true }), false);
 });
 
@@ -116,4 +120,31 @@ test('每轮思考与工具前说的话挂到本轮第一条工具记录上（�
   const out = await runAgentTurn({ config: { baseUrl: 'https://mock/v1', apiKey: 'k', model: 'm' }, messages: [{ role: 'user', content: 'x' }], tools: { noop: async () => ({ ok: true }) }, fetchImpl });
   assert.equal(out.trace[0].thought, '先确认目录结构');
   assert.equal(out.trace[0].say, '我先看看目录。');
+});
+
+test('回合内速度上限：超过上限只折叠旧工具结果（最近 12 条原文），用户最初的任务要求不被摘要掉', async () => {
+  const bodies = [];
+  let calls = 0;
+  const sse = (chunks) => new Response(chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`).join('') + 'data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } });
+  const fetchImpl = async (_u, init) => {
+    bodies.push(JSON.parse(init.body));
+    calls++;
+    if (calls <= 24) return sse([{ choices: [{ delta: { tool_calls: [{ index: 0, id: `r${calls}`, function: { name: 'big', arguments: JSON.stringify({ n: calls }) } }] } }] }]);
+    return sse([{ choices: [{ delta: { content: '完成' } }] }]);
+  };
+  const task = '用 remotion 做一个苹果级丝滑的宣传片，节奏 45 秒，结尾放二维码';
+  const out = await runAgentTurn({
+    config: { baseUrl: 'https://mock/v1', apiKey: 'k', model: 'm', contextWindow: 1000000, inTurnTokenCap: 40000 },
+    messages: [{ role: 'user', content: task }],
+    tools: { big: async ({ n }) => ({ n, content: 'x'.repeat(8000) }) },
+    fetchImpl,
+  });
+  assert.match(out.answer, /完成/);
+  const last = bodies.at(-1).messages;
+  const tools = last.filter((m) => m.role === 'tool');
+  const cleaned = tools.filter((m) => /^\[(索引|旧工具结果已清理)/.test(String(m.content)));
+  assert.ok(cleaned.length >= 1, '超过速度上限后旧工具结果被折叠');
+  assert.ok(tools.length - cleaned.length >= 12, '最近 12 条原文保留');
+  assert.ok(last.some((m) => m.role === 'user' && m.content === task), '用户最初的任务要求原样还在');
+  assert.ok(!last.some((m) => String(m.content || '').startsWith('[历史摘要]')), '不触发全面摘要');
 });

@@ -326,10 +326,13 @@ export function registerAgentIpc({
     // 中断后「继续」（2026-11-19 用户定案，对齐 Claude Code）：上一轮被中断且跑过工具 → 把它的完整工具过程
     // （调用 + 真实结果 + 当时说的话）原样放回上下文，AI 直接接着做，不用从头 ls / 读文件。
     // 从库里读：重启 app 之后、渲染层没有内存记录时也成立。
+    let sessionTierAnswered = false; // 本会话之前通过提问卡答过 L1/L2/L3（验收前置闸据此不重复问）
     if (sessionId) {
       try {
         const { replayInterruptedTurn } = await import('../interrupted-replay.mjs');
         const s = await sessions.loadSession(sessionId);
+        sessionTierAnswered = (s.messages || []).some((m) => (m.trace || []).some((x) => (x?.tool || x?.name) === 'ask_user'
+          && /(^|[^A-Za-z0-9])L\s*[123](?![0-9])/i.test(String(x?.result?.answer ?? (typeof x?.result === 'string' ? x.result : '')))));
         const r = replayInterruptedTurn(contextMessages, s.messages);
         if (r.replay) {
           contextMessages = r.messages;
@@ -767,6 +770,8 @@ export function registerAgentIpc({
         repoRoot,
         permissions,
         recordAudit,
+        // 验收前置闸：用户在对话里亲口说过 L1/L2/L3 才算定了档位；模型自己往参数里填的不算（2026-11-19 用户实测）
+        userStatedTier: sessionTierAnswered || (messages || []).some((m) => m?.role === 'user' && /(^|[^A-Za-z0-9])L\s*[123](?![0-9])/i.test(typeof m.content === 'string' ? m.content : JSON.stringify(m.content ?? ''))),
         projectPath: turnProjectPath,
         policy,
         hooksConfig: hooksCfg,

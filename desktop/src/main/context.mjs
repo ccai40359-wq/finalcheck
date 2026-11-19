@@ -280,9 +280,13 @@ function estimateTok(text) {
  * 而是挤进**最早那条**索引行的位置（保持 tool_call_id 对齐，不会产生悬空调用）。
  */
 export const INDEX_MAX_LINES = 300;
+// 成批收口（2026-11-19，对齐 Claude Code 的「保护提示缓存」）：超过上限时一次收到 INDEX_COLLAPSE_TO 条，
+// 而不是每多一条就改写一次最前面的计数行——那样第 300 步之后**每一步**都改动对话前部，
+// 模型网关的前缀缓存每步全部失效（实测 529 步的视频回合后半程越来越慢的原因之一）。
+export const INDEX_COLLAPSE_TO = 150;
 const INDEX_COLLAPSED_MARK = `${INDEX_MARK} ⋯`;
 
-export function microcompact(list, { keepRecentTool = 5 } = {}) {
+export function microcompact(list, { keepRecentTool = 5, maxFold = Infinity } = {}) {
   if (!Array.isArray(list)) return false;
   const toolIdx = [];
   list.forEach((m, i) => { if (m?.role === 'tool') toolIdx.push(i); });
@@ -302,6 +306,7 @@ export function microcompact(list, { keepRecentTool = 5 } = {}) {
   let counterIdx = -1; // 已存在的计数行（至多一条）
   const blankIdx = []; // 纯占位行（`[索引] ⋯`，无计数），可复用为计数行落点
   let prevCollapsed = 0; // 已有计数行累计的次数，必须接着累加
+  let folded = 0; // 本次新折叠的条数（maxFold：成批折叠时只折最老的 N 条）
   for (const i of toolIdx) {
     if (keep.has(i)) continue;
     const old = contentText(list[i]?.content);
@@ -321,6 +326,7 @@ export function microcompact(list, { keepRecentTool = 5 } = {}) {
     }
     // 幂等：已是明细索引行 / 旧占位符 → 保留，明细索引行仍要计入上限
     if (old.startsWith(INDEX_MARK) || old.startsWith(CLEANED_TOOL_PREFIX)) { detailIdx.push(i); continue; }
+    if (folded >= maxFold) continue; // 只折最老的 maxFold 条，较新的原文留到下一批
     const call = calls.get(list[i]?.tool_call_id) || { name: '工具', args: null };
     const icon = TOOL_ICON[call.name] || '·';
     const target = toolTargetOf(call.args, call.name);
@@ -328,12 +334,13 @@ export function microcompact(list, { keepRecentTool = 5 } = {}) {
     const line = `${INDEX_MARK} ${icon} ${call.name}${target ? ' ' + target : ''} (~${tok} tok)`;
     list[i] = { ...list[i], content: line };
     detailIdx.push(i);
+    folded++;
     changed = true;
   }
   // 上限收口（2026-11-17 P1）：明细最多留 INDEX_MAX_LINES - 1 条，其余合并成 1 条计数行。
   // 每条被折叠的 tool 消息仍在原位（正文换成极短占位），所以不会出现悬空的 tool_call_id。
   if (detailIdx.length > INDEX_MAX_LINES - 1) {
-    const collapseCount = detailIdx.length - (INDEX_MAX_LINES - 1);
+    const collapseCount = detailIdx.length - INDEX_COLLAPSE_TO;
     const toCollapse = detailIdx.slice(0, collapseCount);
     // 落点优先级：已有计数行 → 已有占位行 → 最靠后的一条被折叠明细
     const survival = counterIdx >= 0 ? counterIdx : (blankIdx.length ? blankIdx[0] : toCollapse[toCollapse.length - 1]);
@@ -349,12 +356,32 @@ export function microcompact(list, { keepRecentTool = 5 } = {}) {
     if (survival != null && survival >= 0) {
       list[survival] = {
         ...list[survival],
-        content: `${INDEX_COLLAPSED_MARK} 其余 ${prevCollapsed + collapseCount} 次调用已折叠（明细保留最近 ${INDEX_MAX_LINES - 1} 条，原文可重跑获取）`
+        content: `${INDEX_COLLAPSED_MARK} 其余 ${prevCollapsed + collapseCount} 次调用已折叠（较早的明细已合并，原文可重跑获取）`
       };
     }
     changed = true;
   }
   return changed;
+}
+
+/**
+ * 成批折叠的规划（2026-11-19）：从最老的未折叠工具结果开始，算出要折几条才能把估算 token 压到 targetTokens 以下。
+ * 最近 keepRecentTool 条永不折。返回 { count, after }：count 交给 microcompact 的 maxFold，after 是折完后的估算值。
+ */
+export function planFold(list, { keepRecentTool = 5, targetTokens = 0, tokensNow = null } = {}) {
+  if (!Array.isArray(list)) return { count: 0, after: 0 };
+  let tokens = Number.isFinite(tokensNow) ? tokensNow : estimateMessagesTokens(list);
+  const toolIdx = [];
+  list.forEach((m, i) => { if (m?.role === 'tool') toolIdx.push(i); });
+  const limit = Math.max(0, toolIdx.length - Math.max(0, keepRecentTool));
+  let count = 0;
+  for (let k = 0; k < limit && tokens > targetTokens; k++) {
+    const text = contentText(list[toolIdx[k]]?.content);
+    if (text.startsWith(INDEX_MARK) || text.startsWith(CLEANED_TOOL_PREFIX)) continue;
+    tokens -= Math.max(0, estimateTokens(text) - 30); // 折成一行索引约 30 token
+    count++;
+  }
+  return { count, after: tokens };
 }
 
 // 统计 microcompact 将会清理的条数（保留区之外、且还没被压成索引行的 tool 消息）。
