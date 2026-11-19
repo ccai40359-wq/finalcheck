@@ -4,7 +4,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { t } from '../i18n/core.mjs';
 import { renderMarkdown } from './md.jsx';
 import { PdfPager } from './PdfPager.jsx';
-import { planPanelLayout, clampPanelWidth } from '../lib/panel-layout.mjs';
+import { planPanelLayout, clampPanelWidth, shouldClosePanel } from '../lib/panel-layout.mjs';
 import { useWindowWidth } from '../lib/use-window-width.mjs';
 
 export const PREVIEW_EXTS = new Set([
@@ -72,13 +72,11 @@ export function ArtifactPanel({ y, artifact, loading, error, onClose, onReload, 
   const widthRef = useRef(width);
   useEffect(() => { widthRef.current = width; }, [width]);
 
-  // 布局档位：窗口放得下就并排，放不下就改浮层覆盖（正文保持完整宽度）。
-  // 旧逻辑上限是「窗口 72%」，1010px 窗口下右栏能占 727px、正文只剩 71px——
-  // 就是用户截图里主区被压没的样子。
+  // 宽度策略：始终并排，但右栏给正文让出位置（不再有浮层/遮罩）。
+  // 旧逻辑上限是「窗口 72%」，1010px 窗口下右栏能占 727px、正文只剩 71px。
   const winW = useWindowWidth();
   const layout = planPanelLayout({ windowWidth: winW, desiredWidth: width });
-  const isSheet = layout.mode === 'sheet';
-  const panelW = isSheet ? layout.width : Math.min(width, layout.maxRail || width);
+  const panelW = layout.width;
 
   const startDrag = (e) => {
     e.preventDefault();
@@ -86,8 +84,8 @@ export function ArtifactPanel({ y, artifact, loading, error, onClose, onReload, 
     const startW = widthRef.current;
     const move = (ev) => {
       const raw = Math.max(0, startW + (startX - ev.clientX));
-      if (!isSheet && raw < 220) { cleanup(); onClose?.(); return; } // 并排拖到头 = 关上
-      setWidth(clampPanelWidth({ windowWidth: winW, width: raw, mode: layout.mode }));
+      if (shouldClosePanel(raw)) { cleanup(); onClose?.(); return; } // 拖到头 = 关上
+      setWidth(clampPanelWidth({ windowWidth: winW, width: raw }));
     };
     const cleanup = () => {
       window.removeEventListener('mousemove', move);
@@ -102,27 +100,11 @@ export function ArtifactPanel({ y, artifact, loading, error, onClose, onReload, 
     window.addEventListener('mouseup', up);
   };
   return (
-    <>
-      {/* 浮层模式的遮罩：一眼看出「这是盖在正文上的」而不是布局错位；点一下收起 */}
-      {isSheet && (
-        <div
-          onClick={() => onClose?.()}
-          data-panel-scrim="1"
-          className="absolute inset-0 z-20 bg-black/60 backdrop-blur-[2px] animate-[fadeIn_.15s_ease]"
-          aria-hidden="true"
-        />
-      )}
-      <aside
-        style={{ width: panelW }}
-        data-panel-mode={layout.mode}
-        className={
-          isSheet
-            // 浮层：明显浮起（更重的左侧阴影 + 圆角左边 + 金色边线），
-            // 一眼能看出是「盖在正文上的抽屉」，不是把正文挤窄的分栏
-            ? 'absolute right-0 top-2 bottom-2 z-30 border border-gold/25 rounded-l-2xl bg-panel flex flex-col min-h-0 shadow-[-32px_0_80px_rgba(0,0,0,0.7)] animate-[fadeIn_.18s_ease]'
-            : 'shrink-0 border-l border-edge bg-panel flex flex-col min-h-0 relative'
-        }
-      >
+    <aside
+      style={{ width: panelW }}
+      data-panel-mode="rail"
+      className="shrink-0 border-l border-edge bg-panel flex flex-col min-h-0 relative"
+    >
       <div onMouseDown={startDrag} onDoubleClick={() => setWidth(560)} title={t('拖动调整宽度（拖到头关闭，双击复位）')}
         className="group absolute left-0 top-0 h-full w-2 -ml-1 cursor-col-resize z-10">
         <div className="w-px h-full mx-auto bg-edge/70 group-hover:bg-gold/60 transition-colors" />
@@ -173,6 +155,5 @@ export function ArtifactPanel({ y, artifact, loading, error, onClose, onReload, 
               )}
       </div>
     </aside>
-    </>
   );
 }
