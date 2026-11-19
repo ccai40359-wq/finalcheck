@@ -40,15 +40,15 @@ function AttachmentChip({ item, onRemove }) {
       <div className="group relative shrink-0">
         {src
           ? <img src={src} alt={item.name || ''} title={item.name || ''} className="h-9 w-9 rounded-lg object-cover border border-edge/60 hover:border-gold/50 transition-colors" onError={handleImgError} />
-          : <span title={item.name || ''} className="h-9 w-9 rounded-lg bg-white/[0.04] border border-edge/60 flex items-center justify-center text-goldDeep">▤</span>}
+          : <span title={item.name || ''} className="h-9 w-9 rounded-lg bg-lift/[0.04] border border-edge/60 flex items-center justify-center text-goldDeep">▤</span>}
         <button onClick={onRemove} title={t('移除附件')}
           className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-black/80 border border-edge text-[9px] leading-none text-mute/80 opacity-0 group-hover:opacity-100 hover:text-red-400 transition-opacity">✕</button>
       </div>
     );
   }
   return (
-    <div className="group inline-flex items-center gap-2 rounded-xl bg-white/[0.04] border border-edge/60 pl-1.5 pr-2 py-1 text-[11px] transition-colors duration-200 hover:border-edge">
-      <span className="h-7 w-7 rounded-lg bg-white/[0.04] flex items-center justify-center text-goldDeep">▤</span>
+    <div className="group inline-flex items-center gap-2 rounded-xl bg-lift/[0.04] border border-edge/60 pl-1.5 pr-2 py-1 text-[11px] transition-colors duration-200 hover:border-edge">
+      <span className="h-7 w-7 rounded-lg bg-lift/[0.04] flex items-center justify-center text-goldDeep">▤</span>
       <span className="max-w-[170px] truncate text-ink/80">{item.name}</span>
       <button onClick={onRemove} title={t('移除附件')} className="text-mute/50 hover:text-red-400 transition-colors duration-200">✕</button>
     </div>
@@ -243,7 +243,7 @@ export default function Composer({
                   className="shrink-0 rounded-md border border-gold/40 px-2 py-0.5 text-[10px] text-goldSoft hover:bg-gold/15 transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent">Steer</button>
                 <button type="button" data-testid="queue-edit" onClick={() => moveQueueItemToInput(item.id)}
                   title={t('取回编辑（从队列移除，内容放回输入框）')}
-                  className="shrink-0 rounded-md p-1 text-mute/55 hover:text-goldSoft hover:bg-white/5 transition-colors">
+                  className="shrink-0 rounded-md p-1 text-mute/55 hover:text-goldSoft hover:bg-lift/5 transition-colors">
                   <IconEdit />
                 </button>
                 <button type="button" data-testid="queue-remove" onClick={() => removeQueueItem(item.id)}
@@ -280,12 +280,12 @@ export default function Composer({
             <div className="space-y-1.5 px-3 pt-2.5">
               {pastedBlocks.map((b) => (
                 <div key={b.id} data-testid="pasted-card"
-                  className="overflow-hidden rounded-xl border border-edge bg-white/[0.035]">
+                  className="overflow-hidden rounded-xl border border-edge bg-lift/[0.035]">
                   <div role="button" tabIndex={0}
                     onClick={() => togglePasted(b.id)}
                     onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); togglePasted(b.id); } }}
                     title={b.expanded ? t('收起粘贴文本') : t('展开粘贴文本')}
-                    className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left cursor-pointer hover:bg-white/5 transition-colors">
+                    className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left cursor-pointer hover:bg-lift/5 transition-colors">
                     <IconPaste />
                     <span className="shrink-0 text-[11px] text-goldSoft">Pasted text</span>
                     <span className="shrink-0 text-[10px] text-mute/55">{t('{n} 行', { n: b.lines })}</span>
@@ -299,7 +299,7 @@ export default function Composer({
                   </div>
                   {b.expanded && (
                     <pre data-testid="pasted-text-full"
-                      className="max-h-[40vh] overflow-auto whitespace-pre-wrap break-words border-t border-edge bg-[#0a0a0c] px-3 py-2 font-mono text-[12px] leading-6 text-ink/80">
+                      className="max-h-[40vh] overflow-auto whitespace-pre-wrap break-words border-t border-edge bg-base px-3 py-2 font-mono text-[12px] leading-6 text-ink/80">
                       {b.text}
                     </pre>
                   )}
@@ -334,22 +334,22 @@ export default function Composer({
           {/* 底部工具条：只有图标与文字，没有边框（对齐 ZCode） */}
           <div className="flex items-center gap-0.5 px-2 pb-2">
             <button onClick={pickAttachFiles} title={t('添加文件（也可直接粘贴截图 / 拖拽文件）')}
-              className="shrink-0 h-7 w-7 rounded-lg text-mute/70 hover:text-goldSoft hover:bg-white/[0.06] transition-colors flex items-center justify-center">
+              className="shrink-0 h-7 w-7 rounded-lg text-mute/70 hover:text-goldSoft hover:bg-lift/[0.06] transition-colors flex items-center justify-center">
               <IconPlus />
             </button>
             <div className="relative">
               <button onClick={() => setMenu(menu === 'perm' ? null : 'perm')}
-                className={`inline-flex items-center gap-1.5 text-[11px] rounded-lg px-2 py-1.5 transition-colors hover:bg-white/[0.06] ${permMode === 'full' ? 'text-goldSoft' : 'text-mute hover:text-ink'}`}>
+                className={`inline-flex items-center gap-1.5 text-[11px] rounded-lg px-2 py-1.5 transition-colors hover:bg-lift/[0.06] ${permMode === 'full' ? 'text-goldSoft' : 'text-mute hover:text-ink'}`}>
                 <IconShield />
                 {permMode === 'full' ? t('完全权限') : t('标准审批')}
                 <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M6 9l6 6 6-6" /></svg>
               </button>
               {menu === 'perm' && (
                 <div className="glass-pop absolute bottom-full mb-1.5 left-0 w-60 rounded-2xl p-1.5 z-40">
-                  <button onClick={() => changeMode('ask')} className={`w-full text-left px-2.5 py-2 rounded-lg transition-colors text-xs ${permMode === 'ask' ? 'bg-gold/10 text-goldSoft' : 'hover:bg-white/5'}`}>
+                  <button onClick={() => changeMode('ask')} className={`w-full text-left px-2.5 py-2 rounded-lg transition-colors text-xs ${permMode === 'ask' ? 'bg-gold/10 text-goldSoft' : 'hover:bg-lift/5'}`}>
                     {t('标准审批')}<span className="block text-[10px] text-mute mt-0.5">{t('执行命令前每次确认（默认）')}</span>
                   </button>
-                  <button onClick={() => changeMode('full')} className={`w-full text-left px-2.5 py-2 rounded-lg transition-colors text-xs ${permMode === 'full' ? 'bg-gold/10 text-goldSoft' : 'hover:bg-white/5'}`}>
+                  <button onClick={() => changeMode('full')} className={`w-full text-left px-2.5 py-2 rounded-lg transition-colors text-xs ${permMode === 'full' ? 'bg-gold/10 text-goldSoft' : 'hover:bg-lift/5'}`}>
                     {t('完全权限')}<span className="block text-[10px] text-mute mt-0.5">{t('不再询问；灾难命令仍会被拦截')}</span>
                   </button>
                 </div>
@@ -365,7 +365,7 @@ export default function Composer({
                   onMouseLeave={() => setMenu((m) => (m === 'context' ? null : m))}
                   onClick={() => setMenu(menu === 'context' ? null : 'context')}
                   title={t('上下文使用情况')}
-                  className="p-1 rounded-full hover:bg-white/5 transition-colors">
+                  className="p-1 rounded-full hover:bg-lift/5 transition-colors">
                   <ContextRing percent={ctxStats?.measured?.prompt ? Math.min(100, (ctxStats.measured.prompt / ctxStats.window) * 100) : (ctxStats?.percent || 0)} />
                 </button>
                 {menu === 'context' && (
@@ -395,7 +395,7 @@ export default function Composer({
                               <span>{busy ? t('估算 {pct}%（下一轮请求） · 本轮进行中，暂无实测', { pct: pct.toFixed(1) }) : t('估算 {pct}%（下一轮请求）', { pct: pct.toFixed(1) })}</span>
                             )}
                           </div>
-                          <div className="mt-1.5 h-1.5 rounded-full bg-white/10 overflow-hidden">
+                          <div className="mt-1.5 h-1.5 rounded-full bg-lift/10 overflow-hidden">
                             <div className="h-full rounded-full bg-goldSoft transition-all duration-300" style={{ width: `${pct}%` }} />
                           </div>
                           <div className="mt-1 text-[10px] leading-relaxed text-mute/40">
@@ -444,7 +444,7 @@ export default function Composer({
                   <div className="glass-pop absolute bottom-full mb-2 right-0 w-[300px] rounded-2xl z-50 pop-in">
                     {/* 供应商头：点一下切到供应商列表 */}
                     <button onClick={() => setProviderMenu(!providerMenu)}
-                      className="w-full flex items-center gap-2 px-3 py-2.5 hover:bg-white/5 transition-colors text-left">
+                      className="w-full flex items-center gap-2 px-3 py-2.5 hover:bg-lift/5 transition-colors text-left">
                       <span className="w-5 h-5 rounded-md bg-gold/15 border border-gold/40 flex items-center justify-center text-[11px] text-goldSoft">⌬</span>
                       <span className="text-[13px] text-ink/90 truncate">{activeProv?.name || t('未配置供应商')}</span>
                       <span className="text-[9px] px-1 py-0.5 rounded border border-edge text-mute/55">API</span>
@@ -455,7 +455,7 @@ export default function Composer({
                     <div className="max-h-56 overflow-y-auto px-1.5 pb-1">
                       {activeModelEntries.map((m) => (
                         <button key={m.id} onClick={() => chooseModel(activeProv.id, m.id)}
-                          className={`w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-xs font-mono transition-colors ${m.id === activeModel ? 'bg-white/[0.06] text-ink' : 'text-ink/75 hover:bg-white/5'}`}>
+                          className={`w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-xs font-mono transition-colors ${m.id === activeModel ? 'bg-lift/[0.06] text-ink' : 'text-ink/75 hover:bg-lift/5'}`}>
                           <span className="truncate">{m.id}</span>
                           {(m.vision || /vision|vl\b/i.test(m.id)) ? <span className="text-[9px] px-1.5 py-0.5 rounded-full border border-edge text-mute/60 font-sans shrink-0">Vision</span> : null}
                           {m.id === activeModel ? <span className="ml-auto text-jade shrink-0">✓</span> : null}
@@ -493,7 +493,7 @@ export default function Composer({
                         {providers.length === 0 && <div className="px-2.5 py-3 text-[11px] text-mute">{t('还没有供应商，请到「模型设置」添加')}</div>}
                         {providers.map((p) => (
                           <button key={p.id} onClick={() => pickProvider(p)}
-                            className={`w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-xs transition-colors ${p.id === activeProv?.id ? 'bg-white/[0.06] text-ink' : 'text-ink/75 hover:bg-white/5'}`}>
+                            className={`w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-xs transition-colors ${p.id === activeProv?.id ? 'bg-lift/[0.06] text-ink' : 'text-ink/75 hover:bg-lift/5'}`}>
                             <span className="truncate">{p.name}</span>
                             <span className="text-[9px] px-1 py-0.5 rounded border border-edge text-mute/50">API</span>
                             {(p.models || []).length === 0 ? <span className="text-[9px] text-amber-400/80">{t('无模型')}</span> : null}
@@ -501,7 +501,7 @@ export default function Composer({
                           </button>
                         ))}
                         <button onClick={() => { setMenu(null); onGoSettings(); }}
-                          className="w-full text-left px-2.5 py-2 mt-1 rounded-lg text-xs text-mute hover:text-goldSoft hover:bg-white/5 border-t border-edge/60">
+                          className="w-full text-left px-2.5 py-2 mt-1 rounded-lg text-xs text-mute hover:text-goldSoft hover:bg-lift/5 border-t border-edge/60">
                           Manage models
                         </button>
                       </div>
@@ -523,7 +523,7 @@ export default function Composer({
                   </button>
                 )}
                 <button onClick={stop} disabled={stopping} title={stopping ? t('正在中断，请稍候') : t('停止本回合')}
-                  className={`ml-1.5 shrink-0 h-7 rounded-[9px] flex items-center justify-center gap-1 transition-colors duration-200 ${stopping ? 'px-2 bg-gold/60 text-[#0a0a0c] cursor-not-allowed' : 'w-7 bg-gold hover:bg-goldSoft text-[#0a0a0c]'}`}>
+                  className={`ml-1.5 shrink-0 h-7 rounded-[9px] flex items-center justify-center gap-1 transition-colors duration-200 ${stopping ? 'px-2 bg-gold/60 text-[rgb(var(--fc-on-gold))] cursor-not-allowed' : 'w-7 bg-gold hover:bg-goldSoft text-[rgb(var(--fc-on-gold))]'}`}>
                   {stopping ? (
                     <>
                       <svg className="animate-spin" width="10" height="10" viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="6" r="4.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeDasharray="6 4" /></svg>
@@ -536,7 +536,7 @@ export default function Composer({
               </>
             ) : (
               <button onClick={() => send()} disabled={!y || (!input.trim() && !pastedBlocks.length)} title={t('发送')}
-                className="ml-1.5 shrink-0 h-7 w-7 rounded-[9px] flex items-center justify-center bg-gold text-[#141008] hover:bg-goldSoft disabled:opacity-60 transition-colors duration-200">
+                className="ml-1.5 shrink-0 h-7 w-7 rounded-[9px] flex items-center justify-center bg-gold text-[rgb(var(--fc-on-gold))] hover:bg-goldSoft disabled:opacity-60 transition-colors duration-200">
                 <IconSend />
               </button>
             )}
@@ -553,17 +553,17 @@ export default function Composer({
                     onMouseDown={(e) => e.preventDefault()}
                     onClick={() => chooseSlash(item)}
                     onMouseEnter={() => setSlashIndex(idx)}
-                    className={`w-full flex items-center gap-2 px-2.5 py-[7px] rounded-lg transition-colors ${idx === Math.min(slashIndex, slashItems.length - 1) ? 'bg-gold/12' : 'hover:bg-white/5'}`}>
+                    className={`w-full flex items-center gap-2 px-2.5 py-[7px] rounded-lg transition-colors ${idx === Math.min(slashIndex, slashItems.length - 1) ? 'bg-gold/12' : 'hover:bg-lift/5'}`}>
                     <span className={`shrink-0 font-mono text-[12px] ${item.type === 'command' ? 'text-goldSoft' : 'text-jade'}`}>/{item.name}</span>
                     <span className="min-w-0 flex-1 truncate text-[11px] text-ink/70">
                       {item.type === 'skill' && lang === 'en' ? (item.description || t(item.cn)) : t(item.cn)}
                     </span>
-                    <span className={`shrink-0 text-[9px] px-1.5 py-0.5 rounded-full ${item.type === 'command' ? 'text-goldDeep/80 bg-gold/10' : 'text-mute/50 bg-white/[0.05]'}`}>
+                    <span className={`shrink-0 text-[9px] px-1.5 py-0.5 rounded-full ${item.type === 'command' ? 'text-goldDeep/80 bg-gold/10' : 'text-mute/50 bg-lift/[0.05]'}`}>
                       {item.type === 'command' ? t('命令') : t('技能')}
                     </span>
                   </button>
                 ))}
-                <div className="px-3 py-1.5 text-[10px] text-mute/35 border-t border-white/[0.06] mt-1">
+                <div className="px-3 py-1.5 text-[10px] text-mute/35 border-t border-lift/[0.06] mt-1">
                   {t('↑↓ 选择 · Enter 确认 · Esc 关闭')}
                 </div>
               </div>

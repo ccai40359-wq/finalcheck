@@ -45,14 +45,15 @@ export function IconPlus() {
 }
 
 // 上下文用量：只有一个小圆圈（hover 看明细）；颜色按占用率变化
+// 颜色走 CSS 变量，随主题切换（浅色下自动换成深一档，否则白底上看不见）
 export function ContextRing({ percent = 0 }) {
   const p = Math.max(0, Math.min(100, Number(percent) || 0));
   const r = 7.5;
   const c = 2 * Math.PI * r;
-  const color = p >= 85 ? '#f87171' : p >= 60 ? '#fbbf24' : '#34d399';
+  const color = p >= 85 ? 'rgb(var(--fc-red-text))' : p >= 60 ? 'rgb(var(--fc-amber-text))' : 'rgb(var(--fc-emerald-text))';
   return (
     <svg width="20" height="20" viewBox="0 0 20 20" className="block">
-      <circle cx="10" cy="10" r={r} fill="none" stroke="#3a3a42" strokeWidth="2.5" />
+      <circle cx="10" cy="10" r={r} fill="none" stroke="rgb(var(--fc-edge))" strokeWidth="2.5" />
       <circle cx="10" cy="10" r={r} fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round"
         strokeDasharray={`${Math.max(0.6, (p / 100) * c)} ${c}`} transform="rotate(-90 10 10)" />
     </svg>

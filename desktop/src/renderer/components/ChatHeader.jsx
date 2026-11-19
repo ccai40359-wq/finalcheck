@@ -17,7 +17,7 @@ export default function ChatHeader({
         <span className="font-kai text-sm text-goldSoft truncate">{activeTitle || 'FinalCheck'}</span>
         {(() => { const cur = sessions.find((x) => x.id === activeId); return cur?.archived ? (
           <button onClick={() => onArchiveSession(cur, activeProjectId)} title={t('这条会话已归档（历史和记忆都还在），点一下恢复')}
-            className="ml-2 shrink-0 rounded-full border border-white/10 px-2 py-0.5 text-[10px] text-mute/70 hover:text-goldSoft hover:border-gold/40 transition-colors">{t('归档')}</button>
+            className="ml-2 shrink-0 rounded-full border border-lift/10 px-2 py-0.5 text-[10px] text-mute/70 hover:text-goldSoft hover:border-gold/40 transition-colors">{t('归档')}</button>
         ) : null; })()}
         {busy && <span className="ml-3 text-[11px] text-mute">{t('思考中…')}</span>}
       </div>

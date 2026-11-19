@@ -9,6 +9,7 @@ app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion,Wi
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { readdir, mkdir, stat, copyFile, unlink, writeFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import * as sessions from './sessions.mjs';
 import * as projects from './projects.mjs';
 import { loadHooksConfig } from './hooks.mjs';
@@ -181,6 +182,16 @@ let logFile = null;
 const writeLog = (line) => { if (logFile) void appendLogLine(logFile, line); };
 installProcessGuards({ proc: process, getWin: () => win, log: writeLog });
 
+// 启动期读一次主题：窗口底板色要用（config.json 由 configStore 管理，但那时还没 ready）。
+// 读不到/解析失败一律按深色——与 normalizeConfig 的默认值保持一致。
+function startupTheme() {
+  try {
+    const f = process.env.FINALCHECK_CONFIG_FILE || path.join(DATA_ROOT, 'config.json');
+    const raw = JSON.parse(readFileSync(f, 'utf8'));
+    return raw?.theme === 'light' ? 'light' : 'dark';
+  } catch { return 'dark'; }
+}
+
 function createWindow() {
   win = new BrowserWindow({
     width: 1280, height: 820, minWidth: 980,
@@ -188,7 +199,9 @@ function createWindow() {
     // （自动化跑批/长任务验收用——窗口是真实的，只是不弹到用户面前）
     show: process.env.FINALCHECK_WINDOW_BG !== '1',
     title: 'FinalCheck',
-    backgroundColor: '#0a0a0c',
+    // 窗口底板色：跟随主题，否则浅色主题启动/缩放时会闪一下黑边。
+    // 这里读盘上的 config.json（同步、启动期一次），拿不到就按深色兜底。
+    backgroundColor: startupTheme() === 'light' ? '#f7f5f0' : '#0a0a0c',
     autoHideMenuBar: true,
     frame: false, // 自绘标题栏（用户：原生标题栏丑）
     icon: APP_ICON, // 任务栏/窗口图标：build/icon.ico（由 logo 生成，打包后 exe 同源）

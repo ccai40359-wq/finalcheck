@@ -54,5 +54,5 @@ test('UsagePage/SettingsPage/App：running 状态已接线（自动刷新开关�
 
   const app = await readFile(path.join(ROOT, 'desktop/src/renderer/App.jsx'), 'utf8');
   assert.match(app, /const anyRunning = Object\.values\(runningIds\)\.some\(Boolean\);/);
-  assert.match(app, /<SettingsPage onBack=\{\(\) => setPage\('chat'\)\} running=\{anyRunning\}/);
+  assert.match(app, /<SettingsPage[\s\S]{0,200}?onBack=\{\(\) => setPage\('chat'\)\}[\s\S]{0,200}?running=\{anyRunning\}/);
 });

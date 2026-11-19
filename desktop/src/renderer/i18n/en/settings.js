@@ -26,6 +26,18 @@ export const EN_SETTINGS = {
   '已选': 'Selected',
   '这里只影响按钮、菜单、表单与提示等界面文案；AI 回复和报告使用你提问时的语言，不随这里切换。': 'This only affects interface text such as buttons, menus, forms and hints. AI replies and reports use the language you write in and do not follow this setting.',
 
+  // 外观页（深色 / 浅色两套主题）
+  '外观': 'Appearance',
+  '深色': 'Dark',
+  '浅色': 'Light',
+  '墨黑鎏金：暗底金字，长时间看不刺眼。': 'Ink and gold: dark background with gold accents, easy on the eyes over long sessions.',
+  '宣纸暖白：亮底深字，白天或投影时更清楚。': 'Warm paper: light background with dark text, clearer in daylight or on a projector.',
+  '深色（墨黑鎏金）与浅色（宣纸暖白）两套主题；切换立即生效。': 'Two themes: dark (ink and gold) and light (warm paper). Switching takes effect immediately.',
+  '主题只影响界面配色，不改动任何代码、报告与导出的文件内容。标题栏右上角的 ☀/☾ 也能随时切换。': 'The theme only changes interface colours. It does not touch any code, report or exported file. The ☀/☾ button in the title bar also switches at any time.',
+  '切换到深色主题': 'Switch to the dark theme',
+  '切换到浅色主题': 'Switch to the light theme',
+  '底 · 面 · 字 · 金': 'surface · panel · text · gold',
+
   // Agent / 运行时
   'Agent / 运行时': 'Agent / Runtime',
   'Sandbox 管路径与命令边界，Tool concurrency 管同时跑几个工具。': 'Sandbox controls path and command boundaries, and Tool concurrency controls how many tools run at once.',

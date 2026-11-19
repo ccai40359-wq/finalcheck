@@ -32,7 +32,7 @@ function metaOf(status) {
 
 // 分割线用 1px 底色条，而不是 border：整卡只保留最外层一条边框（用户要求「最多一个框」）。
 function Separator() {
-  return <div role="presentation" aria-hidden="true" className="h-px shrink-0 bg-white/[0.06]" />;
+  return <div role="presentation" aria-hidden="true" className="h-px shrink-0 bg-lift/[0.06]" />;
 }
 
 function ChevronIcon({ collapsed }) {
@@ -132,8 +132,8 @@ export default function TodoCard({
   const completed = list.filter((it) => it.status === 'done');
   const countText = `${summary.done}/${summary.total}`;
   const rootCls = pinned
-    ? `pointer-events-auto flex w-full max-w-[320px] min-h-0 max-h-full flex-col overflow-hidden rounded-xl border border-gold/35 bg-[#0b0b0c] shadow-[0_12px_36px_rgba(0,0,0,0.55)]`
-    : `my-3 flex overflow-hidden rounded-xl border border-gold/35 bg-[#0b0b0c] animate-[fadeIn_.2s_ease] motion-reduce:animate-none ${
+    ? `pointer-events-auto flex w-full max-w-[320px] min-h-0 max-h-full flex-col overflow-hidden rounded-xl border border-gold/35 bg-base shadow-[0_12px_36px_rgba(0,0,0,0.55)]`
+    : `my-3 flex overflow-hidden rounded-xl border border-gold/35 bg-base animate-[fadeIn_.2s_ease] motion-reduce:animate-none ${
       collapsed ? '' : 'max-h-[420px] flex-col'
     }`;
 
@@ -166,7 +166,7 @@ export default function TodoCard({
           aria-expanded={!collapsed} aria-controls={contentId}
           aria-label={collapsed ? t('展开验收单') : t('收起验收单')}
           title={collapsed ? t('展开验收单') : t('收起验收单')}
-          className="-mr-1 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[5px] text-mute/55 transition-colors motion-reduce:transition-none hover:bg-white/[0.06] hover:text-goldSoft focus-visible:bg-white/[0.10] focus-visible:text-goldSoft focus-visible:shadow-[inset_0_0_0_1px_rgba(227,197,107,0.55)] focus-visible:outline-none">
+          className="-mr-1 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[5px] text-mute/55 transition-colors motion-reduce:transition-none hover:bg-lift/[0.06] hover:text-goldSoft focus-visible:bg-lift/[0.10] focus-visible:text-goldSoft focus-visible:shadow-[inset_0_0_0_1px_rgba(227,197,107,0.55)] focus-visible:outline-none">
           <ChevronIcon collapsed={collapsed} />
         </button>
       </div>
@@ -192,7 +192,7 @@ export default function TodoCard({
             <span className="shrink-0 text-[10.5px] tracking-[0.06em] text-mute/45">{t('进度')}</span>
             <div role="progressbar" aria-label={t('进度')} aria-valuemin={0} aria-valuemax={Math.max(summary.total, 1)}
               aria-valuenow={summary.done} data-testid="todo-progress-bar"
-              className="h-[3px] min-w-0 flex-1 overflow-hidden rounded-full bg-white/[0.07]">
+              className="h-[3px] min-w-0 flex-1 overflow-hidden rounded-full bg-lift/[0.07]">
               <div className="h-full rounded-full bg-jade/75 transition-[width] duration-300 ease-out motion-reduce:transition-none"
                 style={{ width: `${summary.percent}%` }} />
             </div>
@@ -205,7 +205,7 @@ export default function TodoCard({
               <div className="shrink-0">
                 <button type="button" onClick={() => setShowDone((v) => !v)} aria-expanded={showDone}
                   aria-label={showDone ? t('收起已完成条目') : t('展开已完成条目')}
-                  className="flex min-h-6 w-full items-center gap-1.5 px-3.5 py-[6px] text-left text-[10.5px] tabular-nums text-mute/60 transition-colors hover:bg-white/[0.03] hover:text-mute/85 focus-visible:bg-white/[0.06] focus-visible:text-mute/85 focus-visible:outline-none">
+                  className="flex min-h-6 w-full items-center gap-1.5 px-3.5 py-[6px] text-left text-[10.5px] tabular-nums text-mute/60 transition-colors hover:bg-lift/[0.03] hover:text-mute/85 focus-visible:bg-lift/[0.06] focus-visible:text-mute/85 focus-visible:outline-none">
                   <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                     strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"
                     className={`shrink-0 transition-transform duration-150 ${showDone ? '-rotate-90' : ''}`}>
@@ -281,7 +281,7 @@ export function TodoPanel({ items = [], error = null, sessionId = null, live = t
         <button type="button" data-testid="todo-chip" ref={chipRef} onClick={handleToggle}
           data-done={summary.done} data-total={summary.total}
           aria-controls={bodyId} aria-expanded="false" aria-label={t('展开验收单')} title={t('展开验收单')}
-          className="pointer-events-auto inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full border border-gold/35 bg-[#0b0b0c]/95 px-2.5 text-[11px] leading-none text-goldSoft shadow-[0_6px_20px_rgba(0,0,0,0.45)] backdrop-blur-sm transition-colors motion-reduce:transition-none hover:border-gold/70 hover:bg-[#141210]/95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold/60 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0a0a0c]">
+          className="pointer-events-auto inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full border border-gold/35 bg-base/95 px-2.5 text-[11px] leading-none text-goldSoft shadow-[0_6px_20px_rgba(0,0,0,0.45)] backdrop-blur-sm transition-colors motion-reduce:transition-none hover:border-gold/70 hover:bg-cardHover/95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold/60 focus-visible:ring-offset-2 focus-visible:ring-offset-base">
           <span aria-hidden="true" className="inline-block h-2 w-2 shrink-0 rounded-[2px] bg-gold/50" />
           <span className="font-medium tracking-[0.12em]">{t('验收单')}</span>
           <span className="tabular-nums text-goldSoft/85">{summary.done}/{summary.total}</span>
@@ -308,7 +308,7 @@ export function TodoHistoryRow({ msg }) {
   return (
     <div data-testid="todo-history" aria-label={label} title={error || summary.firstTask || label}
       className="my-2 flex min-w-0 items-center gap-2 text-[11px] leading-relaxed text-mute/35">
-      <span aria-hidden="true" className="inline-block h-[3px] w-3 shrink-0 rounded-full bg-white/10" />
+      <span aria-hidden="true" className="inline-block h-[3px] w-3 shrink-0 rounded-full bg-lift/10" />
       <span className="shrink-0 tracking-[0.12em]">{t('验收单')}</span>
       <span className="shrink-0 tabular-nums">{summary.done}/{summary.total}</span>
       {summary.firstTask ? <span className="min-w-0 truncate">{summary.firstTask}</span> : null}

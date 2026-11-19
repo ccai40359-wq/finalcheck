@@ -15,6 +15,9 @@ import { buildSendHistory } from './lib/interrupted-digest.mjs';
 // 双语：t() 在英文模式查词典、中文模式原样返回；useLanguage() 只负责切换语言时触发重渲染
 import { t, setLanguage, resolveLanguage } from './i18n/core.mjs';
 import { useLanguage } from './i18n/index.jsx';
+// 主题：dark（墨黑鎏金，默认）/ light（宣纸暖白）。颜色本体在 styles.css 的 CSS 变量里，
+// 这里只管状态、持久化与落到 <html data-theme>。
+import { readCachedTheme, writeCachedTheme, applyThemeToDocument, normalizeTheme, nextTheme } from './lib/theme.mjs';
 import {
   modelIdsOf, nextQueueId, nextPasteId, countLines, needsFirstRunSetup, prettyTitle, baseName, expandSkill, modelDisplayLabel
 } from './lib/app-helpers.mjs';
@@ -181,6 +184,9 @@ export default function App() {
   const [menu, setMenu] = useState(null); // 'perm' | 'model' | 'context' | null
   const [providerMenu, setProviderMenu] = useState(false); // 模型面板右侧的供应商列表
   const [cfg, setCfg] = useState(null);
+  // 主题：先用本地缓存立即上屏（与 index.html 内联脚本同一个 key，避免闪白），
+  // 等 config.json 读回来再以磁盘为准纠正。
+  const [theme, setThemeState] = useState(() => readCachedTheme(typeof localStorage !== 'undefined' ? localStorage : null));
   // 事件回调（onAgentEvent 等）注册时只捕获一次闭包：要读最新供应商名必须走 ref，
   // 否则切了供应商之后回调里拿到的还是旧列表（模型名显示成内部 id 就是这样发生的）。
   const providersRef = useRef([]);
@@ -726,17 +732,55 @@ export default function App() {
     })();
     // 权限模式 / 模型 / 思考强度：启动时从配置载入（仿 ZCode Full access）
     Promise.resolve(y.getConfig?.())
-      .then((c) => { setCfg(c || null); setPermMode(c?.permissionMode === 'full' ? 'full' : 'ask'); setLanguage(resolveLanguage(c?.language, navigator.language)); })
+      .then((c) => {
+        setCfg(c || null);
+        setPermMode(c?.permissionMode === 'full' ? 'full' : 'ask');
+        setLanguage(resolveLanguage(c?.language, navigator.language));
+        setThemeState(normalizeTheme(c?.theme)); // config.json 是权威值，覆盖本地缓存
+      })
       .catch(() => {})
       .finally(() => setCfgLoaded(true));
     y.skillsList?.().then((list) => setSkills(Array.isArray(list) ? list : [])).catch(() => {});
   }, []);
 
-  // 从设置页回到对话：重新读配置（模型/effort 可能在设置页改过）
+  // 从设置页回到对话：重新读配置（模型/effort/主题可能在设置页改过）
   useEffect(() => {
     if (page !== 'chat' || !y) return;
-    y.getConfig?.().then((c) => { setCfg(c); setPermMode(c?.permissionMode === 'full' ? 'full' : 'ask'); setLanguage(resolveLanguage(c?.language, navigator.language)); }).catch(() => {});
+    y.getConfig?.().then((c) => {
+      setCfg(c);
+      setPermMode(c?.permissionMode === 'full' ? 'full' : 'ask');
+      setLanguage(resolveLanguage(c?.language, navigator.language));
+      setThemeState(normalizeTheme(c?.theme));
+    }).catch(() => {});
   }, [page]);
+
+  // 主题落到 DOM：state 一变就改 <html data-theme>，CSS 变量整棵树跟随。
+  // 同时写一份 localStorage，供下次首屏（index.html 内联脚本）防闪。
+  useEffect(() => {
+    applyThemeToDocument(document, theme);
+    writeCachedTheme(typeof localStorage !== 'undefined' ? localStorage : null, theme);
+  }, [theme]);
+
+  // 切换主题：立即改内存 + DOM，并同步写回 config.json。
+  // 为什么必须写盘：设置页读的是 config.json，标题栏读的是内存——只改内存会让两处
+  // 打架（实测外观页显示「深色已选」而界面是浅色）。主题是纯界面偏好，不值得要求用户
+  // 再点一次「保存」，所以这里和权限模式一样直接落盘。
+  // 注意：落盘不能写在 setState 的 updater 里——StrictMode 会把 updater 跑两遍，等于写两次盘。
+  const persistTheme = (next) => {
+    Promise.resolve(y?.getConfig?.())
+      .then((c) => y?.setConfig?.({ ...(c || {}), theme: next }))
+      .catch(() => { /* 写盘失败：界面已经切了，下次启动回落深色，不阻塞用户 */ });
+  };
+  const setTheme = (value) => {
+    const next = normalizeTheme(value);
+    setThemeState(next);
+    persistTheme(next);
+  };
+  const toggleTheme = () => {
+    const next = nextTheme(theme);
+    setThemeState(next);
+    persistTheme(next);
+  };
 
   // 首次使用向导：没有供应商（或全部 disabled）时显示；有可用供应商后清掉跳过标记
   const needsSetup = needsFirstRunSetup(cfg);
@@ -1590,7 +1634,7 @@ export default function App() {
     <div className="app-root h-full flex flex-col bg-base text-ink">
       {/* 液态玻璃的底：两团极暗的金色/青色光晕（玻璃要有东西可以折射） */}
       <div className="app-ambient" aria-hidden="true" />
-      <TitleBar y={y} />
+      <TitleBar y={y} theme={theme} onToggleTheme={toggleTheme} />
       <div className="relative z-[1] flex-1 min-h-0 flex text-ink">
       {/* ---- 左栏（液态玻璃）：设置/用量页改全屏布局，不露会话侧栏 ---- */}
       {page === 'chat' && <Sidebar
@@ -1632,7 +1676,7 @@ export default function App() {
                   {draftRunners.map((r) => (
                     <button key={r.id} data-ui="draft-runner"
                       onClick={() => { r.session && r.project ? openProjectSession(r.project, r.session) : openSession(r.id); }}
-                      className="px-2 py-0.5 rounded-md bg-white/[0.06] hover:bg-white/[0.12] text-goldSoft truncate max-w-[240px] transition-colors">
+                      className="px-2 py-0.5 rounded-md bg-lift/[0.06] hover:bg-lift/[0.12] text-goldSoft truncate max-w-[240px] transition-colors">
                       {r.label}
                     </button>
                   ))}
@@ -1681,7 +1725,13 @@ export default function App() {
             />
           </>
         ) : (
-          <SettingsPage onBack={() => setPage('chat')} running={anyRunning} initialSection={page === 'usage' ? 'usage' : 'models'} />
+          <SettingsPage
+            onBack={() => setPage('chat')}
+            running={anyRunning}
+            initialSection={page === 'usage' ? 'usage' : 'models'}
+            theme={theme}
+            onThemeChange={setTheme}
+          />
         )}
       </main>
       {showStepPanel ? (

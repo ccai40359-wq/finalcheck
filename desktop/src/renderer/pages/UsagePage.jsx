@@ -275,7 +275,7 @@ function TokenHeatmap({ series }) {
               key={day.date}
               title={`${day.date} · ${fmtTokens(day.total)} tokens`}
               onMouseEnter={(e) => showTip(e, day)}
-              className="rounded-[6px] border border-white/[0.05] transition-[background-color,box-shadow] duration-200 hover:border-gold/40"
+              className="rounded-[6px] border border-lift/[0.05] transition-[background-color,box-shadow] duration-200 hover:border-gold/40"
               style={{
                 width: cell,
                 height: cell,
@@ -305,7 +305,7 @@ function HeatLegend() {
   return (
     <div className="flex items-center gap-1.5 text-[10px] text-mute/40 select-none">
       <span>{t('少')}</span>
-      <span className="h-3 w-3 rounded-[3px] bg-white/[0.05] border border-white/[0.05]" />
+      <span className="h-3 w-3 rounded-[3px] bg-lift/[0.05] border border-lift/[0.05]" />
       <span className="h-3 w-3 rounded-[3px]" style={{ backgroundColor: 'rgba(201,162,39,0.18)' }} />
       <span className="h-3 w-3 rounded-[3px]" style={{ backgroundColor: 'rgba(201,162,39,0.36)' }} />
       <span className="h-3 w-3 rounded-[3px]" style={{ backgroundColor: 'rgba(201,162,39,0.58)' }} />
@@ -731,7 +731,7 @@ export default function UsagePage({ running = false }) {
                 <div className="text-sm text-ink font-medium">{t('每日 Token 趋势')}</div>
                 <div className="mt-0.5 text-[11px] text-mute/60">{t('按模型分色，X 轴日期，Y 轴 token')}</div>
               </div>
-              <div className="flex items-center gap-1 rounded-full bg-white/[0.04] p-0.5">
+              <div className="flex items-center gap-1 rounded-full bg-lift/[0.04] p-0.5">
                 {[7, 30].map((d) => (
                   <button key={d} onClick={() => setDays(d)}
                     className={`rounded-full px-3 py-1 text-[11px] transition-colors duration-200 ${

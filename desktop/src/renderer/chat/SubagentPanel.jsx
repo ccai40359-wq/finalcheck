@@ -95,7 +95,7 @@ function SystemPrompt({ text }) {
           className={`transition-transform duration-200 ${open ? 'rotate-180' : ''}`}><polyline points="6 9 12 15 18 9" /></svg>
       </button>
       {open ? (
-        <pre className="mt-1.5 whitespace-pre-wrap break-words rounded-lg bg-white/[0.03] px-3 py-2 text-[11px] leading-relaxed text-mute/60 font-mono">{text}</pre>
+        <pre className="mt-1.5 whitespace-pre-wrap break-words rounded-lg bg-lift/[0.03] px-3 py-2 text-[11px] leading-relaxed text-mute/60 font-mono">{text}</pre>
       ) : null}
     </div>
   );
@@ -199,12 +199,12 @@ export function SubagentPanel({ target, onClose }) {
   };
 
   return (
-    <aside style={{ width }} className="shrink-0 border-l border-white/[0.07] bg-[#0b0b0e] flex flex-col min-h-0 relative">
+    <aside style={{ width }} className="shrink-0 border-l border-lift/[0.07] bg-panel flex flex-col min-h-0 relative">
       <div onMouseDown={startDrag} onDoubleClick={() => setWidth(620)} title={t('拖动调整宽度（拖到头关闭，双击复位）')}
         className="group absolute left-0 top-0 h-full w-2 -ml-1 cursor-col-resize z-10">
-        <div className="w-px h-full mx-auto bg-white/[0.08] group-hover:bg-gold/60 transition-colors" />
+        <div className="w-px h-full mx-auto bg-lift/[0.08] group-hover:bg-gold/60 transition-colors" />
       </div>
-      <div className="shrink-0 h-11 px-3.5 flex items-center gap-2 border-b border-white/[0.07]">
+      <div className="shrink-0 h-11 px-3.5 flex items-center gap-2 border-b border-lift/[0.07]">
         <span className="text-goldSoft text-sm">◈</span>
         <div className="min-w-0 flex-1">
           <div className="text-xs text-ink/90 truncate">{data?.role || target?.name || t('子代理')}</div>
@@ -219,7 +219,7 @@ export function SubagentPanel({ target, onClose }) {
           </div>
         </div>
         <button onClick={onClose} title={t('关闭')}
-          className="h-7 w-7 rounded-md text-mute hover:text-ink hover:bg-white/5 transition-colors">✕</button>
+          className="h-7 w-7 rounded-md text-mute hover:text-ink hover:bg-lift/5 transition-colors">✕</button>
       </div>
 
       <div ref={bodyRef} onScroll={(e) => { const el = e.currentTarget; stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80; }}
