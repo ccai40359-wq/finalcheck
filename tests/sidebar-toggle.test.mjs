@@ -43,17 +43,20 @@ test('标题栏按钮不抢拖拽区（WebkitAppRegion: no-drag）', () => {
   assert.match(btn, /WebkitAppRegion: 'no-drag'/, 'logo 按钮必须可从拖拽区排除，否则点不动');
 });
 
-test('App：折叠状态持久化到 localStorage，且收起时真的卸载侧栏', () => {
+test('App：折叠状态持久化到 localStorage，侧栏常驻但宽度收到 0', () => {
   assert.match(app, /localStorage\.getItem\('fc\.sidebarCollapsed'\) === '1'/, '读取持久化状态');
   assert.match(app, /localStorage\.setItem\('fc\.sidebarCollapsed'/);
-  assert.match(app, /page === 'chat' && !sidebarCollapsed && <Sidebar/, '收起时必须卸载侧栏（不能只是隐藏）');
+  // 0.27 起改成「始终挂载 + 宽度过渡」：卸载会让主区瞬间跳 212px、且丢失滚动位置
+  assert.match(app, /page === 'chat' && <Sidebar/, '侧栏始终挂载');
+  assert.match(app, /collapsed=\{sidebarCollapsed\}/, '折叠通过 prop 传给侧栏');
   assert.match(app, /sidebarCollapsed=\{sidebarCollapsed\} onToggleSidebar=\{toggleSidebar\}/, 'TitleBar 没接开关');
 });
 
-test('App：侧栏收起时，右栏宽度计算要用 0 而不是 212', () => {
-  assert.match(app, /sidebarWidth=\{sidebarCollapsed \? 0 : 212\}/, '两个面板都要收到真实侧栏宽度');
-  const artifacts = app.match(/sidebarWidth=\{sidebarCollapsed \? 0 : 212\}/g) || [];
-  assert.equal(artifacts.length, 2, 'ArtifactPanel 与 SubagentPanel 都要传');
+test('App：右栏宽度计算跟随侧栏真实像素（过渡期间也不跳）', () => {
+  assert.match(app, /sidebarWidth=\{sidebarPx\}/, '应传实时像素宽度，而不是折叠布尔值');
+  const n = (app.match(/sidebarWidth=\{sidebarPx\}/g) || []).length;
+  assert.equal(n, 2, 'ArtifactPanel 与 SubagentPanel 都要传');
+  assert.match(app, /ResizeObserver/, '靠 ResizeObserver 跟随过渡中的实际宽度');
 });
 
 test('两个面板接收 sidebarWidth 并传给布局函数', () => {
