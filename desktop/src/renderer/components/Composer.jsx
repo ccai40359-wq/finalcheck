@@ -256,7 +256,7 @@ export default function Composer({
           </div>
         )}
         <div
-          className={`glass-composer relative z-30 rounded-[20px] ${dragging ? 'fc-drag' : ''}`}
+          className={`glass-composer relative z-30 rounded-[20px] fc-composer-box ${dragging ? 'fc-drag' : ''}`}
           onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
           onDragLeave={() => setDragging(false)}
           onDrop={async (e) => { e.preventDefault(); setDragging(false); await addFiles(e.dataTransfer?.files); }}
@@ -331,18 +331,21 @@ export default function Composer({
             />
           </div>
 
-          {/* 底部工具条：只有图标与文字，没有边框（对齐 ZCode） */}
-          <div className="flex items-center gap-0.5 px-2 pb-2">
+          {/* 底部工具条：只有图标与文字，没有边框（对齐 ZCode）
+              窄宽度（右栏并排 / 窗口小）时每个元素都必须单行：原来没有 nowrap、没有 min-w-0，
+              420px 以下 "Full access" 和 "Type / for skills" 会被拆成两三行，工具条高度从 36 涨到 50。
+              现在：文字一律 nowrap + 省略号；次要提示在窄容器里隐藏（见 styles.css 的容器查询）。 */}
+          <div className="flex items-center gap-0.5 px-2 pb-2 fc-composer-bar">
             <button onClick={pickAttachFiles} title={t('添加文件（也可直接粘贴截图 / 拖拽文件）')}
               className="shrink-0 h-7 w-7 rounded-lg text-mute/70 hover:text-goldSoft hover:bg-lift/[0.06] transition-colors flex items-center justify-center">
               <IconPlus />
             </button>
-            <div className="relative">
+            <div className="relative fc-shrink-label">
               <button onClick={() => setMenu(menu === 'perm' ? null : 'perm')}
-                className={`inline-flex items-center gap-1.5 text-[11px] rounded-lg px-2 py-1.5 transition-colors hover:bg-lift/[0.06] ${permMode === 'full' ? 'text-goldSoft' : 'text-mute hover:text-ink'}`}>
+                className={`inline-flex items-center gap-1.5 text-[11px] rounded-lg px-2 py-1.5 transition-colors hover:bg-lift/[0.06] whitespace-nowrap ${permMode === 'full' ? 'text-goldSoft' : 'text-mute hover:text-ink'}`}>
                 <IconShield />
-                {permMode === 'full' ? t('完全权限') : t('标准审批')}
-                <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M6 9l6 6 6-6" /></svg>
+                <span className="fc-perm-text">{permMode === 'full' ? t('完全权限') : t('标准审批')}</span>
+                <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="shrink-0"><path d="M6 9l6 6 6-6" /></svg>
               </button>
               {menu === 'perm' && (
                 <div className="glass-pop absolute bottom-full mb-1.5 left-0 w-60 rounded-2xl p-1.5 z-40">
@@ -356,9 +359,9 @@ export default function Composer({
               )}
             </div>
 
-            <span className="text-[10px] text-mute/35 select-none pl-1">{compacting ? t('压缩中…') : t('输入 / 选技能')}</span>
+            <span className="text-[10px] text-mute/35 select-none pl-1 fc-hint-line">{compacting ? t('压缩中…') : t('输入 / 选技能')}</span>
 
-            <div className="ml-auto flex items-center gap-1.5">
+            <div className="ml-auto flex items-center gap-1.5 fc-right-group">
               <div className="relative">
                 <button
                   onMouseEnter={() => setMenu('context')}
@@ -435,10 +438,10 @@ export default function Composer({
               </div>
               <div className="relative" ref={modelMenuRef}>
                 <button onClick={() => { setMenu(menu === 'model' ? null : 'model'); setProviderMenu(false); }}
-                  className="inline-flex items-center gap-1.5 max-w-[280px] text-[11px] px-1 py-1 text-mute hover:text-goldSoft transition-colors duration-200">
-                  <span className="truncate">{activeModel || t('未配置模型')}</span>
-                  <span className="text-mute/45">{effortLabel}</span>
-                  <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M6 9l6 6 6-6" /></svg>
+                  className="inline-flex items-center gap-1.5 max-w-[280px] min-w-0 text-[11px] px-1 py-1 text-mute hover:text-goldSoft transition-colors duration-200 whitespace-nowrap">
+                  <span className="truncate min-w-0">{activeModel || t('未配置模型')}</span>
+                  <span className="text-mute/45 shrink-0">{effortLabel}</span>
+                  <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="shrink-0"><path d="M6 9l6 6 6-6" /></svg>
                 </button>
                 {menu === 'model' && (
                   <div className="glass-pop absolute bottom-full mb-2 right-0 w-[300px] rounded-2xl z-50 pop-in">

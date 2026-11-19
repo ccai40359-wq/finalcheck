@@ -544,3 +544,37 @@ button, [role="button"] {
     scroll-behavior: auto !important;
   }
 }
+
+/* ============ 输入框工具条：窄宽度不换行 ============
+   问题（用户 2026-11-19 截图）：输入框变窄（右栏并排 / 窗口小）时，
+   "Full access" 被拆成 "Full"+"access" 两行、"Type / for skills" 被拆成三行，
+   工具条高度从 36px 涨到 50px，输入框整体变形。
+   做法：容器查询（container query）——按输入框自己的宽度决定收哪一项，
+   而不是按窗口宽度；同一个窗口里，右栏展开与否输入框宽度就差很多。 */
+.fc-composer-box { container-type: inline-size; }
+
+.fc-composer-bar { flex-wrap: nowrap; min-width: 0; }
+.fc-composer-bar > * { min-width: 0; }
+/* 文字类一律单行 + 省略号，绝不折行 */
+.fc-composer-bar .fc-shrink-label { flex-shrink: 0; }
+.fc-composer-bar .fc-shrink-label > button { white-space: nowrap; }
+.fc-composer-bar .fc-hint-line {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.fc-composer-bar .fc-right-group { flex-shrink: 0; min-width: 0; }
+
+/* 输入框宽度不够时，按优先级依次收起：先收提示文案，再收模型名，最后收权限文字（留图标） */
+@container (max-width: 460px) {
+  .fc-hint-line { display: none; }
+}
+@container (max-width: 380px) {
+  .fc-composer-bar .fc-right-group button { max-width: 150px; }
+}
+@container (max-width: 320px) {
+  /* 权限按钮只留盾牌 + 箭头（文字藏起来但仍在 DOM 里，读屏和 title 都还在） */
+  .fc-composer-bar .fc-perm-text { display: none; }
+}
