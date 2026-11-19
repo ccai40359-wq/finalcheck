@@ -134,3 +134,66 @@ test('回合内：折完工具结果仍贴着上限（正文太长）→ 调用�
   assert.ok(sum.content.includes(task), '用户原话在摘要里原样保留');
   assert.match(sum.content, /已改到第 5 页/);
 });
+
+// ───────── 2026-11-19 真实事故回归：图片 base64 被当成文字估 token → 每隔几步就失忆
+test('估算：图片按固定成本计，不把 base64 当文字（一张 40 万字符的截图不能估成 10 万 token）', async () => {
+  const { estimateMessagesTokens, IMAGE_TOKEN_ESTIMATE } = await import('../desktop/src/main/context.mjs');
+  const big = 'A'.repeat(400000);
+  const msg = { role: 'user', content: [{ type: 'text', text: '看图' }, { type: 'image_url', image_url: { url: `data:image/png;base64,${big}` } }, { type: 'image_url', image_url: { url: `data:image/png;base64,${big}` } }] };
+  const tok = estimateMessagesTokens([msg]);
+  assert.ok(tok <= 2 * IMAGE_TOKEN_ESTIMATE + 20, `两张图估算应约 ${2 * IMAGE_TOKEN_ESTIMATE}（实际 ${tok}）`);
+});
+
+test('视觉迭代长回合：频繁看大图也不触发折叠/摘要，模型不会每隔几步失忆', async () => {
+  const ROUNDS = 40;
+  const bodies = [];
+  let calls = 0;
+  let summaries = 0;
+  const fetchImpl = async (_u, init) => {
+    bodies.push(JSON.parse(init.body));
+    calls++;
+    if (calls <= ROUNDS) {
+      const name = calls % 2 ? 'view_image' : 'noop';
+      return sse([{ choices: [{ delta: { tool_calls: [{ index: 0, id: `r${calls}`, function: { name, arguments: JSON.stringify({ step: calls }) } }] } }] }]);
+    }
+    return sse([{ choices: [{ delta: { content: '完成' } }] }]);
+  };
+  const shot = 'B'.repeat(450000); // 一张真实截图的 base64 量级
+  const task = '把宣传片第 2 幕的字幕溢出修掉';
+  const out = await runAgentTurn({
+    config: { baseUrl: 'https://mock/v1', apiKey: 'k', model: 'm', contextWindow: 1000000, vision: true },
+    messages: [{ role: 'user', content: task }],
+    tools: {
+      view_image: async ({ step }) => ({ ok: true, __images: [{ mime: 'image/png', base64: shot, label: `f${step}.png` }, { mime: 'image/png', base64: shot, label: `g${step}.png` }] }),
+      noop: async ({ step }) => ({ ok: true, step }),
+    },
+    fetchImpl,
+    systemPrompt: 'sys',
+    summarize: async () => { summaries++; return '摘要'; },
+  });
+  assert.match(out.answer, /完成/);
+  assert.equal(summaries, 0, '不应触发模型摘要');
+  const last = bodies.at(-1).messages;
+  assert.ok(!last.some((m) => m.role === 'tool' && String(m.content).startsWith('[索引]')), '不应折叠工具结果');
+  assert.ok(last.some((m) => m.role === 'user' && m.content === task), '用户任务原样在');
+  assert.ok(last.filter((m) => m.role === 'tool').length === ROUNDS, '全部工具结果原文保留');
+});
+
+test('兜底：速度上限触发的模型摘要之间至少隔 20 次请求', async () => {
+  let calls = 0;
+  let summaries = 0;
+  const fetchImpl = async () => {
+    calls++;
+    if (calls <= 30) return sse([{ choices: [{ delta: { content: longText(calls) } }] }, { choices: [{ delta: { tool_calls: [{ index: 0, id: `r${calls}`, function: { name: 'noop', arguments: JSON.stringify({ s: calls }) } }] } }] }]);
+    return sse([{ choices: [{ delta: { content: '完成' } }] }]);
+  };
+  await runAgentTurn({
+    config: { baseUrl: 'https://mock/v1', apiKey: 'k', model: 'm', contextWindow: 1000000, inTurnTokenCap: 3000 },
+    messages: [{ role: 'user', content: 't' }],
+    tools: { noop: async () => ({ ok: true }) },
+    fetchImpl,
+    systemPrompt: 'sys',
+    summarize: async () => { summaries++; return '## 当前进度\nx'; },
+  });
+  assert.ok(summaries >= 1 && summaries <= 2, `30 次请求里摘要最多 2 次（实际 ${summaries}）`);
+});

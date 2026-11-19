@@ -149,20 +149,29 @@ export function estimateTokens(text) {
   return cjk + Math.ceil(other / 4);
 }
 
-// content 可能是字符串、多段 parts（图片/文本）或空
+// 图片按固定 token 计（2026-11-19 修复真实事故）：以前图片 part 被 JSON.stringify 连 base64 一起当文字数，
+// 一张截图几十万字符 ≈ 估成十几万 token（实际视觉 token 只有一两千）。上下文里只要挂着图，估算就永远超过
+// 16 万速度上限 → 每步折叠 + 模型摘要只留最近 8 条 → AI 每隔几步失忆、反复 ls / 重读 / 重看图原地打转
+// （0.24.0 实测：做视频第 2 小时起 80 次请求零进展）。
+export const IMAGE_TOKEN_ESTIMATE = 1600;
+const isImagePart = (p) => !!p && typeof p === 'object' && (p.type === 'image_url' || p.type === 'image' || p.type === 'input_image');
+
+// content 可能是字符串、多段 parts（图片/文本）或空。图片只留占位，绝不把 base64 当文字
 function contentText(content) {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
-    return content.map((p) => (typeof p === 'string' ? p : (typeof p?.text === 'string' ? p.text : JSON.stringify(p)))).join('\n');
+    return content.map((p) => (typeof p === 'string' ? p : (typeof p?.text === 'string' ? p.text : (isImagePart(p) ? '[图片]' : JSON.stringify(p))))).join('\n');
   }
   return content == null ? '' : String(content);
 }
 
-// 单条消息的 token：正文 + tool_calls 的 JSON 长度（工具参数也会占上下文）
+const imageCount = (content) => (Array.isArray(content) ? content.filter(isImagePart).length : 0);
+
+// 单条消息的 token：正文 + tool_calls 的 JSON 长度（工具参数也会占上下文）+ 每张图固定成本
 export function estimateMessagesTokens(list) {
   return (Array.isArray(list) ? list : []).reduce((n, m) => {
     const calls = Array.isArray(m?.tool_calls) ? JSON.stringify(m.tool_calls) : '';
-    return n + estimateTokens(contentText(m?.content)) + estimateTokens(calls);
+    return n + estimateTokens(contentText(m?.content)) + estimateTokens(calls) + imageCount(m?.content) * IMAGE_TOKEN_ESTIMATE;
   }, 0);
 }
 

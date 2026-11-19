@@ -6,6 +6,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.24.2] - 2026-11-19
+
+Hotfix: in 0.24.0 / 0.24.1, during tasks that look at images over and over, such as making videos or decks, the AI forgot what it had done every few steps and went in circles.
+
+### Fixed
+
+- **On image-heavy tasks the AI kept losing its memory and going in circles**: when estimating context size, a screenshot's raw base64 was counted as text, so one image was estimated at over 100k tokens when it really uses only one or two thousand. Any image in context made the context count as "over the limit", so it was compacted again and again until only the last few messages were left. In a real promo-video run on 0.24.0, from the second hour on, 80 requests in a row made no progress at all: the AI kept re-listing directories, re-reading files and re-viewing the same images. Each image is now estimated at a fixed cost; in a simulated 40-step "edit and look at images" loop, compactions dropped from 19 to 0.
+- Added a safeguard: summaries triggered by the speed cap are at least 20 requests apart, so even if an estimate is off again, it can no longer turn into "forget everything every few steps".
+
 ## [0.24.1] - 2026-11-19
 
 The UI release: new dark and light themes with one-click switching, plus a reworked dark theme with clearer depth and lighting.

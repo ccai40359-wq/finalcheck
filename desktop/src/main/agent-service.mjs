@@ -1490,6 +1490,11 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
   const FOLD_TARGET_RATIO = 0.5;
   const FOLD_REARM_RATIO = 0.25;
   let nextFoldAt = speedThreshold;
+  // 速度上限触发的模型摘要之间至少隔 MIN_REQUESTS_BETWEEN_SUMMARY 次请求：任何估算偏差都不能再造成
+  // 「每隔几步失忆一次」的死循环（2026-11-19 图片估算事故）。真正逼近窗口（compactThreshold）不受此限。
+  const MIN_REQUESTS_BETWEEN_SUMMARY = 20;
+  let compactCalls = 0;
+  let lastStuckSummaryAt = -Infinity;
   const compactNow = async () => {
     if (compactFails >= 3) return; // 熔断后不再尝试
     // 进行中状态：事件只用来让界面在需要时点亮「压缩中」（渲染层有 120ms 延迟出现，瞬时压缩不会闪一下）；
@@ -1499,6 +1504,7 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
     try {
       let tokens = estimateMessagesTokens(convo);
       // ① 速度上限：成批折叠旧工具结果（最近 MICRO_KEEP_RECENT_IN_TURN 条原文不动、对话正文不动）
+      compactCalls++;
       let foldStuck = false; // 折完仍贴着速度上限：剩下的是对话正文/模型自己写的长内容，折工具结果已经没用
       if (tokens >= nextFoldAt) {
         const target = Math.floor(speedThreshold * FOLD_TARGET_RATIO);
@@ -1510,7 +1516,7 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
           }
         }
         tokens = estimateMessagesTokens(convo);
-        foldStuck = tokens >= speedThreshold * 0.9;
+        foldStuck = tokens >= speedThreshold * 0.9 && compactCalls - lastStuckSummaryAt >= MIN_REQUESTS_BETWEEN_SUMMARY;
         nextFoldAt = Math.max(speedThreshold, tokens + Math.floor(speedThreshold * FOLD_REARM_RATIO));
       }
       // ② 模型写交接摘要（对齐 Claude Code auto-compact），失败回落本地摘要。两种情况会走到：
@@ -1520,6 +1526,7 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
         announced = true;
         onEvent?.({ kind: 'compact-start', scope: 'auto', before });
         microcompact(convo, { keepRecentTool: MICRO_KEEP_RECENT_IN_TURN });
+        if (foldStuck) lastStuckSummaryAt = compactCalls;
         const r = await modelFullCompact(convo, { summarize });
         if (r.error) onEvent?.({ kind: 'warning', message: t('模型摘要失败，改用本地摘要：{error}', { error: r.error }) });
         nextFoldAt = Math.max(speedThreshold, estimateMessagesTokens(convo) + Math.floor(speedThreshold * FOLD_REARM_RATIO));
