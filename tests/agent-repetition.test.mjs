@@ -62,11 +62,51 @@ test('repetition: 正文无精确重复但 >20000 字 → 长度帽兜底熔断'
   assert.equal(out.repetitive, true);
 });
 
-test('repetition: 思考流（reasoning）> 60k → 熔断（content 帽子够不着思考流的盲区）', async () => {
+test('repetition: 思考流周期复读 → repetitive=true（不是 longThink）', async () => {
+  // 同一段 800 字反复刷 40 次（真复读），必须走 repetitive 而不是「想太久」
+  const block = '再核对一遍文件清单与构建日志，确认没有遗漏，然后继续下一项。'.repeat(26); // ~800 字
   const chunks = [];
-  for (let i = 0; i < 40; i++) chunks.push(thinkChunk('再核对一遍文件清单与构建日志，确认没有遗漏。'.repeat(120)));
+  for (let i = 0; i < 40; i++) chunks.push(thinkChunk(block));
   const out = await run(chunks);
-  assert.equal(out.repetitive, true);
+  assert.equal(out.repetitive, true, '真复读必须判 repetitive');
+  assert.ok(!out.longThink, '不能归到「想太久」那一类');
+});
+
+// 造「真正互不相同」的长文本：每节都换主题词 + 换数字，不存在可被检测到的重复周期。
+// 编造这种夹具很容易踩坑（第一版我用了 `${filler}${i}.` 重复 20 次，周期内完全一样，
+// 被自己的检测器判成复读——这本身说明检测器有效）。
+const distinctLong = (sections) => {
+  const A = ['版式', '配色', '动效', '层级', '栅格', '字体', '间距', '卡片', '按钮', '导航', '页脚', '扫描线', '留白', '描边', '阴影', '渐变', '遮罩', '视差'];
+  const B = ['取舍', '平衡', '克制', '索引', '回放', '比对', '校准', '收敛', '分档', '降噪', '复核', '取证'];
+  const C = ['把结论落到文件行号', '按同一路径重走一遍', '标出证据等级', '说明命中条件', '记下没有跑到的部分', '区分线索与结论'];
+  let t = '';
+  for (let i = 0; i < sections; i++) {
+    t += `第${(i * 137) % 9973}节讨论${A[i % A.length]}与${B[(i * 3) % B.length]}在${(i * 11) % 4111}px处的具体做法：`
+      + `${C[(i * 5) % C.length]}，第${(i * 29) % 8761}项判断引用第${(i * 7) % 5501}段结论但措辞要换，`
+      + `第${(i * 17) % 6221}行的证据等级只到B不可冒充A，第${(i * 23) % 7333}处需要再确认一次边界。`;
+  }
+  return t;
+};
+
+test('repetition: 思考流 12 万字互不相同 → 不判死、不标复读（r11 实测误杀）', async () => {
+  // r11 实测：12 万字思考里 40/60/80/120 字滑窗最高频片段只出现 1-2 次 = 真的只是想了很久。
+  // 旧逻辑（>60k 就当复读判死）会让开放式任务 0 产出，这条是防回归。
+  const text = distinctLong(1500); // ~14 万字：超过旧 60k 帽（旧逻辑必误杀），但不到 200k 硬帽
+  assert.ok(text.length > 120000, `夹具要超过 12 万字（实际 ${text.length}）`);
+  assert.ok(text.length < 200000, `但也不能到 200k 硬帽（实际 ${text.length}）`);
+  const out = await run([thinkChunk(text)]);
+  assert.equal(out.reasoning.length > 120000, true);
+  assert.ok(!out.repetitive, '互不相同的长思考不得判成复读');
+  assert.ok(!out.longThink, '不到 200k 硬帽，也不该标「想太久」');
+  assert.ok(!out.aborted, '不能被冒充成用户中断');
+});
+
+test('repetition: 思考流触及 200k 硬帽但无复读 → longThink（不是 repetitive）', async () => {
+  const text = distinctLong(5000); // ~20 万字以上，必然触 200k 硬帽
+  assert.ok(text.length > 200000, `夹具要超过 20 万字（实际 ${text.length}）`);
+  const out = await run([thinkChunk(text)]);
+  assert.equal(out.longThink, true, '触硬帽要标 longThink');
+  assert.ok(!out.repetitive, '没有周期复读就不能说它是复读（会诱导模型误报「我之前循环了」）');
 });
 
 test('repetition: 工具参数流 > 100k → 熔断（Writing read_file… 21m57s 的盲区）', async () => {

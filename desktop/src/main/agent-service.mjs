@@ -13,7 +13,7 @@ import { crossTurnBudgetTokens } from './model-config.mjs';
 import { GREP_CODE_SCHEMA, TODO_CC_RULES_TEXT } from './agent-tools.mjs';
 // token 估算/两级压缩原语实现放在 context.mjs（与上下文视图同源）；这里重新导出，单测可直接从 agent-service 取
 export { estimateTokens, estimateMessagesTokens, microcompact, fullCompact, contextBudget } from './context.mjs';
-import { loadCatalog, renderCatalog } from '../../../src/playbooks.mjs';
+import { loadCatalog, loadSkills, renderCatalog } from '../../../src/playbooks.mjs';
 import { runHookEvent } from './hooks.mjs';
 import { SUBAGENT_TOOL_NAMES, deriveNodeErrorCode } from './swarm.mjs';
 // 中断/空回复的确定性 salvage：与 workflow 层共用同一份文案（不调模型、不烧 token）
@@ -221,8 +221,8 @@ export const TOOLS_SCHEMA = [
   { type: 'function', function: { name: 'probe_target', description: '对目标应用做渗透探测（无认证访问复现/CORS 反射/安全头），并采样返回延迟百分位 p50/p95/min/max/firstByteMs。仅限用户确认的本机应用', parameters: { type: 'object', properties: { url: { type: 'string' }, requests: { type: 'number', description: '可选：延迟采样次数 3–20，默认 10', minimum: 3, maximum: 20 } }, required: ['url'] } } },
   { type: 'function', function: { name: 'stress_target', description: '对目标应用做压力测试（温和上限 60s/50 连接）。仅限用户确认的本机应用', parameters: { type: 'object', properties: { url: { type: 'string' }, duration: { type: 'number', default: 10 }, connections: { type: 'number', default: 10 } }, required: ['url'] } } },
   { type: 'function', function: { name: 'get_report', description: '跑体检并返回人话报告全文（有 profile 或传 sources 时是 11 维表：结论/证据等级/覆盖检查项）', parameters: { type: 'object', properties: { dir: { type: 'string', description: '项目绝对路径。' + PATH_JSON_HINT }, tier: { type: 'string', enum: ['L1', 'L2', 'L3'] }, sources: { type: 'object', description: '可选：输入面 {code,url,dynamicAuth,loadLimit}，同 audit_project' } }, required: ['dir'] } } },
-  { type: 'function', function: { name: 'list_playbooks', description: '列出渗透方法论库的 40 个类目（编号/中文名/英文名/触发词/文件数）。开始渗透测试或不确定该用哪类手法时先调用它', parameters: { type: 'object', properties: {} } } },
-  { type: 'function', function: { name: 'read_playbook', description: '读方法论库（playbooks/web-vuln，40 类漏洞技能包）。topic 传类目编号或英文名（如 11 / ssrf / sql-injection）；默认返回 SKILL.md 入口（含文件路由）；附属手册用 file 指定、大文件用 offset/limit 续读', parameters: { type: 'object', properties: { topic: { type: 'string', description: '类目编号或英文名，如 11 / ssrf / idor / jwt / wafbypass / vuln-report-generate' }, file: { type: 'string', description: '可选：该类目目录下的具体文件名（可先用 topic 读入口看 files 列表）' }, offset: { type: 'number', description: '可选：从第几个字符开始读，默认 0' }, limit: { type: 'number', description: '可选：本次最多读多少字符，默认 14000，上限 30000' } }, required: ['topic'] } } },
+  { type: 'function', function: { name: 'list_playbooks', description: '列出方法论库的全部类目（编号/中文名/英文名/触发词/文件数）。两类内容都有：01-40 漏洞复核手法（渗透测试/越权/注入/SSRF/反序列化等），41-50 修复技能（密钥轮换/注入修复/依赖升级/提示注入防护/沙箱限额/数据脱敏等）。什么时候该调用它：① 不确定该用哪类手法时；② 按 audit_project 报告的 nextSteps 拿到 topic 编号但不确定对应哪一类时；③ 交付验收（L2/L3）里要判某个高危「到底能不能被真利用」、或要动手修某个审计发现时。**别凭规则名或凭感觉判真假——先看一眼目录**', parameters: { type: 'object', properties: {} } } },
+  { type: 'function', function: { name: 'read_playbook', description: '读方法论库的一类技能包。topic 传类目编号或英文名（如 11 / ssrf / sql-injection）；01-40 是漏洞复核手法，41-50 是修复技能（dev 轨修审计发现时用）。默认返回 SKILL.md 入口（含文件路由）；附属手册用 file 指定、大文件用 offset/limit 续读', parameters: { type: 'object', properties: { topic: { type: 'string', description: '类目编号或英文名，如 11 / ssrf / idor / jwt / wafbypass / vuln-report-generate' }, file: { type: 'string', description: '可选：该类目目录下的具体文件名（可先用 topic 读入口看 files 列表）' }, offset: { type: 'number', description: '可选：从第几个字符开始读，默认 0' }, limit: { type: 'number', description: '可选：本次最多读多少字符，默认 14000，上限 30000' } }, required: ['topic'] } } },
   { type: 'function', function: { name: 'read_file', description: '读取单个文本文件，自动带行号，大文件用 offset/limit 续读。⚠️ 这是读文件的唯一正确方式：不要用 run_command 的 cat/type/head/tail 读文件（shell 读不到项目外的文件，也不会给你行号）。要找某个字符串/函数/报错出在哪 → 用 grep_code，不要用它逐个文件翻。', parameters: { type: 'object', properties: { path: { type: 'string', description: '文件绝对路径。' + PATH_JSON_HINT }, offset: { type: 'number', description: '可选：从第几个字符开始，默认 0' }, limit: { type: 'number', description: '可选：本次最多读多少字符，默认 20000，上限 40000' } }, required: ['path'] } } },
   { type: 'function', function: { name: 'edit_file', description: '精确修改文件：把 old_string 替换成 new_string（old_string 必须在文件中唯一，否则拒绝）。改前先 read_file；改后返回 +N/-M 与 diff。需要用户审批', parameters: { type: 'object', properties: { path: { type: 'string', description: '文件绝对路径。' + PATH_JSON_HINT }, old_string: { type: 'string', description: '要替换的原文本（含缩进，必须唯一）' }, new_string: { type: 'string', description: '替换后的文本（可为空字符串=删除）' } }, required: ['path', 'old_string', 'new_string'] } } },
   { type: 'function', function: { name: 'write_file', description: '新建或整体覆盖文本文件（≤2MB），返回 +N/-M 与 diff。父目录必须已存在；需要用户审批', parameters: { type: 'object', properties: { path: { type: 'string', description: '文件绝对路径。' + PATH_JSON_HINT }, content: { type: 'string', description: '完整文件内容' } }, required: ['path', 'content'] } } },
@@ -282,7 +282,7 @@ export const TOOLS_SCHEMA = [
     }
   },
   {type: 'function',function: {name: 'view_image',description: '看图：把本地图片（png/jpg/gif/webp/bmp）直接给你看。用于检查自己生成的图、用户/项目里的截图与设计稿。大图会自动缩到 1600px 宽。最多一次 4 张（paths）。',parameters: {type: 'object',properties: {path: {type: 'string',description: '图片绝对路径'},paths: {type: 'array',items: {type: 'string'},description: '可选：一次看多张（≤4）'}}}}},
-  {type: 'function',function: {name: 'capture_screenshot',description: '截图并直接给你看：本地 html/svg（渲染后的真实效果）、pdf / pptx / docx 的某一页、mp4/webm/mov 的某一帧、http(s) 网页。做 PPT / 网页 / 视频 / 海报等视觉产物时，生成后必须用它逐页/关键帧看效果，发现文字溢出、重叠、错位、配色问题就改，改完再截一次确认——不要只凭代码判断「应该没问题」。只在桌面端可用。',parameters: {type: 'object',properties: {target: {type: 'string',description: '本地文件绝对路径或 http(s) 网址'},page: {type: 'number',description: 'pdf / pptx / docx 的页码（从 1 开始）'},time: {type: 'number',description: '视频的时间点（秒）'},width: {type: 'number',description: '视口/输出宽度，默认 1280（PPT 16:9 建议 1600）'},height: {type: 'number',description: '网页视口高度，默认 800'},full_page: {type: 'boolean',description: '网页截整页（长页面）'},wait_ms: {type: 'number',description: '网页加载后再等多少毫秒再截（动画/字体），默认 800-1200'}},required: ['target']}}},
+  {type: 'function',function: {name: 'capture_screenshot',description: '截图并直接给你看：本地 html/svg（渲染后的真实效果）、pdf / pptx / docx 的某一页、mp4/webm/mov 的某一帧、http(s) 网页。做 PPT / 网页 / 视频 / 海报等视觉产物时，生成后必须用它逐页/关键帧看效果，发现文字溢出、重叠、错位、配色问题就改，改完再截一次确认——不要只凭代码判断「应该没问题」。**写完 HTML/CSS/JS 一定要先截图看一遍再交**，尤其是自己起的服务（传 http://127.0.0.1:端口）。',parameters: {type: 'object',properties: {target: {type: 'string',description: '本地文件绝对路径或 http(s) 网址'},page: {type: 'number',description: 'pdf / pptx / docx 的页码（从 1 开始）'},time: {type: 'number',description: '视频的时间点（秒）'},width: {type: 'number',description: '视口/输出宽度，默认 1280（PPT 16:9 建议 1600）'},height: {type: 'number',description: '网页视口高度，默认 800'},full_page: {type: 'boolean',description: '网页截整页（长页面）'},wait_ms: {type: 'number',description: '网页加载后再等多少毫秒再截（动画/字体），默认 800-1200'}},required: ['target']}}},
   {type: 'function',function: {name: 'remember_project',description: '把「下次任何人打开这个项目都成立」的事实写进项目根 AGENTS.md（项目宪法，不是任务日志）。按 kind 分节：overview 项目概况（用途/技术栈/部署）、commands 常用命令（启动/构建/测试/重新生成产物）、layout 目录约定（源码与产物各在哪、哪些是生成的不要手改）、rules 规范与禁忌（长期偏好、不许做的事）、acceptance 验收口径（默认档位、必须过的闸）。会被直接拒绝的写法：行号、进度（已修好/这次/下一步）、会变的数量（13 页/6 个脚本）、产物文件清单、超过 220 字。例：✅「宣传 PPT 源文件在 deck/src/（HTML+CSS），产物输出到 deck/out/，不要手改产物」（layout）✅「重建 PPT：python deck/tools/build_deck.py，改完跑 deck/tools/qa_*.py」（commands）❌「产物 deck/out/finalcheck-deck.pptx（13 页）、finalcheck-deck.pdf、slides/*.png；质检脚本 qa_layout.py、qa_contrast.py…」。已有条目过时了就传 replace（旧条目里的一段原文）就地更新，不要再追加一条。跨目录改别的项目时传 dir 写进那个项目。',parameters: {type: 'object',properties: {fact: {type: 'string',description: '一个长期成立的事实，一句话（≤220 字），带可核对的目录/命令/配置名'},kind: {type: 'string',enum: ['overview','commands','layout','rules','acceptance'],description: '写进哪一节（默认 rules）'},replace: {type: 'string',description: '可选：要更新的旧条目里的一段原文（从 AGENTS.md 复制）；传了就替换那一条而不是追加'},dir: {type: 'string',description: '要记住的项目根绝对路径（可选）。跨目录场景必传：用户让你改 A 项目、但当前会话绑的是 B，就传 A 的路径，记忆写进 A 的 AGENTS.md'}},required: ['fact']}}},
   { type: 'function', function: { name: 'run_command', description: '在本机执行 shell 命令。**统一是 Git Bash 一种语法**（2026-11-17 决策：ACL 沙箱默认关闭，不再有 cmd 这条路径；bash 语法在这里全部可用）。\n可用写法：`ls -la`、`grep -rn`、`cat`、`head -n`、`tail -n`、`wc -l`、`sed`、`awk`、`find . -name "*.py"`、`sort`、`uniq`、`diff`、`tr`、`cut`、`rm -rf`、`mv`、`cp`、`mkdir -p`、`for f in ...; do ...; done`、`$(...)`、`2>/dev/null`、`| head`、`&&`、`||`、`~`（会展开成家目录）。\n⚠️ 不要写 cmd 语法，这些在 bash 里都不对：`dir /b`（用 `ls -la`）、`type`（用 `cat` 或 read_file）、`findstr`（用 `grep -rn` 或 grep_code）、`2>nul`（用 `2>/dev/null`）、`if exist`（用 `test -e`）、`cd /d`（用 `cd`）。\n⚠️ 硬性分工（违反会被应用层拒绝）：① 读文件必须用 read_file（自带行号+分页），禁止 cat/head/tail 读文件；② 搜代码必须用 grep_code（返回 file:line:内容），禁止 grep 搜代码内容；③ 敏感路径（~/.ssh、~/.aws、~/.gnupg、私钥文件）无条件拒绝；项目目录之外的路径默认拒绝（需要跨目录改别的项目时，让用户显式授权该目录）。\n灾难性命令（rm -rf /、format、dd 等）会被黑名单拦截。起常驻服务（node server.mjs / 端口监听 / uvicorn）必须用 background:true 立刻拿 PID，不要用 nohup & 再等它返回；连续 120s 无输出的命令会自动转后台并返回 PID（进程不杀）。', parameters: { type: 'object', properties: { command: { type: 'string', description: '要执行的命令（Git Bash 语法）' }, cwd: { type: 'string', description: '工作目录（可选）。' + PATH_JSON_HINT }, timeout_ms: { type: 'number', description: '超时毫秒（可选）；不传则不限时跑到命令结束（连续 120s 无输出会转后台返回 PID），传了按该毫秒数到点终止' }, background: { type: 'boolean', description: 'true=立刻在后台启动并返回 PID（起常驻服务用），不等待输出' }, idle_ms: { type: 'number', description: '可选：多久无输出算卡住并转后台，默认 120000；0=关闭该兜底' } }, required: ['command'] } } }
 ];
@@ -352,7 +352,7 @@ const SYSTEM_BASE = [
   '边界：动态目标以用户在对话中的口头确认为准——用户给出目标 URL 或表示同意，即为授权，直接执行（压测默认温和参数）；结论引用工具返回的 verdict；覆盖不足要明说"没查到"。',
   '工具结果超长时会被截断为「头+尾」并完整落盘，按提示的 spill 路径用 run_command 检索，不要猜中间内容。',
   '长任务提速（2026-11-19 实测：做一个宣传片 529 步、109 分钟，其中 99 分钟在等模型、353 次回复只调了 1 个工具）：① 互不依赖的读文件 / 查看 / 命令放在同一次回复里一起发（读文件 / 搜索 / 看图 / 截图会并发执行；多条互不依赖的命令可以合并进一次 run_command），不要一次只调一个；② 视觉迭代要成批——一条命令里循环渲染或截取多帧（或用脚本拼成一张总览图），一次 view_image 看完（每次最多 4 张），把看到的问题列全、一次改完，再整体验证一次；不要「改一处 → 渲染一帧 → 裁图 → 看一眼」反复循环；③ 已经确认没问题的部分不要重复检查。',
-  '看图与截图：做 PPT / 网页 / 视频 / 海报 / 图表这类视觉产物时，生成后必须用 capture_screenshot 逐页（或关键帧）看实际效果，文字溢出、重叠、错位、配色不对就改，改完再截一次确认；不要只看代码就说「应该没问题」。用户或项目里的图片用 view_image 直接看。截图只在桌面端可用。',
+  '看图与截图：做 PPT / 网页 / 视频 / 海报 / 图表这类视觉产物时，生成后必须用 capture_screenshot 逐页（或关键帧）看实际效果，文字溢出、重叠、错位、配色不对就改，改完再截一次确认；不要只看代码就说「应该没问题」。用户或项目里的图片用 view_image 直接看。写完页面一定要先 capture_screenshot 看一遍再交，不要凭代码猜。',
   '修代码：先 read_file 看清原文，再用 edit_file 做最小替换（old_string 必须唯一）；新建文件用 write_file。改完明确告诉用户「改了哪个文件、+几行/-几行、为什么」。',
   '路径参数转义（硬规则）：JSON 参数里的 Windows 路径一律优先写正斜杠（D:/Projects/demo）；必须用反斜杠时一律双写（D:\\\\Projects\\\\demo）；写成单反斜杠会让参数不是合法 JSON，工具不会执行。',
   '产出可预览文件（html / png / pdf / mp4 / pptx / md 等）后，调用 present_artifact(path) 登记；用户在聊天里点一下就出现在右侧预览面板（视频可直接播放，PDF/PPT/Word 分页展示）。',
@@ -384,7 +384,7 @@ const SYSTEM_DEV_BASE = [
   '需要并行查证/多路改造时用 run_workflow 分头跑（步骤 3-8 个，每步一个独立子代理；不需要上游结果就写 depends_on: [] 并行）；单文件小改动不要用工作流，自己直接做更快。每步 name 用职位名（4-10 字），不许写「步骤 1」。',
   '轻量子代理（spawn_agent）的判断标准：预计要搜 / 读 5 个以上文件才能回答的调查型问题（「X 都在哪」「Y 是怎么实现的」「帮我摸清某个模块」「所有用到 Z 的地方」），不要自己一个个翻——第一步就派 spawn_agent 去查，只拿结论回来，你自己的上下文保持干净；问题能拆成几个互不相关的方向时（例如「登录怎么做的」和「CSRF 怎么防的」），在同一次回复里各派一个，它们会并行。只有一两次 read_file / grep_code 就能搞定的小问题才自己做。要多路分工、互相依赖、需要盲验复核的验收 / 审计大任务用 run_workflow。重要结论想再确认一遍时，可以派 type=verify 的子代理独立复核（把结论和证据写进 prompt）。',
   '长任务提速（2026-11-19 实测：做一个宣传片 529 步、109 分钟，其中 99 分钟在等模型、353 次回复只调了 1 个工具）：① 互不依赖的读文件 / 查看 / 命令放在同一次回复里一起发（读文件 / 搜索 / 看图 / 截图会并发执行；多条互不依赖的命令可以合并进一次 run_command），不要一次只调一个；② 视觉迭代要成批——一条命令里循环渲染或截取多帧（或用脚本拼成一张总览图），一次 view_image 看完（每次最多 4 张），把看到的问题列全、一次改完，再整体验证一次；不要「改一处 → 渲染一帧 → 裁图 → 看一眼」反复循环；③ 已经确认没问题的部分不要重复检查。',
-  '看图与截图：做 PPT / 网页 / 视频 / 海报 / 图表这类视觉产物时，生成后必须用 capture_screenshot 逐页（或关键帧）看实际效果，文字溢出、重叠、错位、配色不对就改，改完再截一次确认；不要只看代码就说「应该没问题」。用户或项目里的图片用 view_image 直接看。截图只在桌面端可用。',
+  '看图与截图：做 PPT / 网页 / 视频 / 海报 / 图表这类视觉产物时，生成后必须用 capture_screenshot 逐页（或关键帧）看实际效果，文字溢出、重叠、错位、配色不对就改，改完再截一次确认；不要只看代码就说「应该没问题」。用户或项目里的图片用 view_image 直接看。写完页面一定要先 capture_screenshot 看一遍再交，不要凭代码猜。',
   '需要用户拍板的事（砍功能/动线上数据/花钱的 API）用 ask_user 问一次就动手；其余决策自己定。一次回合最多问 3 次。',
   '路径参数转义（硬规则）：JSON 参数里的 Windows 路径一律优先写正斜杠（D:/Projects/demo）；必须用反斜杠时一律双写（D:\\\\Projects\\\\demo）；写成单反斜杠会让参数不是合法 JSON，工具不会执行。',
   '工具结果超长时会被截断为「头+尾」并完整落盘，按提示的 spill 路径用 run_command 检索，不要猜中间内容。',
@@ -403,7 +403,19 @@ export function getSystemPromptParts(mode = 'audit') {
       let skills = '';
       try {
         const catalog = await loadCatalog();
-        skills = renderCatalog(catalog);
+        if (key === 'dev') {
+          // dev 轨要的是修复技能（41-50），而 renderCatalog 只覆盖 web-vuln（01-40）。
+          // 不给目录，模型就只看到 prompt 里一句「topic=对应编号 41-50」，根本不知道每号是什么
+          // ——2026-11-20 实测：41-50 一次没被读过，修复全靠即兴。这里单独渲染 dev-fix 那一段。
+          const fix = await loadSkills({}).catch(() => []);
+          const fixOnly = fix.filter((e) => e.domain === 'dev-fix');
+          skills = fixOnly.length
+            ? renderCatalog(fixOnly, { triggerChars: 56 }) + '\n'
+              + '（上面是修复技能；要判「某个高危能不能被真利用」时再看漏洞复核手法：list_playbooks 会列出 01-40。）'
+            : renderCatalog(catalog);
+        } else {
+          skills = renderCatalog(catalog);
+        }
       } catch { /* 方法论库缺失不阻断对话 */ }
       return { base, skills, full: base + (skills ? '\n\n' + skills : '') };
     })());
@@ -431,9 +443,19 @@ const MAX_EMPTY_NUDGES = 2;
 const EMPTY_NUDGE_DIGEST_ITEMS = 12;
 /* ---------- 复读熔断参数（round8 实测：自检阶段同义复述 20+ 分钟，被 402 才收场） ---------- */
 // 正文 exact-tail 检测（每 400 字查一次）+ 20k 正文帽是老闸；下面补思考流与工具参数流两块盲区
-const REASONING_LOOP_CAP = 60000; // 思考流字数帽：content 检测够不着 reasoning，理论流会无限增长
+// 2026-11-20 修正（r11 实测）：原来 reasoning 只判长度，超 60k 就标成「复读」直接判死。
+// 三轮实测（r8 120k / r9 120k / r11 96k）用 40/60/80/120 字四档滑窗扫过，最高频片段只出现 1-2 次
+// ——根本没有机械复读，只是开放式任务上想得久。开放式任务越自由（写文案/定视觉/做取舍）越容易
+// 想久，结果两次都是 0 个文件、~460 秒全烧在思考上。
+// 现在改成：reasoning 用「周期重复检测」抓真复读；长度帽抬到 200k 只做兜底，且兜底时给的是
+// 「想太久了」的催收（不消耗不限额度），不是判死。
+const REASONING_LOOP_CAP = 200000;   // 思考流硬帽（兜底）：正常长思考实测最多 12 万，200k 留足余量
+const REASONING_DUP_MIN = 3000;      // 低于此长度不做重复检测（太短的思考本来就没法判断周期）
+const REASONING_DUP_CHECK = 800;     // 每新增这么多字扫一次（避免每块都跑 indexOf）
+const REASONING_DUP_MAX_QUERIES = 60; // 单次检测最多查这么多个候选周期（防止长文本上 O(n²)）
 const ARGS_LOOP_CAP = 100000; // 单轮工具参数总量帽：正常 write 大文件也远够不着，读到这基本是参数复读
-const MAX_REPETITION_NUDGES = 1; // 复读熔断后先催收一次（不是直接判死）；再犯才报错收轮
+const MAX_REPETITION_NUDGES = 2; // 真复读熔断后先催收（不直接判死）；连催 2 次仍复发才报错收轮
+const MAX_LONG_THINK_NUDGES = 3; // 「想太久」单独计额度，不与上面共用——否则正常长思考会吃掉复读的催收机会
 const EMPTY_NUDGE_DIGEST_LINE_MAX = 200;
 const EMPTY_NUDGE_DIGEST_MAX = 2400;
 
@@ -520,6 +542,42 @@ function countOverlapping(hay, needle, cap = 8) {
   return n;
 }
 
+/**
+ * 思考流「周期复读」检测（2026-11-20 新增，替代原来的纯长度判死）。
+ *
+ * 为什么不能只看长度：r11 实测 12 万字思考里 40/60/80/120 字四档滑窗最高频片段只出现 1-2 次，
+ * 也就是「想得久」不是「复读」。但 reasoning 又必须有一道闸——真复读时它是无上限增长的。
+ *
+ * 做法：在文本尾窗里取若干候选周期长度，看「最后一段是否在更长范围里重复出现 ≥4 次」。
+ * 候选周期从 40 到 window/4 取几何级数，只查有限个数，避免长文本上 O(n²)。
+ *
+ * @param {string} text 累积的思考文本
+ * @param {number} [window=6000] 只扫最近这么多字（复读是「当下正在发生」，不需要全history）
+ * @param {number} [minRepeat=4] 同一片段至少重复几次才算复读
+ * @returns {boolean}
+ */
+export function detectReasoningLoop(text, { window = 6000, minRepeat = 4 } = {}) {
+  const s = String(text || '');
+  if (s.length < REASONING_DUP_MIN) return false;
+  const seg = s.slice(-Math.min(window, s.length));
+  if (seg.length < 600) return false;
+
+  // 候选周期：40, 50, 63, 79, 100, ... 到 seg.length/4（几何递增，最多 REASONING_DUP_MAX_QUERIES 个）
+  const maxPeriod = Math.max(40, Math.floor(seg.length / (minRepeat + 1)));
+  const periods = [];
+  for (let p = 40; p <= maxPeriod && periods.length < REASONING_DUP_MAX_QUERIES; p = Math.max(p + 1, Math.floor(p * 1.26))) {
+    periods.push(p);
+  }
+  // 取每个周期的最后一整段作为查询串，看它在 seg 里出现几次（取最靠后的位置保证是「当前在复读」）
+  for (const p of periods) {
+    if (p >= seg.length) continue;
+    const probe = seg.slice(-p);
+    if (!probe.trim()) continue;
+    if (countOverlapping(seg, probe, minRepeat + 2) >= minRepeat) return true;
+  }
+  return false;
+}
+
 /* ---------- 行为层防复读（CC 式）：同工具+同参数连续重复调用 ---------- */
 // 时间照旧不限（用户拍板），拦的是「零进展的动作重复」：相同输入必然得到相同输出，
 // 连续多轮完全相同的调用就是卡死循环。轮询类合法场景（改了中间步骤）会打断连续计数，不受影响。
@@ -556,11 +614,16 @@ export async function consumeStream(res, onToken, onEvent, ctl, onChunk = null) 
   let usage = null;
   let finishReason = null;
   let lastCheckLen = 0;
+  let lastThinkCheck = 0; // reasoning 重复检测的检查点（避免每块都扫）
   let repetitive = false;
   // 复读熔断专用标记：熔断也走 ctl.abort()，如果不与「用户停止」区分，
   // catch 会把 AbortError 归成 aborted（中断），repetitive 分支永远不可达——
   // round8 实测：20 分钟的同义复述被当成「已中断」照单全收（用户截图为证）。
   let loopAbort = false;
+  // 「想太久」单独一条路径（2026-11-20）：reasoning 触及硬帽但没检测到周期复读时，
+  // 不能说它是复读（会诱导模型误报「我之前循环了」），也不能直接判死（开放式任务会全军覆没）。
+  let longThink = false;
+  let longAbort = false;
   // 活动提示（WorkingStatus 实时文案）：真实增量驱动，不伪造进度。
   // 首 token → Writing…；tool_calls 参数流 → Writing <tool>…；参数继续增长时
   // 每累计 ≥512 字符且距上次提示 ≥500ms 才再发一条（带 chars），避免刷屏。
@@ -618,8 +681,13 @@ export async function consumeStream(res, onToken, onEvent, ctl, onChunk = null) 
       reasoning += think;
       chunkProgress = true;
       onEvent?.({ kind: 'reasoning', text: think });
-      // 思考频道的复读同样要熔断：content 帽子够不着 reasoning，理论流会无限增长
-      if (reasoning.length > REASONING_LOOP_CAP) { repetitive = true; loopAbort = true; ctl?.abort(); }
+      // 思考频道的闸（2026-11-20 重写）：先判「周期复读」——那才是真复读；长度帽只做兜底并且
+      // 归到「想太久」，交给上层用另一套话术催收（不判死、不消耗复读催收额度）。
+      if (!repetitive && reasoning.length >= REASONING_DUP_MIN && reasoning.length - lastThinkCheck >= REASONING_DUP_CHECK) {
+        lastThinkCheck = reasoning.length;
+        if (detectReasoningLoop(reasoning)) { repetitive = true; loopAbort = true; ctl?.abort(); }
+      }
+      if (!repetitive && !longThink && reasoning.length > REASONING_LOOP_CAP) { longThink = true; longAbort = true; ctl?.abort(); }
     }
     if (d.content) {
       chunkProgress = true;
@@ -665,8 +733,8 @@ export async function consumeStream(res, onToken, onEvent, ctl, onChunk = null) 
       try { onChunk?.(chunkProgress); } catch { /* 观测回调失败不影响流 */ }
     }
   } catch (e) {
-    if (loopAbort) {
-      // 内部复读熔断：不冒充用户中断（否则 repetitive 标志丢失，循环输出被当成「已中断」落账）
+    if (loopAbort || longAbort) {
+      // 内部熔断：不冒充用户中断（否则重复/超长标志丢失，输出被当成「已中断」落账）
     } else if (ctl?.signal?.aborted || e?.name === 'AbortError' || /abort/i.test(e?.message || '')) {
       // dsh 语义：中断不截断——已流出的内容原样保留，返回 aborted 标记交给上层合成「已中断」收尾
       aborted = true;
@@ -683,6 +751,9 @@ export async function consumeStream(res, onToken, onEvent, ctl, onChunk = null) 
   }
   if (aborted) return { content, reasoning, toolCalls: [], raw, aborted: true, usage, finishReason };
   if (repetitive) return { content, reasoning, toolCalls: [], raw, repetitive: true, usage, finishReason };
+  // 想太久（触了 reasoning 硬帽但没有周期复读）：同样这一轮不算数，但标记不同，
+  // 上层要走「催收继续」而不是「你复读了」——也不能消耗复读的催收额度。
+  if (longThink) return { content, reasoning, toolCalls: [], raw, longThink: true, usage, finishReason };
   // 终审 P2#4：非标准网关返回裸 JSON（无视 stream）时兜底解析
   let out = { content, reasoning, toolCalls: toolCalls.filter(Boolean), raw, usage, finishReason };
   if (!out.content && !out.toolCalls.length) {
@@ -1567,6 +1638,7 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
   let retriedForTools = false; // 首轮空转提醒只重试一次
   let emptyNudges = 0; // 空回复补交次数：最多 MAX_EMPTY_NUDGES 次（第一次普通催，第二次强制只输出正文）
   let repetitiveNudges = 0; // 复读熔断后的催收次数：最多 MAX_REPETITION_NUDGES 次（round8 新增）
+  let longThinkNudges = 0; // 「想太久」的催收次数：与复读分开计额度（2026-11-20）
   let lastToolLoopSig = null; // 行为层防复读：上一轮的工具调用签名
   let toolLoopRounds = 0; // 连续相同签名的轮数
   let forceAnswerNoTools = false; // 下一次请求带 tool_choice='none'（第二次补交用，成功发出后复位）
@@ -1852,7 +1924,7 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
       onEvent?.({ kind: 'turn-end', ms: Date.now() - turnStart, error: true });
       return { error: t('网关连接失败：{err}。{checklist}', { err: lastErr || t('未知错误'), checklist: CHECKLIST }), trace, warnings, reasoning: reasoningAll || undefined, workedMs: Date.now() - turnStart };
     }
-    let { content, reasoning, toolCalls, repetitive, aborted, usage, finishReason } = streamOut;
+    let { content, reasoning, toolCalls, repetitive, aborted, longThink, usage, finishReason } = streamOut;
     if (usage) {
       lastUsage = usage;
       const pt = Number(usage.prompt_tokens ?? usage.input_tokens);
@@ -1869,6 +1941,20 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
       return { cancelled: true, interrupted: true, partialContent: partial, answer: partial, reasoning: reasoningAll || undefined, trace, workedMs: Date.now() - turnStart, roundsUsed: turnsUsed, usage: usage || lastUsage || undefined };
     }
     if (reasoning) reasoningAll += (reasoningAll ? '\n' : '') + reasoning;
+    // 「想太久」：不是复读，但这一轮也没产出可用结果。用另一套话术催收（明说「没有复读，只是思考过长」），
+    // 独立额度（MAX_LONG_THINK_NUDGES），不吃掉真复读的那份催收机会。
+    if (longThink) {
+      if (longThinkNudges < MAX_LONG_THINK_NUDGES) {
+        longThinkNudges += 1;
+        const nudge = '你这一轮思考过长（已超过长度上限被截断），但没有任何代码或工具产出。思考时不要反复推演方案取舍——先把文件写出来，再用实际渲染/测试结果判断好不好，边做边改。现在就动手：直接调用工具推进，不要再做长段规划。';
+        convo.push({ role: 'user', content: `[系统] ${nudge}` });
+        onEvent?.({ kind: 'warning', message: t('模型思考过长（不是复读），已截断并催收推进（{n}/{max}）', { n: longThinkNudges, max: MAX_LONG_THINK_NUDGES }) });
+        onEvent?.({ kind: 'activity', label: t('思考过长，催收推进（{n}/{max}）…', { n: longThinkNudges, max: MAX_LONG_THINK_NUDGES }) });
+        continue;
+      }
+      onEvent?.({ kind: 'turn-end', ms: Date.now() - turnStart, error: true });
+      return { error: t('模型连续 {n} 轮思考过长且没有任何产出，已自动中止。这个任务对当前模型的思考预算来说过于开放，建议把需求拆小（比如先定配色和版式，再让它实现），或换一个思考更收敛的模型。', { n: longThinkNudges }), reasoning: reasoningAll, trace, roundsUsed: turnsUsed, warnings };
+    }
     if (repetitive) {
       // 复读熔断（round8 实测：同义复述刷了 20+ 分钟，最终被 402 才收场；此前熔断标志还会被
       // consumeStream 的 catch 误标成用户中断，本分支根本不可达——两处都已修）。
@@ -2210,6 +2296,14 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
       const abortLabel = fsilenceHit ? t('网关静默 {s}s 无任何响应', { s: silenceSec(SILENCE_MS) }) : t('收尾请求超时（{s}s）', { s: watchdogSec(FINALIZE_WATCHDOG_MS) });
       onEvent?.({ kind: 'turn-end', ms: workedMs(), interrupted: true });
       return await runStopHook({ answer: (partial ? partial + '\n\n' : '') + t('[{reason}，以上为已输出部分；本轮工具证据仍保留]', { reason: abortLabel }), reasoning: reasoningAll, trace, workedMs: workedMs(), usage: lastUsage || undefined, usageTotal, finishReason: lastFinishReason, warnings, roundsUsed: turnsUsed, ...(budgetStop ? { budgetStop } : {}) });
+    }
+    // 收尾请求自己也可能复读/想太久（2026-11-20）：以前只判 fin.aborted，熔断时 aborted 为假，
+    // partial 被当成正常回答交付，用户看到半截复读却以为成功了。
+    if (fin.repetitive || fin.longThink) {
+      const partial = fin.content || '';
+      const why = fin.repetitive ? t('模型在收尾回答里陷入重复输出') : t('模型在收尾回答里思考过长');
+      onEvent?.({ kind: 'turn-end', ms: workedMs(), error: true });
+      return { error: t('{why}，已自动截断，这次收尾不算完成。本轮工具证据仍保留在时间线里，可点「继续」让我重新收尾。', { why }), reasoning: reasoningAll, trace, workedMs: workedMs(), usage: lastUsage || undefined, roundsUsed: turnsUsed, warnings, ...(partial ? { partialContent: partial } : {}) };
     }
     const names = [...new Set(trace.map((tr) => tr.tool))].join('、') || t('（无）');
     const answer = fin.content || t('{stop}，本轮调用工具：{tools}。可以点「继续」让我接着做。', { stop: stopDesc, tools: names });

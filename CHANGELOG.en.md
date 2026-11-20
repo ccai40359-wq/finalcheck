@@ -6,6 +6,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.28.0] - 2026-11-20
+
+Long-task release: open-ended work (designing a page, choosing a visual direction, weighing architecture trade-offs) used to end with the model thinking for a long time and producing nothing. It now finishes, and it checks its own output by taking screenshots before delivering instead of trusting the code.
+
+### Fixed
+
+- **Open-ended tasks were aborted as "output loop"**: previously, whenever the model's reasoning passed 60k characters it was treated as a loop and killed with "detected a repetitive output loop". In three measured runs of 120k characters there was no repetition at all — it was simply thinking for a long time. It now first checks whether the same passage actually recurs, and the length ceiling is raised to 200k with a distinct "thinking too long" signal instead of a false loop report. Measured: before the fix, two consecutive attempts produced zero files and spent over seven minutes thinking; after the fix, the same task completed.
+- **The AI could not see what it wrote when running headless**: it used to get no screenshot at all (told "screenshots are only available in the desktop app"), so it wrote UI blind — a measured run produced a page whose own script threw, and whose screen-reader text was never hidden, rendering the numbers as "1919/4141", and it had no way to know. When there is no desktop window it now starts a separate renderer process to capture the page, so the model can look and then fix. Measured on the same task: 0 screenshots before, 11 screenshots and 40 image views after, iterating until it was deliverable.
+- **Playbooks 41-50 never reached the AI**: in dev mode the system prompt only carried the 01-40 vulnerability-technique catalogue, and 41-50 fix skills were reduced to "topic=the matching number", so the AI had no idea what each one was and fixed issues off the cuff. Dev mode now lists 41-50 with their numbers and purposes. The descriptions of "list playbooks" and "read playbook" also no longer say "when starting pentesting" — they now cover delivery acceptance and fixing audit findings too. Before this, across 9 sessions and 1188 tool calls, neither tool had ever been used.
+
+### Improved
+
+- **Repetition protection now covers the closing answer too**: if the model starts repeating while writing its final conclusion, that used to be delivered as a normal answer; it is now reported plainly as an incomplete finish.
+- **Screenshots no longer pile up renderer processes**: at most two run at once, waiting longer than 30 seconds gives a clear reason, and each capture cleans up its temporary directory.
+
 ## [0.27.1] - 2026-11-19
 
 Interface release: the session sidebar can now be collapsed, the preview panel no longer squeezes the conversation away, and the composer keeps its shape at any width.

@@ -10,7 +10,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
 import {
-  SIDEBAR_WIDTH, MIN_MAIN_WIDTH, MIN_PANEL_WIDTH, CLOSE_AT,
+  SIDEBAR_WIDTH, MIN_MAIN_WIDTH, CLOSE_AT,
   maxRailWidth, planPanelLayout, clampPanelWidth, shouldClosePanel
 } from '../desktop/src/renderer/lib/panel-layout.mjs';
 

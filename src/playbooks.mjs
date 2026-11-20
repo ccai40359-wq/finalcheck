@@ -313,11 +313,11 @@ export async function readPlaybook({ topic, file, offset = 0, limit = DEFAULT_IN
   };
 }
 
-// 系统提示里的紧凑目录（40 行，约 3-4KB）
+// 系统提示里的紧凑目录（每类一行，约 0.1KB/类）
 export function renderCatalog(catalog, { triggerChars = 64 } = {}) {
   const lines = [
     `## 方法论库（${catalog.length} 类，按需加载）`,
-    '做渗透测试前先查目录再动手：命中类目后调 read_playbook(topic=编号或英文名) 读入口 SKILL.md（含文件路由），附属手册用 file + offset 续读。不要凭记忆编造测试步骤。',
+    '命中类目后调 read_playbook(topic=编号或英文名) 读入口 SKILL.md（含文件路由），附属手册用 file + offset 续读。不要凭记忆编造步骤或结论。',
     ...catalog.map((e) => `${e.id} ${e.cn}｜${e.name}｜${clip(e.triggers, triggerChars)}`)
   ];
   return lines.join('\n');
