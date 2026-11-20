@@ -543,39 +543,102 @@ function countOverlapping(hay, needle, cap = 8) {
 }
 
 /**
- * 思考流「周期复读」检测（2026-11-20 新增，替代原来的纯长度判死）。
+ * 思考流「周期复读」检测（2026-11-20 新增，替代原来的纯长度判死；同日修正误判）。
  *
  * 为什么不能只看长度：r11 实测 12 万字思考里 40/60/80/120 字四档滑窗最高频片段只出现 1-2 次，
  * 也就是「想得久」不是「复读」。但 reasoning 又必须有一道闸——真复读时它是无上限增长的。
  *
- * 做法：在文本尾窗里取若干候选周期长度，看「最后一段是否在更长范围里重复出现 ≥4 次」。
- * 候选周期从 40 到 window/4 取几何级数，只查有限个数，避免长文本上 O(n²)。
+ * 2026-11-20 第二版（修正实测误判）：
+ *   第一版最短周期 40 字 + 「出现 4 次就算复读」，结果模型在思考里起草 5 个结构相同的 JSON / CSS 块时
+ *   会被判成复读——代码块天然同构，只有字段值不同。这类误判比原来的长度帽更隐蔽：它会在正常写页面时
+ *   触发，提示「你复读了」，连着两次就判死。
+ *   第二版：
+ *   ① 最短周期从 40 字提到 200 字（真复读的周期通常是整句/整段，不是几十字；代码块通常 <200 字）；
+ *   ② 要求「首尾相接」——重复片段必须紧挨着连续出现（A A A A），不是散落在上下文里各出现一次；
+ *   ③ 跳过明显的代码块/结构化片段（含 { } [ ] 占比高的、以缩进开头的行）。
  *
  * @param {string} text 累积的思考文本
- * @param {number} [window=6000] 只扫最近这么多字（复读是「当下正在发生」，不需要全history）
- * @param {number} [minRepeat=4] 同一片段至少重复几次才算复读
+ * @param {number} [window=6000] 只扫最近这么多字（复读是「当下正在发生」，不需要全 history）
+ * @param {number} [minRepeat=4] 同一片段至少连续重复几次才算复读
  * @returns {boolean}
  */
 export function detectReasoningLoop(text, { window = 6000, minRepeat = 4 } = {}) {
   const s = String(text || '');
   if (s.length < REASONING_DUP_MIN) return false;
   const seg = s.slice(-Math.min(window, s.length));
-  if (seg.length < 600) return false;
+  if (seg.length < 900) return false;
 
-  // 候选周期：40, 50, 63, 79, 100, ... 到 seg.length/4（几何递增，最多 REASONING_DUP_MAX_QUERIES 个）
-  const maxPeriod = Math.max(40, Math.floor(seg.length / (minRepeat + 1)));
-  const periods = [];
-  for (let p = 40; p <= maxPeriod && periods.length < REASONING_DUP_MAX_QUERIES; p = Math.max(p + 1, Math.floor(p * 1.26))) {
-    periods.push(p);
+  // 候选周期不能只扫固定网格：真复读的周期是「模型自己那句话的长度」，
+  // 它可能落在任何数值上（实测 36 字的句子反复刷，40/50/63 的网格全都错位扫不到）。
+  // 所以先把候选周期从固定网格里取一批，再补一批「以行尾/句尾为边界」的周期。
+  const candidates = new Set();
+
+  // ① 固定网格（几何递增），兜住散文式复读
+  const MIN_PERIOD = 40;
+  const maxPeriod = Math.max(MIN_PERIOD, Math.floor(seg.length / (minRepeat + 1)));
+  for (let p = MIN_PERIOD; p <= maxPeriod && candidates.size < REASONING_DUP_MAX_QUERIES; p = Math.max(p + 1, Math.floor(p * 1.26))) {
+    candidates.add(p);
   }
-  // 取每个周期的最后一整段作为查询串，看它在 seg 里出现几次（取最靠后的位置保证是「当前在复读」）
-  for (const p of periods) {
-    if (p >= seg.length) continue;
+
+  // ② 真实句子边界：从 seg 末尾往前找换行/句末标点，用它切出的每个前缀都试一遍
+  //    这能精确命中「同一句话反复刷」，不管那句多长
+  const boundaries = [];
+  for (let k = seg.length - 1; k > 0 && boundaries.length < 24; k--) {
+    const ch = seg[k];
+    if (ch === '\n' || ch === '。' || ch === '！' || ch === '？' || ch === '.' || ch === '；' || ch === ';') {
+      const len = seg.length - (k + 1);
+      if (len >= 20 && len <= maxPeriod) boundaries.push(len);
+    }
+  }
+  for (const b of boundaries) candidates.add(b);
+  // 边界长度的小倍数（两句重复、三句重复）
+  for (const b of boundaries.slice(0, 6)) {
+    for (const m of [2, 3]) {
+      const p = b * m;
+      if (p <= maxPeriod) candidates.add(p);
+    }
+  }
+
+  for (const p of candidates) {
+    if (p < 20 || p >= seg.length) continue;
     const probe = seg.slice(-p);
     if (!probe.trim()) continue;
-    if (countOverlapping(seg, probe, minRepeat + 2) >= minRepeat) return true;
+    // 跳过代码块：结构化片段几乎必然同构（字段名一样、只有值不同），不能当复读
+    if (looksLikeCode(probe)) continue;
+    // 必须首尾相接：seg 结尾是 probe，往前再看它是否紧贴着又出现 minRepeat-1 次。
+    // 这一条才是区分「复读」和「结构相似但内容不同」的关键——正常写作里相同片段不会紧挨着排队。
+    if (countTrailingRepeats(seg, probe, minRepeat) >= minRepeat) return true;
   }
   return false;
+}
+
+/** 这段文本像代码/结构化数据吗（{ } [ ] 密度高、或多数行以缩进开头） */
+function looksLikeCode(chunk) {
+  const s = String(chunk || '');
+  if (!s) return true;
+  const braces = (s.match(/[{}[\]]/g) || []).length;
+  if (braces * 20 >= s.length) return true; // 每 20 字就有一个括号 → 结构化
+  const lines = s.split('\n').filter((l) => l.trim());
+  if (!lines.length) return true;
+  const indented = lines.filter((l) => /^\s{2,}/.test(l) || /[:;,{]\s*$/.test(l)).length;
+  return indented * 2 > lines.length; // 过半行是缩进/以标点结尾 → 代码
+}
+
+/**
+ * 从 seg 末尾往前数「紧挨着」出现了几次 probe（A A A A 而非 A x A x A）。
+ * 只数连续的，散落各处的重复不算复读。
+ */
+function countTrailingRepeats(seg, probe, cap = 8) {
+  let n = 0;
+  let end = seg.length;
+  while (n < cap) {
+    const start = end - probe.length;
+    if (start < 0) break;
+    if (seg.slice(start, end) !== probe) break;
+    n++;
+    end = start;
+  }
+  return n;
 }
 
 /* ---------- 行为层防复读（CC 式）：同工具+同参数连续重复调用 ---------- */

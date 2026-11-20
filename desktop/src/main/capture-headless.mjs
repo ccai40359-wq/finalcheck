@@ -116,14 +116,15 @@ async function renderOnce(backend, payload, timeoutMs) {
   let child;
   try {
     if (backend.kind === 'electron') {
-      // 独立 user-data-dir + 关掉原生窗口遮挡检测（Windows 下后台窗口会被标 hidden，capturePage 等不到帧）
+      // 独立 user-data-dir + 关掉原生窗口遮挡检测（Windows 下后台窗口会被标 hidden，capturePage 等不到帧）。
+      // 注意不要加 --no-sandbox：渲染进程里加载的是外部内容（用户写的网页 / 项目里的 html），
+      // 关掉沙箱等于让它能碰文件系统和配置。实测不加也能正常截图（800x600 / 29KB）。
       child = spawn(backend.bin, [
         path.join(HERE, 'render-main.mjs'),
         jobFile,
         `--user-data-dir=${path.join(tmp, 'ud')}`,
         '--disable-gpu',
-        '--disable-features=CalculateNativeWinOcclusion',
-        '--no-sandbox'
+        '--disable-features=CalculateNativeWinOcclusion'
       ], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, env: childEnv() });
     } else {
       child = spawn(backend.bin, [

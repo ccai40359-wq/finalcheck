@@ -72,6 +72,56 @@ test('repetition: 思考流周期复读 → repetitive=true（不是 longThink�
   assert.ok(!out.longThink, '不能归到「想太久」那一类');
 });
 
+// ---- 2026-11-20 第二版回归：Claude 审出第一版检测器会误判 ----
+// 第一版用「最短 40 字周期 + 出现 4 次就算复读」，结果模型在思考里起草 5 个结构相同的
+// JSON / CSS 块就被判成复读（代码块天然同构，只有字段值不同）。这个误判比原来的长度帽更隐蔽：
+// 它在正常写页面时触发，提示「你复读了」，连两次就判死——正好打在 0.28 要修的同一个地方。
+
+test('repetition: 思考里起草 5 个结构相同的 JSON 块 → 不算复读（Claude 审出的误判）', async () => {
+  // 前置正常推理 + 5 个只有 name 不同的配置块
+  let text = '';
+  const topics = ['导航', '英雄区', '数据区', '能力清单', '证据矩阵', '页脚', '按钮', '卡片', '表格', '动效'];
+  for (let i = 0; text.length < 5000; i++) {
+    text += `${topics[i % topics.length]}要考虑第${i}处宽度 ${(i * 37) % 1400}px 时的表现，第${(i * 11) % 900}项留到实现阶段再调。\n`;
+  }
+  for (let k = 1; k <= 5; k++) {
+    text += `{\n  "name": "module-${k}",\n  "enabled": true,\n  "timeout": 3000,\n  "retries": 2\n}\n`;
+  }
+  const out = await run([thinkChunk(text)]);
+  assert.ok(!out.repetitive, '同结构配置块不是复读（只有字段值不同）');
+  assert.ok(!out.longThink, '也不该标「想太久」');
+});
+
+test('repetition: 思考里起草 5 张结构相同的 CSS 卡片 → 不算复读', async () => {
+  let text = '';
+  const topics = ['版式', '配色', '动效', '层级', '栅格', '字体'];
+  for (let i = 0; text.length < 5000; i++) {
+    text += `${topics[i % topics.length]}要确认第${i}处的间距与对比度，第${(i * 13) % 800}项另说。\n`;
+  }
+  const card = '.card {\n  padding: 20px;\n  border-radius: 12px;\n  background: #1a1a1a;\n  border: 1px solid #333;\n}\n';
+  for (let k = 1; k <= 5; k++) text += `第 ${k} 张：\n${card}这张用第${k}种点缀。\n`;
+  const out = await run([thinkChunk(text)]);
+  assert.ok(!out.repetitive, '同结构 CSS 块不是复读');
+});
+
+test('repetition: 同一句短句反复刷 → 仍能抓到（不能因为修误判而漏掉真复读）', async () => {
+  // 36 字的句子刷 120 次 = 4320 字。第一版修到「最短周期 200 字」时这条会漏检（修过头了）。
+  const sent = '我正在核对文件清单与构建日志，确认没有遗漏，接下来要检查交付物是否齐备。';
+  const out = await run([thinkChunk(sent.repeat(120))]);
+  assert.equal(out.repetitive, true, '短句反复刷是最典型的复读形态，必须抓到');
+});
+
+test('repetition: 相同句子夹着不同内容（A x A x A）→ 不算复读', async () => {
+  // 正常写作里同一句话可能反复出现，但不会紧挨着排队——这是「复读」与「反复提及」的分界
+  let text = '';
+  for (let i = 0; i < 20; i++) {
+    text += '我正在核对文件清单与构建日志，确认没有遗漏。'
+      + `第${i}次补充：这一处与前面不同，需要单独确认 ${(i * 53) % 700}px 的表现。`;
+  }
+  const out = await run([thinkChunk(text)]);
+  assert.ok(!out.repetitive, '散落出现的相同句子不算复读');
+});
+
 // 造「真正互不相同」的长文本：每节都换主题词 + 换数字，不存在可被检测到的重复周期。
 // 编造这种夹具很容易踩坑（第一版我用了 `${filler}${i}.` 重复 20 次，周期内完全一样，
 // 被自己的检测器判成复读——这本身说明检测器有效）。
