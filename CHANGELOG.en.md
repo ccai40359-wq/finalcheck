@@ -6,6 +6,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.28.1] - 2026-11-20
+
+Polish release: six rough edges found in real use, two of which were "works, but feels wrong" rather than outright breakage.
+
+### Fixed
+
+- **When the AI asked you a question, the question itself was missing**: in the English UI, if the AI asked in Chinese the whole sentence was replaced with "Choose from the options below." — you saw four options and had no idea what was being asked. The question now always keeps its original text (if you cannot read it you can still copy it and translate, which beats a placeholder line). Dev mode now also asks in the UI language.
+- **The model picker had a redundant "Current" row**: the separate highlighted block above the list is gone; the current model's own row now shows a check mark plus its effort level instead.
+- **Context usage never refreshed**: it only recalculated after you sent a message, so after compaction or during a long tool run the number sat at a stale value that looked like compaction had not worked. It now refreshes every 5 minutes on its own (skipped while the window is in the background).
+- **Clicking a link in a message turned the whole app into a web page**: nothing intercepted it, so Electron navigated the main window to that URL and you had to restart. Links now open in your system browser and the main window is never taken over.
+- **A two-item checklist was rejected**: the minimum used to be three. For one or two clear goals, two items is a sensible breakdown, and being rejected forced a rewrite and another round trip. Two is now accepted (one is still rejected — a single item is not a breakdown).
+
+### Added
+
+- **Stuck-on-the-same-error now gets a nudge**: previously only exact repeats of the same tool call were caught, not "different attempts that keep hitting the same error" — which is what getting stuck actually looks like. The failure signature of each round is now remembered (error kind, failing test count; paths and line numbers do not count as differences), and five consecutive rounds on the same error trigger a prompt to step back, try something simpler, or report honestly where it is stuck. It only nudges, never aborts, and at most twice per error.
+
 ## [0.28.0] - 2026-11-20
 
 Long-task release: open-ended work (designing a page, choosing a visual direction, weighing architecture trade-offs) used to end with the model thinking for a long time and producing nothing. It now finishes, and it checks its own output by taking screenshots before delivering instead of trusting the code.
