@@ -461,7 +461,9 @@ test('agent-tools: resolveRipgrepPath 检测顺序（env 覆盖 → vendor/rg �
 
     // 2) 没有 env 时认开发态捆绑 vendor/rg/rg.exe（打包态走 process.resourcesPath/rg，单测环境无 resourcesPath）
     delete process.env.FINALCHECK_RG_PATH;
-    const vendored = path.join(dir, 'vendor', 'rg', 'rg.exe');
+    // 2026-11-20 Linux 移植：Windows 上是 rg.exe，Linux/macOS 是 rg（无扩展名）
+    const rgBin = process.platform === 'win32' ? 'rg.exe' : 'rg';
+    const vendored = path.join(dir, 'vendor', 'rg', rgBin);
     await mkdir(path.dirname(vendored), { recursive: true });
     await writeFile(vendored, 'fake');
     assert.equal(resolveRipgrepPath({ repoRoot: dir }), vendored);
@@ -520,7 +522,10 @@ test('agent-tools: grep_code 结构化搜索 + glob 过滤 + maxResults 截断',
   assert.match(miss.error, /pattern 必填/);
 });
 
-test('agent-tools: grep_code rg 启动失败时自动回退 findstr（literal-only，不报错）', async (t) => {
+// 这条测的是「rg 挂了就回退到 findstr」——findstr 是 Windows 独有的。
+// Linux/macOS 的回退目标是 grep（GNU grep，支持正则，与 findstr 的 literal-only 语义不同），
+// 那条路径另有覆盖。在非 Windows 上跳过，避免把 Windows 行为当成跨平台不变量。
+test('agent-tools: grep_code rg 启动失败时自动回退 findstr（literal-only，不报错）', { skip: process.platform !== 'win32' }, async (t) => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'fc-grep-fb-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   await writeFile(path.join(dir, 'a.js'), 'hello world\nconst hel = 1;\n', 'utf8');

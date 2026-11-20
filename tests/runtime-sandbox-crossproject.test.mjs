@@ -29,8 +29,13 @@ test('§6.1 闸①: 敏感路径无条件拒（默认关沙箱时）', () => {
 });
 
 test('§6.1 闸②: 项目边界仍生效（默认 workspace，不是 off）', () => {
-  const p = createPolicy({ projectPath: 'D:/projA', mode: 'workspace' });
-  const r = checkCommandPaths(p, 'cat D:/projB/x.txt', 'D:/projA');
+  // 2026-11-20 Linux 移植：原来写死 'D:/projA'。
+  // POSIX 上 'D:/projB/x.txt' 不是绝对路径 → 边界闸不触发 → 假红。
+  const onWin = process.platform === 'win32';
+  const root = onWin ? 'D:/projA' : '/tmp/projA';
+  const outside = onWin ? 'D:/projB' : '/tmp/projB';
+  const p = createPolicy({ projectPath: root, mode: 'workspace' });
+  const r = checkCommandPaths(p, `${onWin ? 'type' : 'cat'} ${outside}/x.txt`, root);
   assert.equal(r.ok, false);
   assert.equal(r.matchedRule, 'path-outside');
 });

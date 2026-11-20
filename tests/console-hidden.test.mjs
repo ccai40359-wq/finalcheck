@@ -131,7 +131,11 @@ test('console: DLL-init failure is returned once without visible/detached retry'
   assert.equal(fs.readFileSync(marker, 'utf8').trim().split(/\r?\n/).length, 1, 'must execute once');
 });
 
-test('console: required mode rejects incompatible command before any host execution', async (t) => {
+// 这条测的是 Windows ACL 受限令牌专属的行为：LIST 里的 node/npm/grep 在受限令牌下
+// 拿不到命名管道/cygwin 共享内存，所以 required 模式要**先拒绝**而不是落到宿主机。
+// Linux 的 bwrap 沙箱没有这个限制（node/grep 在 bubblewrap 里能正常跑），
+// sandboxCompatible 在非 Windows 上直接返回 compatible —— 所以这条只在 Windows 上有意义。
+test('console: required mode rejects incompatible command before any host execution', { skip: process.platform !== 'win32' }, async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fc-required-test-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const previous = process.env.FINALCHECK_ACL_SANDBOX;

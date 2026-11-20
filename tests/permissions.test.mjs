@@ -232,10 +232,14 @@ test('permissions: noteTarget 口头确认语义——只记账不拦（协议�
 
 /* ---------- 目录台账 ---------- */
 test('permissions: 目录未确认 assertDir 抛错；confirmDir（含相对路径归一）后放行', () => {
-  assert.throws(() => assertDir('D:\\tmp\\x'), /不在已确认名单/);
+  // 2026-11-20 Linux 移植：原来写死 Windows 盘符 'D:\tmp\x'。
+  // POSIX 上这不是绝对路径 → assertDir 把它 join 到 cwd，断言拿到的不是原值 → 假红。
+  // 改成用当前平台的绝对路径，两边跑同一条不变量。
+  const dir = process.platform === 'win32' ? 'D:\\tmp\\x' : '/tmp/x';
+  assert.throws(() => assertDir(dir), /不在已确认名单/);
   assert.equal(confirmDir(''), false);
-  assert.equal(confirmDir('D:\\tmp\\x'), true);
-  assert.equal(assertDir('D:\\tmp\\x'), 'D:\\tmp\\x'); // Windows 绝对路径原样归一
+  assert.equal(confirmDir(dir), true);
+  assert.equal(assertDir(dir), dir, '绝对路径应原样归一');
   assert.deepEqual(getLedger().confirmedDirs.length, 1);
 });
 

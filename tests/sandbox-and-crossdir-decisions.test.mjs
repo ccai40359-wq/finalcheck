@@ -104,9 +104,19 @@ test('决策2: off 模式（新默认）可跨目录读写', async (t) => {
 });
 
 test('决策2: workspace 模式仍保持项目边界（显式要边界时有效）', () => {
-  const a = createPolicy({ projectPath: 'C:/projA', mode: 'workspace' });
-  const r = checkCommandPaths(a, 'cat C:/projB/x.txt', 'C:/projA');
+  // 2026-11-20 Linux 移植：原来写死 Windows 盘符路径 'C:/projA'。
+  // 在 POSIX 上 'C:/projB/x.txt' 不是绝对路径（会被当相对路径解析），
+  // 于是边界闸根本没触发 → 这条测试在 Linux 上假红。
+  // 改用 path.join 构造当前平台的绝对路径（也避开反斜杠转义陷阱）。
+  const onWin = process.platform === 'win32';
+  const base = onWin ? path.win32.join('C:', 'fc') : '/tmp/fc-boundary';
+  const root = path.join(base, 'projA');
+  const outside = path.join(base, 'projB');
+  const a = createPolicy({ projectPath: root, mode: 'workspace' });
+  const cat = onWin ? 'type' : 'cat';
+  const r = checkCommandPaths(a, `${cat} ${path.join(outside, 'x.txt')}`, root);
   assert.equal(r.ok, false, 'workspace 模式仍应拒绝项目外路径');
+  assert.equal(r.matchedRule, 'path-outside');
 });
 
 test('决策2: 记忆跟目录走——remember_project 传 dir 时写那个项目', async (t) => {

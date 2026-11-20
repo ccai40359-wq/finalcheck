@@ -1,4 +1,4 @@
-// Linux 首启依赖准备：Playwright 浏览器。
+// Linux / macOS 首启依赖准备：Playwright 浏览器。
 //
 // 为什么不把浏览器打进包：Chromium 一个就 150MB+，加上 FFmpeg 和系统依赖，
 // AppImage 会从 ~250MB 涨到 400MB+。用户大部分时间并不截图，
@@ -11,6 +11,7 @@
 //   --with-deps  同时用 apt/dnf/zypper 装系统库（需要 sudo）。CI 与全新机器用这个。
 //   --dry-run    只检查，不下载。
 import { spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -22,18 +23,34 @@ const dryRun = args.includes('--dry-run');
 
 const log = (...a) => console.log('[playwright-linux]', ...a);
 
-function run(cmd, argv, opts = {}) {
-  const r = spawnSync(cmd, argv, { stdio: 'inherit', cwd: desktopRoot, shell: false, ...opts });
+function run(cmd, argv) {
+  const r = spawnSync(cmd, argv, { stdio: 'inherit', cwd: desktopRoot, shell: false });
   return r.status ?? 1;
 }
 
-// 先看浏览器是否已就绪：已就绪就跳过下载（重复跑很快）
+/**
+ * 浏览器是否已就绪。
+ *
+ * ⚠️ 2026-11-20 实测坑：`chromium.executablePath()` 只反映**完整浏览器**目录，
+ * 而 `chromium.launch()` 默认用 **headless shell**（chrome-headless-shell）。
+ * 两者是分开下载的两份产物 —— 只装了前者时 executablePath() 非空，
+ * 但真截图会报 `Executable doesn't exist at .../chromium_headless_shell-XXXX`。
+ * 所以「就绪」必须两份都在。目录布局：
+ *   <browsers>/chromium-1255/chrome-linux64/chrome
+ *   <browsers>/chromium_headless_shell-1255/chrome-headless-shell-linux64/...
+ */
 async function browsersReady() {
   try {
     const { chromium } = await import('playwright');
-    const p = chromium.executablePath?.();
-    if (p) return { ready: true, path: p };
-    return { ready: false };
+    const full = chromium.executablePath?.();
+    if (!full || !existsSync(full)) return { ready: false };
+    // 从完整浏览器的路径反推出同版本的 headless shell 目录
+    const parent = path.dirname(path.dirname(full)); // .../ms-playwright/chromium-<ver>
+    const version = parent.match(/chromium-(\d+)/)?.[1];
+    if (!version) return { ready: true, path: full }; // 反推不出就认为够用（非标准布局）
+    const shellRoot = path.join(path.dirname(parent), `chromium_headless_shell-${version}`);
+    if (!existsSync(shellRoot)) return { ready: false, missing: 'headless shell', full };
+    return { ready: true, path: full };
   } catch (e) {
     return { ready: false, error: e?.message || String(e) };
   }
@@ -45,25 +62,31 @@ if (state.ready) {
   if (!withDeps) process.exit(0);
 } else {
   if (state.error) log('playwright 模块有问题:', state.error);
+  if (state.missing === 'headless shell') log('完整浏览器在，但缺 headless shell（截图默认走它）——补装中…');
   log('准备下载 Chromium…');
 }
 
 if (dryRun) {
-  log(dryRun ? '（--dry-run：不实际下载）' : '');
+  log('（--dry-run：不实际下载）');
   process.exit(0);
 }
 
-// package.json 里 playwright 是本地依赖，用 npx 会拿它自己的 CLI
-const argv = ['playwright', 'install', 'chromium'];
-if (withDeps) argv.unshift('--with-deps'); // playwright install --with-deps chromium
-// 注意 --with-deps 会调系统包管理器，需要 sudo；在容器里通常已是 root
-const code = run(process.platform === 'win32' ? 'npx.cmd' : 'npx', withDeps
-  ? ['--yes', 'playwright@' + (process.env.PLAYWRIGHT_VERSION || '1.65.1'), 'install', '--with-deps', 'chromium']
-  : ['--yes', 'playwright@' + (process.env.PLAYWRIGHT_VERSION || '1.65.1'), 'install', 'chromium']);
+// 用**本地已安装的** playwright CLI，不要用 npx：
+// npx playwright 在没进 PATH / 没全局安装时会直接失败（2026-11-20 在 WSL 实测
+// `npx playwright` → "playwright: not found"），而本地依赖必然存在。
+const cliEntry = path.join(desktopRoot, 'node_modules', 'playwright', 'cli.js');
+if (!existsSync(cliEntry)) {
+  log('本地没有 playwright CLI，先跑：cd desktop && npm install');
+  process.exit(1);
+}
+const cliArgv = [cliEntry, 'install'];
+if (withDeps) cliArgv.push('--with-deps');
+cliArgv.push('chromium');
+const code = run(process.execPath, cliArgv);
 
 if (code !== 0) {
   log('下载失败。可以手动执行：');
-  log('  cd desktop && npx playwright install --with-deps chromium');
+  log(withDeps ? '  cd desktop && node scripts/install-playwright-linux.mjs --with-deps' : '  cd desktop && node scripts/install-playwright-linux.mjs');
   log('国内网络慢的话可设 PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright');
   process.exit(code);
 }
@@ -73,5 +96,5 @@ if (after.ready) {
   log('完成:', after.path);
   process.exit(0);
 }
-log('下载命令执行完，但 executablePath() 仍为空——请检查 PLAYWRIGHT_BROWSERS_PATH');
+log('下载命令执行完，但浏览器/headless shell 仍缺失——请检查 PLAYWRIGHT_BROWSERS_PATH');
 process.exit(1);

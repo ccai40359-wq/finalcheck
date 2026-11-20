@@ -230,6 +230,34 @@ export function createPolicy({
       path: trimTrailingSep(pathApi, pathApi.normalize(pathApi.join(homeDir, '.git-credentials'))),
       label: 'Git 凭据文件'
     });
+
+    // 2026-11-20 Linux 移植：应用自己的数据目录也必须挡住。
+    // 上面只处理 %APPDATA%\FinalCheck（Windows）。Linux 上配置在
+    // ~/.config/FinalCheck（XDG），macOS 在 ~/Library/Application Support/FinalCheck ——
+    // 里面同样有 config.json（**存着 API Key**）和会话库。不补这几条，
+    // Linux 上 agent 一个 read_file 就能把用户自己的密钥读出来。
+    if (!isWinPlatform(effectivePlatform)) {
+      if (effectivePlatform === 'darwin') {
+        addDir(pathApi.join('Library', 'Application Support', 'FinalCheck'), '应用数据目录（含 API Key）');
+        addDir(pathApi.join('Library', 'Caches', 'FinalCheck'), '应用缓存目录');
+      } else {
+        // Linux / 其他 POSIX：尊重 XDG_CONFIG_HOME / XDG_CACHE_HOME 的覆盖
+        const xdgCfg = readEnv(envSnapshot, 'XDG_CONFIG_HOME', false);
+        const xdgCache = readEnv(envSnapshot, 'XDG_CACHE_HOME', false);
+        const cfgBase = xdgCfg ? normalizeRoot(pathApi, xdgCfg, null, homeDir) : null;
+        const cacheBase = xdgCache ? normalizeRoot(pathApi, xdgCache, null, homeDir) : null;
+        sensitiveDirs.push({
+          path: trimTrailingSep(pathApi, pathApi.normalize(
+            pathApi.join(cfgBase || pathApi.join(homeDir, '.config'), 'FinalCheck'))),
+          label: '应用数据目录（含 API Key）'
+        });
+        sensitiveDirs.push({
+          path: trimTrailingSep(pathApi, pathApi.normalize(
+            pathApi.join(cacheBase || pathApi.join(homeDir, '.cache'), 'FinalCheck'))),
+          label: '应用缓存目录'
+        });
+      }
+    }
   }
 
   const keyBasenames = isWinPlatform(effectivePlatform)
@@ -580,6 +608,24 @@ function literalPathsIn(text) {
     // 含 %VAR% / 通配符 / 管道符号的不猜，交给黑名单与审批
     if (value && !value.includes('%') && !value.includes('*') && !value.includes('?')) found.push(value);
   }
+  // ④ POSIX 绝对路径（2026-11-20 Linux 移植补的洞）。
+  //
+  // 上面两条只覆盖「盘符路径」和「家目录写法」。Linux 上 `cat /etc/passwd`、`cp /var/log/x`、
+  // `rm /home/other/f` 这类**纯 POSIX 绝对路径**一条都匹配不到 → literalPathsIn 返回空 →
+  // checkCommandPaths 直接 ok:true，项目边界闸在 Linux 上等于不存在（WSL 实测确认）。
+  //
+  // 边界与 homeRe 同口径：必须是词首（文本开头 / 空白 / 引号 / 分隔符），
+  // 且第二字符不能是 `/`（`//server/share` 交给下面单独判，`/b` `/s` 这类单字母开关不当路径）。
+  // 末尾允许带不带引号的路径字符，跳到空白/分隔符为止。
+  const posixAbsRe = /(?:^|[\s"'(=;&|<>])((?:\/(?!\/)[^\s"'|;&<>)]*))/g;
+  let pm;
+  while ((pm = posixAbsRe.exec(text)) !== null) {
+    const value = (pm[1] || '').trim();
+    if (!value || value === '/') continue;                 // 单独一个 `/` 不算
+    if (/^\/[a-zA-Z]$/.test(value)) continue;              // `ls /b` 这类单字母开关
+    if (value.includes('*') || value.includes('?') || value.includes('$')) continue; // 通配/变量不猜
+    found.push(value);
+  }
   return found;
 }
 
@@ -594,17 +640,21 @@ function resolveCommandPath(policy, raw, base) {
   if (typeof raw !== 'string' || !raw.trim()) return null;
   const text = raw.trim().replace(/^["']|["']$/g, '');
   const home = policy && typeof policy.homeDir === 'string' ? policy.homeDir : null;
+  // 2026-11-20 Linux 移植：这里原来用宿主 `path`（path.isAbsolute / path.join / path.resolve），
+  // 是「当前运行平台」的实现。在 Linux 上跑 Windows 策略（测试/交叉验证）或反过来时，
+  // 绝对路径判定与路径拼接都会错平台。统一走 policy.platform 对应的 API。
+  const pathApi = pathApiFor(policy?.platform);
 
   // 家目录写法 → 绝对路径（统一成 Windows 风格，便于与 policy.sensitive.dirs 比对）
   const homeMatch = /^(~|\$HOME|\$\{HOME\}|%USERPROFILE%)((?:[\\/].*)?)$/i.exec(text);
   if (homeMatch) {
     if (!home) return null;
     const rest = String(homeMatch[2] || '').replace(/^[\\/]/, '');
-    return rest ? path.join(home, ...rest.split(/[\\/]+/).filter(Boolean)) : home;
+    return rest ? pathApi.join(home, ...rest.split(/[\\/]+/).filter(Boolean)) : home;
   }
 
-  if (path.isAbsolute(text)) return text;
-  return base ? path.resolve(base, text) : null;
+  if (pathApi.isAbsolute(text)) return text;
+  return base ? pathApi.resolve(base, text) : null;
 }
 
 /**

@@ -179,7 +179,11 @@ test('沙箱默认关闭时 node 能正常跑（走宿主机 Git Bash）', async
 // 受限令牌跑不了「会捕获孙进程输出」的命令：实测 node --test / npm test 静默 EPERM，
 // grep / cat / head 直接 CreateFileMapping fatal（Codex 的 Windows 沙箱同样 spawn EPERM）。
 // 这些命令按兼容清单改在宿主机执行（路径策略、黑名单、审批仍生效），其余命令照常进沙箱。
-test('sandboxCompatible: 按管道段判断兼容性', () => {
+// 2026-11-20 Linux 移植：这份不兼容清单是 **Windows ACL 受限令牌专属**的。
+// Linux 的 bwrap 没有命名管道/共享内存限制，sandboxCompatible 在非 Windows 上直接返回
+// compatible:true（否则 node/npm/grep 会被误判成「沙箱不支持」而统统落到宿主机）。
+// 所以这两条只在 Windows 上有意义。
+test('sandboxCompatible: 按管道段判断兼容性', { skip: process.platform !== 'win32' }, () => {
   assert.equal(sandboxCompatible('dir').compatible, true);
   assert.equal(sandboxCompatible('git status').compatible, true);
   assert.equal(sandboxCompatible('powershell -NoProfile -Command "Get-Content a.txt"').compatible, true);
@@ -192,7 +196,7 @@ test('sandboxCompatible: 按管道段判断兼容性', () => {
 // 2026-11-17：这些词在 cmd 里**存在但语义不同**，进去会得到静默错误的结果，
 // 比「命令不存在」更危险（实测 FastAPI 会话里模型就写了 find/sort）。
 // 必须改走宿主机 Git Bash，语义才对。
-test('sandboxCompatible: cmd 里语义不同的 bash 工具必须走宿主机', () => {
+test('sandboxCompatible: cmd 里语义不同的 bash 工具必须走宿主机', { skip: process.platform !== 'win32' }, () => {
   for (const cmd of [
     'find . -name "*.py"',
     'find . -type f -newer x',

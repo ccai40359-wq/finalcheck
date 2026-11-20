@@ -274,7 +274,9 @@ test('playwright: 截图后端优先级（Playwright 在 Electron 之后、Chrom
 
 test('playwright: 沙箱里启动 Chromium 必须带 --no-sandbox（bwrap 内没有 user namespace）', () => {
   const src = read('desktop/src/main/capture-headless.mjs');
-  assert.match(src, /args: \['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage'\]/, '缺 --no-sandbox 时 Chromium 在容器/bwrap 里直接退出');
+  // 断言「启动参数里含 --no-sandbox」，不锁写法（可能是内联数组，也可能是 launchArgs 常量）
+  assert.match(src, /'--no-sandbox'/, '缺 --no-sandbox 时 Chromium 在容器/bwrap 里直接退出');
+  assert.match(src, /'--disable-dev-shm-usage'/, '容器里 /dev/shm 太小会崩，必须带这个');
 });
 
 test('playwright: 不可用文案给出精确命令（不是"自己装 puppeteer"）', () => {
@@ -286,5 +288,60 @@ test('打包: deb 依赖声明 bubblewrap + socat（Linux 沙箱的硬依赖）'
   const pkg = JSON.parse(read('desktop/package.json'));
   for (const dep of ['bash', 'git', 'ripgrep', 'bubblewrap', 'socat']) {
     assert.ok(pkg.build.deb.depends.includes(dep), `deb 缺 ${dep} 依赖`);
+  }
+});
+
+// ---------------------------------------------------------------- grep 回退（Linux）
+
+test('linux: grep_code 在非 Windows 上回退到 GNU grep（不再报「请安装 ripgrep」）', { skip: process.platform === 'win32' }, () => {
+  const src = read('desktop/src/main/agent-tools.mjs');
+  // 旧实现：`return { error: '未找到 ripgrep（rg）：当前平台没有 findstr 兜底，请安装 ripgrep 后重试' }`
+  // grep 是 POSIX 标准工具，系统必然自带，没理由让用户为搜索额外装东西。
+  // 只断言「不再作为 error 返回」。注释里仍会引用旧文案做历史说明，那是允许的。
+  assert.ok(!/error:\s*'未找到 ripgrep/.test(src), '不该再把「未找到 ripgrep」当硬失败返回');
+  assert.match(src, /return grepCodeGnuGrep\(\{ target, glob, pattern, max \}\);/, '非 Windows 应回退 GNU grep');
+  assert.match(src, /async function grepCodeGnuGrep\(/, '缺 grepCodeGnuGrep 实现');
+});
+
+test('linux: GNU grep 回退要带 -H（否则单文件命中解析不出，模型看到 0 处）', { skip: process.platform === 'win32' }, () => {
+  const src = read('desktop/src/main/agent-tools.mjs');
+  // 取函数体前 900 字符（含 argv 构造），不用 indexOf('}') —— 函数内有多个 }
+  const fn = src.slice(src.indexOf('async function grepCodeGnuGrep'));
+  assert.match(fn.slice(0, 900), /'-n', '-H', '-I', '-E'/, 'grep argv 必须含 -H（带文件名）与 -I（跳二进制）');
+});
+
+test('linux: aclSandbox 的不兼容清单是 Windows 专属，Linux 上 node/grep 不应被判不兼容', { skip: process.platform === 'win32' }, () => {
+  const src = read('desktop/src/main/sandbox.mjs');
+  const fn = src.slice(src.indexOf('export function sandboxCompatible'));
+  const head = fn.slice(0, 900);
+  assert.match(head, /if \(process\.platform !== 'win32'\) return \{ compatible: true, reason: null \};/,
+    'Linux 上必须先短路返回 compatible（否则 node/npm/grep 全被跳过沙箱落到宿主机）');
+});
+
+test('linux: 应用自己的配置目录是敏感路径（config.json 里存着 API Key）', async () => {
+  const { createPolicy, isSensitivePath } = await import('../desktop/src/main/policy.mjs');
+  const os = await import('node:os');
+  const pathMod = await import('node:path');
+  const home = os.homedir();
+  // 三个平台各取自己的应用数据目录。这条在 Linux 上最有价值：
+  // Windows 分支只认 %APPDATA%，XDG 路径曾完全没被保护（实测能读出来）。
+  const cfg = process.platform === 'win32'
+    ? pathMod.join(process.env.APPDATA || pathMod.join(home, 'AppData', 'Roaming'), 'FinalCheck', 'config.json')
+    : process.platform === 'darwin'
+      ? pathMod.join(home, 'Library', 'Application Support', 'FinalCheck', 'config.json')
+      : pathMod.join(process.env.XDG_CONFIG_HOME || pathMod.join(home, '.config'), 'FinalCheck', 'config.json');
+  const p = createPolicy({ projectPath: process.cwd(), mode: 'workspace' });
+  assert.ok(isSensitivePath(p, cfg), `${cfg} 必须命中敏感路径（里面有 config.json 的 API Key）`);
+});
+
+test('linux: POSIX 绝对路径必须在项目边界闸里被识别（曾经整块漏掉）', async () => {
+  const { createPolicy, checkCommandPaths } = await import('../desktop/src/main/policy.mjs');
+  const p = createPolicy({ projectPath: '/tmp/proj', mode: 'workspace' });
+  // literalPathsIn 原来只匹配「盘符路径」和「家目录写法」，纯 POSIX 绝对路径一条都不匹配
+  // → Linux 上 `cat /etc/passwd` 直接 ok:true，边界闸等于不存在。
+  if (process.platform !== 'win32') {
+    const r = checkCommandPaths(p, 'cat /etc/passwd', '/tmp/proj');
+    assert.equal(r.ok, false, 'POSIX 绝对路径必须触发边界检查');
+    assert.equal(r.matchedRule, 'path-outside');
   }
 });

@@ -8,6 +8,7 @@
 // 让它在隐藏窗口里渲染目标再 capturePage；不连 CDP、不开端口、不碰主应用的单实例锁。
 // 拿不到 electron 二进制时回退到系统 Chrome/Edge 的 headless 截图。
 import { mkdir, readFile, writeFile, rm } from 'node:fs/promises';
+import { statSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
@@ -35,10 +36,16 @@ export async function probeCaptureBackend() {
   // 模型只能盲写 UI。Playwright 自带浏览器二进制，装完即用。
   try {
     const { chromium } = await import('playwright');
-    // executablePath() 在没下载浏览器时返回 null（不抛）
-    const avail = chromium.executablePath?.();
-    if (avail) { probed = { ok: true, kind: 'playwright', bin: avail }; return probed; }
-    reasons.push('playwright 已安装但浏览器未下载（npx playwright install chromium）');
+    // ⚠️ executablePath() 只是**按版本号拼出的期望路径**，不保证文件真的存在。
+    // 2026-11-20 实测：只装了完整浏览器、没装 headless shell 时它照样返回非空，
+    // 于是这里判「可用」→ 真截图时才炸。必须真的 stat 一下。
+    const full = chromium.executablePath?.();
+    const fullOk = !!full && existsSyncSync(full);
+    // 完整浏览器不在也没关系：renderWithPlaywright 会扫描缓存目录找任意已装版本
+    const anyChromium = findInstalledChromiums()[0] || null;
+    const pick = fullOk ? full : (anyChromium || null);
+    if (pick) { probed = { ok: true, kind: 'playwright', bin: pick }; return probed; }
+    reasons.push('playwright 已安装但没有任何可用的 chromium（node desktop/scripts/install-playwright-linux.mjs）');
   } catch (e) { reasons.push(`playwright 不可用（${e?.message || e}）`); }
   // ③ 系统 Chrome / Edge（无 Electron 的 CI、纯 CLI 环境）
   const guesses = [];
@@ -231,13 +238,87 @@ async function mkdtempish() {
  *     真正的隔离由外层 bwrap 负责。
  *   · waitUntil: 'load' + 额外 waitMs：只等 load 会漏掉异步渲染的内容（图表/动画首帧）
  */
+/**
+ * 扫 ms-playwright 缓存目录，找**任意版本**已安装的完整 chromium 可执行文件。
+ *
+ * 为什么需要：headless shell 与完整浏览器是分开下载的两份产物，
+ * 用户机器上经常只有一部分（或只有别的 Playwright 项目的旧版本）。
+ * 只要能找到一个真正的 chromium，截图就该能用 —— 版本差几代不影响截静态页面。
+ *
+ * 目录布局：<cache>/chromium-<ver>/chrome-linux64/chrome（Linux）
+ *           <cache>/chromium-<ver>/chrome-win64/chrome.exe（Windows）
+ *           <cache>/chromium-<ver>/chrome-mac/Chromium.app/Contents/MacOS/Chromium（macOS）
+ */
+function findInstalledChromiums() {
+  const out = [];
+  try {
+    const pathMod = path;
+    const osMod = os;
+    const roots = [
+      process.env.PLAYWRIGHT_BROWSERS_PATH,
+      pathMod.join(osMod.homedir(), '.cache', 'ms-playwright'),
+      pathMod.join(osMod.homedir(), 'Library', 'Caches', 'ms-playwright'),
+      pathMod.join(osMod.homedir(), 'AppData', 'Local', 'ms-playwright')
+    ].filter(Boolean);
+    const subdirs = ['chrome-linux64/chrome', 'chrome-linux/chrome', 'chrome-win64/chrome.exe',
+      'chrome-win/chrome.exe', 'chrome-mac/Chromium.app/Contents/MacOS/Chromium'];
+    for (const root of roots) {
+      let entries;
+      try { entries = fs.readdirSync(root); } catch { continue; }
+      // 按版本号倒序：新的优先
+      const vers = entries.filter((d) => /^chromium-\d+$/.test(d)).sort((a, b) => {
+        const na = Number(a.split('-')[1]); const nb = Number(b.split('-')[1]);
+        return nb - na;
+      });
+      for (const v of vers) {
+        for (const sub of subdirs) {
+          const p = pathMod.join(root, v, sub);
+          try { if (statSync(p).isFile()) out.push(p); } catch { /* 不存在 */ }
+        }
+      }
+    }
+  } catch { /* 扫描失败就当没找到 */ }
+  return out;
+}
+
+function existsSyncSync(p) {
+  try { return statSync(p).isFile(); } catch { return false; }
+}
+
 async function renderWithPlaywright(payload, timeoutMs) {
   const { chromium } = await import('playwright');
   let browser = null;
   try {
-    browser = await chromium.launch({
-      args: ['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage']
-    });
+    // 优先用 headless shell（更快、更省内存）；缺它时退回**完整浏览器**的 headless 模式。
+    //
+    // 2026-11-20 实测：这两份是分开下载的产物，经常只装了一份。
+    // 只装完整浏览器时 `chromium.launch()` 会直接报
+    // "Executable doesn't exist at .../chromium_headless_shell-XXXX" ——
+    // 截图功能整个不可用，但实际上完整浏览器完全能跑 headless。
+    const launchArgs = ['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage'];
+    const tryLaunch = async () => { browser = await chromium.launch({ args: launchArgs }); };
+    try {
+      await tryLaunch();
+    } catch (e) {
+      const msg = String(e?.message || e);
+      if (!/headless shell|Executable doesn't exist/i.test(msg)) throw e;
+      // ① 先用 Playwright 认为的本版本完整浏览器
+      // ② 再看 ms-playwright 目录下**任意版本**的已装 chromium
+      //    （用户可能装过别的 Playwright 项目，浏览器缓存是共享的）
+      const candidates = [];
+      const full = chromium.executablePath?.();
+      if (full) candidates.push(full);
+      for (const c of findInstalledChromiums()) candidates.push(c);
+      let lastErr = e;
+      for (const bin of candidates) {
+        try {
+          if (!existsSyncSync(bin)) continue;
+          browser = await chromium.launch({ args: launchArgs, executablePath: bin, headless: true });
+          break;
+        } catch (e2) { lastErr = e2; browser = null; }
+      }
+      if (!browser) throw lastErr;
+    }
     const page = await browser.newPage({
       viewport: { width: payload.width, height: payload.height },
       deviceScaleFactor: 1

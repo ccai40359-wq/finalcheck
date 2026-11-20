@@ -464,6 +464,44 @@ async function grepCodeFindstr({ target, glob, pattern, max }) {
   return finishGrepResult(rows, { max, target, glob, pattern, engine: 'findstr (literal-only)', truncatedOut: !!r.outTruncated });
 }
 
+/**
+ * GNU grep 回退（Linux / macOS）。2026-11-20 Linux 移植补的。
+ *
+ * 原来非 Windows 上「没装 rg」直接报错「当前平台没有 findstr 兜底，请安装 ripgrep」——
+ * 但 Linux/macOS **系统自带 grep**（POSIX 标准工具），完全可以兜住。
+ * 让用户为了一个搜索功能去装 rg 是不必要的门槛。
+ *
+ * 与 findstr 的语义差异（要如实标注给模型）：
+ *   · GNU grep 支持正则（BRE/ERE），不是 literal-only —— 这比 findstr 更强，不用降级提示
+ *   · `-r` 递归、`-n` 行号、`-H` 强制带文件名（与 rg 同口径，否则单文件命中解析不出）
+ *   · `-I` 跳过二进制文件（避免在图片/压缩包里吐二进制垃圾）
+ *   · `--exclude-dir` 排除 node_modules/.git 这类噪音目录
+ */
+async function grepCodeGnuGrep({ target, glob, pattern, max }) {
+  let st = null;
+  try { st = statSync(target); } catch { /* 目标不存在时让 grep 自己报错 */ }
+  const isFile = !!st && st.isFile();
+  const cwd = isFile ? path.dirname(target) : target;
+  // -n 行号 -H 带文件名 -I 跳二进制 -E 扩展正则（rg 默认就是 ERE 语义，对齐）
+  const argv = ['-n', '-H', '-I', '-E', '--color=never'];
+  if (!isFile) {
+    argv.push('-r', '--exclude-dir=node_modules', '--exclude-dir=.git', '--exclude-dir=.finalcheck');
+  }
+  if (glob) argv.push(`--include=${glob}`);
+  argv.push('--', pattern, isFile ? path.basename(target) : '.');
+  const r = await spawnCapture('grep', argv, { cwd });
+  // grep 退出码：0 有匹配 / 1 无匹配 / 2 出错
+  if (r.spawnFailed || r.code === 2) {
+    return {
+      error: `grep 回退失败（退出码 ${r.code}）：${(r.stderr || '未知错误').slice(0, 500)}`,
+      engine: 'grep (GNU)', pattern, path: target
+    };
+  }
+  const rows = r.stdout.split(/\r?\n/).filter(Boolean).map(parseGrepRow).filter(Boolean)
+    .map((m) => ({ ...m, file: path.resolve(cwd, m.file) }));
+  return finishGrepResult(rows, { max, target, glob, pattern, engine: 'grep (GNU)', truncatedOut: !!r.outTruncated });
+}
+
 // 模型可见 schema 条目（SSOT 在 agent-service.mjs 的 TOOLS_SCHEMA；本文件导出待并轨条目，
 // 由主会话 append 进 SSOT —— 避免与其他 worker 对 agent-service.mjs 的并行改动冲突）。
 export const GREP_CODE_SCHEMA = {
@@ -815,19 +853,24 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
         argv.push('--', pattern, target);
         const r = await spawnCapture(rg, argv);
         if (r.spawnFailed) {
-          // 检测到的 rg 启动失败（坏二进制/权限）：按「找不到 rg」处理，回退 findstr 不报错
-          return grepCodeFindstr({ target, glob, pattern, max });
+          // 检测到的 rg 启动失败（坏二进制/权限）：按「找不到 rg」处理，回退下一个引擎不报错
+          return process.platform === 'win32'
+            ? grepCodeFindstr({ target, glob, pattern, max })
+            : grepCodeGnuGrep({ target, glob, pattern, max });
         }
         if (r.code !== 0 && r.code !== 1) {
-          // rg 退出码 2 = 用法/正则错误：语义不同，不静默降级成 findstr 字面量
+          // rg 退出码 2 = 用法/正则错误：语义不同，不静默降级成字面量匹配
           return { error: `ripgrep 退出码 ${r.code}：${(r.stderr || '未知错误').slice(0, 500)}`, engine: 'ripgrep', pattern, path: target };
         }
         const rows = r.stdout.split(/\r?\n/).filter(Boolean).map(parseGrepRow).filter(Boolean)
           .map((m) => ({ ...m, file: path.resolve(target, m.file) }));
         return finishGrepResult(rows, { max, target, glob, pattern, engine: 'ripgrep', truncatedOut: !!r.outTruncated });
       }
+      // 没有 rg：Windows 用 findstr，Linux/macOS 用系统自带的 GNU grep。
+      // 2026-11-20 之前非 Windows 直接报错「请安装 ripgrep」——但 grep 是 POSIX 标准工具，
+      // 系统必然自带，没理由让用户为搜索功能额外装东西。
       if (process.platform === 'win32') return grepCodeFindstr({ target, glob, pattern, max });
-      return { error: '未找到 ripgrep（rg）：当前平台没有 findstr 兜底，请安装 ripgrep 后重试', pattern, path: target };
+      return grepCodeGnuGrep({ target, glob, pattern, max });
     },
 
     edit_file: async (args) => {

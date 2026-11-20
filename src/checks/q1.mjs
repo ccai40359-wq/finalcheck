@@ -11,9 +11,47 @@ const COVERAGE_SUMMARY_NAME = 'coverage-summary.json';
 const COVERAGE_SKIP_DIRS = new Set(['node_modules', '.git', '.finalcheck', 'workflow-runs', '.next', 'vendor']);
 const COVERAGE_BUILD_RE = /^(?:dist|build|out|release|release-[A-Za-z0-9._-]+|dist-[A-Za-z0-9._-]+|[A-Za-z0-9._-]+-unpacked)$/i;
 
+/**
+ * 找到 npm 的 CLI 入口（npm-cli.js）。
+ *
+ * 2026-11-20 Linux 移植修的真 bug：原来只有一条路径 ——
+ *   path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js')
+ * 这条在 Windows 官方 Node 安装器下成立（npm 和 node.exe 一起装在 C:\Program Files\nodejs）。
+ * **但在 Linux 上不成立**：npm 是随发行版单独安装的，
+ *   实际位置是 /usr/lib/node_modules/npm/bin/npm-cli.js，
+ *   而 node 的 execPath 是 /usr/bin/node → 找 /usr/bin/node_modules/... → 永远不存在。
+ * 后果：Linux 上 Q1 永远报「npm-cli.js 未找到」→ 每条审计都记「覆盖不足」→
+ * **所有项目都被判「无法验收」**（这是最严重的一类跨平台假红）。
+ *
+ * 现在按顺序找：① node 同目录 ② PATH 上的 npm ③ Linux/macOS 常见安装位置。
+ */
+function resolveNpmCli() {
+  const candidates = [];
+  // ① node 同目录（Windows 官方安装器、nvm、部分 macOS 打包）
+  candidates.push(path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js'));
+  // ② PATH 上的 npm（Linux 发行版通常是指向 npm-cli.js 的符号链接）
+  for (const bin of ['npm', 'npm.cmd']) {
+    const hit = findBinarySafe(bin);
+    if (hit) candidates.push(hit);
+  }
+  // ③ Linux / macOS 常见位置（PATH 不可靠时兜底）
+  candidates.push(
+    '/usr/lib/node_modules/npm/bin/npm-cli.js',
+    '/usr/local/lib/node_modules/npm/bin/npm-cli.js',
+    '/opt/homebrew/lib/node_modules/npm/bin/npm-cli.js'
+  );
+  for (const c of candidates) {
+    try { if (c && existsSync(c)) return c; } catch { /* 继续找 */ }
+  }
+  return null;
+}
+
 async function npmTest(projectDir) {
-  const npmCli = path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
-  if (!existsSync(npmCli)) return { error: new Error('npm-cli.js 未找到') };
+  const npmCli = resolveNpmCli();
+  if (!npmCli) {
+    return { error: new Error('未找到 npm-cli.js（已尝试：node 同目录 / PATH 上的 npm / /usr/lib/node_modules）') };
+  }
+  // npm-cli.js 是纯 JS，用 process.execPath 跑即可（PATH 上的 npm 最终也是它）
   return runProcess(process.execPath, [npmCli, 'test'], { cwd: projectDir, timeoutMs: 180000 });
 }
 

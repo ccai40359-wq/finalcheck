@@ -101,6 +101,12 @@ const SHELL_SPLIT = /\|\||&&|\||;|&|\r?\n/;
 
 /** 命令是否能在 ACL 沙箱里跑：逐段看每个管道的第一个词，命中不兼容清单就改走宿主机。 */
 export function sandboxCompatible(command) {
+  // 2026-11-20 Linux 移植：这份不兼容清单是**Windows ACL 受限令牌专属**的
+  // （受限令牌下拿不到命名管道写权限与 cygwin 共享内存，node/npm/grep 会静默 EPERM）。
+  // Linux 的 bwrap 沙箱没有这个限制——`node`、`npm`、`grep` 在 bubblewrap 里都能正常跑。
+  // 如果不在这里短路，Linux 上会把这些命令误判成「沙箱不支持」，
+  // 结果是它们统统跳过沙箱直接落到宿主机 → 沙箱形同虚设（安全降级，静默发生）。
+  if (process.platform !== 'win32') return { compatible: true, reason: null };
   const text = String(command || '');
   for (const raw of text.split(SHELL_SPLIT)) {
     const seg = raw.trim();

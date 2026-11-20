@@ -209,13 +209,19 @@ test('账本：失败的 edit_file 记成错误而不是「改」；grep 记关�
 
 test('命令路径闸：字符串里的 "\r\n" / "\t" 不是路径，不能当项目外路径拒绝；真路径照拒', async () => {
   const { createPolicy, checkCommandPaths } = await import('../desktop/src/main/policy.mjs');
-  const p = createPolicy({ projectPath: 'C:/projA', mode: 'workspace' });
+  // 2026-11-20 Linux 移植：原来写死 'C:/projA'。
+  // POSIX 上 'C:/projB/x.txt' 不是绝对路径 → 第 220 行的「真路径照拒」断言在 Linux 上假红。
+  // 项目根按平台取绝对路径；转义序列那三条与平台无关，保持原样。
+  const onWin = process.platform === 'win32';
+  const root = onWin ? 'C:/projA' : '/tmp/projA';
+  const outsidePath = onWin ? 'C:/projB/x.txt' : '/tmp/projB/x.txt';
+  const p = createPolicy({ projectPath: root, mode: 'workspace' });
   for (const cmd of [
     'python -c "import sys; sys.stdout.write(\'a\' + \'\r\n\')"',
     'python - <<\'PY\'\ndata = data.replace("\n", "\r\n")\nPY',
     "printf '\t'",
   ]) {
-    assert.equal(checkCommandPaths(p, cmd, 'C:/projA').ok, true, cmd);
+    assert.equal(checkCommandPaths(p, cmd, root).ok, true, cmd);
   }
-  assert.equal(checkCommandPaths(p, 'cat "C:/projB/x.txt"', 'C:/projA').ok, false);
+  assert.equal(checkCommandPaths(p, `cat "${outsidePath}"`, root).ok, false);
 });

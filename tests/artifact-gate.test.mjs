@@ -10,11 +10,24 @@ import { createPolicy } from '../desktop/src/main/policy.mjs';
 const appdata = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
 const home = os.homedir();
 
-test('artifact gate: 拒绝 %APPDATA%/FinalCheck 下的 config.json（含真 API Key）', () => {
-  const p = path.join(appdata, 'FinalCheck', 'config.json');
-  const out = assertArtifactPath(p);
-  assert.equal(out.ok, false, 'APPDATA/FinalCheck 必须命中敏感目录');
-  assert.match(String(out.reason), /敏感路径|APPDATA/);
+test('artifact gate: 拒绝应用自己的 config.json（含真 API Key）', () => {
+  // 2026-11-20 Linux 移植：原来这条只测 %APPDATA%\FinalCheck（Windows）。
+  // Linux 上配置在 ~/.config/FinalCheck（XDG），macOS 在 Application Support ——
+  // 里面的 config.json 同样存着 API Key，必须一样被挡住。按平台取实际路径，
+  // 断言只要求「被拒 + 原因里带敏感字样」，不写死目录名。
+  const candidates = [];
+  if (process.platform === 'win32') {
+    candidates.push(path.join(appdata, 'FinalCheck', 'config.json'));
+  } else if (process.platform === 'darwin') {
+    candidates.push(path.join(home, 'Library', 'Application Support', 'FinalCheck', 'config.json'));
+  } else {
+    candidates.push(path.join(process.env.XDG_CONFIG_HOME || path.join(home, '.config'), 'FinalCheck', 'config.json'));
+  }
+  for (const p of candidates) {
+    const out = assertArtifactPath(p);
+    assert.equal(out.ok, false, `${p} 必须命中敏感目录`);
+    assert.match(String(out.reason), /敏感路径|APPDATA|API Key/);
+  }
 });
 
 test('artifact gate: 拒绝 SSH 私钥与 .ssh 目录', () => {
