@@ -6,6 +6,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.29.0] - 2026-11-21
+
+Desktop-control release: the AI can now see your screen, move the mouse and type on the keyboard (for non-browser apps like Word, Excel, system settings), and it can click buttons and fill forms in a web page the way a person would. The whole permission design follows Claude Code's approach.
+
+### Added
+
+- **Computer use**: the AI can capture the screen to see what is currently on your desktop, move the mouse, click (left/right/middle, double and triple click), drag, scroll, type text, and press key combinations. The screenshot reports which app is in front, and coordinates are simply pixels on that screenshot.
+- **Browser use**: opens a separate window (it does not load your login state) that can navigate, read the page structure (every clickable or typeable element carries a `[ref=eN]` reference), click by reference, fill forms, run JS, and read console errors. Reading the structure beats guessing pixel coordinates when you need to know how the page is built.
+- **Per-application access requests**: before touching any other app the AI asks you first ("AI requests access to: WINWORD, EXCEL") and only proceeds after you agree. If you decline, it says plainly that you need to grant access — it will not route around you. Access resets when the app restarts.
+
+### Improved
+
+- **Three permission tiers enforced by the frontmost app**: browsers (Chrome/Edge/Firefox/Safari/Brave/360…) are view-only — no clicking, no typing; terminals and editors (Windows Terminal/PowerShell/VSCode/Cursor/IDEA/python/node…) allow left clicks only — no typing, right-click or dragging; everything else (Word/Excel/Photoshop/system settings) is fully allowed. This is deliberate: typing into a terminal or editor on the user's behalf means running commands for them.
+- **Frontmost target is checked before every action**: mouse and keyboard input only reaches the window that is currently in front, so each action first confirms the frontmost app is the one you authorised. If it is not, the action is refused with an explanation rather than assumed to have worked. This came out of real testing — when the target window failed to come to the front, clicks landed on a different program.
+- **Chinese text input**: fixed Chinese input turning into mojibake (the Windows console decodes as GBK by default; it now goes through Unicode escapes).
+
 ## [0.28.1] - 2026-11-20
 
 Polish release: six rough edges found in real use, two of which were "works, but feels wrong" rather than outright breakage.
