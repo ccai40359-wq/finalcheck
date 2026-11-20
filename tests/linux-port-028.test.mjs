@@ -107,9 +107,15 @@ test('linux: aclSandbox 开关不得让 Linux 上所有命令被拒（沙箱后�
   assert.match(src, /sandboxAvailability\(\)\.available === true/, '缺少平台能力判定');
 });
 
-test('linux: createSandboxedRun 在非 Windows 上返回 null（不是抛错）', () => {
+test('linux: 沙箱后端按平台分流（Windows 用 ACL argv，Linux 用 bwrap shell 字符串）', () => {
   const src = read('desktop/src/main/sandbox.mjs');
-  assert.match(src, /if \(process\.platform !== 'win32' \|\| !runnerPath\) return null;/, '非 Windows 应静默不可用');
+  // 非 Windows 分支必须先看探测结果：不可用就返回 null（降级到宿主机，调用方决定）
+  assert.match(src, /if \(linuxProbe\?\.available !== true\) return null;/, 'Linux 未探测/不可用时必须返回 null');
+  // Linux 分支走 createLinuxSandboxedRun（异步，返回 shell 字符串）
+  assert.match(src, /return createLinuxSandboxedRun\(/, 'Linux 应走 bubblewrap 后端');
+  // 两个后端的返回形状不同：Windows 是 {file,args}，Linux 是 {command}
+  assert.match(src, /file: process\.execPath,/, 'Windows 后端仍要返回 argv 形式');
+  assert.match(src, /command: wrapped\.command,/, 'Linux 后端要返回 shell 字符串');
 });
 
 // ---------------------------------------------------------------- ripgrep
@@ -177,4 +183,108 @@ test('linux: isWindowsPlatform 是唯一平台判断入口', () => {
   assert.equal(isWindowsPlatform('win32'), true);
   assert.equal(isWindowsPlatform('linux'), false);
   assert.equal(isWindowsPlatform('darwin'), false);
+});
+
+// ---------------------------------------------------------------- Linux 沙箱（bubblewrap）
+
+test('linux 沙箱: 配置收敛到 CC 的语义（写 allow-only / 读 deny-then-allow / 网络白名单）', async () => {
+  const { buildSandboxConfig, DEFAULT_DENY_READ, DEFAULT_WRITE_PATHS } = await import('../desktop/src/main/sandbox-linux.mjs');
+  const cfg = buildSandboxConfig({ gatewayUrls: ['https://api.example.com/v1'], extraDomains: ['my.internal'] });
+  // 写：allow-only —— 必须有显式白名单，且不能是空
+  assert.ok(cfg.filesystem.allowWrite.length >= DEFAULT_WRITE_PATHS.length);
+  // 读：默认拒绝凭据目录（这是 Windows ACL 沙箱做不到的）
+  assert.ok(cfg.filesystem.denyRead.includes('~/.ssh'), '必须拒绝读 ~/.ssh');
+  assert.ok(cfg.filesystem.denyRead.includes('~/.aws'), '必须拒绝读 ~/.aws');
+  assert.ok(cfg.filesystem.denyRead.length >= DEFAULT_DENY_READ.length);
+  // 网络：网关域名自动进白名单（否则 FC 连不上模型）
+  assert.ok(cfg.network.allowedDomains.includes('api.example.com'), '网关 host 必须自动加入');
+  assert.equal(cfg.network.allowedDomains.includes('https://api.example.com/v1'), false, '白名单里不能带协议前缀');
+  assert.ok(cfg.network.allowedDomains.includes('my.internal'));
+});
+
+test('linux 沙箱: 严格模式只认用户填的域名（不自动加开发域名）', async () => {
+  const { buildSandboxConfig } = await import('../desktop/src/main/sandbox-linux.mjs');
+  const strict = buildSandboxConfig({ strictNetwork: true, extraDomains: ['only.example.com'], gatewayUrls: ['https://gw.example.com'] });
+  const allowed = strict.network.allowedDomains;
+  assert.ok(allowed.includes('only.example.com'));
+  assert.ok(allowed.includes('gw.example.com'));
+  assert.equal(allowed.includes('registry.npmjs.org'), false, 'strict 模式不该自动放行 npm');
+});
+
+test('linux 沙箱: 完全断网时 deniedDomains 是通配（不是空列表）', async () => {
+  const { buildSandboxConfig } = await import('../desktop/src/main/sandbox-linux.mjs');
+  const offline = buildSandboxConfig({ allowNetwork: false });
+  assert.deepEqual(offline.network.allowedDomains, []);
+  assert.deepEqual(offline.network.deniedDomains, ['*']);
+});
+
+test('linux 沙箱: hostOfUrl 只取 host（协议/路径/端口噪声都要丢掉）', async () => {
+  const { hostOfUrl } = await import('../desktop/src/main/sandbox-linux.mjs');
+  assert.equal(hostOfUrl('https://api.example.com/v1'), 'api.example.com');
+  assert.equal(hostOfUrl('api.example.com'), 'api.example.com');
+  assert.equal(hostOfUrl(''), '');
+  assert.equal(hostOfUrl('not a url'), '');
+});
+
+test('linux 沙箱: probeSandbox 在 Windows 上明确说走 ACL 后端（不误报可用）', async () => {
+  const { probeSandbox } = await import('../desktop/src/main/sandbox-linux.mjs');
+  if (process.platform !== 'win32') return; // 只在这台机器上是 Windows 时验证
+  const r = await probeSandbox();
+  assert.equal(r.available, false);
+  assert.match(r.reason, /ACL/);
+});
+
+test('linux 沙箱: agent-tools 里 Linux 沙箱走 shell 字符串（不是 argv）', () => {
+  const src = read('desktop/src/main/agent-tools.mjs');
+  // 两个后端形状不同：Windows 有 args，Linux 只有 command
+  assert.match(src, /if \(sandbox && sandbox\.args\) \{/, '缺少 Windows argv 分支');
+  assert.match(src, /else if \(sandbox && sandbox\.command\) \{/, '缺少 Linux shell 字符串分支');
+  // Linux 分支必须用真 bash 跑（dash 不认 bwrap 命令）
+  assert.match(src, /shellSpec\.args\(sandbox\.command\)/, 'Linux 沙箱命令没交给 shell');
+});
+
+test('linux 沙箱: createSandboxedRun 调用点必须 await（Linux 侧是异步的）', () => {
+  const src = read('desktop/src/main/agent-tools.mjs');
+  assert.match(src, /await createSandboxedRun\(/, 'Linux 沙箱初始化是异步的，不 await 会拿到 Promise');
+});
+
+test('linux 沙箱: 退出前释放沙箱（否则残留 socat 进程与 Unix socket）', () => {
+  const src = read('desktop/src/main/index.mjs');
+  assert.match(src, /before-quit[\s\S]{0,200}?releaseSandbox/, '缺 before-quit 释放');
+});
+
+// ---------------------------------------------------------------- Playwright
+
+test('playwright: 是依赖而不是 devDependency（打包后要能用）', () => {
+  const pkg = JSON.parse(read('desktop/package.json'));
+  assert.ok(pkg.dependencies?.playwright, 'playwright 必须在 dependencies');
+  // 锁死版本：浏览器与 Node 侧版本必须匹配，^ 会在升级时错配
+  assert.match(pkg.dependencies.playwright, /^1\.\d+\.\d+$/, 'playwright 要锁精确版本');
+});
+
+test('playwright: 截图后端优先级（Playwright 在 Electron 之后、Chrome 之前）', () => {
+  const src = read('desktop/src/main/capture-headless.mjs');
+  const idxPlaywright = src.indexOf("kind: 'playwright'");
+  const idxElectron = src.indexOf("kind: 'electron'");
+  const idxChrome = src.indexOf("kind: 'chrome'");
+  assert.ok(idxElectron > 0 && idxPlaywright > 0 && idxChrome > 0);
+  // Playwright 探测排在最后（先试 Electron，再 Playwright，最后系统 Chrome）
+  assert.ok(idxPlaywright > idxElectron, 'Playwright 应排在 Electron 之后（桌面端 Electron 更快）');
+});
+
+test('playwright: 沙箱里启动 Chromium 必须带 --no-sandbox（bwrap 内没有 user namespace）', () => {
+  const src = read('desktop/src/main/capture-headless.mjs');
+  assert.match(src, /args: \['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage'\]/, '缺 --no-sandbox 时 Chromium 在容器/bwrap 里直接退出');
+});
+
+test('playwright: 不可用文案给出精确命令（不是"自己装 puppeteer"）', () => {
+  const src = read('desktop/src/main/capture-headless.mjs');
+  assert.match(src, /npx playwright install --with-deps chromium/, '缺精确的安装命令');
+});
+
+test('打包: deb 依赖声明 bubblewrap + socat（Linux 沙箱的硬依赖）', () => {
+  const pkg = JSON.parse(read('desktop/package.json'));
+  for (const dep of ['bash', 'git', 'ripgrep', 'bubblewrap', 'socat']) {
+    assert.ok(pkg.build.deb.depends.includes(dep), `deb 缺 ${dep} 依赖`);
+  }
 });

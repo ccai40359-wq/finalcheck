@@ -21,13 +21,26 @@ export async function probeCaptureBackend() {
   if (probed) return probed;
   const reasons = [];
   // ① Electron 二进制（开发态 desktop/node_modules，打包后随 app 走）
+  //    排在最前：桌面端进程已经在跑，BrowserWindow 截图比另起浏览器快。
   try {
     const m = await import('electron');
     const p = typeof m === 'string' ? m : (m?.default && typeof m.default === 'string' ? m.default : null);
     if (p && p.length > 4) { probed = { ok: true, kind: 'electron', bin: p }; return probed; }
     reasons.push('electron 模块未给出可用二进制路径');
   } catch (e) { reasons.push(`electron 不可用（${e?.message || e}）`); }
-  // ② 系统 Chrome / Edge（无 Electron 的 CI、纯 CLI 环境）
+  // ② Playwright（2026-11-20 Linux 移植新增，排在 Electron 之后、系统 Chrome 之前）
+  //
+  // 为什么需要它：Linux 发行版默认**不带 Chrome/Chromium**（Ubuntu 只有 snap 版、路径不稳定；
+  // Debian/Alpine 默认没有）。没有这条时，Linux 上 capture_screenshot 大概率直接不可用，
+  // 模型只能盲写 UI。Playwright 自带浏览器二进制，装完即用。
+  try {
+    const { chromium } = await import('playwright');
+    // executablePath() 在没下载浏览器时返回 null（不抛）
+    const avail = chromium.executablePath?.();
+    if (avail) { probed = { ok: true, kind: 'playwright', bin: avail }; return probed; }
+    reasons.push('playwright 已安装但浏览器未下载（npx playwright install chromium）');
+  } catch (e) { reasons.push(`playwright 不可用（${e?.message || e}）`); }
+  // ③ 系统 Chrome / Edge（无 Electron 的 CI、纯 CLI 环境）
   const guesses = [];
   const env = process.env;
   if (env.CHROME_PATH) guesses.push(env.CHROME_PATH);
@@ -39,12 +52,13 @@ export async function probeCaptureBackend() {
     '/usr/bin/google-chrome',
     '/usr/bin/chromium',
     '/usr/bin/chromium-browser',
+    '/snap/bin/chromium',
     '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
   );
   for (const g of guesses) {
     try { await (await import('node:fs/promises')).access(g); probed = { ok: true, kind: 'chrome', bin: g }; return probed; } catch { /* 继续找 */ }
   }
-  reasons.push('没找到 Electron 二进制，也没找到系统 Chrome/Edge');
+  reasons.push('没找到 Electron 二进制 / Playwright 浏览器 / 系统 Chrome');
   probed = { ok: false, reasons };
   return probed;
 }
@@ -59,9 +73,14 @@ export async function captureAvailable() {
 export async function captureUnavailableReason() {
   const r = await probeCaptureBackend();
   if (r.ok) return null;
+  // Linux 是这里最常见的情况：发行版默认不带 Chrome，Playwright 浏览器也没下载。
+  // 给出精确命令比「自己装 puppeteer」有用得多（后者还要用户选版本、装系统库）。
+  const linuxHint = process.platform === 'linux'
+    ? 'Linux 上执行：cd desktop && npx playwright install --with-deps chromium（或 npx playwright install chromium 后自己装系统库）'
+    : '执行：npx playwright install chromium';
   return `当前环境没有可用的网页渲染器（${r.reasons.join('；')}）。`
-    + '可以这样绕：① 生成的 HTML 用 read_file 自查结构（看有没有未闭合标签、CSS 选择器是否对得上）；'
-    + '② 用 node 起一个静态服务器 + 自行装 puppeteer/playwright 截图（但要你自己装，不保证有网）；'
+    + `可以这样修：① ${linuxHint}；`
+    + '② 生成的 HTML 用 read_file 自查结构（看有没有未闭合标签、CSS 选择器是否对得上）；'
     + '③ 直接把文件交给用户，请他打开看。不要假装看过渲染结果。';
 }
 
@@ -107,6 +126,9 @@ async function runRenderer(payload, { timeoutMs = 60000 } = {}) {
 }
 
 async function renderOnce(backend, payload, timeoutMs) {
+  // Playwright 不是「spawn 一个二进制」，要用它的 API 拿像素；单独一条路径。
+  if (backend.kind === 'playwright') return renderWithPlaywright(payload, timeoutMs);
+
   const tmp = await mkdtempish();
   const outPng = path.join(tmp, 'shot.png');
   const jobFile = path.join(tmp, 'job.json');
@@ -194,6 +216,47 @@ async function mkdtempish() {
     return d;
   });
   return dir;
+}
+
+/**
+ * 用 Playwright 截一张图（Linux 移植新增，2026-11-20）。
+ *
+ * 为什么单独写而不是复用 spawn 路径：Playwright 不是「命令行参数 + 产出文件」的形态，
+ * 它要开浏览器、等页面、取 buffer。硬塞进 spawn 分支反而更乱。
+ *
+ * 关键设置：
+ *   · --no-sandbox：bwrap 沙箱里没有 user namespace 权限，Chromium 会以
+ *     "No usable sandbox!" 退出。这里是**宿主侧截图**（不是被沙箱化的命令），
+ *     且渲染的是用户自己的页面，所以关掉 Chromium 自己的沙箱是可接受的；
+ *     真正的隔离由外层 bwrap 负责。
+ *   · waitUntil: 'load' + 额外 waitMs：只等 load 会漏掉异步渲染的内容（图表/动画首帧）
+ */
+async function renderWithPlaywright(payload, timeoutMs) {
+  const { chromium } = await import('playwright');
+  let browser = null;
+  try {
+    browser = await chromium.launch({
+      args: ['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage']
+    });
+    const page = await browser.newPage({
+      viewport: { width: payload.width, height: payload.height },
+      deviceScaleFactor: 1
+    });
+    const url = payload.url || pathToFileURLSafe(payload.file);
+    await page.goto(url, { waitUntil: 'load', timeout: Math.min(timeoutMs, 45000) });
+    // 给异步渲染留时间（图表、字体、首帧动画）
+    const waitMs = Math.max(0, Math.min(5000, Number(payload.waitMs) || 800));
+    if (waitMs) await page.waitForTimeout(waitMs);
+    const buf = await page.screenshot({
+      fullPage: payload.fullPage === true,
+      type: 'png'
+    });
+    return Buffer.from(buf);
+  } catch (e) {
+    throw new Error(`Playwright 截图失败：${e?.message || e}`);
+  } finally {
+    if (browser) await browser.close().catch(() => { /* 已崩 */ });
+  }
 }
 
 /** PNG 尺寸（不依赖图像库，直接读 IHDR） */

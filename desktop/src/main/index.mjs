@@ -256,6 +256,19 @@ app.whenReady().then(async () => {
 
   createWindow();
   updater.ensureUpdater(); // dev 下内部直接返回 null（不 import、不联网）
+  // Linux/macOS 沙箱探测（bubblewrap/socat 是否可用）：异步、要 spawn 子进程查依赖。
+  // 放在建窗之后不阻塞启动 —— 探完之前 run_command 按「沙箱不可用」降级（应用层三道闸照旧）。
+  void import('./sandbox.mjs')
+    .then((m) => m.ensureLinuxSandboxProbe())
+    .then((r) => {
+      if (r?.available) writeLog(`[sandbox] ${r.platform} 沙箱可用`);
+      else writeLog(`[sandbox] 沙箱不可用：${r?.reason || '未知'}${r?.hint ? `（${r.hint}）` : ''}`);
+    })
+    .catch((e) => writeLog(`[sandbox] 探测失败：${e?.message || e}`));
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+});
+// 退出前释放沙箱（停代理、清挂载点）——Linux 上不释放会残留 socat 进程与 Unix socket
+app.on('before-quit', () => {
+  void import('./sandbox-linux.mjs').then((m) => m.releaseSandbox()).catch(() => {});
 });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });

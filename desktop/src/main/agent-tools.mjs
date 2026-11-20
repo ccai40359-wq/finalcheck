@@ -279,14 +279,30 @@ export function runCommandWithSignal(command, {
       };
       // 决策 1（2026-11-16）：非沙箱路径统一走 Git Bash（用户已装 → 内置 → cmd 回落）。
       // shell:true 会让 Node 用 cmd.exe 套壳，模型写 bash 语法（cat/2>/dev/null/&& $?）就全错。
-      const shellSpec = sandbox ? null : resolveShell({ appRoot: shellAppRoot });
-      proc = sandbox
-        ? spawn(sandbox.file, sandbox.args, { ...spawnOptions, shell: false })
-        : spawn(shellSpec.file, shellSpec.args(cmd), {
-            ...spawnOptions,
-            env: { ...spawnOptions.env, ...(shellSpec.env || {}) },
-            shell: false
-          });
+      //
+      // 2026-11-20 Linux 移植：沙箱现在有两种形态——
+      //   · Windows ACL → 有 file/args，直接 spawn
+      //   · Linux bwrap → 只有一条 shell 命令字符串（沙箱自身已拼好 bwrap 调用，
+      //     mount 绑定、env、socat 中转都在里面），必须交给真 bash 执行
+      // 所以不能再用 `sandbox ? spawn(sandbox.file...)` 一刀切。
+      const shellSpec = resolveShell({ appRoot: shellAppRoot });
+      if (sandbox && sandbox.args) {
+        // Windows：argv 形式
+        proc = spawn(sandbox.file, sandbox.args, { ...spawnOptions, shell: false });
+      } else if (sandbox && sandbox.command) {
+        // Linux/macOS：shell 字符串形式。用真 bash（dash 不认 bwrap 命令里的语法）
+        proc = spawn(shellSpec.file, shellSpec.args(sandbox.command), {
+          ...spawnOptions,
+          env: { ...spawnOptions.env, ...(shellSpec.env || {}) },
+          shell: false
+        });
+      } else {
+        proc = spawn(shellSpec.file, shellSpec.args(cmd), {
+          ...spawnOptions,
+          env: { ...spawnOptions.env, ...(shellSpec.env || {}) },
+          shell: false
+        });
+      }
     } catch (e) {
       return finish({ blocked: false, code: 1, stdout: '', stderr: e?.message || String(e) });
     }
@@ -471,7 +487,7 @@ export const GREP_CODE_SCHEMA = {
 // todo_write 的 CC 式三条规则（并轨时追加到 AGENT_ONLY_TOOLS_SCHEMA 里 todo_write 的 description 末尾）
 export const TODO_CC_RULES_TEXT = 'CC 式规则：① 同一时间恰好一个 in_progress（工具层会自动把多余的 running 降回 pending 并提示）；② 测试失败/实现不全/有未解决错误时禁止标 done——保持 running，并新建一条写清「需要解决什么」；③ 做完一条立刻调用 todo_write 更新状态，不要攒批';
 
-export function createAgentTools({ repoRoot, permissions, recordAudit = async () => {}, playbookRoot, runWorkflow = null, projectPath = null, policy = null, hooksConfig = null, hooksRunner = null, sessionId = null, cwd = null, signal = null, commandIdleMs = DEFAULT_COMMAND_IDLE_MS, askUser = null, todoWrite = null, spawnAgent = null, onActivity = null, requireAuditIntent = null, shellAppRoot = null, aclSandbox = undefined, userStatedTier = null } = {}) {
+export function createAgentTools({ repoRoot, permissions, recordAudit = async () => {}, playbookRoot, runWorkflow = null, projectPath = null, policy = null, hooksConfig = null, hooksRunner = null, sessionId = null, cwd = null, signal = null, commandIdleMs = DEFAULT_COMMAND_IDLE_MS, askUser = null, todoWrite = null, spawnAgent = null, onActivity = null, requireAuditIntent = null, shellAppRoot = null, aclSandbox = undefined, userStatedTier = null, sandboxCfg = null } = {}) {
   let askedThisTurn = false; // 本回合已经通过 ask_user 问过用户（验收前置闸据此放行）
   if (!repoRoot) throw new Error('createAgentTools 需要 repoRoot');
   const engineUrl = (rel) => pathToFileURL(path.join(repoRoot, rel)).href;
@@ -1095,11 +1111,14 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
       // 命令统一走宿主机 Git Bash，一种 shell、一套语法。
       const sandboxOn = sandboxEnabled({ aclSandbox });
       const compat = sandboxCompatible(cmd);
-      const sandbox = !sandboxOn || !compat.compatible ? null : createSandboxedRun({
+      // 2026-11-20：Linux 沙箱是异步的（initialize 要起代理），必须 await；
+      // Windows 是同步的，await 一个普通对象无副作用。
+      const sandbox = !sandboxOn || !compat.compatible ? null : await createSandboxedRun({
         workspaceRoot: projectPath || runCwd,
         policyMode: sandboxMode,
         command: cmd,
         cwd: runCwd,
+        cfg: sandboxCfg,
         sandboxAppRoot: shellAppRoot
       });
       // 沙箱「在这个平台上根本不存在」≠「这条命令沙箱跑不了」。

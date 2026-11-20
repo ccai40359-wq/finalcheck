@@ -881,6 +881,9 @@ export function registerAgentIpc({
         commandIdleMs: cfg.commandIdleMs,
         shellAppRoot,
         aclSandbox: typeof store.aclSandboxOf === 'function' ? store.aclSandboxOf(cfg) : undefined,
+        // Linux/macOS 的 bwrap 配置（网关域名自动进白名单、denyRead 挡凭据）。
+        // Windows 不走这条（用 ACL 后端），传进去也无害。
+        sandboxCfg: cfg,
         onActivity: sendEvent,
         // 只有主 agent 有 ask_user；子代理/工作流 gate 不注册（避免并行弹多张卡）
         askUser: (args, ctx) => askUsers.ask({ ...(args || {}), sessionId, signal: ctx?.signal || chatAbort.signal }),

@@ -16,6 +16,8 @@
     "dist:linux:dir": "node scripts/prepare-rg.mjs linux && electron-vite build && electron-builder --linux dir",
     "prepare:rg": "node scripts/prepare-rg.mjs",
     "fetch:rg:linux": "node scripts/fetch-rg-linux.mjs",
+    "playwright:install": "playwright install chromium",
+    "playwright:install:linux": "playwright install --with-deps chromium",
     "preview": "electron-vite preview",
     "setup:sqlite": "node scripts/ensure-sqlite-binding.mjs",
     "postinstall": "node scripts/ensure-sqlite-binding.mjs",
@@ -147,7 +149,9 @@
       "depends": [
         "bash",
         "git",
-        "ripgrep"
+        "ripgrep",
+        "bubblewrap",
+        "socat"
       ]
     },
     "win": {
@@ -182,8 +186,10 @@
     "vite": "^5.4.11"
   },
   "dependencies": {
+    "@anthropic-ai/sandbox-runtime": "0.0.83",
     "autocannon": "^7.15.0",
     "better-sqlite3": "^12.11.1",
-    "electron-updater": "^6.8.11"
+    "electron-updater": "^6.8.11",
+    "playwright": "1.65.1"
   }
 }

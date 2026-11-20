@@ -1,13 +1,18 @@
-// Windows ACL 受限令牌沙箱适配（dsh-sandbox-windows-acl, BSD-3-Clause）。
-// - 只在 Windows 上启用；包不可用/平台不支持 → 返回 null，由调用方决定 fail-open 还是 fail-closed。
-// - runner 是 argv 前缀：node runner.js --workspace ... --temp ... --mode ... -- <argv>
-// - 文件写入/删除被限制在 workspace + 私有 temp；读/网络/进程可见性不在该后端范围（诚实标注）。
+// 沙箱后端分流（2026-11-20）：
+//   · Windows        → ACL 受限令牌（dsh-sandbox-windows-acl，只拦写）
+//   · Linux / macOS  → bubblewrap / Seatbelt（@anthropic-ai/sandbox-runtime，读写都能拦）
+//
+// 两个后端的调用契约**不同**，这是要特别注意的地方：
+//   · Windows 返回 { file, args } —— 直接 spawn，argv 形式
+//   · Linux   返回 { command }    —— 是**一条 shell 命令字符串**，要用 shell 跑
+//   Linux 这侧必须由 agent-tools 用 shell 执行，不能再按 argv 拼接。
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { appCacheDir } from './platform-paths.mjs';
+import { probeSandbox, linuxSandboxOptionsOf, sandboxCwdOf, wrapCommand } from './sandbox-linux.mjs';
 
 const require = createRequire(import.meta.url);
 
@@ -20,14 +25,46 @@ try {
 }
 
 export const SANDBOX_PACKAGE = '@deepseek-ai/dsh-sandbox-windows-acl';
+export const LINUX_SANDBOX_PACKAGE = '@anthropic-ai/sandbox-runtime';
 
-/** 沙箱是否可用（Windows + runner 可解析）。 */
+// Linux/macOS 的可用性探测是异步的（要真去查 bwrap/socat），
+// 这里缓存在模块级：探测一次，之后同步读结果。失败也缓存，避免每次命令都卡 5 秒。
+let linuxProbe = null;       // { available, reason, hint } | null
+let linuxProbePromise = null;
+
+/** 触发（或复用）Linux 沙箱探测。调用方可在启动时就预热。 */
+export function ensureLinuxSandboxProbe() {
+  if (linuxProbe) return Promise.resolve(linuxProbe);
+  if (!linuxProbePromise) {
+    linuxProbePromise = probeSandbox()
+      .then((r) => { linuxProbe = r; return r; })
+      .catch((e) => { linuxProbe = { available: false, platform: process.platform, reason: String(e?.message || e) }; return linuxProbe; });
+  }
+  return linuxProbePromise;
+}
+
+/**
+ * 沙箱是否可用。
+ * Windows 结果同步；Linux/macOS 用最近一次探测结果（未探测过则视为不可用，
+ * 调用方应先 ensureLinuxSandboxProbe）。
+ */
 export function sandboxAvailability() {
+  if (process.platform === 'win32') {
+    return {
+      available: !!runnerPath,
+      platform: 'win32',
+      backend: 'windows-acl',
+      runner: runnerPath,
+      error: runnerError || null
+    };
+  }
   return {
-    available: process.platform === 'win32' && !!runnerPath,
+    available: linuxProbe?.available === true,
     platform: process.platform,
-    runner: runnerPath,
-    error: runnerError || null
+    backend: process.platform === 'darwin' ? 'seatbelt' : 'bubblewrap',
+    runner: LINUX_SANDBOX_PACKAGE,
+    error: linuxProbe?.reason || null,
+    hint: linuxProbe?.hint || null
   };
 }
 
@@ -100,11 +137,26 @@ function tempDirFor(workspaceRoot) {
 }
 
 /**
- * 构造一次沙箱执行：返回 { file, args, cwd, env, tempDir, cleanup } 或 null。
- * @param {{workspaceRoot:string, policyMode:string, command:string, cwd?:string}} opts
+ * 构造一次沙箱执行。
+ *
+ * 两个后端的返回形状不同，调用方必须分流：
+ *   · Windows → { file, args, cwd, env, tempDir, cleanup }  用 spawn(file, args)
+ *   · Linux   → { command, cwd, env, cleanup, backend:'bubblewrap' }
+ *               command 是一条 **shell 命令字符串**，要交给 shell 跑（不能当 argv）
+ *
+ * @param {{workspaceRoot:string, policyMode:string, command:string, cwd?:string, cfg?:object}} opts
+ * @returns {null | {file:string,args:string[],cwd:string,env?:object,tempDir?:string,cleanup:()=>void}
+ *                | Promise<{command:string,cwd:string,env?:object,cleanup:()=>void,backend:string}>}
  */
-export function createSandboxedRun({ workspaceRoot, policyMode, command, cwd = null }) {
-  if (process.platform !== 'win32' || !runnerPath) return null;
+export function createSandboxedRun({ workspaceRoot, policyMode, command, cwd = null, cfg = null }) {
+  if (process.platform !== 'win32') {
+    // 非 Windows：异步（initialize 要起代理）。调用方需要 await。
+    if (linuxProbe?.available !== true) return null; // 未探测或不可用：降级到宿主机（调用方决定）
+    const mode = modeOf(policyMode);
+    if (!mode) return null; // off：用户明确放开，不用沙箱
+    return createLinuxSandboxedRun({ workspaceRoot, policyMode, command, cwd, cfg, mode });
+  }
+  if (!runnerPath) return null;
   const mode = modeOf(policyMode);
   if (!mode) return null;
   const root = path.resolve(String(workspaceRoot || cwd || '.'));
@@ -140,5 +192,47 @@ export function createSandboxedRun({ workspaceRoot, policyMode, command, cwd = n
     mode,
     workspaceRoot: root,
     cleanup
+  };
+}
+
+/**
+ * Linux / macOS 沙箱（bubblewrap / Seatbelt，对齐 Claude Code）。
+ *
+ * 与 Windows 后端的三个关键差异：
+ *   1. 返回的 command 是 **shell 字符串**，调用方必须走 shell 执行；
+ *   2. 读写都能拦（bwrap 用 --tmpfs 盖住 denyRead 目录），比 Windows 那套只拦写更强；
+ *   3. initialize 要起代理进程，是异步的，所以整个函数是 async。
+ *
+ * readonly 模式下不允许任何写入：把 allowWrite 清空（bwrap 的写是 allow-only 语义，
+ * 空列表 = 全拒）。
+ */
+async function createLinuxSandboxedRun({ workspaceRoot, policyMode, command, cwd, cfg, mode }) {
+  const root = sandboxCwdOf(workspaceRoot || cwd, process.cwd());
+  const opts = linuxSandboxOptionsOf(cfg || {});
+  if (mode === 'read-only') {
+    // readonly：连工作目录也不给写。只保留 /tmp（很多工具会写临时文件，
+    // 不给的话编译/测试全失败；/tmp 里的东西本来就不是持久数据）。
+    opts.filesystem.allowWrite = ['/tmp'];
+  } else {
+    // workspace-write：把工作目录本身加进允许写列表（默认只放了 '.'，
+    // bwrap 需要绝对路径）
+    opts.filesystem.allowWrite = [...new Set([root, ...opts.filesystem.allowWrite.map((p) => (p === '.' ? root : p))])];
+  }
+  const shellPath = process.env.SHELL && /bash/.test(process.env.SHELL) ? process.env.SHELL : '/usr/bin/bash';
+  const wrapped = await wrapCommand({
+    command: String(command || ''),
+    cwd: root,
+    config: opts,
+    shellPath,
+    commandId: `fc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  });
+  return {
+    command: wrapped.command,   // shell 字符串
+    backend: process.platform === 'darwin' ? 'seatbelt' : 'bubblewrap',
+    cwd: root,
+    mode,
+    workspaceRoot: root,
+    // Linux 沙箱没有私有 temp 要清；代理是全局的，由 releaseSandbox 统一释放
+    cleanup: () => { /* 单次命令无需清理 */ }
   };
 }

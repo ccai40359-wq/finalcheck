@@ -13,7 +13,9 @@ test('capture-headless: 后端探测返回可解释结果（不是裸布尔）',
   const r = await probeCaptureBackend();
   assert.equal(typeof r.ok, 'boolean');
   if (r.ok) {
-    assert.ok(['electron', 'chrome'].includes(r.kind), '后端类型必须是 electron 或 chrome');
+    // playwright 是 Linux 移植新增的后端（2026-11-20）：Linux 发行版默认不带 Chrome，
+    // 靠 Playwright 自带浏览器二进制兜住，否则模型只能盲写 UI。
+    assert.ok(['electron', 'chrome', 'playwright'].includes(r.kind), '后端类型必须是 electron / chrome / playwright');
     assert.ok(typeof r.bin === 'string' && r.bin.length > 4, '必须给出可执行文件路径');
   } else {
     assert.ok(Array.isArray(r.reasons) && r.reasons.length > 0, '不可用时必须说明原因');
