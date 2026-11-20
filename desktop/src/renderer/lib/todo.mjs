@@ -7,7 +7,10 @@ import { t } from '../i18n/core.mjs';
 
 export const TODO_TOOL = 'todo_write';
 export const TODO_STATUSES = Object.freeze(['pending', 'running', 'done', 'failed', 'skipped']);
-export const TODO_MIN_ITEMS = 3;
+// 验收单条数（2026-11-20 用户实机反馈后放宽下限）：原来最少 3 条，模型对「只有一个明确目标」
+// 的任务想写 2 条（很合理）被拒，还得改写再调一次，白烧一轮。现在最少 2 条——
+// 仍然不允许只写 1 条（单条清单等于没拆解，失去验收单的意义）。
+export const TODO_MIN_ITEMS = 2;
 export const TODO_MAX_ITEMS = 8;
 
 function asObject(value) {

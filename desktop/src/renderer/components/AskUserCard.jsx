@@ -112,7 +112,7 @@ export default function AskUserCard({ payload, onSubmit = null }) {
                       ) : null}
                       <span className={`font-medium ${active ? 'text-goldSoft' : 'text-ink/90'}`}>{translateAskText(label, lang)}</span>
                     </div>
-                    {opt?.description ? <div className="mt-0.5 pl-0.5 text-[11px] leading-relaxed text-mute/65">{displayAskText(opt.description, lang)}</div> : null}
+                    {opt?.description ? <div className="mt-0.5 pl-0.5 text-[11px] leading-relaxed text-mute/65">{displayAskText(opt.description, lang, '', { keepOriginal: true })}</div> : null}
                   </button>
                 );
               })}

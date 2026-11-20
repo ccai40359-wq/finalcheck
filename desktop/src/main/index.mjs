@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, protocol } from 'electron';
+import { app, BrowserWindow, ipcMain, protocol, shell } from 'electron';
 import { registerMediaScheme, installMediaProtocol } from './media-protocol.mjs';
 import { setSnapshotRenderer } from './capture.mjs';
 
@@ -142,6 +142,62 @@ function startupTheme() {
   } catch { return 'dark'; }
 }
 
+/**
+ * 外部链接一律交给系统浏览器（2026-11-20 用户实机反馈）。
+ *
+ * 以前完全没拦：点消息里的 http(s) 链接，Electron 默认让**主窗口自己导航过去**，
+ * 界面就变成一个网页，用户只能关掉重开——看起来像「点了链接就进了 Electron」。
+ * 现在：应用自己的 origin（dev 的 vite / 打包后的 file://）放行，其它 http(s) 一律
+ * shell.openExternal 交给默认浏览器，并且拒绝在主窗口里导航。
+ *
+ * 只在 http/https 里放行外部打开（其它 scheme 如 file:/javascript: 直接拒绝）。
+ */
+function installExternalLinkGuards() {
+  const APP_ORIGIN = process.env.ELECTRON_RENDERER_URL
+    ? new URL(process.env.ELECTRON_RENDERER_URL).origin
+    : 'file://';
+  const isAppUrl = (u) => {
+    try {
+      const s = String(u || '');
+      if (s.startsWith('file://')) return true;      // 打包后的渲染层
+      if (s.startsWith('fc-media://')) return true;   // 视频/媒体协议
+      if (s.startsWith('fc-snapshot')) return true;
+      return s.startsWith(APP_ORIGIN);
+    } catch { return false; }
+  };
+  const openOutside = (url) => {
+    try {
+      const parsed = new URL(String(url || ''));
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+      void shell.openExternal(parsed.href);
+      return true;
+    } catch { return false; }
+  };
+
+  // ① 主窗口自己不许被导航到外部站点
+  win?.webContents.on('will-navigate', (event, url) => {
+    if (isAppUrl(url)) return; // 应用内跳转（如 hash 路由）放行
+    event.preventDefault();
+    openOutside(url);
+  });
+
+  // ② target=_blank / window.open：不开新 Electron 窗口，交系统浏览器
+  win?.webContents.setWindowOpenHandler(({ url }) => {
+    if (openOutside(url)) return { action: 'deny' };
+    return { action: 'deny' }; // 非 http(s) 一律不开窗
+  });
+
+  // ③ 以后新建的任何 webContents（含截图隐藏窗口）同样遵守
+  app.on('web-contents-created', (_event, contents) => {
+    contents.setWindowOpenHandler(({ url }) => { openOutside(url); return { action: 'deny' }; });
+    contents.on('will-navigate', (event, url) => {
+      if (isAppUrl(url)) return;
+      event.preventDefault();
+      openOutside(url);
+    });
+  });
+}
+
 function createWindow() {
   win = new BrowserWindow({
     width: 1280, height: 820, minWidth: 980,
@@ -255,6 +311,7 @@ app.whenReady().then(async () => {
   const updater = registerUpdaterIpc({ ipcMain, app, getWin: () => win });
 
   createWindow();
+  installExternalLinkGuards(); // 点消息里的链接要开系统浏览器，不能把主窗口导航走
   updater.ensureUpdater(); // dev 下内部直接返回 null（不 import、不联网）
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });

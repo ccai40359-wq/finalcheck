@@ -466,20 +466,19 @@ export default function Composer({
                     </button>
 
                     <div className="px-3 pt-2 pb-1 text-[10px] text-mute/50">Models</div>
-                    {/* 当前模型 + 思考强度：图标按钮不显示名字，所以这里必须写清楚，
-                        否则用户不知道自己在用哪个模型 */}
-                    <div className="mx-2 mb-1 rounded-lg bg-lift/[0.04] px-2.5 py-1.5 text-[11px] flex items-center gap-2">
-                      <span className="text-mute/55 shrink-0">{t('当前')}</span>
-                      <span className="font-mono text-ink/85 truncate min-w-0">{activeModel || t('未配置模型')}</span>
-                      <span className="ml-auto shrink-0 rounded border border-edge px-1.5 py-0.5 text-[10px] text-goldSoft">{effortLabel}</span>
-                    </div>
                     <div className="max-h-56 overflow-y-auto px-1.5 pb-1">
                       {activeModelEntries.map((m) => (
                         <button key={m.id} onClick={() => chooseModel(activeProv.id, m.id)}
                           className={`w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-xs font-mono transition-colors ${m.id === activeModel ? 'bg-lift/[0.06] text-ink' : 'text-ink/75 hover:bg-lift/5'}`}>
                           <span className="truncate">{m.id}</span>
                           {(m.vision || /vision|vl\b/i.test(m.id)) ? <span className="text-[9px] px-1.5 py-0.5 rounded-full border border-edge text-mute/60 font-sans shrink-0">Vision</span> : null}
-                          {m.id === activeModel ? <span className="ml-auto text-jade shrink-0">✓</span> : null}
+                          {/* 当前项只打一个勾（2026-11-20 用户要求：不要额外一行 Current，重复信息占位） */}
+                          {m.id === activeModel
+                            ? <span className="ml-auto shrink-0 flex items-center gap-1.5">
+                              <span className="text-[10px] font-sans text-goldSoft">{effortLabel}</span>
+                              <span className="text-jade">✓</span>
+                            </span>
+                            : null}
                         </button>
                       ))}
                       {activeModelEntries.length === 0 && (

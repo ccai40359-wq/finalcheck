@@ -839,7 +839,11 @@ export default function App() {
     requestAnimationFrame(() => inputRef.current?.focus());
   };
 
-  // Context 指示器：消息变化后 500ms 估算一次（主进程算系统提示/工具 schema/技能目录/摘要）
+  // Context 指示器（2026-11-20 用户实机反馈：以前只在消息变化后才重算，压缩完上下文、
+  // 或者模型在长时间跑工具时，面板上的数字一直停在旧值，看起来像「压缩没生效」）。
+  // 现在两层：
+  //   ① 消息/会话/配置变化后 500ms 防抖重算（保持原有的即时性）；
+  //   ② 每 5 分钟定时重算一次（即使不发消息也能看到最新估算；页面隐藏时跳过，省 CPU）。
   useEffect(() => {
     if (!y?.contextStats) return undefined;
     const timer = setTimeout(() => {
@@ -847,6 +851,22 @@ export default function App() {
     }, 500);
     return () => clearTimeout(timer);
   }, [messages, activeId, cfg]);
+
+  // 定时轮询复用已有的 activeIdRef（第 182 行声明、255 行同步），不要再声明一次
+  const CTX_REFRESH_MS = 5 * 60 * 1000;
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
+  useEffect(() => {
+    if (!y?.contextStats) return undefined;
+    const id = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return; // 后台窗口隐藏时不算
+      const msgs = messagesRef.current;
+      if (!Array.isArray(msgs) || !msgs.length) return; // 空会话没必要算
+      y.contextStats({ messages: msgs.filter((m) => !m.steer), sessionId: activeIdRef.current })
+        .then(setCtxStats).catch(() => {});
+    }, CTX_REFRESH_MS);
+    return () => clearInterval(id);
+  }, [y, activeId]);
 
   // 全局提示气泡：主进程进程级异常（sessionId=null 的 notice）与回合 warning 都要看得见。
   // 插入规则（2026-11-16 用户反馈「切换提示跑到了错误消息之后」）：

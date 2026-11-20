@@ -111,11 +111,25 @@ export function containsCjk(text) {
 }
 
 /**
- * 英文界面的显示兜底：翻译后仍是中文就不原样露出（问题用 fallback，描述默认隐藏）。
- * 中文界面原样返回；英文但已无中文时返回译文。
+ * 英文界面的显示兜底。
+ *
+ * 2026-11-20 修正（用户实机截图）：以前「翻译后仍是中文」就整句替换成 EN_QUESTION_FALLBACK
+ * （"Choose from the options below."），结果英文界面下模型用中文问的开放式问题**整句消失**，
+ * 用户只看到四个选项、完全不知道在问什么——比看到中文原文糟得多。
+ * 现在：问题（question）永远保留原文（能看懂就懂，看不懂也能复制去翻译，至少知道在问什么），
+ * 只有「描述」（description）这种次要信息才允许隐藏。
+ *
+ * @param {string} text
+ * @param {'zh'|'en'} lang
+ * @param {string} [fallback] 仅在 keepOriginal=false（描述类）时使用
+ * @param {{keepOriginal?:boolean}} [opts] keepOriginal=true（默认）：翻不动就显示原文
  */
-export function displayAskText(text, lang, fallback = '') {
-  const out = translateAskText(text, lang);
-  if (lang === 'en' && containsCjk(out)) return fallback;
+export function displayAskText(text, lang, fallback = '', { keepOriginal = true } = {}) {
+  const src = text == null ? '' : String(text);
+  if (!src) return '';
+  const out = translateAskText(src, lang);
+  if (lang === 'en' && containsCjk(out)) {
+    return keepOriginal ? src : fallback;
+  }
   return out;
 }

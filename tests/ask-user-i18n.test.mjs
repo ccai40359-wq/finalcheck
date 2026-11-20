@@ -100,12 +100,18 @@ test('ask-user i18n: 审计前置问法（问题 + 选项说明）整句英文�
   assert.equal(translateAskText('选择全部 11 维', 'en'), 'Select all 11 dimensions');
 });
 
-test('ask-user i18n: 翻译后仍含中文时问题走英文兜底、描述隐藏，不把中文直接露给英文用户', () => {
+test('ask-user i18n: 翻不动的问题保留原文（不能整句替换成一句废话）', () => {
+  // 2026-11-20 用户实机：英文界面下模型用中文问开放式问题，旧逻辑把它整句换成
+  // "Choose from the options below."，用户只看到四个选项、完全不知道在问什么。
+  // 看中文原文至少知道在问什么，比看一句废话强。
   assert.equal(displayAskText('这次体检要覆盖哪些维度？', 'en'), 'Which dimensions should this audit cover?');
-  assert.equal(displayAskText('完全不认识的自由发挥问题', 'en', EN_QUESTION_FALLBACK), EN_QUESTION_FALLBACK);
-  assert.equal(displayAskText('完全不认识的自由发挥描述', 'en'), '');
+  assert.equal(displayAskText('完全不认识的自由发挥问题', 'en', EN_QUESTION_FALLBACK), '完全不认识的自由发挥问题', '翻不动就保留原文');
+  assert.equal(displayAskText('完全不认识的自由发挥描述', 'en'), '完全不认识的自由发挥描述');
+  // 描述类可以显式要求隐藏（keepOriginal:false）——那是次要信息
+  assert.equal(displayAskText('完全不认识的自由发挥描述', 'en', '', { keepOriginal: false }), '');
   assert.equal(displayAskText('完全不认识的自由发挥问题', 'zh', EN_QUESTION_FALLBACK), '完全不认识的自由发挥问题');
   assert.equal(displayAskText('Security', 'en'), 'Security');
+  assert.equal(displayAskText('', 'en', EN_QUESTION_FALLBACK), '', '空问题不能吐 fallback');
 });
 
 test('ask-user i18n: AskUserCard 显示走 translateAskText，提交仍用原始 label', () => {
@@ -117,7 +123,7 @@ test('ask-user i18n: AskUserCard 显示走 translateAskText，提交仍用原始
   // 显示文本：问题走英文兜底，标签/描述/结果行走翻译
   assert.match(src, /\{displayAskText\(data\.question, lang, EN_QUESTION_FALLBACK\)\}/);
   assert.match(src, /\{translateAskText\(label, lang\)\}/);
-  assert.match(src, /\{displayAskText\(opt\.description, lang\)\}/);
+  assert.match(src, /\{displayAskText\(opt\.description, lang, '', \{ keepOriginal: true \}\)\}/);
   assert.match(src, /translateAskText\(payload\.answer, lang\)/);
 
   // 交互与提交必须仍用原始 label（主进程按原文匹配）

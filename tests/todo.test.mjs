@@ -60,7 +60,7 @@ test('todo: todo_write 只在主 agent schema / 工具表，子代理没有', as
 
   const schema = AGENT_TOOLS_SCHEMA.find((x) => x.function.name === 'todo_write');
   const items = schema.function.parameters.properties.items;
-  assert.equal(items.minItems, 3);
+  assert.equal(items.minItems, 2, '2026-11-20 下限放宽到 2（单一目标任务的合理拆解）');
   assert.equal(items.maxItems, 8);
   assert.deepEqual(items.items.required, ['id', 'task', 'acceptance'], 'acceptance 在 schema 层就是必填');
   assert.deepEqual(
@@ -80,15 +80,17 @@ test('todo: todo_write 只在主 agent schema / 工具表，子代理没有', as
   assert.deepEqual(await withTodo.todo_write({ items: items3() }, {}), { echo: { items: items3() }, sessionId: 's-1' });
 });
 
-/* ---------- ② 参数校验：acceptance 必填 / 3-8 条 / id 稳定 ---------- */
+/* ---------- ② 参数校验：acceptance 必填 / 2-8 条 / id 稳定 ---------- */
 test('todo: acceptance 缺失、条数越界、id 重复、status 非法都报错（提示模型补）', () => {
   const missingAcceptance = validateTodoItems(items3().map((it, i) => (i === 1 ? { id: it.id, task: it.task } : it)));
   assert.equal(missingAcceptance.ok, false);
   assert.match(missingAcceptance.error, /acceptance/);
   assert.match(missingAcceptance.error, /验收标准/, '错误文案要提示模型补验收标准');
 
-  assert.match(validateTodoItems(items3().slice(0, 2)).error, /3-8/);
-  assert.match(validateTodoItems(Array.from({ length: 9 }, (_, i) => ({ id: `s${i}`, task: 'x', acceptance: 'y' }))).error, /3-8/);
+  // 2026-11-20 下限从 3 放宽到 2：只写 1 条仍然拒绝，写 2 条要通过
+  assert.match(validateTodoItems(items3().slice(0, 1)).error, /2-8/);
+  assert.equal(validateTodoItems(items3().slice(0, 2)).ok, true, '2 条是合法的（单一目标任务的合理拆解）');
+  assert.match(validateTodoItems(Array.from({ length: 9 }, (_, i) => ({ id: `s${i}`, task: 'x', acceptance: 'y' }))).error, /2-8/);
   assert.match(validateTodoItems('nope').error, /items 数组/);
 
   const dup = items3().map((it) => ({ ...it, id: 'same' }));
@@ -135,7 +137,7 @@ test('todo: 状态流转 pending → running → done，evidence 合并保留；
   assert.equal(fifth.progress.failed, 1);
 
   // 校验失败不改台账
-  assert.match(reg.write('s-1', { items: [{ id: 'x', task: 'y' }] }).error, /3-8|acceptance/);
+  assert.match(reg.write("s-1", { items: [{ id: "x", task: "y" }] }).error, /2-8|acceptance/);
   assert.equal(reg.list('s-1').length, 3);
 
   // 会话隔离 + 新回合清空

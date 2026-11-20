@@ -322,9 +322,10 @@ export const AGENT_ONLY_TOOLS_SCHEMA = [
   // 回合中途向用户提问：只在主 agent 的工具表；子代理不注册（避免并行子代理同时弹多个问题）。
   // 卡片 UI 用 callId 关联；回答经 finalcheck:ask-user-answer 回填，工具返回 { answer }。
   { type: 'function', function: { name: 'ask_user', description: '回合中途向用户提问并等待回答（同一回合最多 3 次）。只在真有分叉且影响结论时使用（例如「按 L2 还是 L3」「动态探测要不要授权」「两个方向只能选一个」），信息足够时不要打扰用户。最多给 6 个选项；纯开放式提问可以不给 options，由用户自己输入。调用后本回合暂停，直到用户回答或点击停止', parameters: { type: 'object', properties: { question: { type: 'string', description: '要问用户的问题，一句话说清分叉点与影响' }, options: { type: 'array', maxItems: 6, description: '可选：2-6 个候选答案；不给则纯开放式提问', items: { type: 'object', properties: { label: { type: 'string', description: '选项短标签' }, description: { type: 'string', description: '可选的补充说明（影响/代价）' } }, required: ['label'] } }, multiSelect: { type: 'boolean', description: '可选：是否允许多选，默认 false' } }, required: ['question'] } } },
-  // 验收单（ZCode todo 式）：用户可见的勾选清单，3-8 条，每条必须写清验收标准。
+  // 验收单（ZCode todo 式）：用户可见的勾选清单，2-8 条，每条必须写清验收标准。
+  // （2026-11-20 下限从 3 放宽到 2：模型对单一目标的任务写 2 条很合理，以前被拒后还得改写重发一轮）
   // 可多次调用更新状态；done 必须带 evidence，failed/skipped 会被报告闸要求写进 ## Not covered。
-  { type: 'function', function: { name: 'todo_write', description: '维护本轮任务的验收单（勾选清单）：3-8 条，每条必须给 acceptance（怎么算做完）；可多次调用按 id 更新 status。开工时先写一遍，做完一条就把 status 改成 done 并补 evidence（文件:行 / 命令输出 / HTTP 复现）。不能做或跳过的条目标 failed/skipped，最终回答的 ## Not covered 必须点名它们。' + TODO_CC_RULES_TEXT, parameters: { type: 'object', properties: { items: { type: 'array', minItems: 3, maxItems: 8, description: '3-8 条任务；id 稳定（更新状态时按 id 合并）', items: { type: 'object', properties: { id: { type: 'string', description: '稳定标识（如 s1 / step-1）' }, task: { type: 'string', description: '这一步要做什么（一句话）' }, acceptance: { type: 'string', description: '验收标准（必填）：怎么算这一步完成，可检查的条件' }, status: { type: 'string', enum: ['pending', 'running', 'done', 'failed', 'skipped'], description: '状态，默认 pending' }, evidence: { type: 'string', description: '证据（done 时必填）：文件:行 / 命令输出摘要 / HTTP 复现' } }, required: ['id', 'task', 'acceptance'] } } }, required: ['items'] } } }
+  { type: 'function', function: { name: 'todo_write', description: '维护本轮任务的验收单（勾选清单）：2-8 条，每条必须给 acceptance（怎么算做完）；可多次调用按 id 更新 status。开工时先写一遍，做完一条就把 status 改成 done 并补 evidence（文件:行 / 命令输出 / HTTP 复现）。不能做或跳过的条目标 failed/skipped，最终回答的 ## Not covered 必须点名它们。' + TODO_CC_RULES_TEXT, parameters: { type: 'object', properties: { items: { type: 'array', minItems: 2, maxItems: 8, description: '2-8 条任务（只有一两个目标时写 2 条也行，不要硬凑）；id 稳定（更新状态时按 id 合并）', items: { type: 'object', properties: { id: { type: 'string', description: '稳定标识（如 s1 / step-1）' }, task: { type: 'string', description: '这一步要做什么（一句话）' }, acceptance: { type: 'string', description: '验收标准（必填）：怎么算这一步完成，可检查的条件' }, status: { type: 'string', enum: ['pending', 'running', 'done', 'failed', 'skipped'], description: '状态，默认 pending' }, evidence: { type: 'string', description: '证据（done 时必填）：文件:行 / 命令输出摘要 / HTTP 复现' } }, required: ['id', 'task', 'acceptance'] } } }, required: ['items'] } } }
 ];
 export const AGENT_TOOLS_SCHEMA = [...TOOLS_SCHEMA, GREP_CODE_SCHEMA, ...AGENT_ONLY_TOOLS_SCHEMA];
 
@@ -367,7 +368,7 @@ const SYSTEM_BASE = [
   'audit_project 返回的 nextSteps 是针对本项目的具体下一步（该读哪个方法论、要不要开工作流、哪些关要列进 Not covered），逐条执行或在回答里说明为什么跳过。',
   '验收档位纪律：用户说「按 L1 / L2 / L3 验收」时必须把 tier 显式传给 audit_project，不许自行降档；L2 会跑交接(H1)与可维护性(Q3)，L3 再加许可证(C1)与运维(O1)。返回的 gates.gaps 必须原样列给用户（「这关没跑，原因是…」），不许把没跑的关说成通过，也不许用「AI 看过了」替代没跑的闸。',
   '向用户提问：只在不问就无法继续、且答案会改变结论时调用 ask_user（例如「按 L2 还是 L3」「动态探测要不要授权」「两个方向只能选一个」）；信息足够时不要打扰用户。一次只问一件事，选项最多 6 个；纯开放式问题可以不给选项。一次回合最多问 3 次，第 4 次会被拒绝。',
-  '验收单：任务要分几步做时，开工前先用 todo_write 写 3-8 条，每条 acceptance（怎么算完成）必填；做完一条立刻再调一次 todo_write 把 status 改成 done 并补 evidence（文件:行 / 命令输出 / HTTP 复现）。做不了或跳过的条目写 failed/skipped，最终回答的 ## Not covered 必须逐条点名它们——done 无证据、failed/skipped 没点名，报告闸会判不合格。',
+  '验收单：任务要分几步做时，开工前先用 todo_write 写 2-8 条，每条 acceptance（怎么算完成）必填；做完一条立刻再调一次 todo_write 把 status 改成 done 并补 evidence（文件:行 / 命令输出 / HTTP 复现）。做不了或跳过的条目写 failed/skipped，最终回答的 ## Not covered 必须逐条点名它们——done 无证据、failed/skipped 没点名，报告闸会判不合格。',
   // 不再绑定界面语言：模型用与用户提问相同的语言作答（界面中英文只影响 UI 文案）
   '回答简洁，先结论后证据；用与用户提问相同的语言作答（用户写中文就用中文，写英文就用英文）。用 markdown 排版（结论加粗、证据用列表、长输出用代码块）。'
 ].join('\n');
@@ -386,6 +387,7 @@ const SYSTEM_DEV_BASE = [
   '长任务提速（2026-11-19 实测：做一个宣传片 529 步、109 分钟，其中 99 分钟在等模型、353 次回复只调了 1 个工具）：① 互不依赖的读文件 / 查看 / 命令放在同一次回复里一起发（读文件 / 搜索 / 看图 / 截图会并发执行；多条互不依赖的命令可以合并进一次 run_command），不要一次只调一个；② 视觉迭代要成批——一条命令里循环渲染或截取多帧（或用脚本拼成一张总览图），一次 view_image 看完（每次最多 4 张），把看到的问题列全、一次改完，再整体验证一次；不要「改一处 → 渲染一帧 → 裁图 → 看一眼」反复循环；③ 已经确认没问题的部分不要重复检查。',
   '看图与截图：做 PPT / 网页 / 视频 / 海报 / 图表这类视觉产物时，生成后必须用 capture_screenshot 逐页（或关键帧）看实际效果，文字溢出、重叠、错位、配色不对就改，改完再截一次确认；不要只看代码就说「应该没问题」。用户或项目里的图片用 view_image 直接看。写完页面一定要先 capture_screenshot 看一遍再交，不要凭代码猜。',
   '需要用户拍板的事（砍功能/动线上数据/花钱的 API）用 ask_user 问一次就动手；其余决策自己定。一次回合最多问 3 次。',
+  'ask_user 语言规则（dev 模式同样适用）：question、option 的 label 与 description 一律用**用户界面语言**写——界面是英文就写英文，界面是中文就写中文。不要因为用户消息是中文就在英文界面里写中文问题：界面语言优先级高于用户消息语言。另外，问题本身必须自包含（不要写「这个」「上面那个」），用户只看得到这一张卡。',
   '路径参数转义（硬规则）：JSON 参数里的 Windows 路径一律优先写正斜杠（D:/Projects/demo）；必须用反斜杠时一律双写（D:\\\\Projects\\\\demo）；写成单反斜杠会让参数不是合法 JSON，工具不会执行。',
   '工具结果超长时会被截断为「头+尾」并完整落盘，按提示的 spill 路径用 run_command 检索，不要猜中间内容。',
   '产出可预览文件（html / png / pdf / mp4 / pptx / md 等）后，调用 present_artifact(path) 登记；用户在聊天里点一下就出现在右侧预览面板（视频可直接播放，PDF/PPT/Word 分页展示）。',
@@ -641,7 +643,66 @@ function countTrailingRepeats(seg, probe, cap = 8) {
   return n;
 }
 
-/* ---------- 行为层防复读（CC 式）：同工具+同参数连续重复调用 ---------- */
+/* ---------- 死磕检测：从工具结果里提取「这一轮卡在什么错误上」 ---------- */
+// 目标不是判「重复调用」（那是 toolLoopRounds 干的），而是判「换着法子试，但撞的是同一个错误」。
+// 典型：改了 5 次代码，每次编译报的都是同一个 SyntaxError / 测试还是同样的 2 failed / 
+// 服务还是起不来（同一个 EADDRINUSE）。这种要提示模型跳出圈，而不是继续磨。
+const STUCK_ROUNDS = 5; // 连续 5 轮同一个错误 → 提示跳出
+const STUCK_MAX_NUDGES = 2; // 同一指纹最多提示 2 次（第 3 次起不再打扰）
+const STUCK_SIG_MAX = 120;
+
+/** 从一轮工具结果里提取失败指纹；没有失败返回 null */
+export function extractFailureSig(toolResults) {
+  const list = Array.isArray(toolResults) ? toolResults : [];
+  const parts = [];
+  for (const r of list) {
+    const payload = r?.trace?.result ?? r;
+    if (!payload || typeof payload !== 'object') continue;
+    // ① 显式失败（工具自己报的 error）
+    if (typeof payload.error === 'string' && payload.error.trim()) {
+      parts.push('err:' + normalizeErrLine(payload.error));
+      continue;
+    }
+    // ② 命令退出码非 0：从 stderr / stdout 里挑第一行像错误的
+    const code = Number(payload.code);
+    if (Number.isFinite(code) && code !== 0) {
+      const text = String(payload.stderr || '').trim() || String(payload.stdout || '').trim();
+      parts.push('exit' + code + ':' + normalizeErrLine(pickErrorLine(text)));
+      continue;
+    }
+    // ③ 测试失败数 / 编译错误数（输出里能数出来的，用它当指纹更稳）
+    const out = String(payload.stdout || '');
+    const testFail = /(\d+)\s*(?:failed|failing)/i.exec(out) || /(\d+)\s*passed[^\n]*?(\d+)\s*failed/i.exec(out);
+    if (testFail && Number(testFail[1]) > 0) parts.push('testsfail:' + testFail[1] + ':' + normalizeErrLine(pickErrorLine(out)));
+  }
+  if (!parts.length) return null;
+  // 一轮里有多个失败时只取第一个（第一个通常是根因，后面多是它引发的连锁）
+  return parts[0].slice(0, STUCK_SIG_MAX);
+}
+
+/** 从多行输出里挑一行最像「错误本身」的（而不是调用栈/路径） */
+function pickErrorLine(text) {
+  const lines = String(text || '').split('\n').map((l) => l.trim()).filter(Boolean);
+  // 优先含错误关键词的行
+  const KEY = /(error|exception|failed|failure|cannot|unable|not found|denied|invalid|unexpected|syntaxerror|traceback|EADDRINUSE|undefined)/i;
+  const hit = lines.find((l) => KEY.test(l)) || lines[0] || '';
+  return hit;
+}
+
+/** 归一化：去掉行号/列号/时间戳/路径里的随机部分，让「同一类错误」落到同一个指纹 */
+function normalizeErrLine(text) {
+  return String(text || '')
+    .replace(/[A-Za-z]:[\\/][^\s:'"]+/g, '<path>')       // Windows 绝对路径
+    .replace(/\/(?:[\w.-]+\/)+[\w.-]+/g, '<path>')        // POSIX 路径
+    .replace(/:\d+(?::\d+)?/g, ':<n>')                    // :12:34 行号列号
+    .replace(/\b\d{4}-\d{2}-\d{2}[T ][\d:.]+Z?\b/g, '<ts>') // 时间戳
+    .replace(/\b0x[0-9a-f]+\b/gi, '<hex>')                // 内存地址
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 100);
+}
+
+
 // 时间照旧不限（用户拍板），拦的是「零进展的动作重复」：相同输入必然得到相同输出，
 // 连续多轮完全相同的调用就是卡死循环。轮询类合法场景（改了中间步骤）会打断连续计数，不受影响。
 function canonArgs(a) {
@@ -1704,6 +1765,11 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
   let longThinkNudges = 0; // 「想太久」的催收次数：与复读分开计额度（2026-11-20）
   let lastToolLoopSig = null; // 行为层防复读：上一轮的工具调用签名
   let toolLoopRounds = 0; // 连续相同签名的轮数
+  // 死磕检测（2026-11-20）：不是「同参数重复调用」，而是「每轮都在换法子试，但撞的是同一个错误」。
+  // 文字不同、参数不同，可错误指纹一样——这种最像人钻牛角尖，之前完全没兜住。
+  let lastErrorSig = null; // 上一轮的失败指纹（同一类报错 = 同一指纹）
+  let stuckRounds = 0; // 连续「同一个错误没解开」的轮数
+  let stuckNudges = 0; // 跳出圈提示的次数（同一指纹最多提几次，避免刷屏）
   let forceAnswerNoTools = false; // 下一次请求带 tool_choice='none'（第二次补交用，成功发出后复位）
   let argsTruncatedRetried = false; // finish_reason=length 且带 tool_calls：整轮重发一次（参数半截，一律不执行）
   let argsRepaired = false; // 参数非法 JSON：纠错一次（把那一个调用回给模型重发），再失败才报错
@@ -2210,6 +2276,36 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
     });
     // 工具返回的图片：所有 tool 消息之后补一条多模态消息（tool 消息必须紧跟 assistant 的 tool_calls）
     appendToolImages(convo, toolResults, { vision: liveConfig.vision });
+    // ---- 死磕检测（2026-11-20）：换着法子试、但撞的是同一个错误 → 提示跳出圈 ----
+    // 与上面的「同参数重复调用」互补：那个抓原地打转，这个抓「改了 5 次还是同一个报错」。
+    // 不判停（用户明确不要超时/不要硬断），只提示；同一指纹最多提 2 次，避免刷屏。
+    {
+      const sig = extractFailureSig(toolResults);
+      if (sig) {
+        if (sig === lastErrorSig) stuckRounds += 1;
+        else { stuckRounds = 1; lastErrorSig = sig; stuckNudges = 0; }
+      } else {
+        // 这一轮没有失败（跑通了 / 只是读文件）→ 死磕清零，不做任何提示
+        stuckRounds = 0; lastErrorSig = null; stuckNudges = 0;
+      }
+      if (stuckRounds >= STUCK_ROUNDS && stuckNudges < STUCK_MAX_NUDGES) {
+        stuckNudges += 1;
+        const nudge = [
+          `你已经连续 ${stuckRounds} 轮卡在同一个错误上：`,
+          `「${lastErrorSig}」`,
+          '换了写法但根因没变。**现在停一下，跳出当前思路**，按顺序自查：',
+          '① 这个错误真的是我理解的那个意思吗？（先读完整报错，不要只看第一行）',
+          '② 我是不是在解决一个不该解决的问题——能用更简单的方式绕过去吗（换实现、降范围、跳过这一步、先用假数据跑通）？',
+          '③ 有没有一条完全不同的路径能达到目标（换个工具、换个库、换个文件位置、先做最小可用版）？',
+          '④ 这个错误是不是环境问题而不是代码问题（端口占用、权限、缺依赖、路径写错）？',
+          '先说你判断的根因，再选一条新路径动手——不要再在同一个地方加第 ' + (stuckRounds + 1) + ' 次补丁。',
+          '如果确认这个错误无法在本回合解决，直接把现状（已做了什么、卡在哪、用户需要做什么）写进最终回答，如实交付。'
+        ].join('\n');
+        convo.push({ role: 'user', content: `[系统] ${nudge}` });
+        onEvent?.({ kind: 'warning', message: t('连续 {n} 轮卡在同一个错误，已提示跳出当前思路（{k}/{max}）', { n: stuckRounds, k: stuckNudges, max: STUCK_MAX_NUDGES }) });
+        onEvent?.({ kind: 'activity', label: t('检测到死磕同一个错误，已提示换思路…') });
+      }
+    }
     // 回合内折叠统一在下一次请求前的 compactNow 里做（成批折叠，保护前缀缓存；见 nextFoldAt）。
     // 2026-11-16 教训仍然有效：不能每步把最近几条以外全清掉（「读完就忘」，同一文件读了 107 次）。
     if (inspected.invalid.length) {
