@@ -140,6 +140,16 @@ export function IconSparkle() {
     </svg>
   );
 }
+// 立方体：输入框工具条里的「模型」入口（不显示模型名，只用一个图标）
+export function IconCube({ size = 15 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
+      <path d="M12 2.8 20.5 7.4v9.2L12 21.2 3.5 16.6V7.4z" />
+      <path d="M3.5 7.4 12 12l8.5-4.6" />
+      <path d="M12 12v9.2" />
+    </svg>
+  );
+}
 export function IconShield() {
   return (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">

@@ -129,6 +129,36 @@ export default function App() {
   const y = api(); // window.finalcheck（浏览器直开时为空 → 仅壳）
   useLanguage(); // 订阅语言状态：设置页切换语言后整棵界面重渲染（t() 读的是最新语言）
   const [page, setPage] = useState('chat');
+  // 会话侧栏折叠：开关做在标题栏的 FC logo 上（悬停显示侧栏图标，点一下收起/展开）。
+  // 状态记在 localStorage，重启保持；侧栏收起后正文拿回 212px。
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try { return localStorage.getItem('fc.sidebarCollapsed') === '1'; } catch { return false; }
+  });
+  const toggleSidebar = () => setSidebarCollapsed((v) => {
+    const next = !v;
+    try { localStorage.setItem('fc.sidebarCollapsed', next ? '1' : '0'); } catch { /* 忽略 */ }
+    return next;
+  });
+  // 右栏宽度计算要读「侧栏当前真实宽度」，而不是折叠状态的真假值——
+  // 否则折叠瞬间 sidebarWidth 从 212 直接跳到 0，右栏会跟着跳一下，
+  // 和侧栏的 220ms 过渡对不上。用 ResizeObserver 跟随实际像素。
+  const [sidebarPx, setSidebarPx] = useState(() => {
+    try { return localStorage.getItem('fc.sidebarCollapsed') === '1' ? 0 : 212; } catch { return 212; }
+  });
+  useEffect(() => {
+    if (typeof ResizeObserver === 'undefined') return undefined;
+    // Sidebar 是函数组件（没转 forwardRef），直接按类名取它的根节点；
+    // 侧栏只在 chat 页挂载，所以依赖 page 重新绑定。
+    const el = document.querySelector('.fc-sidebar');
+    if (!el) return undefined;
+    setSidebarPx(Math.round(el.getBoundingClientRect().width));
+    const ro = new ResizeObserver((entries) => {
+      const w = Math.round(entries[0]?.contentRect?.width || 0);
+      setSidebarPx((prev) => (prev === w ? prev : w));
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [page]);
   const [sessions, setSessions] = useState([]);       // 当前项目的会话 [{id,title,updatedAt,turns}]
   const [projects, setProjects] = useState([]);       // [{id,name,path,isDefault,sessionCount}]
   const [activeProjectId, setActiveProjectId] = useState(null);
@@ -1643,10 +1673,14 @@ export default function App() {
     <div className="app-root h-full flex flex-col bg-base text-ink">
       {/* 液态玻璃的底：两团极暗的金色/青色光晕（玻璃要有东西可以折射） */}
       <div className="app-ambient" aria-hidden="true" />
-      <TitleBar y={y} theme={theme} onToggleTheme={toggleTheme} />
+      <TitleBar y={y} theme={theme} onToggleTheme={toggleTheme}
+        sidebarCollapsed={sidebarCollapsed} onToggleSidebar={toggleSidebar} />
       <div className="relative z-[1] flex-1 min-h-0 flex text-ink">
       {/* ---- 左栏（液态玻璃）：设置/用量页改全屏布局，不露会话侧栏 ---- */}
+      {/* 侧栏始终挂载：折叠用宽度过渡而不是卸载——卸载会让主区瞬间跳 212px，
+          没有任何过渡；而且侧栏里的滚动位置/展开状态都会丢。 */}
       {page === 'chat' && <Sidebar
+        collapsed={sidebarCollapsed}
         y={y} booted={booted} page={page} projects={projects} activeProjectId={activeProjectId}
         activeId={activeId} sessions={sessions} projectSessions={projectSessions}
         showAllSessions={showAllSessions} showArchived={showArchived}
@@ -1659,8 +1693,10 @@ export default function App() {
         onSettings={() => setPage('settings')}
       />}
 
-      {/* ---- 主区 + 右侧产物预览 ---- */}
-      <div className="flex-1 min-w-0 flex min-h-0">
+      {/* ---- 主区 + 右侧产物预览 ----
+          relative 是必需的：窗口不够宽时右栏降级为浮层（absolute right-0），
+          浮层相对这块定位，不再把正文压没。 */}
+      <div className="relative flex-1 min-w-0 flex min-h-0">
       <main className="chat-veil flex-1 min-w-0 flex flex-col">
         {!y && (
           <div className="m-4 mb-0 rounded-lg bg-amber-500/10 border border-amber-500/40 text-amber-300 text-sm px-4 py-3 transition-all duration-200">
@@ -1744,7 +1780,7 @@ export default function App() {
         )}
       </main>
       {showStepPanel ? (
-        <SubagentPanel target={stepView} onClose={() => setStepView(null)} />
+        <SubagentPanel target={stepView} onClose={() => setStepView(null)} sidebarWidth={sidebarPx} />
       ) : showArtifactPanel && (
         <ArtifactPanel
           y={y}
@@ -1754,6 +1790,7 @@ export default function App() {
           onClose={closeArtifact}
           onReload={openArtifact}
           onOpen={(p) => y?.artifactOpen?.(p)}
+          sidebarWidth={sidebarPx}
         />
       )}
       </div>

@@ -890,16 +890,29 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
       const target = String(args?.target || args?.path || args?.url || '').trim();
       if (!target) return { error: '缺少 target：本地文件路径（html/svg/pdf/pptx/docx/mp4/图片）或 http(s) 网址' };
       const cap = await import('./capture.mjs');
-      if (!(await cap.captureAvailable())) return { error: '截图只在 FinalCheck 桌面端可用（当前是无界面运行）；图片文件可以用 view_image 直接看' };
+      const headless = await import('./capture-headless.mjs');
+      // 可用性判定（2026-11-20 改）：以前只认 Electron 主进程，纯 Node（sim / CLI / CI）下模型被告知
+      // 「截图只在桌面端可用」→ 它在盲写 UI，页面 JS 崩了、无障碍文本没隐藏都看不见。
+      // 现在桌面端用 BrowserWindow，其余环境自动起一个独立渲染子进程（electron 二进制 / 系统 Chrome）。
+      const desktopOk = await cap.captureAvailable();
+      if (!desktopOk) {
+        const hn = await headless.probeCaptureBackend();
+        if (!hn.ok) return { error: await headless.captureUnavailableReason() };
+      }
       const width = Math.max(320, Math.min(2400, Number(args?.width) || 1280));
       const height = Math.max(240, Math.min(4000, Number(args?.height) || 800));
       // 截图存进项目的 .finalcheck/captures（%APPDATA%\FinalCheck 下的 spill 目录会被产物闸拒绝，用户点不开）
       const outDir = projectPath ? path.join(projectPath, '.finalcheck', 'captures') : path.join(os.tmpdir(), 'fc-captures');
+      const captureWeb = async (target2, opts) => {
+        // 桌面端优先（隐藏 BrowserWindow，快且能等 fullPage）；否则起独立渲染子进程
+        if (desktopOk) return cap.captureUrl(target2, opts);
+        return headless.captureBySubprocess(target2, { width: opts.width, height: opts.height, waitMs: opts.waitMs, outDir: opts.outDir });
+      };
       let shot;
       let what;
       try {
         if (/^https?:\/\//i.test(target)) {
-          shot = await cap.captureUrl(target, { width, height, waitMs: Number(args?.wait_ms) || 1200, fullPage: !!args?.full_page, outDir });
+          shot = await captureWeb(target, { width, height, waitMs: Number(args?.wait_ms) || 1200, fullPage: !!args?.full_page, outDir });
           what = target;
         } else {
           const gate = assertArtifactPath(target, { policy });
@@ -911,9 +924,10 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
           if (['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'].includes(ext)) {
             return tools.view_image({ path: abs });
           } else if (['.html', '.htm', '.svg'].includes(ext)) {
-            shot = await cap.captureUrl(abs, { width, height, waitMs: Number(args?.wait_ms) || 800, fullPage: !!args?.full_page, outDir });
+            shot = await captureWeb(abs, { width, height, waitMs: Number(args?.wait_ms) || 800, fullPage: !!args?.full_page, outDir });
             what = path.basename(abs);
           } else if (ext === '.pdf' || OFFICE_EXTS.has(ext)) {
+            if (!desktopOk) return { error: '截 PDF / PPT / Word 需要 FinalCheck 桌面端（无界面模式没有 pdf.js 渲染层）。网页和 html/svg 截图可用，图片可以用 view_image 直接看' };
             let pdf = abs;
             if (ext !== '.pdf') {
               const cacheDir = path.join(path.dirname(process.env.FINALCHECK_CONFIG_FILE || path.join(os.tmpdir(), 'x')), 'preview-cache');

@@ -1,6 +1,6 @@
 // 左栏（液态玻璃）：Workspaces / 项目行 / 会话行 / Archived / Show more / 底部 Settings。
 // 纯展示组件：所有状态仍在 App，行为通过 props 回调（与原 App.jsx 内联 JSX 一一对应）。
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { t } from '../i18n/core.mjs';
 import { prettyTitle, relTime } from '../lib/app-helpers.mjs';
 import { IconPlusCircle, IconFolderPlus, IconFolder, IconPlus, IconTrash, IconArchive, IconUnarchive, IconGear, Spinner } from './Icons.jsx';
@@ -12,10 +12,48 @@ export default function Sidebar({
   showAllSessions, showArchived, runningIds, updateVersion, isProjectExpanded,
   setShowAllSessions, setShowArchived,
   onNewSession, onAddProject, onToggleProject, onOpenSession, onNewSessionInProject,
-  onRemoveProject, onArchiveSession, onOpenRowMenu, onSettings
+  onRemoveProject, onArchiveSession, onOpenRowMenu, onSettings,
+  collapsed = false
 }) {
+  // 折叠动画的性能约束（本仓踩过的坑）：
+  // 侧栏有 backdrop-filter: blur()，宽度每变一帧就要重新卷积后面的像素；
+  // 全屏玻璃跑无限动画那次实测稳定吃 11% CPU。
+  // 做法：只在**动画进行的 ~220ms 内**去掉模糊，结束立刻恢复——
+  // 侧栏本来就 0.86 不透明，去掉模糊肉眼看不出，但合成成本掉一个数量级。
+  // 用 transitionend + 兜底计时器双保险（属性没变时 transitionend 不会触发）。
+  const [animating, setAnimating] = useState(false);
+  const asideRef = useRef(null);
+  const firstRef = useRef(true);
+  useEffect(() => {
+    if (firstRef.current) { firstRef.current = false; return; } // 首次挂载不播动画
+    setAnimating(true);
+    const el = asideRef.current;
+    let done = false;
+    const stop = () => {
+      if (done) return;
+      done = true;
+      setAnimating(false);
+    };
+    const onEnd = (e) => { if (e.propertyName === 'width') stop(); };
+    el?.addEventListener('transitionend', onEnd);
+    const timer = setTimeout(stop, 280); // 兜底：prefers-reduced-motion 时不触发 transitionend
+    return () => {
+      el?.removeEventListener('transitionend', onEnd);
+      clearTimeout(timer);
+    };
+  }, [collapsed]);
   return (
-    <aside className="glass-side w-[212px] shrink-0 flex flex-col">
+    <aside
+      ref={asideRef}
+      className={`glass-side shrink-0 flex flex-col overflow-hidden fc-sidebar ${
+        collapsed ? 'fc-sidebar-collapsed' : ''
+      } ${animating ? 'fc-sidebar-animating' : ''}`}
+      style={{ width: collapsed ? 0 : 212 }}
+      aria-hidden={collapsed}
+      inert={collapsed ? '' : undefined}
+    >
+      {/* 内层定宽 212：外层宽度收到 0 时，内容不会被挤变形（相当于横向裁切） */}
+      <div className="w-[212px] flex flex-col flex-1 min-h-0 fc-sidebar-inner">
       {/* 最上面一条：New Session（居中、全英文，仿 ZCode） */}
       <div className="px-2 pt-2.5 pb-1">
         <button onClick={onNewSession} disabled={!y || !activeProjectId}
@@ -151,6 +189,7 @@ export default function Sidebar({
           ) : null}
         </button>
         <span title={y ? t('IPC 已连接') : t('IPC 不可用')} className={`w-1.5 h-1.5 rounded-full ${y ? 'bg-jade' : 'bg-red-400/70'}`} />
+      </div>
       </div>
     </aside>
   );

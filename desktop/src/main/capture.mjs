@@ -68,7 +68,7 @@ function waitTitle(win, timeoutMs) {
  */
 export async function captureUrl(target, { width = 1280, height = 800, waitMs = 800, fullPage = false, outDir = null } = {}) {
   const E = await electron();
-  if (!E) throw new Error('截图只在 FinalCheck 桌面端可用');
+  if (!E) throw new Error('这个渲染通道需要 Electron 主进程；无界面环境下请走 capture-headless 的子进程渲染');
   const win = new E.BrowserWindow({
     show: false, width, height, useContentSize: true, paintWhenInitiallyHidden: true,
     webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, partition: 'fc-capture', backgroundThrottling: false },
@@ -93,7 +93,7 @@ export async function captureUrl(target, { width = 1280, height = 800, waitMs = 
 /** PDF 某一页 / 视频某一帧：在隐藏窗口里打开渲染层的 #fc-snapshot 路由 */
 export async function captureSnapshot(params, { outDir = null, timeoutMs = 60000 } = {}) {
   const E = await electron();
-  if (!E) throw new Error('截图只在 FinalCheck 桌面端可用');
+  if (!E) throw new Error('这个渲染通道需要 Electron 主进程；无界面环境下请走 capture-headless 的子进程渲染');
   if (!rendererTarget) throw new Error('截图通道未初始化');
   const width = Math.max(200, Math.min(2400, Number(params.width) || 1280));
   const win = new E.BrowserWindow({
