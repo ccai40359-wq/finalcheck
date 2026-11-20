@@ -59,12 +59,46 @@ export function resolveShell({ appRoot = null, platform = process.platform, exis
   const isWin = platform === 'win32';
 
   if (!isWin) {
-    // 非 Windows：直接用系统 shell（/bin/sh），不进 bash 分支
+    // 非 Windows（Linux / macOS）：必须用真正的 bash，**不能返回 /bin/sh**。
+    //
+    // 为什么不给 /bin/sh：Ubuntu/Debian 的 /bin/sh 是 dash，只支持 POSIX sh。
+    // 而 run_command 的工具描述（agent-service.mjs）明确承诺「统一一种 shell 语法」，
+    // 模型会写 `[[ ]]`、`for f in "${arr[@]}"`、`$'...'`、`2>/dev/null`、进程替换
+    // `<(cmd)` —— 在 dash 下全是语法错误。Windows 侧已经统一到 Git Bash，
+    // Linux 侧返回 /bin/sh 就成了「同一个提示词、不同平台不同行为」，
+    // 与「一种 shell、一套语法」的设计目标直接矛盾。
+    //
+    // 解析顺序：/usr/bin/bash → /bin/bash → /usr/local/bin/bash → /opt/homebrew/bin/bash
+    //          → （都找不到）回落 /bin/sh 并记 warning（fail-visible，不静默降级）
+    const BASH_CANDIDATES = [
+      '/usr/bin/bash',          // Linux 标准位置
+      '/bin/bash',              // 老发行版 / 部分容器镜像
+      '/usr/local/bin/bash',    // 用户自己装的新版 bash（macOS Intel 也常见）
+      '/opt/homebrew/bin/bash'  // macOS Apple Silicon Homebrew
+    ];
+    for (const candidate of BASH_CANDIDATES) {
+      let ok = false;
+      try { ok = exists(candidate); } catch { ok = false; }
+      if (ok) {
+        return {
+          kind: 'bash',
+          file: candidate,
+          // 与 Windows 同一口径用 -c 而不是 -lc：-lc 会加载 /etc/profile 与
+          // 用户 profile，实测慢 4-5 倍，会触发命令空闲看门狗误判。
+          args: (cmd) => ['-c', cmd],
+          origin: 'user-installed'
+        };
+      }
+    }
+    // 一个 bash 都没有：这台机器跑不了 bash 语法。回落 sh 但要让用户看见。
     return {
       kind: 'bash',
       file: '/bin/sh',
       args: (cmd) => ['-c', cmd],
-      origin: 'user-installed'
+      origin: 'fallback-cmd', // 复用「降级」这个 origin，下游能据此提示
+      warning: '没有找到 bash（/usr/bin/bash、/bin/bash 均不存在），已回落到 /bin/sh。'
+        + '若系统是 Ubuntu/Debian，/bin/sh 是 dash：[[ ]]、数组、$\'...\' 等 bash 语法会失败。'
+        + '请安装 bash（Debian/Ubuntu: apt install bash；Alpine: apk add bash）。'
     };
   }
 

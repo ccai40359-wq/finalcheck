@@ -635,9 +635,10 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
           cwd: projectDir,
           sandboxAppRoot: shellAppRoot
         });
-        if (!sb && sandboxEnabled({ aclSandbox })) {
+        if (!sb && sandboxEnabled({ aclSandbox }) && sandboxAvailability().available) {
           return { code: 1, ms: 0, out: '', err: '沙箱不可用；FINALCHECK_ACL_SANDBOX=on（或 config aclSandbox:true） 已拒绝在宿主机执行', timedOut: false };
         }
+        // 平台没有 ACL 沙箱后端（Linux/macOS）：如实降级到宿主机执行，不是拒绝
         const t0 = Date.now();
         const run = await runCommandWithSignal(String(command), {
           cwd: projectDir,
@@ -1101,7 +1102,14 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
         cwd: runCwd,
         sandboxAppRoot: shellAppRoot
       });
-      if (!sandbox && sandboxOn) {
+      // 沙箱「在这个平台上根本不存在」≠「这条命令沙箱跑不了」。
+      // Linux/macOS 没有 ACL 受限令牌后端（sandboxAvailability().available === false），
+      // 此时 aclSandbox 开关无论开不开都无从生效。旧逻辑一律返回「已拒绝在宿主机执行」，
+      // 等于 Linux 用户一勾这个开关（或设 FINALCHECK_ACL_SANDBOX=on）就再也跑不了任何命令。
+      // 这里区分两种 null：平台不支持 → 降级到宿主机执行并如实告知（应用层三道闸照旧）；
+      // 平台支持但这条命令跑不了 → 仍然拒绝（那是用户明确要求的写保护）。
+      const platformHasSandbox = sandboxAvailability().available === true;
+      if (!sandbox && sandboxOn && platformHasSandbox) {
         return {
           error: !compat.compatible
             ? `沙箱不支持这条命令（${compat.reason}）；FINALCHECK_ACL_SANDBOX=on（或 config aclSandbox:true） 已拒绝在宿主机执行`

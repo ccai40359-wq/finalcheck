@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import { appCacheDir } from './platform-paths.mjs';
 
 const require = createRequire(import.meta.url);
 
@@ -79,7 +80,11 @@ export function sandboxCompatible(command) {
 function tempDirFor(workspaceRoot) {
   const candidates = [
     path.join(os.tmpdir(), 'fc-sandbox'),
-    path.join(process.env.LOCALAPPDATA || os.homedir(), 'FinalCheck', 'sandbox-tmp')
+    // 回落目录走 appCacheDir：Linux 是 ~/.cache/FinalCheck（XDG），macOS 是
+    // ~/Library/Caches/FinalCheck。旧实现硬写 LOCALAPPDATA||homedir 的
+    // 'FinalCheck/sandbox-tmp'，在 Linux 上会落在 ~/FinalCheck/sandbox-tmp——
+    // 家目录根上多出一个不像应用目录的文件夹。
+    path.join(appCacheDir(), 'sandbox-tmp')
   ];
   for (const base of candidates) {
     try {

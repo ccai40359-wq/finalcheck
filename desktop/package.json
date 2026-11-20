@@ -10,8 +10,12 @@
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
-    "dist": "electron-vite build && electron-builder --win nsis --publish never",
-    "dist:dir": "electron-vite build && electron-builder --win dir",
+    "dist": "node scripts/prepare-rg.mjs win32 && electron-vite build && electron-builder --win nsis --publish never",
+    "dist:dir": "node scripts/prepare-rg.mjs win32 && electron-vite build && electron-builder --win dir",
+    "dist:linux": "node scripts/prepare-rg.mjs linux && electron-vite build && electron-builder --linux AppImage deb --publish never",
+    "dist:linux:dir": "node scripts/prepare-rg.mjs linux && electron-vite build && electron-builder --linux dir",
+    "prepare:rg": "node scripts/prepare-rg.mjs",
+    "fetch:rg:linux": "node scripts/fetch-rg-linux.mjs",
     "preview": "electron-vite preview",
     "setup:sqlite": "node scripts/ensure-sqlite-binding.mjs",
     "postinstall": "node scripts/ensure-sqlite-binding.mjs",
@@ -40,8 +44,11 @@
     ],
     "extraResources": [
       {
-        "from": "../vendor/rg/rg.exe",
-        "to": "rg/rg.exe"
+        "from": "resources/rg",
+        "to": "rg",
+        "filter": [
+          "**/*"
+        ]
       },
       {
         "from": "resources/gitbash-full",
@@ -114,6 +121,35 @@
         ]
       }
     ],
+    "linux": {
+      "icon": "build/icon.png",
+      "category": "Development",
+      "executableName": "finalcheck",
+      "synopsis": "AI 写的代码，交付前先验一遍",
+      "description": "FinalCheck 终检台：全方位代码体检 + 渗透/压测 + AI Agent",
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "desktop": {
+        "entry": {
+          "Name": "FinalCheck",
+          "Comment": "AI code acceptance terminal",
+          "Categories": "Development;Security;"
+        }
+      }
+    },
+    "appImage": {
+      "artifactName": "fc-${version}.${ext}"
+    },
+    "deb": {
+      "artifactName": "fc-${version}.${ext}",
+      "depends": [
+        "bash",
+        "git",
+        "ripgrep"
+      ]
+    },
     "win": {
       "icon": "build/icon.ico",
       "legalTrademarks": "FinalCheck",

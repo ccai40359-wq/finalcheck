@@ -9,7 +9,7 @@
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolveShell } from './shell-resolver.mjs';
-import os from 'node:os';
+import { appDataDir } from './platform-paths.mjs';
 import path from 'node:path';
 import { t } from '../renderer/i18n/core.mjs';
 
@@ -67,11 +67,10 @@ function resolveHooksFile(file) {
   if (typeof file === 'string' && file.trim()) return path.resolve(file.trim());
   const envFile = process.env.FINALCHECK_HOOKS_FILE;
   if (envFile && envFile.trim()) return path.resolve(envFile.trim());
-  if (process.platform === 'win32') {
-    const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
-    return path.join(appData, 'FinalCheck', 'hooks.json');
-  }
-  return path.join(os.homedir(), 'FinalCheck', 'hooks.json');
+  // 平台路径集中到 platform-paths.mjs（Windows %APPDATA% / Linux XDG / macOS Application Support）。
+  // 旧实现在非 Windows 直接落到 homedir()/FinalCheck，与 Electron 自己的 userData 不一致，
+  // 也从没遵循 XDG 规范。
+  return path.join(appDataDir(), 'hooks.json');
 }
 
 function normalizeHookList(eventName, list, configTimeoutMs, warnings) {

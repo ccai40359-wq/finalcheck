@@ -91,10 +91,29 @@ test('shell: 两者都没有 → 回落 cmd 且带 warning', () => {
   assert.ok(r.warning && /Git Bash/.test(r.warning), '必须给出警告文案');
 });
 
-test('shell: 非 Windows 走 /bin/sh，不碰 Git Bash 逻辑', () => {
+// 这条曾经断言「非 Windows 走 /bin/sh」。那是 Linux 移植时要改掉的行为，不是要守住的不变量。
+// 为什么必须改：Ubuntu/Debian 的 /bin/sh 是 dash，只认 POSIX sh。而 run_command 的工具描述
+// 承诺「统一一种 shell 语法」，模型会写 `[[ ]]`、数组、`$'...'`、进程替换 —— dash 全报语法错误。
+// Windows 侧已统一到 Git Bash，Linux 侧返回 /bin/sh 就成了「同一提示词、不同平台不同行为」。
+test('shell: 非 Windows 优先真 bash（不再返回 /bin/sh，那是 dash）', () => {
   const r = resolveShell({ platform: 'linux', exists: () => true });
+  assert.equal(r.file, '/usr/bin/bash', 'Linux 标准位置优先');
+  assert.equal(r.kind, 'bash');
+  assert.deepEqual(r.args('ls'), ['-c', 'ls'], '和 Windows 同口径用 -c（-lc 慢 4-5 倍会触发空闲看门狗）');
+});
+
+test('shell: bash 逐个候选回落（/usr/bin → /bin → /usr/local → homebrew）', () => {
+  const only = (p) => ({ platform: 'linux', exists: (f) => f === p });
+  assert.equal(resolveShell(only('/bin/bash')).file, '/bin/bash');
+  assert.equal(resolveShell(only('/usr/local/bin/bash')).file, '/usr/local/bin/bash');
+  assert.equal(resolveShell({ platform: 'darwin', exists: (f) => f === '/opt/homebrew/bin/bash' }).file, '/opt/homebrew/bin/bash');
+});
+
+test('shell: 一个 bash 都没有时回落 /bin/sh 但必须给 warning（fail-visible）', () => {
+  const r = resolveShell({ platform: 'linux', exists: () => false });
   assert.equal(r.file, '/bin/sh');
-  assert.deepEqual(r.args('ls'), ['-c', 'ls']);
+  assert.ok(r.warning, '静默降级会让 bash 语法神秘失败，必须让用户看见');
+  assert.match(r.warning, /dash|bash/);
 });
 
 test('shell: 用户版存在时不因为内置版缺失而回落', () => {

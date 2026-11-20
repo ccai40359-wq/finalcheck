@@ -4,8 +4,8 @@
 // 文件损坏时回退空账本并 warning，绝不阻塞对话。
 import { readFile, writeFile, mkdir, rename, stat, rm } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
-import os from 'node:os';
 import path from 'node:path';
+import { appDataDir } from './platform-paths.mjs';
 
 export const USAGE_VERSION = 1;
 export const RETENTION_DAYS = 180;
@@ -17,11 +17,8 @@ const warnedFiles = new Set();
 export function usageFilePath() {
   const envFile = process.env.FINALCHECK_USAGE_FILE;
   if (envFile && envFile.trim()) return path.resolve(envFile.trim());
-  if (process.platform === 'win32') {
-    const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
-    return path.join(appData, 'FinalCheck', 'usage.json');
-  }
-  return path.join(os.homedir(), 'FinalCheck', 'usage.json');
+  // 与 hooks / diagnostics 统一走 platform-paths（Linux XDG / macOS Application Support）
+  return path.join(appDataDir(), 'usage.json');
 }
 
 // 进程内缓存（file + mtime/size 签名）：连续 append 不必每次都重读整个账本。

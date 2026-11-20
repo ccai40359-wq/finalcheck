@@ -1,8 +1,8 @@
 // 诊断包：把环境/配置/路径信息汇总成可导出的 JSON。
 // 硬规则：apiKey 一律替换为 '***'，日志/字符串里出现的密钥也要抹掉，绝不把原文写进诊断文件。
 import { open, stat } from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
+import { appDataDir } from './platform-paths.mjs';
 
 const SECRET_KEY_RE = /^(api[_-]?key|apikey|authorization|auth[_-]?token|access[_-]?token)$/i;
 const MAX_DEPTH = 12;
@@ -104,11 +104,8 @@ export async function readLastErrors(logFile, { limit = 5, secrets = [] } = {}) 
 export function hooksFilePath() {
   const envFile = process.env.FINALCHECK_HOOKS_FILE;
   if (envFile && envFile.trim()) return path.resolve(envFile.trim());
-  if (process.platform === 'win32') {
-    const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
-    return path.join(appData, 'FinalCheck', 'hooks.json');
-  }
-  return path.join(os.homedir(), 'FinalCheck', 'hooks.json');
+  // 与 hooks.mjs 统一走 platform-paths（Linux 用 XDG，macOS 用 Application Support）
+  return path.join(appDataDir(), 'hooks.json');
 }
 
 const nameOf = (p) => (typeof p === 'string' ? p : String(p?.name ?? '')).trim();
