@@ -12,6 +12,12 @@ import { spawn } from 'node:child_process';
 
 
 const PS_SCRIPT = String.raw`
+# 中文编码（2026-11-21 真机踩到）：PowerShell 默认按系统 ANSI（中文 Windows = GBK）读写控制台，
+# 输入输出里的中文都会变成乱码。stdin 侧由 JS 把所有非 ASCII 转成 \uXXXX（纯 ASCII 安全）；
+# 输出侧（窗口标题可能含中文）在这里统一设成 UTF-8。
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+[Console]::InputEncoding  = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 Add-Type -ReferencedAssemblies @('System.Windows.Forms','System.Drawing') -TypeDefinition @"
@@ -27,6 +33,10 @@ public class FcCu {
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
+  [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr h);
+  // GetCurrentThreadId 在 kernel32，不在 user32（真机踩到 ERR entry point not found）
+  [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
+  [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
 
   // SendInput：绝对坐标用 0..65535 归一化（跨多显示器），标志位含 MOVE|ABSOLUTE|VIRTUALDESK
   [StructLayout(LayoutKind.Sequential)] public struct MOUSEINPUT {
@@ -174,9 +184,24 @@ while ($true) {
       "type"    { [FcCu]::TypeText([string]$cmd.text); Write-Output "OK|" }
       "focus"   {
         $h = [IntPtr][long]$cmd.hwnd
-        [FcCu]::ShowWindow($h, 9) | Out-Null   # SW_RESTORE
-        [FcCu]::SetForegroundWindow($h) | Out-Null
-        Write-Output "OK|"
+        # 抢前台（2026-11-21 真机踩到）：SetForegroundWindow 只对「当前正在接收输入的进程」有效，
+        # 后台进程调用会静默失败（返回 true 但前台不变）。标准绕法是 AttachThreadInput：
+        # 把本进程的输入队列临时挂到前台窗口所属线程上，借它的「前台身份」再调 SetForegroundWindow。
+        $fw = [FcCu]::GetForegroundWindow()
+        $fwTid = [FcCu]::GetWindowThreadProcessId($fw, [ref]$null)
+        $myTid = [FcCu]::GetCurrentThreadId()
+        [FcCu]::ShowWindow($h, 9) | Out-Null            # SW_RESTORE
+        if ($fwTid -ne 0 -and $fwTid -ne $myTid) {
+          [FcCu]::AttachThreadInput($myTid, $fwTid, $true) | Out-Null
+          [FcCu]::BringWindowToTop($h) | Out-Null
+          [FcCu]::SetForegroundWindow($h) | Out-Null
+          [FcCu]::AttachThreadInput($myTid, $fwTid, $false) | Out-Null
+        } else {
+          [FcCu]::SetForegroundWindow($h) | Out-Null
+        }
+        # 回报真实结果（不是「我调过了」，是「现在前台是谁」）
+        $now = [FcCu]::GetForegroundWindow()
+        Write-Output ("OK|" + $now.ToInt64() + "|" + ($now.ToInt64() -eq $h.ToInt64()).ToString().ToLower())
       }
       default   { Write-Output ("ERR|unknown op: " + $cmd.op) }
     }
@@ -229,7 +254,7 @@ function next() {
   if (pending || !queue.length) return;
   pending = queue.shift();
   if (!proc) { pending.reject(new Error('输入注入进程未启动')); pending = null; return next(); }
-  proc.stdin.write(JSON.stringify(pending.cmd) + '\n');
+  proc.stdin.write((pending.json || JSON.stringify(pending.cmd)) + '\n');
 }
 
 /** 启动（幂等）。返回虚拟桌面尺寸，给截图/坐标换算用 */
@@ -248,7 +273,12 @@ export async function ensureInputReady({ timeoutMs = 15000 } = {}) {
 function send(cmd) {
   return new Promise((resolve, reject) => {
     if (!proc || !ready) { reject(new Error('输入注入进程未就绪')); return; }
-    queue.push({ cmd, resolve, reject });
+    // 中文编码（2026-11-21 真机踩到）：PowerShell 的 stdin 按系统 ANSI（中文 Windows 是 GBK）
+    // 解码，直接发 UTF-8 的中文会变成「娴嬭瘯」这种乱码。JSON 的 \\uXXXX 转义是纯 ASCII，
+    // 跨编码安全，ConvertFrom-Json 也能正确还原。
+    const json = JSON.stringify(cmd).replace(/[^\x00-\x7F]/g, (c) =>
+      '\\u' + ('0000' + c.charCodeAt(0).toString(16)).slice(-4));
+    queue.push({ cmd, json, resolve, reject });
     next();
   });
 }
@@ -275,7 +305,15 @@ export async function scroll(x, y, { dir = 'down', amount = 3 } = {}) {
 }
 export async function pressKey(keys, { repeat = 1 } = {}) { await send({ op: 'key', keys, repeat }); }
 export async function typeText(text) { await send({ op: 'type', text: String(text) }); }
-export async function focusWindow(hwnd) { await send({ op: 'focus', hwnd }); }
+/**
+ * 把指定窗口切到前台。返回真实结果（不是「我调过了」，是「现在前台是不是它」）。
+ * @returns {Promise<{ok:boolean, hwnd:number|null, becameForeground:boolean}>}
+ */
+export async function focusWindow(hwnd) {
+  const r = await send({ op: 'focus', hwnd });
+  const [nowHwnd, became] = r.split('|');
+  return { ok: true, hwnd: Number(nowHwnd) || null, becameForeground: became === 'true' };
+}
 
 /** 关闭常驻进程（应用退出/测试收尾时调用） */
 export function shutdownInput() {

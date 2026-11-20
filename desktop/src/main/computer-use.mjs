@@ -124,7 +124,28 @@ export async function performAction(action, params = {}) {
     };
   }
 
-  // ③ 派发（坐标按模型看到的图换算回真实屏幕坐标）
+  // ③ 前台目标校验（2026-11-21 真机测试踩到的真漏洞）：
+  //    鼠标键盘输入是「投给当前前台窗口」的，不管我们以为自己在点哪。
+  //    实测：靶子窗口 show+focus 之后，前台仍然是用户正在用的程序，
+  //    于是「点靶子按钮」实际点到了别的应用上（点击计数 0，动作却报成功）。
+  //    所以坐标投递前必须确认：前台就是本次操作预期的那个应用，否则拒绝。
+  const expect = String(params.expectProcess || '').trim();
+  if (expect) {
+    const same = fg.process.toLowerCase().includes(expect.toLowerCase())
+      || fg.title.toLowerCase().includes(expect.toLowerCase());
+    if (!same) {
+      return {
+        ok: false,
+        deniedBy: 'foreground-mismatch',
+        error: `前台不是预期应用：期望「${expect}」，实际「${fg.process} / ${fg.title}」。`
+          + '鼠标键盘输入只会送到当前前台窗口，打着别的应用上会误操作。'
+          + '先让目标应用切到前台（computer_action 的 focus 动作，或让用户手动切换）再重试。',
+        foreground: { process: fg.process, title: fg.title, tier: fg.tier }
+      };
+    }
+  }
+
+  // ④ 派发（坐标按模型看到的图换算回真实屏幕坐标）
   const scale = Number(params.scale) > 0 ? Number(params.scale) : 1;
   const toReal = (v) => Math.round(Number(v) * scale);
   try {
