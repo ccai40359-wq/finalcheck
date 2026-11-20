@@ -104,11 +104,11 @@ export function createBackend({ ipcMain, getWin, getDataRoot, engineUrl, repoRoo
   }
 
   /** 注册不依赖 Electron 的 IPC（顺序与拆分前一致） */
-  function registerCoreIpc() {
+  async function registerCoreIpc() {
     registerSystemIpc({ ipcMain, getWin, engineUrl, store, getHooksConfig: () => hooksConfig, sessionProjectPathOf, sessionUsage: state.sessionUsage });
     registerSessionIpc({ ipcMain, state, sessionProjectPathOf, runSessionStart });
     registerCompactIpc({ ipcMain, getWin, store, sessionProjectPathOf });
-    registerAgentIpc({
+    await registerAgentIpc({
       ipcMain,
       getWin,
       getHooksConfig: () => hooksConfig,

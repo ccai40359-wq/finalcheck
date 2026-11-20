@@ -471,7 +471,7 @@ export const GREP_CODE_SCHEMA = {
 // todo_write 的 CC 式三条规则（并轨时追加到 AGENT_ONLY_TOOLS_SCHEMA 里 todo_write 的 description 末尾）
 export const TODO_CC_RULES_TEXT = 'CC 式规则：① 同一时间恰好一个 in_progress（工具层会自动把多余的 running 降回 pending 并提示）；② 测试失败/实现不全/有未解决错误时禁止标 done——保持 running，并新建一条写清「需要解决什么」；③ 做完一条立刻调用 todo_write 更新状态，不要攒批';
 
-export function createAgentTools({ repoRoot, permissions, recordAudit = async () => {}, playbookRoot, runWorkflow = null, projectPath = null, policy = null, hooksConfig = null, hooksRunner = null, sessionId = null, cwd = null, signal = null, commandIdleMs = DEFAULT_COMMAND_IDLE_MS, askUser = null, todoWrite = null, spawnAgent = null, onActivity = null, requireAuditIntent = null, shellAppRoot = null, aclSandbox = undefined, userStatedTier = null } = {}) {
+export function createAgentTools({ repoRoot, permissions, recordAudit = async () => {}, playbookRoot, runWorkflow = null, projectPath = null, policy = null, hooksConfig = null, hooksRunner = null, sessionId = null, cwd = null, signal = null, commandIdleMs = DEFAULT_COMMAND_IDLE_MS, askUser = null, todoWrite = null, spawnAgent = null, onActivity = null, requireAuditIntent = null, shellAppRoot = null, aclSandbox = undefined, userStatedTier = null, getDesktopTools = null } = {}) {
   let askedThisTurn = false; // 本回合已经通过 ask_user 问过用户（验收前置闸据此放行）
   if (!repoRoot) throw new Error('createAgentTools 需要 repoRoot');
   const engineUrl = (rel) => pathToFileURL(path.join(repoRoot, rel)).href;
@@ -1135,6 +1135,116 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
       return result;
     }
   };
+
+  // ---- 桌面操作 + 浏览器操作（2026-11-21）：只给主 agent（子代理没有这两个模块的引用）----
+  // 桌面操作的每一步都要过 tier/授权闸（在 computer-use.mjs 里），这里只做参数整理与结果包装。
+  const dt = getDesktopTools ? getDesktopTools() : null;
+  const computerUse = dt?.computerUse || null;
+  const browserUse = dt?.browserUse || null;
+  if (computerUse) {
+    tools.computer_screenshot = async (args) => {
+      const r = await computerUse.captureScreen({
+        target: args?.target === 'window' ? 'window' : 'screen',
+        windowTitle: String(args?.window_title || '')
+      });
+      if (!r.ok) return { error: r.error || '截图失败' };
+      const fg = r.foreground
+        ? `当前前台：${r.foreground.process}「${r.foreground.title}」· 权限 ${r.foreground.tierLabel}` +
+          (r.foreground.granted ? '（已授权）' : '（未授权，动手前先 computer_request_access）')
+        : '读不到前台应用（可能被系统保护）';
+      return {
+        ok: true,
+        width: r.width,
+        height: r.height,
+        // 模型看到的图是缩过的，点的时候要把坐标乘回去——这个值必须让它知道
+        scale: Number(r.scale) || 1,
+        foreground: r.foreground,
+        note: `${fg}。坐标请用这张图上的像素；调 computer_action 时把 scale=${Number(r.scale) || 1} 一并传回。`,
+        __images: [{ mime: r.mime, base64: r.buf.toString('base64'), label: `桌面截图 ${r.source?.name || ''}`.trim() }]
+      };
+    };
+
+    tools.computer_request_access = async (args) => {
+      const apps = Array.isArray(args?.apps) ? args.apps.map((x) => String(x ?? '').trim()).filter(Boolean) : [];
+      if (!apps.length) return { error: '缺少 apps：写下你要操作的应用名（进程名或窗口标题片段）' };
+      const reason = String(args?.reason || '').trim();
+      // 用已有的 ask_user 通道向用户确认（有 human-in-the-loop 就不另造一套 UI）
+      if (typeof askUser === 'function') {
+        const r = await askUser({
+          question: `AI 请求操作这些应用：${apps.join('、')}${reason ? `\n原因：${reason}` : ''}\n同意后本进程内一直有效（重启要重新授权）。`,
+          options: [
+            { label: '同意', description: '允许操作这些应用（仍受权限级别限制）' },
+            { label: '拒绝', description: '不允许操作' },
+            { label: '只同意部分', description: '请你直接在下面写同意哪几个' }
+          ]
+        }, {});
+        if (r?.error) return r;
+        const answer = String(r?.answer || '').trim();
+        const agreed = /同意|允许|yes|ok|可以/i.test(answer) && !/拒绝|不同意|no/i.test(answer);
+        if (!agreed) return { ok: false, granted: [], note: `用户未同意（回答：${answer || '空'}）。不要自己绕过授权，如实说明需要用户先授权。` };
+        const granted = computerUse.grantApps(apps);
+        return { ok: true, granted, note: `已授权：${granted.join('、')}。现在可以 computer_action 了（仍受 tier 限制）。` };
+      }
+      return { error: '当前会话没有可用的用户确认通道，无法授权' };
+    };
+
+    tools.computer_action = async (args) => {
+      const action = String(args?.action || '').trim();
+      if (!action) return { error: '缺少 action' };
+      const r = await computerUse.performAction(action, args || {});
+      if (!r.ok) {
+        // 被 tier 或授权挡掉时，返回里要把「下一步该做什么」说清楚（模型才知道换路）
+        return { error: r.error, deniedBy: r.deniedBy, needAccess: r.needAccess, foreground: r.foreground };
+      }
+      return { ok: true, action: r.action, foreground: r.foregroundAtAction, note: r.note };
+    };
+  }
+
+  if (browserUse) {
+    tools.browser_navigate = async (args) => {
+      const url = String(args?.url || '').trim();
+      if (!url) return { error: '缺少 url' };
+      const r = await browserUse.navigate(url, {
+        show: !!args?.show,
+        waitMs: Number(args?.wait_ms) || 600
+      });
+      await browserUse.installConsoleHook().catch(() => {});
+      return { ok: r.ok, url: r.url, title: r.title, note: '下一步用 browser_snapshot 看页面结构（不要用截图猜坐标）' };
+    };
+    tools.browser_snapshot = async (args) => {
+      const r = await browserUse.snapshot({ maxNodes: Number(args?.max_nodes) || 220 });
+      if (!r.ok) return { error: r.error };
+      return { ok: true, title: r.title, url: r.url, tree: r.tree, nodeCount: r.nodeCount, truncated: r.truncated, note: r.note };
+    };
+    tools.browser_click = async (args) => {
+      const ref = String(args?.ref || '').trim();
+      if (!ref) return { error: '缺少 ref（用 browser_snapshot 拿）' };
+      const r = await browserUse.click(ref);
+      return r.ok ? { ok: true, ...r, note: '已点击。如需确认效果，重新 browser_snapshot（页面可能已变化，旧 ref 会失效）' } : r;
+    };
+    tools.browser_type = async (args) => {
+      const ref = String(args?.ref || '').trim();
+      if (!ref) return { error: '缺少 ref' };
+      const r = await browserUse.typeInto(ref, String(args?.text ?? ''));
+      return r.ok ? { ok: true, note: '已输入。提交表单前建议 browser_snapshot 确认填对了' } : r;
+    };
+    tools.browser_evaluate = async (args) => {
+      const expr = String(args?.expression || '').trim();
+      if (!expr) return { error: '缺少 expression' };
+      return browserUse.evaluate(expr);
+    };
+    tools.browser_console = async () => browserUse.consoleMessages();
+    tools.browser_screenshot = async () => {
+      const r = await browserUse.screenshot();
+      if (!r.ok) return { error: r.error };
+      return {
+        ok: true, width: r.width, height: r.height,
+        note: '这是浏览器页面截图。判断结构对不对优先用 browser_snapshot。',
+        __images: [{ mime: r.mime, base64: r.buf.toString('base64'), label: '浏览器截图' }]
+      };
+    };
+    tools.browser_close = async () => { browserUse.close(); return { ok: true, note: '浏览器已关闭' }; };
+  }
 
   // 回合中途提问：只有主 agent 的 createAgentTools 会传 askUser（子代理/工作流 gate 不传），
   // 工具表与 schema 两层都不给子代理，避免并行子代理同时弹多张卡。

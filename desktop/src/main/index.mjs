@@ -291,7 +291,7 @@ app.whenReady().then(async () => {
     selectProjectEnv: (p) => backend.selectProjectEnv(p)
   });
   // 系统统计 / 会话 / agent：不依赖 Electron 的那部分，桌面端与测试台同一份
-  backend.registerCoreIpc();
+  await backend.registerCoreIpc();
   registerWorkspaceIpc({
     ipcMain,
     getWin: () => win,

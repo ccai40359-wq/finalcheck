@@ -125,7 +125,7 @@ export async function createSimClient({
     const store = createConfigStore({ app: { getLocale: () => 'zh-CN' }, getDataRoot: () => env.dataRoot, engineUrl });
     backend = createBackend({ ipcMain, getWin: () => fakeWin, getDataRoot: () => env.dataRoot, engineUrl, repoRoot: REPO_ROOT, store, log: (l) => log.human('[main] ' + l) });
     const r = await backend.boot({ project: proj });
-    backend.registerCoreIpc();
+    await backend.registerCoreIpc();
     log.write('boot', { project: projDir, interrupted: r.interrupted });
     return r;
   };

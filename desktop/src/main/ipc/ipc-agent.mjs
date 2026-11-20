@@ -111,6 +111,33 @@ export function registerAgentIpc({
   // 回合结束时用同一份台账跑报告闸（lintTodoReport），不改会话 schema。
   const todos = createTodoRegistry();
 
+  // 桌面操作 / 浏览器操作（2026-11-21）：只有真 Electron 主进程里才是可用的。
+  // 两个模块都要 electron API（desktopCapturer / BrowserWindow），纯 Node（sim 测试台）里
+  // import('electron') 只返回 exe 路径字符串而不是 API。
+  //
+  // 懒加载而不是在这里 await：registerAgentIpc 一直是同步注册，改成 async 会让所有既有
+  // 调用方和测试都要加 await（不必要的 breaking change）。工具 handler 内部 await 这个 loader。
+  let desktopToolsCache = null;
+  let desktopToolsTried = false;
+  const loadDesktopTools = async () => {
+    if (desktopToolsTried) return desktopToolsCache;
+    desktopToolsTried = true;
+    try {
+      const el = await import('electron');
+      const api = el.desktopCapturer ? el : (el.default?.desktopCapturer ? el.default : null);
+      if (!api) { desktopToolsCache = null; return null; }
+      const [cu, bu] = await Promise.all([
+        import(engineUrl('desktop/src/main/computer-use.mjs')),
+        import(engineUrl('desktop/src/main/browser-use.mjs'))
+      ]);
+      desktopToolsCache = { computerUse: cu, browserUse: bu };
+      process.once('exit', () => { try { cu.shutdown?.(); } catch { /* 已退 */ } });
+      return desktopToolsCache;
+    } catch { desktopToolsCache = null; return null; }
+  };
+  // 后台预热一次（不阻塞注册；失败也只是没有这两个工具）
+  void loadDesktopTools();
+
   ipcMain.handle('finalcheck:agent-steer', (_e, sessionId = null, text = '') => {
     const steerText = String(text ?? '').trim();
     if (!steerText) return { error: t('Steer 内容为空') };
@@ -888,6 +915,9 @@ export function registerAgentIpc({
         todoWrite: (args) => todos.write(sessionId, args),
         // 轻量子代理（spawn_agent）：只给主 agent；子代理工具表不含它（不会套娃）
         spawnAgent,
+        // 桌面操作 + 浏览器操作（2026-11-21）：只给主 agent。懒加载，未就绪时返回 null，
+        // 工具表里就不出现这两个工具（纯 Node / 测试台里本来也用不了）。
+        getDesktopTools: () => desktopToolsCache,
         runWorkflow: async (args) => {
           const { runWorkflow } = await import(engineUrl('desktop/src/main/workflow.mjs'));
           // 运行中的工作流控制台：暂停/继续/停止、最大并发、子代理模型（UI 可改）
