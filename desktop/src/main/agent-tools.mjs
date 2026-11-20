@@ -471,7 +471,7 @@ export const GREP_CODE_SCHEMA = {
 // todo_write 的 CC 式三条规则（并轨时追加到 AGENT_ONLY_TOOLS_SCHEMA 里 todo_write 的 description 末尾）
 export const TODO_CC_RULES_TEXT = 'CC 式规则：① 同一时间恰好一个 in_progress（工具层会自动把多余的 running 降回 pending 并提示）；② 测试失败/实现不全/有未解决错误时禁止标 done——保持 running，并新建一条写清「需要解决什么」；③ 做完一条立刻调用 todo_write 更新状态，不要攒批';
 
-export function createAgentTools({ repoRoot, permissions, recordAudit = async () => {}, playbookRoot, runWorkflow = null, projectPath = null, policy = null, hooksConfig = null, hooksRunner = null, sessionId = null, cwd = null, signal = null, commandIdleMs = DEFAULT_COMMAND_IDLE_MS, askUser = null, todoWrite = null, spawnAgent = null, onActivity = null, requireAuditIntent = null, shellAppRoot = null, aclSandbox = undefined, userStatedTier = null, getDesktopTools = null } = {}) {
+export function createAgentTools({ repoRoot, permissions, recordAudit = async () => {}, playbookRoot, runWorkflow = null, projectPath = null, policy = null, hooksConfig = null, hooksRunner = null, sessionId = null, cwd = null, signal = null, commandIdleMs = DEFAULT_COMMAND_IDLE_MS, askUser = null, todoWrite = null, spawnAgent = null, onActivity = null, requireAuditIntent = null, shellAppRoot = null, aclSandbox = undefined, userStatedTier = null, getDesktopToolsAsync = null } = {}) {
   let askedThisTurn = false; // 本回合已经通过 ask_user 问过用户（验收前置闸据此放行）
   if (!repoRoot) throw new Error('createAgentTools 需要 repoRoot');
   const engineUrl = (rel) => pathToFileURL(path.join(repoRoot, rel)).href;
@@ -1138,11 +1138,30 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
 
   // ---- 桌面操作 + 浏览器操作（2026-11-21）：只给主 agent（子代理没有这两个模块的引用）----
   // 桌面操作的每一步都要过 tier/授权闸（在 computer-use.mjs 里），这里只做参数整理与结果包装。
-  const dt = getDesktopTools ? getDesktopTools() : null;
-  const computerUse = dt?.computerUse || null;
-  const browserUse = dt?.browserUse || null;
-  if (computerUse) {
+  //
+  // 为什么 handler 无条件注册、内部 await 懒加载：
+  //   AGENT_TOOLS_SCHEMA 是静态常量，模型**始终**能看到这 11 个工具的名字和描述。
+  //   如果这里因为「模块还没加载完」就不注册 handler，模型第一轮调用会撞「unknown tool」，
+  //   而第一轮恰恰是最常见的场景（用户说「帮我操作 Word」）。
+  //   所以：工具表里有 = 一定能调，加载失败时 handler 返回可读原因。
+  if (getDesktopToolsAsync) {
+    const loadDt = async () => {
+      try { return await getDesktopToolsAsync(); } catch { return null; }
+    };
+    const needUtil = async (key) => {
+      const dt = await loadDt();
+      if (!dt?.[key]) {
+        return {
+          error: '桌面操作/浏览器操作在当前环境不可用（需要 FinalCheck 桌面端；'
+            + '测试台与纯 Node 环境没有 Electron 的 desktopCapturer / BrowserWindow）'
+        };
+      }
+      return null;
+    };
+
     tools.computer_screenshot = async (args) => {
+      const miss = await needUtil('computerUse'); if (miss) return miss;
+      const { computerUse } = await loadDt();
       const r = await computerUse.captureScreen({
         target: args?.target === 'window' ? 'window' : 'screen',
         windowTitle: String(args?.window_title || '')
@@ -1165,6 +1184,8 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
     };
 
     tools.computer_request_access = async (args) => {
+      const miss = await needUtil('computerUse'); if (miss) return miss;
+      const { computerUse } = await loadDt();
       const apps = Array.isArray(args?.apps) ? args.apps.map((x) => String(x ?? '').trim()).filter(Boolean) : [];
       if (!apps.length) return { error: '缺少 apps：写下你要操作的应用名（进程名或窗口标题片段）' };
       const reason = String(args?.reason || '').trim();
@@ -1189,6 +1210,8 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
     };
 
     tools.computer_action = async (args) => {
+      const miss = await needUtil('computerUse'); if (miss) return miss;
+      const { computerUse } = await loadDt();
       const action = String(args?.action || '').trim();
       if (!action) return { error: '缺少 action' };
       const r = await computerUse.performAction(action, args || {});
@@ -1198,10 +1221,10 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
       }
       return { ok: true, action: r.action, foreground: r.foregroundAtAction, note: r.note };
     };
-  }
 
-  if (browserUse) {
     tools.browser_navigate = async (args) => {
+      const miss = await needUtil('browserUse'); if (miss) return miss;
+      const { browserUse } = await loadDt();
       const url = String(args?.url || '').trim();
       if (!url) return { error: '缺少 url' };
       const r = await browserUse.navigate(url, {
@@ -1211,30 +1234,50 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
       await browserUse.installConsoleHook().catch(() => {});
       return { ok: r.ok, url: r.url, title: r.title, note: '下一步用 browser_snapshot 看页面结构（不要用截图猜坐标）' };
     };
+
     tools.browser_snapshot = async (args) => {
+      const miss = await needUtil('browserUse'); if (miss) return miss;
+      const { browserUse } = await loadDt();
       const r = await browserUse.snapshot({ maxNodes: Number(args?.max_nodes) || 220 });
       if (!r.ok) return { error: r.error };
       return { ok: true, title: r.title, url: r.url, tree: r.tree, nodeCount: r.nodeCount, truncated: r.truncated, note: r.note };
     };
+
     tools.browser_click = async (args) => {
+      const miss = await needUtil('browserUse'); if (miss) return miss;
+      const { browserUse } = await loadDt();
       const ref = String(args?.ref || '').trim();
       if (!ref) return { error: '缺少 ref（用 browser_snapshot 拿）' };
       const r = await browserUse.click(ref);
       return r.ok ? { ok: true, ...r, note: '已点击。如需确认效果，重新 browser_snapshot（页面可能已变化，旧 ref 会失效）' } : r;
     };
+
     tools.browser_type = async (args) => {
+      const miss = await needUtil('browserUse'); if (miss) return miss;
+      const { browserUse } = await loadDt();
       const ref = String(args?.ref || '').trim();
       if (!ref) return { error: '缺少 ref' };
       const r = await browserUse.typeInto(ref, String(args?.text ?? ''));
       return r.ok ? { ok: true, note: '已输入。提交表单前建议 browser_snapshot 确认填对了' } : r;
     };
+
     tools.browser_evaluate = async (args) => {
+      const miss = await needUtil('browserUse'); if (miss) return miss;
+      const { browserUse } = await loadDt();
       const expr = String(args?.expression || '').trim();
       if (!expr) return { error: '缺少 expression' };
       return browserUse.evaluate(expr);
     };
-    tools.browser_console = async () => browserUse.consoleMessages();
+
+    tools.browser_console = async () => {
+      const miss = await needUtil('browserUse'); if (miss) return miss;
+      const { browserUse } = await loadDt();
+      return browserUse.consoleMessages();
+    };
+
     tools.browser_screenshot = async () => {
+      const miss = await needUtil('browserUse'); if (miss) return miss;
+      const { browserUse } = await loadDt();
       const r = await browserUse.screenshot();
       if (!r.ok) return { error: r.error };
       return {
@@ -1243,9 +1286,13 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
         __images: [{ mime: r.mime, base64: r.buf.toString('base64'), label: '浏览器截图' }]
       };
     };
-    tools.browser_close = async () => { browserUse.close(); return { ok: true, note: '浏览器已关闭' }; };
-  }
 
+    tools.browser_close = async () => {
+      const { browserUse } = await loadDt();
+      browserUse?.close();
+      return { ok: true, note: '浏览器已关闭' };
+    };
+  }
   // 回合中途提问：只有主 agent 的 createAgentTools 会传 askUser（子代理/工作流 gate 不传），
   // 工具表与 schema 两层都不给子代理，避免并行子代理同时弹多张卡。
   if (typeof askUser === 'function') {

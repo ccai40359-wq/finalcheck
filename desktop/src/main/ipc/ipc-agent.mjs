@@ -917,7 +917,7 @@ export function registerAgentIpc({
         spawnAgent,
         // 桌面操作 + 浏览器操作（2026-11-21）：只给主 agent。懒加载，未就绪时返回 null，
         // 工具表里就不出现这两个工具（纯 Node / 测试台里本来也用不了）。
-        getDesktopTools: () => desktopToolsCache,
+        getDesktopToolsAsync: () => loadDesktopTools(),
         runWorkflow: async (args) => {
           const { runWorkflow } = await import(engineUrl('desktop/src/main/workflow.mjs'));
           // 运行中的工作流控制台：暂停/继续/停止、最大并发、子代理模型（UI 可改）
