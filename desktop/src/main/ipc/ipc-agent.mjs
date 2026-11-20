@@ -117,24 +117,20 @@ export function registerAgentIpc({
   //
   // 懒加载而不是在这里 await：registerAgentIpc 一直是同步注册，改成 async 会让所有既有
   // 调用方和测试都要加 await（不必要的 breaking change）。工具 handler 内部 await 这个 loader。
-  let desktopToolsCache = null;
-  let desktopToolsTried = false;
-  const loadDesktopTools = async () => {
-    if (desktopToolsTried) return desktopToolsCache;
-    desktopToolsTried = true;
+  let desktopToolsPromise;
+  const loadDesktopTools = () => desktopToolsPromise ??= (async () => {
     try {
       const el = await import('electron');
       const api = el.desktopCapturer ? el : (el.default?.desktopCapturer ? el.default : null);
-      if (!api) { desktopToolsCache = null; return null; }
+      if (!api) return null;
       const [cu, bu] = await Promise.all([
         import(engineUrl('desktop/src/main/computer-use.mjs')),
         import(engineUrl('desktop/src/main/browser-use.mjs'))
       ]);
-      desktopToolsCache = { computerUse: cu, browserUse: bu };
       process.once('exit', () => { try { cu.shutdown?.(); } catch { /* 已退 */ } });
-      return desktopToolsCache;
-    } catch { desktopToolsCache = null; return null; }
-  };
+      return { computerUse: cu, browserUse: bu };
+    } catch { return null; }
+  })();
   // 后台预热一次（不阻塞注册；失败也只是没有这两个工具）
   void loadDesktopTools();
 

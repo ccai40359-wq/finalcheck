@@ -318,15 +318,15 @@ export const AGENT_ONLY_TOOLS_SCHEMA = [
   SPAWN_AGENT_SCHEMA,
   // ---- 桌面操作（computer use，2026-11-21）：对标 Claude Code 的 computer-use MCP ----
   // 设计要点：① 逐应用授权 ② 三层 tier 由「前台应用」强制 ③ 浏览器类只给 read（不许点）
-  { type: 'function', function: { name: 'computer_screenshot', description: '截取整个屏幕或指定窗口（给你看当前桌面长什么样）。返回图 + 当前前台应用及其权限级别。做非浏览器类桌面操作时，第一步和每一步之后都要用它确认结果', parameters: { type: 'object', properties: { target: { type: 'string', enum: ['screen', 'window'], description: '默认 screen（整个屏幕）；window 只截一个窗口' }, window_title: { type: 'string', description: 'target=window 时按窗口标题片段匹配' } } } } },
+  { type: 'function', function: { name: 'computer_screenshot', description: '截取屏幕或指定窗口，返回图片、前台应用、权限级别及 canAct。只有 canAct 为 true 的全屏截图才能提供 computer_action 使用的 screenshot_id。', parameters: { type: 'object', properties: { target: { type: 'string', enum: ['screen', 'window'], description: '默认 screen（全屏）；window 截取指定窗口，仅供观察' }, window_title: { type: 'string', description: 'target=window 时按窗口标题片段匹配' } } } } },
   { type: 'function', function: { name: 'computer_request_access', description: '请求操作指定应用（必须先授权才能动手，对标 Claude Code 的 request_access）。传你要用的应用进程名或标题片段，例如 ["WINWORD"]、["EXCEL"]。会弹确认给用户；用户同意后本进程内一直有效', parameters: { type: 'object', properties: { apps: { type: 'array', items: { type: 'string' }, description: '要操作的应用（进程名或窗口标题片段），如 ["WINWORD","EXCEL"]' }, reason: { type: 'string', description: '为什么要操作这些应用（一句话，给用户看）' } }, required: ['apps'] } } },
-  { type: 'function', function: { name: 'computer_action', description: '在桌面上执行一个动作（点击/输入/按键/滚动/拖拽）。执行前会自动检查：① 当前前台应用的权限级别（浏览器=只读、终端与编辑器=只能左键、其它=全放）② 该应用是否已被授权。坐标用 computer_screenshot 返回的图上的像素（x,y），scale 参数传截图返回的 scale 值会自动换算回真实屏幕坐标。**每步之后重新截图确认，不要假设点对了**', parameters: { type: 'object', properties: { action: { type: 'string', enum: ['left_click', 'right_click', 'middle_click', 'double_click', 'triple_click', 'move', 'drag', 'scroll', 'type', 'key', 'focus'], description: '要执行的动作' }, x: { type: 'number', description: '坐标 x（截图像素）' }, y: { type: 'number', description: '坐标 y（截图像素）' }, x2: { type: 'number', description: 'drag 的终点 x' }, y2: { type: 'number', description: 'drag 的终点 y' }, scale: { type: 'number', description: 'computer_screenshot 返回的 scale（截图缩放比），给了会自动换算坐标' }, text: { type: 'string', description: 'type 动作要输入的文字' }, keys: { type: 'string', description: 'key 动作的按键，如 "Return" / "^s" / "%{F4}"（SendKeys 语法）' }, repeat: { type: 'number', description: 'key 重复次数，默认 1' }, direction: { type: 'string', enum: ['up', 'down', 'left', 'right'], description: 'scroll 方向' }, amount: { type: 'number', description: 'scroll 格数，默认 3' }, hwnd: { type: 'number', description: 'focus 动作的目标窗口句柄' } }, required: ['action'] } } },
+  { type: 'function', function: { name: 'computer_action', description: '在桌面上执行一个动作。执行前检查应用权限级别、授权和目标窗口。坐标用截图原始像素，缩放由工具处理。点击、移动、拖拽、滚动、输入和按键都需传可操作的最新全屏 screenshot_id。需要验证界面变化时使用 observe。', parameters: { type: 'object', properties: { action: { type: 'string', enum: ['left_click', 'right_click', 'middle_click', 'double_click', 'triple_click', 'move', 'drag', 'scroll', 'type', 'key', 'focus'], description: '要执行的动作' }, screenshot_id: { type: 'string', description: '最新 canAct=true 的全屏截图 ID，focus 除外' }, x: { type: 'number', description: '坐标或拖拽起点 x（截图像素）' }, y: { type: 'number', description: '坐标或拖拽起点 y（截图像素）' }, x2: { type: 'number', description: '拖拽终点 x（截图像素）' }, y2: { type: 'number', description: '拖拽终点 y（截图像素）' }, text: { type: 'string', minLength: 1, maxLength: 4096, description: 'type 动作输入的非空文字，最多 4096 个 UTF-16 代码单元' }, keys: { type: 'string', description: 'key 动作接受一个按键或组合键，如 Enter、Tab、Ctrl+S' }, repeat: { type: 'integer', minimum: 1, maximum: 100, description: '同一按键或组合键的重复次数，默认 1' }, direction: { type: 'string', enum: ['up', 'down', 'left', 'right'], description: 'scroll 方向' }, amount: { type: 'number', description: 'scroll 格数，默认 3' }, hwnd: { type: 'number', description: 'focus 动作的已知目标窗口句柄' }, observe: { type: 'boolean', description: '默认 false。设为 true 时，成功执行后附上全屏截图及其 ID。截图失败时单独返回 observationError' } }, required: ['action'] } } },
   // ---- 浏览器操作（browser use，2026-11-21）：对标 Playwright MCP，但复用 FC 自带 Chromium ----
   // 关键差异：snapshot 返回 accessibility tree（带 ref），不是截图；点按 ref 走 DOM，不猜坐标。
-  { type: 'function', function: { name: 'browser_navigate', description: '打开一个网页（独立窗口，不加载你的登录态）。**所有浏览器类任务都必须走 browser_* 系列，不要用 computer_action 去点网页**（浏览器的桌面权限是只读，点了也会被拒）', parameters: { type: 'object', properties: { url: { type: 'string', description: 'http/https 网址或本地 html 路径' }, show: { type: 'boolean', description: '是否显示窗口让用户看着操作，默认 false' }, wait_ms: { type: 'number', description: '加载后再等多少毫秒，默认 600' } }, required: ['url'] } } },
-  { type: 'function', function: { name: 'browser_snapshot', description: '返回当前页面的可操作结构（accessibility tree）：每个可点/可输入的元素都带 [ref=eN] 与角色、名称。这是你在浏览器里「看」页面的正确方式——比截图准确（截图要点坐标，这个直接给 ref）', parameters: { type: 'object', properties: { max_nodes: { type: 'number', description: '最多返回多少个节点，默认 220' } } } } },
-  { type: 'function', function: { name: 'browser_click', description: '按 ref 点一个元素（走 DOM click，不是模拟鼠标）。ref 来自最近一次 browser_snapshot；页面变了要重新 snapshot', parameters: { type: 'object', properties: { ref: { type: 'string', description: '元素引用号，如 e5（来自 browser_snapshot）' } }, required: ['ref'] } } },
-  { type: 'function', function: { name: 'browser_type', description: '往 input/textarea 里输入文字（用原生 value setter + input 事件，React/Vue 受控组件也能收到）', parameters: { type: 'object', properties: { ref: { type: 'string', description: '元素引用号' }, text: { type: 'string', description: '要输入的文字' } }, required: ['ref', 'text'] } } },
+  { type: 'function', function: { name: 'browser_navigate', description: '在独立浏览器窗口打开网页，默认同时返回页面结构 snapshot 和可操作元素的 ref。此窗口不继承用户登录态。网页操作统一使用 browser_* 工具。', parameters: { type: 'object', properties: { url: { type: 'string', description: 'http/https 网址或本地 HTML 路径' }, show: { type: 'boolean', description: '向用户显示窗口，默认 false' }, width: { type: 'number', description: '窗口宽度' }, height: { type: 'number', description: '窗口高度' }, wait_ms: { type: 'number', description: '加载后额外等待的毫秒数，默认 0' }, observe: { type: 'boolean', description: '默认 true，导航后同时返回页面结构和 ref' } }, required: ['url'] } } },
+  { type: 'function', function: { name: 'browser_snapshot', description: '观察当前页面，返回结构、角色、名称和可操作元素的 ref。页面变化或旧引用失效时，获取最新的 ref。', parameters: { type: 'object', properties: { max_nodes: { type: 'number', description: '最多返回多少个节点，默认 220' }, include_text: { type: 'boolean', description: '默认 true。设为 false 时省略独立文本行，保留元素信息' }, query: { type: 'string', description: '可选关键词，按角色、名称、可见文本和链接目标匹配，忽略大小写' } } } } },
+  { type: 'function', function: { name: 'browser_click', description: '用最新页面结构中的 ref 点击元素。预计页面会变化且需要验证时使用 observe。', parameters: { type: 'object', properties: { ref: { type: 'string', description: '从最新 snapshot 复制的元素引用' }, observe: { type: 'boolean', description: '默认 false。设为 true 时返回点击后的 snapshot；点击与观察各有自己的结果' } }, required: ['ref'] } } },
+  { type: 'function', function: { name: 'browser_type', description: '用最新页面结构中的 ref 往 input/textarea 输入文字。', parameters: { type: 'object', properties: { ref: { type: 'string', description: '从最新 snapshot 复制的元素引用' }, text: { type: 'string', description: '要输入的文字' } }, required: ['ref', 'text'] } } },
   { type: 'function', function: { name: 'browser_evaluate', description: '在当前页面执行一段 JS 并返回结果（读 DOM 细节、算数值、取元素属性）。只读用途优先；改页面状态要谨慎', parameters: { type: 'object', properties: { expression: { type: 'string', description: '要执行的 JS 表达式（会自动包成 async 函数，可 await）' } }, required: ['expression'] } } },
   { type: 'function', function: { name: 'browser_console', description: '读当前页面的控制台错误（最多最近 50 条）。页面表现不对时先查这里', parameters: { type: 'object', properties: {} } } },
   { type: 'function', function: { name: 'browser_screenshot', description: '截当前浏览器页面（需要像素判断或要给用户看时用）。一般判断「页面结构对不对」用 browser_snapshot 就够', parameters: { type: 'object', properties: {} } } },
@@ -349,6 +349,12 @@ export const AGENT_TOOLS_SCHEMA = [...TOOLS_SCHEMA, GREP_CODE_SCHEMA, ...AGENT_O
 // 排除 run_workflow（禁止嵌套工作流）与 remember_project（记忆只由主 agent 写）。
 export const SUBAGENT_TOOLS_SCHEMA = AGENT_TOOLS_SCHEMA.filter((tool) => SUBAGENT_TOOL_NAMES.includes(tool?.function?.name));
 
+const AUTOMATION_GUIDANCE = [
+  '电脑与网页操作优先用专用工具。网页操作统一走 browser_*：browser_navigate 默认同时返回 snapshot，用其中最新的 ref 点击或输入。预计点击会改变页面时传 observe:true；旧 ref 失效或需要缩小范围时，再调用 browser_snapshot，可用 query 找元素。',
+  '桌面软件先用 computer_request_access 请求应用授权。用户同意后，让目标应用处在前台，调用 computer_screenshot 获取 canAct=true 的主显示器全屏截图，再把 screenshot_id 传给 computer_action。需要坐标时直接用图上的原始像素，缩放由工具处理。只有目标窗口和键盘焦点保持一致、截图仍有效时，安全的连续按键才可以复用该 ID。',
+  '提交、保存及其它重要界面变化后，检查页面或桌面确实出现了预期结果。可用 observe:true 在同一调用中获取操作后的观察；截图或页面观察失败时，先区分动作与观察的结果。同一次回复中某个自动化工具失败时，后续同类调用会跳过。按错误和已执行结果重新判断下一步，避免盲目重复截图或重放动作。终端和编辑器操作优先使用 run_command 或文件工具。'
+].join('\n');
+
 const SYSTEM_BASE = [
   '你是 FinalCheck（终检）安全验收助手，连接用户与安全测试工具。',
   '职责：帮用户跑体检/下载闸/渗透探测/压测，并用大白话解释结果；发现必须带证据（文件:行或 HTTP 复现）说话，不编造。',
@@ -369,7 +375,7 @@ const SYSTEM_BASE = [
   '工具结果超长时会被截断为「头+尾」并完整落盘，按提示的 spill 路径用 run_command 检索，不要猜中间内容。',
   '长任务提速（2026-11-19 实测：做一个宣传片 529 步、109 分钟，其中 99 分钟在等模型、353 次回复只调了 1 个工具）：① 互不依赖的读文件 / 查看 / 命令放在同一次回复里一起发（读文件 / 搜索 / 看图 / 截图会并发执行；多条互不依赖的命令可以合并进一次 run_command），不要一次只调一个；② 视觉迭代要成批——一条命令里循环渲染或截取多帧（或用脚本拼成一张总览图），一次 view_image 看完（每次最多 4 张），把看到的问题列全、一次改完，再整体验证一次；不要「改一处 → 渲染一帧 → 裁图 → 看一眼」反复循环；③ 已经确认没问题的部分不要重复检查。',
   '看图与截图：做 PPT / 网页 / 视频 / 海报 / 图表这类视觉产物时，生成后必须用 capture_screenshot 逐页（或关键帧）看实际效果，文字溢出、重叠、错位、配色不对就改，改完再截一次确认；不要只看代码就说「应该没问题」。用户或项目里的图片用 view_image 直接看。写完页面一定要先 capture_screenshot 看一遍再交，不要凭代码猜。',
-  '操作电脑或网页时的选路顺序（硬规则，照 Claude Code 的优先级）：① 能用专用工具就用专用工具（读写文件、跑命令、audit_project 等）；② **网页相关的活一律走 browser_* 系列**（browser_navigate → browser_snapshot 拿 ref → browser_click / browser_type），不要用 computer_action 去点网页——浏览器在桌面权限里是「只读」，点了会被拒，而且像素点选本来就不准；③ 只有「非浏览器的桌面软件」（Word / Excel / Photoshop / 系统设置 / 本地 GUI 工具）才用 computer_*：先 computer_request_access 请求授权（列明要操作哪个应用），同意后用 computer_screenshot 看屏幕 → computer_action 执行 → **每一步之后重新 computer_screenshot 确认**，不要假设点对了。终端和编辑器在桌面权限里是「只能左键」，输入文字会被拒——那类活应该用 run_command / write_file，不是去点界面。',
+  AUTOMATION_GUIDANCE,
   '修代码：先 read_file 看清原文，再用 edit_file 做最小替换（old_string 必须唯一）；新建文件用 write_file。改完明确告诉用户「改了哪个文件、+几行/-几行、为什么」。',
   '路径参数转义（硬规则）：JSON 参数里的 Windows 路径一律优先写正斜杠（D:/Projects/demo）；必须用反斜杠时一律双写（D:\\\\Projects\\\\demo）；写成单反斜杠会让参数不是合法 JSON，工具不会执行。',
   '产出可预览文件（html / png / pdf / mp4 / pptx / md 等）后，调用 present_artifact(path) 登记；用户在聊天里点一下就出现在右侧预览面板（视频可直接播放，PDF/PPT/Word 分页展示）。',
@@ -402,7 +408,7 @@ const SYSTEM_DEV_BASE = [
   '轻量子代理（spawn_agent）的判断标准：预计要搜 / 读 5 个以上文件才能回答的调查型问题（「X 都在哪」「Y 是怎么实现的」「帮我摸清某个模块」「所有用到 Z 的地方」），不要自己一个个翻——第一步就派 spawn_agent 去查，只拿结论回来，你自己的上下文保持干净；问题能拆成几个互不相关的方向时（例如「登录怎么做的」和「CSRF 怎么防的」），在同一次回复里各派一个，它们会并行。只有一两次 read_file / grep_code 就能搞定的小问题才自己做。要多路分工、互相依赖、需要盲验复核的验收 / 审计大任务用 run_workflow。重要结论想再确认一遍时，可以派 type=verify 的子代理独立复核（把结论和证据写进 prompt）。',
   '长任务提速（2026-11-19 实测：做一个宣传片 529 步、109 分钟，其中 99 分钟在等模型、353 次回复只调了 1 个工具）：① 互不依赖的读文件 / 查看 / 命令放在同一次回复里一起发（读文件 / 搜索 / 看图 / 截图会并发执行；多条互不依赖的命令可以合并进一次 run_command），不要一次只调一个；② 视觉迭代要成批——一条命令里循环渲染或截取多帧（或用脚本拼成一张总览图），一次 view_image 看完（每次最多 4 张），把看到的问题列全、一次改完，再整体验证一次；不要「改一处 → 渲染一帧 → 裁图 → 看一眼」反复循环；③ 已经确认没问题的部分不要重复检查。',
   '看图与截图：做 PPT / 网页 / 视频 / 海报 / 图表这类视觉产物时，生成后必须用 capture_screenshot 逐页（或关键帧）看实际效果，文字溢出、重叠、错位、配色不对就改，改完再截一次确认；不要只看代码就说「应该没问题」。用户或项目里的图片用 view_image 直接看。写完页面一定要先 capture_screenshot 看一遍再交，不要凭代码猜。',
-  '操作电脑或网页时的选路顺序（硬规则，照 Claude Code 的优先级）：① 能用专用工具就用专用工具（读写文件、跑命令、audit_project 等）；② **网页相关的活一律走 browser_* 系列**（browser_navigate → browser_snapshot 拿 ref → browser_click / browser_type），不要用 computer_action 去点网页——浏览器在桌面权限里是「只读」，点了会被拒，而且像素点选本来就不准；③ 只有「非浏览器的桌面软件」（Word / Excel / Photoshop / 系统设置 / 本地 GUI 工具）才用 computer_*：先 computer_request_access 请求授权（列明要操作哪个应用），同意后用 computer_screenshot 看屏幕 → computer_action 执行 → **每一步之后重新 computer_screenshot 确认**，不要假设点对了。终端和编辑器在桌面权限里是「只能左键」，输入文字会被拒——那类活应该用 run_command / write_file，不是去点界面。',
+  AUTOMATION_GUIDANCE,
   '需要用户拍板的事（砍功能/动线上数据/花钱的 API）用 ask_user 问一次就动手；其余决策自己定。一次回合最多问 3 次。',
   'ask_user 语言规则（dev 模式同样适用）：question、option 的 label 与 description 一律用**用户界面语言**写——界面是英文就写英文，界面是中文就写中文。不要因为用户消息是中文就在英文界面里写中文问题：界面语言优先级高于用户消息语言。另外，问题本身必须自包含（不要写「这个」「上面那个」），用户只看得到这一张卡。',
   '路径参数转义（硬规则）：JSON 参数里的 Windows 路径一律优先写正斜杠（D:/Projects/demo）；必须用反斜杠时一律双写（D:\\\\Projects\\\\demo）；写成单反斜杠会让参数不是合法 JSON，工具不会执行。',
@@ -983,6 +989,12 @@ export function classifyTool(name) {
   return PARALLEL_TOOLS.has(String(name ?? '')) ? 'parallel' : 'serial';
 }
 
+function automationFamily(name) {
+  if (name.startsWith('browser_')) return 'browser';
+  if (name.startsWith('computer_')) return 'computer';
+  return null;
+}
+
 // 并发上限 clamp 1–16，默认 8；undefined/非数字回落默认
 export function clampToolConcurrency(value, fallback = 8) {
   const n = Number(value);
@@ -1362,7 +1374,7 @@ async function skipToolCall(tc, code, notice, { onEvent, onToolLifecycle, detail
       });
     } catch { /* 落库失败不阻断回合 */ }
   }
-  return { id: tc?.id, trace: { tool: name, args: argsText, result: payload }, modelContent: JSON.stringify(payload) };
+  return { id: tc?.id, trace: { tool: name, args: argsText, result: payload, ...(callId ? { callId } : {}) }, modelContent: JSON.stringify(payload) };
 }
 
 // 执行单个工具调用：自带 tool-start/tool-end 事件，失败只返回自己的 {error}，不影响同批其它调用
@@ -1412,7 +1424,10 @@ export async function runToolCall(tc, tools, onEvent, signal = null, onToolLifec
     const { __images, ...rest } = result;
     result = { ...rest, imagesAttached: images.length };
   }
-  onEvent?.({ kind: 'tool-end', id: tc?.id, name, ms: Date.now() - t0, ok: !result?.error, ...(result?.cancelled ? { cancelled: true } : {}), result: uiResultSummary(result) });
+  const isAutomation = !!automationFamily(name);
+  const failed = !!result?.error || (isAutomation && result?.ok === false);
+  const stopAutomation = isAutomation && (failed || result?.snapshot?.ok === false || !!result?.observationError);
+  onEvent?.({ kind: 'tool-end', id: tc?.id, name, ms: Date.now() - t0, ok: !failed, ...(result?.cancelled ? { cancelled: true } : {}), result: uiResultSummary(result) });
   // 工具结果策略（对齐 dsh）：超长不整块喂模型——头+尾进上下文，全文落盘给 spill 路径
   let modelContent;
   let traceResult;
@@ -1438,14 +1453,14 @@ export async function runToolCall(tc, tools, onEvent, signal = null, onToolLifec
     id: callId,
     name,
     args: argsText,
-    status: result?.error ? 'fail' : 'ok',
+    status: failed ? 'fail' : 'ok',
     result: traceResult,
     error: result?.error ? String(result.error) : null,
     ms: Date.now() - t0,
     cancelled: !!result?.cancelled,
     at: Date.now(),
   });
-  return { id: tc?.id, trace: { tool: name, args: argsText, result: traceResult, ...(tc?.id ? { callId: String(tc.id) } : {}) }, modelContent, ...(images?.length ? { images } : {}) };
+  return { id: tc?.id, trace: { tool: name, args: argsText, result: traceResult, ...(tc?.id ? { callId: String(tc.id) } : {}) }, modelContent, ...(images?.length ? { images } : {}), ...(stopAutomation ? { stopAutomation: true } : {}) };
 }
 
 const MAX_LIVE_IMAGE_MESSAGES = 4; // 带图消息最多同时 4 条；超了一次收回到 IMAGE_TRIM_TO 条（成批改，保护前缀缓存）
@@ -1483,58 +1498,49 @@ export function appendToolImages(convo, toolResults, { vision } = {}) {
 
 // 一轮 assistant 返回多个 tool_calls 时的调度：
 // 连续 parallel 调用合成一批（限流并发）；遇到 serial 调用先等当前批全部完成，再单独执行它。
-async function runToolCalls(toolCalls, { tools, onEvent, toolConcurrency, signal = null, onToolLifecycle = null }) {
+// 参数错误和失败后的同类工具都按原位置闭合，每个 tool_call_id 对应一个结果。
+async function runToolCalls(toolCalls, { tools, onEvent, toolConcurrency, signal = null, onToolLifecycle = null, invalid = [], argsErrorCode = ARGS_INVALID_JSON_CODE }) {
   const limit = clampToolConcurrency(toolConcurrency);
+  const badByIndex = new Map(invalid.map((bad) => [bad.index, bad]));
+  const failedByFamily = new Map();
+  const truncated = argsErrorCode === ARGS_TRUNCATED_CODE;
+  const run = async (tc, index) => {
+    const name = String(tc?.function?.name || 'unknown');
+    const family = automationFamily(name);
+    const earlierFailure = failedByFamily.get(family);
+    if (earlierFailure && !truncated && !signal?.aborted) {
+      const notice = t('同一次回复中先前的自动化调用「{name}」失败，本次调用已跳过。请先根据先前调用的动作结果和错误判断下一步。', { name: earlierFailure.name });
+      return skipToolCall(tc, 'AUTOMATION_SEQUENCE_SKIPPED', notice, {
+        onEvent, onToolLifecycle, detail: { skipped: true, previousToolCallId: earlierFailure.id }
+      });
+    }
+
+    const bad = badByIndex.get(index);
+    if (bad) {
+      if (family) failedByFamily.set(family, { name, id: tc?.id });
+      const notice = buildArgsRepairNotice(bad.name, { truncated, position: bad.position, chars: bad.chars, excerpt: bad.excerpt });
+      return skipToolCall(tc, argsErrorCode, notice, { onEvent, onToolLifecycle, detail: toolArgsFailurePayload(bad, { truncated }) });
+    }
+    const result = await runToolCall(tc, tools, onEvent, signal, onToolLifecycle);
+    if (result.stopAutomation) failedByFamily.set(family, { name, id: tc?.id });
+    return result;
+  };
   const results = [];
   let i = 0;
   while (i < toolCalls.length) {
-    if (signal?.aborted && classifyTool(toolCalls[i]?.function?.name) === 'parallel') {
-      // 已中断：剩下的并行条目全部直接标 cancelled，不再启动
-      let j = i;
-      while (j < toolCalls.length && classifyTool(toolCalls[j]?.function?.name) === 'parallel') j++;
-      results.push(...(await mapLimited(toolCalls.slice(i, j), limit, (tc) => runToolCall(tc, tools, onEvent, signal, onToolLifecycle))));
-      i = j;
-    } else if (classifyTool(toolCalls[i]?.function?.name) === 'parallel') {
+    if (classifyTool(toolCalls[i]?.function?.name) === 'parallel') {
       let j = i + 1;
       while (j < toolCalls.length && classifyTool(toolCalls[j]?.function?.name) === 'parallel') j++;
-      const batch = await mapLimited(toolCalls.slice(i, j), limit, (tc) => runToolCall(tc, tools, onEvent, signal, onToolLifecycle));
+      const start = i;
+      const batch = await mapLimited(toolCalls.slice(start, j), limit, (tc, offset) => run(tc, start + offset));
       results.push(...batch);
       i = j;
     } else {
-      results.push(await runToolCall(toolCalls[i], tools, onEvent, signal, onToolLifecycle));
+      results.push(await run(toolCalls[i], i));
       i++;
     }
   }
   return results; // 按原始调用顺序返回，调用方按序回填 convo/trace
-}
-
-/**
- * 带参数闸的调度：合法的照常执行，非法的**不执行**但仍按原顺序占位——
- * 结果数组与 toolCalls 一一对应（convo 里的 tool 消息必须覆盖每个 call id，否则下一轮请求会被网关拒绝）。
- * @param {any[]} toolCalls
- * @param {Array<{index:number,name:string}>} invalid inspectToolCallArgs().invalid
- */
-async function runToolCallsGuarded(toolCalls, invalid, { tools, onEvent, toolConcurrency, signal = null, onToolLifecycle = null, code = ARGS_INVALID_JSON_CODE, noticeOf = null }) {
-  const badByIndex = new Map((Array.isArray(invalid) ? invalid : []).map((x) => [x.index, x]));
-  const valid = toolCalls.filter((_, i) => !badByIndex.has(i));
-  const executed = valid.length
-    ? await runToolCalls(valid, { tools, onEvent, toolConcurrency, signal, onToolLifecycle })
-    : [];
-  const results = [];
-  let cursor = 0;
-  for (let i = 0; i < toolCalls.length; i += 1) {
-    const bad = badByIndex.get(i);
-    if (!bad) { results.push(executed[cursor]); cursor += 1; continue; }
-    const notice = typeof noticeOf === 'function'
-      ? noticeOf(bad)
-      : buildArgsRepairNotice(bad.name, { truncated: code === ARGS_TRUNCATED_CODE, position: bad.position, chars: bad.chars, excerpt: bad.excerpt });
-    results.push(await skipToolCall(toolCalls[i], code, notice, {
-      onEvent,
-      onToolLifecycle,
-      detail: toolArgsFailurePayload(bad, { truncated: code === ARGS_TRUNCATED_CODE })
-    }));
-  }
-  return results;
 }
 
 export async function runAgentTurn({ config, messages, confirmedHosts = [], onToken, onEvent, onToolLifecycle = null, onUsage = null, tools, toolsSchema = null, systemPrompt: systemPromptOverride = null, roleMode = 'audit', forceFirstToolChoice = false, fetchImpl = fetch, summarize, summarizeRaw = null, compactContext = null, signal, maxTurns = DEFAULT_MAX_TURNS, maxTurnMs: maxTurnMsOpt, maxTurnTokens: maxTurnTokensOpt, retryBaseMs = 600, noLimits = false, hooksConfig = null, hooksRunner = null, sessionId = null, drainSteer = null, resolveConfig = null, cwd = process.cwd() }) {
@@ -2147,9 +2153,9 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
         excerpt: '',
         chars: String(tc?.function?.arguments || '').length
       }));
-      const results = await runToolCallsGuarded(toolCalls, bad, {
+      const results = await runToolCalls(toolCalls, {
         tools, onEvent, toolConcurrency: config.toolConcurrency, signal, onToolLifecycle,
-        code: ARGS_TRUNCATED_CODE
+        invalid: bad, argsErrorCode: ARGS_TRUNCATED_CODE
       });
       for (const r of results) trace.push(r.trace);
       onEvent?.({ kind: 'turn-end', ms: Date.now() - turnStart, error: true });
@@ -2273,12 +2279,9 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
         return onToolLifecycle(ev?.phase === 'start' ? { ...ev, round: turn } : ev);
       }
       : onToolLifecycle;
-    const toolResults = inspected.invalid.length
-      ? await runToolCallsGuarded(toolCalls, inspected.invalid, {
-        tools, onEvent, toolConcurrency: config.toolConcurrency, signal, onToolLifecycle: lifecycleWithNote,
-        code: ARGS_INVALID_JSON_CODE
-      })
-      : await runToolCalls(toolCalls, { tools, onEvent, toolConcurrency: config.toolConcurrency, signal, onToolLifecycle: lifecycleWithNote });
+    const toolResults = await runToolCalls(toolCalls, {
+      tools, onEvent, toolConcurrency: config.toolConcurrency, signal, onToolLifecycle: lifecycleWithNote, invalid: inspected.invalid
+    });
     toolWaitMs += Date.now() - toolStartedAt;
     if (toolResults[0]?.trace && (roundThought || roundSay)) {
       if (roundThought) toolResults[0].trace.thought = roundThought.slice(0, 4000);

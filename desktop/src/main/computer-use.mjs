@@ -1,210 +1,328 @@
-// Computer use 执行层（2026-11-21）：屏幕截图 + 授权检查 + 动作派发。
-//
-// 结构照 Claude Code 的 computer-use MCP server：
-//   ① 每次动作前先看前台是什么应用 → 查 tier → 查是否已授权 → 再执行
-//   ② 截图走 Electron desktopCapturer（零依赖，不引原生模块）
-//   ③ 动作派发给 desktop-input-win.mjs 的常驻 PowerShell 进程（SendInput）
-//   ④ 不判停、不限轮（用户既定「不要任何超时限制」），但每一步都可以被 tier 挡住
+// Electron 截图与 Windows 输入之间的授权和坐标校验。
+import { randomUUID } from 'node:crypto';
 import { desktopCapturer, screen, nativeImage } from 'electron';
 import * as input from './desktop-input-win.mjs';
+import { tierForApp, checkActionAllowed, AccessLedger, describeTier } from './computer-use-policy.mjs';
 import {
-  tierForApp, checkActionAllowed, AccessLedger, describeTier
-} from './computer-use-policy.mjs';
+  actionPoints, matchesImageGeometry, matchesProcess, overlapBounds, sameBounds, sameObservation, selectCaptureSource, thumbnailSize
+} from './computer-use-geometry.mjs';
 
-/** 进程级台账：一次应用生命周期内有效（重启要重新授权，和 CC 一样） */
 const ledger = new AccessLedger();
+const clickActions = new Map([
+  ['click', ['left', 1]], ['left_click', ['left', 1]],
+  ['right_click', ['right', 1]], ['middle_click', ['middle', 1]],
+  ['double_click', ['left', 2]], ['triple_click', ['left', 3]]
+]);
+const otherActions = new Set(['move', 'drag', 'left_click_drag', 'scroll', 'type', 'key', 'focus']);
+let latestScreenshot = null;
+let operationQueue = Promise.resolve();
+
+function withDesktopOperation(operation) {
+  const result = operationQueue.then(operation);
+  operationQueue = result.catch(() => {});
+  return result;
+}
 
 export function grantedApps() { return ledger.list(); }
 export function grantApps(names) { return ledger.grant(names); }
-export function revokeApps() { return ledger.revokeAll(); }
+export function revokeApps() {
+  latestScreenshot = null;
+  return ledger.revokeAll();
+}
 
-/** 当前前台应用 + 其 tier + 是否已授权 */
-export async function foregroundContext() {
+function withPolicy(foreground) {
+  if (!foreground?.process) return null;
+  const tier = tierForApp(foreground.process, foreground.title);
+  return { ...foreground, tier, tierLabel: describeTier(tier), granted: ledger.isGranted(foreground.process) };
+}
+
+function brief(foreground) {
+  if (!foreground) return null;
+  const { hwnd, pid, process, title, tier, tierLabel, granted } = foreground;
+  return { hwnd, pid, process, title, tier, tierLabel, granted };
+}
+
+async function desktopContext() {
   if (!input.inputSupported()) {
     return { ok: false, reason: '当前平台不支持桌面操作（目前只实现了 Windows）' };
   }
-  // 必须先确保常驻进程起来了，否则 send() 会报「未就绪」（真实使用里第一次调用就会踩到）
-  try { await input.ensureInputReady(); } catch (e) {
-    return { ok: false, reason: `桌面输入进程启动失败：${e?.message || e}` };
+  try {
+    await input.ensureInputReady();
+    const state = await input.desktopState();
+    return { ok: true, ...state, foreground: withPolicy(state.foreground) };
+  } catch (error) {
+    return { ok: false, reason: `无法读取桌面状态：${error?.message || error}` };
   }
-  const fg = await input.foregroundInfo();
-  const tier = tierForApp(fg.process, fg.title);
-  return { ok: true, ...fg, tier, tierLabel: describeTier(tier), granted: ledger.isGranted(fg.process) };
 }
 
-/**
- * 截屏（整屏或指定窗口）。
- * @param {{target?: 'screen'|'window', windowTitle?: string, maxWidth?: number}} opts
- */
-export async function captureScreen({ target = 'screen', windowTitle = '', maxWidth = 1560 } = {}) {
+export async function foregroundContext() {
+  const state = await desktopContext();
+  if (!state.ok) return state;
+  if (!state.foreground) return { ok: false, reason: '无法识别当前前台窗口。' };
+  return { ok: true, ...state.foreground };
+}
+
+function primaryDisplay() {
   const display = screen.getPrimaryDisplay();
-  const dsf = display.scaleFactor || 1;
-  // 用显示器物理像素抓，模型看到的坐标就是真实屏幕坐标（避免 DPI 缩放导致点偏）
-  const physicalW = Math.round(display.size.width * dsf);
-  const physicalH = Math.round(display.size.height * dsf);
-  const types = target === 'window' ? ['window'] : ['screen'];
+  const bounds = input.inputSupported()
+    ? screen.dipToScreenRect(null, display.bounds)
+    : { ...display.bounds };
+  return { id: display.id, bounds };
+}
+
+function sameDisplay(first, second) {
+  return first.id === second.id && sameBounds(first.bounds, second.bounds);
+}
+
+function canUseDisplay(display, state) {
+  return state?.physicalCoordinates && sameBounds(display.bounds, state.primaryScreen);
+}
+
+export function captureScreen(options = {}) {
+  return withDesktopOperation(async () => {
+    latestScreenshot = null;
+    try {
+      return await capture(options);
+    } catch (error) {
+      return { ok: false, error: `截图失败：${error?.message || error}` };
+    }
+  });
+}
+
+async function capture({ target = 'screen', windowTitle = '', maxWidth = 1560 } = {}) {
+  const isWindow = target === 'window';
+  const display = primaryDisplay();
+  const before = isWindow ? null : await desktopContext();
+  const requestedSize = thumbnailSize(display.bounds, maxWidth);
   const sources = await desktopCapturer.getSources({
-    types,
-    thumbnailSize: { width: Math.min(physicalW, 2560), height: Math.min(physicalH, 1600) },
+    types: isWindow ? ['window'] : ['screen'],
+    thumbnailSize: requestedSize,
     fetchWindowIcons: false
   });
+  const { source, error } = selectCaptureSource(sources, { target: isWindow ? 'window' : 'screen', displayId: display.id, windowTitle });
+  if (error) return { ok: false, error };
 
-  let src = sources[0];
-  if (target === 'window' && windowTitle) {
-    const want = String(windowTitle).toLowerCase();
-    src = sources.find((s) => s.name.toLowerCase().includes(want)) || sources[0];
+  let image = source.thumbnail;
+  if (!image || image.isEmpty()) return { ok: false, error: '截图为空（窗口可能最小化或内容受到保护）。' };
+  const after = await desktopContext();
+  const foreground = after.foreground;
+  const original = image.getSize();
+  if (original.width > requestedSize.width) image = image.resize({ width: requestedSize.width, quality: 'best' });
+  const { width, height } = image.getSize();
+
+  let observationOnlyReason = null;
+  if (isWindow) {
+    observationOnlyReason = '窗口截图仅供查看。请截取主显示器后再执行桌面动作。';
+  } else if (!sameObservation(before.foreground, foreground)) {
+    observationOnlyReason = '截图期间未能确认同一个前台窗口。请重截主显示器。';
+  } else if (!sameDisplay(display, primaryDisplay()) || !canUseDisplay(display, before) ||
+    !canUseDisplay(display, after) || !sameBounds(before.virtualScreen, after.virtualScreen) ||
+    !matchesImageGeometry({ width, height }, display.bounds)) {
+    observationOnlyReason = '无法确认截图与物理屏幕的坐标对应。当前截图仅供查看。';
+  } else if (!overlapBounds(foreground.bounds, display.bounds)) {
+    observationOnlyReason = '主显示器截图未覆盖前台窗口。请将窗口移到主显示器后重新截图。';
+  } else if (foreground.tier === 'read') {
+    observationOnlyReason = '当前前台应用属于只读级别。';
   }
-  if (!src) return { ok: false, error: `没有抓到${target === 'window' ? '窗口' : '屏幕'}（desktopCapturer 无源）` };
 
-  let img = src.thumbnail;
-  if (!img || img.isEmpty()) return { ok: false, error: '截图为空（可能窗口最小化或受保护内容）' };
-  const size = img.getSize();
-  if (size.width > maxWidth) img = img.resize({ width: maxWidth, quality: 'best' });
+  const screenshotId = randomUUID();
+  const canAct = !observationOnlyReason;
+  const buf = isWindow ? image.toPNG() : image.toJPEG(92);
+  if (!buf.length) return { ok: false, error: '截图编码失败。' };
 
-  const fg = await foregroundContext().catch(() => null);
-  const shot = img.toPNG();
-  const finalSize = img.getSize();
-
+  latestScreenshot = {
+    screenshotId, canAct, observationOnlyReason, display, width, height,
+    bounds: display.bounds, foreground, virtualScreen: after.virtualScreen,
+    focusHwnd: before?.foreground?.focusHwnd === foreground?.focusHwnd ? foreground?.focusHwnd : null
+  };
   return {
-    ok: true,
-    buf: shot,
-    mime: 'image/png',
-    width: finalSize.width,
-    height: finalSize.height,
-    // 截图坐标 ↔ 屏幕坐标的换算：模型看的是缩过的图，点的时候要乘回去
-    scale: size.width > 0 ? size.width / finalSize.width : 1,
-    source: { id: src.id, name: src.name },
+    ok: true, buf, mime: isWindow ? 'image/png' : 'image/jpeg', width, height, screenshotId, canAct,
+    observationOnlyReason,
+    scale: isWindow ? original.width / width : display.bounds.width / width,
+    source: { id: source.id, name: source.name },
     sourceCount: sources.length,
-    foreground: fg?.ok ? { process: fg.process, title: fg.title, tier: fg.tier, tierLabel: fg.tierLabel, granted: fg.granted } : null,
-    virtualScreen: await input.ensureInputReady().catch(() => null)
+    foreground: brief(foreground),
+    virtualScreen: after.virtualScreen ?? null
   };
 }
 
-/** 列出可截的窗口（给模型挑） */
 export async function listWindows() {
-  const display = screen.getPrimaryDisplay();
-  const dsf = display.scaleFactor || 1;
   const sources = await desktopCapturer.getSources({
     types: ['window'],
-    thumbnailSize: { width: Math.round(display.size.width * dsf * 0.4), height: Math.round(display.size.height * dsf * 0.4) }
+    thumbnailSize: { width: 0, height: 0 },
+    fetchWindowIcons: false
   });
-  return sources.map((s) => ({ id: s.id, name: s.name }));
+  return sources.map(({ id, name }) => ({ id, name }));
 }
 
-/**
- * 执行一个动作：先过 tier/授权闸，再派发。
- * @param {string} action  'left_click' | 'right_click' | 'double_click' | 'type' | 'key' | 'scroll' | 'drag' | 'move'
- * @param {object} params
- */
-export async function performAction(action, params = {}) {
-  if (!input.inputSupported()) return { ok: false, error: '当前平台不支持桌面操作（目前只实现了 Windows）' };
-
-  const fg = await foregroundContext();
-  if (!fg.ok) return { ok: false, error: fg.reason };
-
-  // ① tier 检查（前台应用决定）
-  const policy = checkActionAllowed(fg.tier, action);
-  if (!policy.ok) {
+function checkPolicy(foreground, action) {
+  const policy = checkActionAllowed(foreground.tier, action);
+  if (!policy.ok) return { ok: false, deniedBy: 'tier', error: policy.reason, foreground: brief(foreground) };
+  if (!ledger.isGranted(foreground.process)) {
     return {
-      ok: false,
-      deniedBy: 'tier',
-      error: policy.reason,
-      foreground: { process: fg.process, title: fg.title, tier: fg.tier, tierLabel: fg.tierLabel }
+      ok: false, deniedBy: 'access', needAccess: foreground.process, foreground: brief(foreground),
+      error: `应用「${foreground.process}」还没有获得操作授权。请先调用 computer_request_access。`
     };
   }
+  return null;
+}
 
-  // ② 逐应用授权（CC 的 request_access）
-  if (!fg.granted) {
-    return {
-      ok: false,
-      deniedBy: 'access',
-      needAccess: fg.process,
-      error: `应用「${fg.process || fg.title}」还没有被授权操作。先调用 computer_request_access 请求授权（列出你要用到的应用），用户同意后再试。`,
-      foreground: { process: fg.process, title: fg.title, tier: fg.tier }
-    };
+function deny(deniedBy, error, foreground) {
+  return { ok: false, deniedBy, error, foreground: brief(foreground) };
+}
+
+function foregroundGuard(foreground) {
+  return { hwnd: foreground.hwnd, pid: foreground.pid, title: foreground.title, windowBounds: foreground.bounds };
+}
+
+async function performFocus(params, foreground) {
+  const hwnd = Number(params.hwnd);
+  if (!Number.isSafeInteger(hwnd) || hwnd <= 0) return { ok: false, error: 'focus 需要有效的目标窗口句柄。' };
+  const target = withPolicy(await input.windowInfo(hwnd));
+  if (!target || !matchesProcess(target.process, params.expectProcess)) {
+    return deny('foreground-mismatch', '找不到与目标身份匹配的窗口。', foreground);
   }
+  const blocked = checkPolicy(target, 'focus');
+  if (blocked) return blocked;
+  if (target.tier === 'read') return deny('tier', '当前目标窗口属于只读级别。', target);
+  const currentBlocked = checkPolicy(foreground, 'focus');
+  if (currentBlocked) return currentBlocked;
 
-  // ③ 前台目标校验（2026-11-21 真机测试踩到的真漏洞）：
-  //    鼠标键盘输入是「投给当前前台窗口」的，不管我们以为自己在点哪。
-  //    实测：靶子窗口 show+focus 之后，前台仍然是用户正在用的程序，
-  //    于是「点靶子按钮」实际点到了别的应用上（点击计数 0，动作却报成功）。
-  //    所以坐标投递前必须确认：前台就是本次操作预期的那个应用，否则拒绝。
-  const expect = String(params.expectProcess || '').trim();
-  if (expect) {
-    const same = fg.process.toLowerCase().includes(expect.toLowerCase())
-      || fg.title.toLowerCase().includes(expect.toLowerCase());
-    if (!same) {
-      return {
-        ok: false,
-        deniedBy: 'foreground-mismatch',
-        error: `前台不是预期应用：期望「${expect}」，实际「${fg.process} / ${fg.title}」。`
-          + '鼠标键盘输入只会送到当前前台窗口，打着别的应用上会误操作。'
-          + '先让目标应用切到前台（computer_action 的 focus 动作，或让用户手动切换）再重试。',
-        foreground: { process: fg.process, title: fg.title, tier: fg.tier }
-      };
+  latestScreenshot = null;
+  const result = await input.focusWindow(hwnd, { target, guard: foregroundGuard(foreground) });
+  if (!result.ok || !result.becameForeground) {
+    return { ok: false, deniedBy: 'foreground-mismatch', error: 'Windows 未能将目标窗口切到前台。请手动切换后重新截图。' };
+  }
+  return actionResult('focus', target);
+}
+
+function actionResult(action, foreground) {
+  const keyboard = action === 'type' || action === 'key';
+  const note = keyboard
+    ? '已发送键盘输入。相同窗口和键盘焦点可沿用截图 ID。需要核对结果时请重新截图。'
+    : '动作已发送。请重新截图确认结果。';
+  return { ok: true, action, foregroundAtAction: brief(foreground), note };
+}
+
+export function performAction(action, params = {}) {
+  return withDesktopOperation(async () => {
+    try {
+      return await runAction(action, params);
+    } catch (error) {
+      const message = String(error?.message || error);
+      const deniedBy = ['foreground-mismatch', 'screenshot-required'].find((code) => message.startsWith(`${code}:`));
+      if (deniedBy) {
+        return {
+          ok: false, deniedBy,
+          error: '输入前的窗口、指针位置或显示器校验失败。请确认目标窗口并重新截图。'
+        };
+      }
+      return { ok: false, error: `动作执行失败：${message}` };
     }
+  });
+}
+
+async function runAction(action, params) {
+  if (!clickActions.has(action) && !otherActions.has(action)) return { ok: false, error: `不认识的桌面动作：${action}` };
+  const state = await desktopContext();
+  if (!state.ok) return { ok: false, error: state.reason };
+  const { foreground } = state;
+  if (!foreground) return deny('foreground-mismatch', '无法确认前台窗口。请重新截图。');
+  const blocked = checkPolicy(foreground, action);
+  if (blocked) return blocked;
+  if (action === 'focus') return performFocus(params, foreground);
+
+  if (!matchesProcess(foreground.process, params.expectProcess)) {
+    return deny('foreground-mismatch', `前台进程是「${foreground.process}」，与指定进程「${params.expectProcess}」不匹配。`, foreground);
   }
 
-  // ④ 派发（坐标按模型看到的图换算回真实屏幕坐标）
-  const scale = Number(params.scale) > 0 ? Number(params.scale) : 1;
-  const toReal = (v) => Math.round(Number(v) * scale);
-  try {
-    switch (action) {
-      case 'move':
-        await input.moveMouse(toReal(params.x), toReal(params.y));
-        break;
-      case 'left_click':
-      case 'click':
-        await input.click(toReal(params.x), toReal(params.y), { button: 'left', count: 1 });
-        break;
-      case 'right_click':
-        await input.click(toReal(params.x), toReal(params.y), { button: 'right', count: 1 });
-        break;
-      case 'middle_click':
-        await input.click(toReal(params.x), toReal(params.y), { button: 'middle', count: 1 });
-        break;
-      case 'double_click':
-        await input.click(toReal(params.x), toReal(params.y), { button: 'left', count: 2 });
-        break;
-      case 'triple_click':
-        await input.click(toReal(params.x), toReal(params.y), { button: 'left', count: 3 });
-        break;
-      case 'drag':
-      case 'left_click_drag':
-        await input.drag(toReal(params.x1 ?? params.fromX), toReal(params.y1 ?? params.fromY), toReal(params.x2), toReal(params.y2));
-        break;
-      case 'scroll':
-        await input.scroll(
-          params.x == null ? -1 : toReal(params.x),
-          params.y == null ? -1 : toReal(params.y),
-          { dir: params.direction || 'down', amount: Number(params.amount) || 3 }
-        );
-        break;
-      case 'type':
-        await input.typeText(String(params.text ?? ''));
-        break;
-      case 'key':
-        await input.pressKey(String(params.keys ?? params.key ?? ''), { repeat: Number(params.repeat) || 1 });
-        break;
-      case 'focus':
-        await input.focusWindow(Number(params.hwnd));
-        break;
-      default:
-        return { ok: false, error: `不认识的桌面动作：${action}` };
-    }
-  } catch (e) {
-    return { ok: false, error: `动作执行失败：${e?.message || e}` };
+  const shot = latestScreenshot;
+  if (!shot?.canAct || shot.screenshotId !== params.screenshotId) {
+    return deny('screenshot-required', shot?.observationOnlyReason || '请传入最近一次可用于操作的主显示器截图 ID。', foreground);
+  }
+  if (!sameObservation(shot.foreground, foreground)) {
+    latestScreenshot = null;
+    return deny('foreground-mismatch', '截图所记录的前台窗口已变化。请切回目标窗口并重新截图。', foreground);
+  }
+  if (!sameDisplay(shot.display, primaryDisplay()) || !canUseDisplay(shot.display, state) ||
+    !sameBounds(shot.virtualScreen, state.virtualScreen)) {
+    latestScreenshot = null;
+    return deny('screenshot-required', '显示器布局已变化。请重新截图。', foreground);
   }
 
-  return {
-    ok: true,
-    action,
-    foregroundAtAction: { process: fg.process, title: fg.title, tier: fg.tier },
-    note: '动作已执行。下一步建议重新截图确认结果（capture_screen），不要假设点对了。'
+  const keyboard = action === 'type' || action === 'key';
+  if (keyboard && (!foreground.focusHwnd || foreground.focusHwnd !== shot.focusHwnd)) {
+    latestScreenshot = null;
+    return deny('foreground-mismatch', '截图所记录的键盘焦点已变化或无法确认。请重新截图。', foreground);
+  }
+  const guard = {
+    ...foregroundGuard(foreground), captureBounds: shot.bounds, virtualScreen: shot.virtualScreen,
+    focusHwnd: foreground.focusHwnd
   };
+
+  let points;
+  try {
+    points = actionPoints(action, params, shot);
+  } catch (error) {
+    return deny('invalid-coordinates', error.message, foreground);
+  }
+
+  const invalidArguments = validateActionArguments(action, params);
+  if (invalidArguments) return { ok: false, error: invalidArguments };
+
+  // 指针动作后重新观察。只有成功的键盘输入可以沿用截图。
+  if (!keyboard) latestScreenshot = null;
+  try {
+    await dispatchAction(action, params, points, guard);
+  } catch (error) {
+    latestScreenshot = null;
+    throw error;
+  }
+  return actionResult(action, foreground);
 }
 
-/** 关掉常驻注入进程（应用退出时） */
-export function shutdown() { input.shutdownInput(); }
+function validateActionArguments(action, params) {
+  if (action === 'scroll') {
+    const direction = params.direction ?? 'down';
+    const amount = Number(params.amount ?? 3);
+    if (!['up', 'down', 'left', 'right'].includes(direction) || !Number.isSafeInteger(amount) || amount < 1 || amount > 2147483647) {
+      return '滚动需要有效的方向和正整数格数。';
+    }
+  } else if (action === 'key') {
+    const keys = params.keys ?? params.key;
+    const repeat = Number(params.repeat ?? 1);
+    if (typeof keys !== 'string' || keys.length === 0 || !Number.isSafeInteger(repeat) || repeat < 1 || repeat > 100) {
+      return '每次只发送一个按键或组合键，例如 Enter、Tab 或 Ctrl+S。重复次数需在 1 到 100 之间。';
+    }
+  } else if (action === 'type' && (typeof params.text !== 'string' || params.text.length === 0 || params.text.length > 4096)) {
+    return '单次输入需要指定文字，最多 4096 个 UTF-16 代码单元。';
+  }
+  return null;
+}
+
+async function dispatchAction(action, params, [first, second], guard) {
+  if (clickActions.has(action)) {
+    const [button, count] = clickActions.get(action);
+    return input.click(first.x, first.y, { button, count, guard });
+  }
+  switch (action) {
+    case 'move':
+      return input.moveMouse(first.x, first.y, { guard });
+    case 'drag':
+    case 'left_click_drag':
+      return input.drag(first.x, first.y, second.x, second.y, { guard });
+    case 'scroll':
+      return input.scroll(first?.x, first?.y, { dir: params.direction ?? 'down', amount: Number(params.amount ?? 3), guard });
+    case 'type':
+      return input.typeText(params.text, { guard });
+    case 'key':
+      return input.pressKey(params.keys ?? params.key, { repeat: Number(params.repeat ?? 1), guard });
+  }
+}
+
+export function shutdown() {
+  latestScreenshot = null;
+  input.shutdownInput();
+}
 
 export { nativeImage };

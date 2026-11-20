@@ -26,12 +26,12 @@ test('cu-real: PowerShell 输出编码必须设成 UTF-8（否则读窗口标题
   assert.match(inputSrc, /\[Console\]::OutputEncoding = \[System\.Text\.Encoding\]::UTF8/);
 });
 
-test('cu-real: focus 抢前台必须用 AttachThreadInput（SetForegroundWindow 后台调用会静默失败）', () => {
-  // 真机现象：靶子窗口 show()+focus() 之后前台仍然是别的应用，于是"点靶子"实际点到用户的应用上
-  assert.match(inputSrc, /AttachThreadInput/);
-  assert.match(inputSrc, /GetForegroundWindow/);
-  // 必须回报真实结果，不是"我调过了"
-  assert.match(inputSrc, /becameForeground|now\.ToInt64\(\) -eq \$h\.ToInt64\(\)/);
+test('cu-real: guarded focus uses Windows policy and reports actual foreground', () => {
+  const guardedFocus = inputSrc.slice(inputSrc.indexOf('public static bool GuardedFocus'), inputSrc.indexOf('public static string CursorPos'));
+  assert.match(guardedFocus, /GetWindowThreadProcessId\(target, out pid\)/);
+  assert.match(guardedFocus, /return GetForegroundWindow\(\) == target/);
+  assert.doesNotMatch(guardedFocus, /AttachThreadInput/);
+  assert.match(cuSrc, /!result\.ok \|\| !result\.becameForeground/);
 });
 
 test('cu-real: GetCurrentThreadId 必须从 kernel32 导入（user32 里没有这个入口点）', () => {
@@ -41,21 +41,37 @@ test('cu-real: GetCurrentThreadId 必须从 kernel32 导入（user32 里没有�
   assert.ok(tidLine.includes('kernel32'), '它必须从 kernel32 导入，实际：' + (tidLine || '').trim());
 });
 
-test('cu-real: performAction 必须有前台目标校验（expectProcess）', () => {
-  // 真机现象：靶子窗口没拿到前台时，"点靶子按钮"实际打到了用户正在玩的应用上，
-  // 动作报 ok=true 但页面里点击计数是 0。这条防线是这次真机测出来才加的。
-  assert.match(cuSrc, /expectProcess/);
-  assert.match(cuSrc, /foreground-mismatch/);
-  assert.match(cuSrc, /鼠标键盘输入只会送到当前前台窗口/);
+test('cu-real: action binds screenshot identity and performs foreground checks again in the native helper', () => {
+  assert.match(cuSrc, /shot\.screenshotId !== params\.screenshotId/);
+  assert.match(cuSrc, /sameObservation\(shot\.foreground, foreground\)/);
+  assert.match(inputSrc, /foreground\.ToInt64\(\) != guard\.hwnd \|\| pid != guard\.pid/);
+  assert.match(inputSrc, /GetAncestor\(window, GA_ROOT\)\.ToInt64\(\) != guard\.hwnd/);
+  assert.match(inputSrc, /inserted != events\.Length/);
 });
 
-test('cu-real: foregroundContext 必须先 ensureInputReady（否则首次调用报「进程未就绪」）', () => {
-  // 真机现象：第一次调 foregroundContext 直接抛 Error: 输入注入进程未就绪
-  const fnBody = cuSrc.slice(cuSrc.indexOf('export async function foregroundContext'));
-  assert.match(fnBody.slice(0, 400), /ensureInputReady/, 'foregroundContext 里要先就绪');
+test('cu-real: desktopContext waits for the helper before querying desktop state', () => {
+  const fnBody = cuSrc.slice(cuSrc.indexOf('async function desktopContext'), cuSrc.indexOf('export async function foregroundContext'));
+  assert.match(fnBody, /await input\.ensureInputReady\(\);\s+const state = await input\.desktopState\(\)/);
 });
 
-test('cu-real: 截图必须返回 scale（模型按图上的像素点，要乘回去）', () => {
-  const fnBody = cuSrc.slice(cuSrc.indexOf('export async function captureScreen'));
-  assert.match(fnBody, /scale:/, 'captureScreen 必须算 scale');
+test('cu-real: capture keeps legacy scale metadata without accepting it from actions', () => {
+  const fnBody = cuSrc.slice(cuSrc.indexOf('async function capture('));
+  assert.match(fnBody, /scale:/);
+  assert.doesNotMatch(cuSrc, /params\.scale/);
+});
+
+test('cu-real: guarded key validates one chord and checks foreground and child focus before each dispatch', () => {
+  const key = inputSrc.slice(inputSrc.indexOf('public static void Key'), inputSrc.indexOf('public static void TypeText'));
+  const guarded = key.slice(key.indexOf('if (repeat < 1'));
+  assert.match(guarded, /repeat > 100/);
+  assert.match(guarded, /GuardedKeyEvents\(keyName\)/);
+  assert.match(guarded, /AssertForeground\(guard, true, true\);\s+Submit\(events, events\.Length \/ 2\)/);
+  assert.doesNotMatch(guarded, /SendKeys/);
+  assert.match(cuSrc, /before\?\.foreground\?\.focusHwnd === foreground\?\.focusHwnd/);
+  assert.match(cuSrc, /if \(!keyboard\) latestScreenshot = null;/);
+});
+
+test('cu-real: native point checks include an existing mouse-capture owner', () => {
+  const point = inputSrc.slice(inputSrc.indexOf('static void AssertPoint'), inputSrc.indexOf('static POINT ReadCursor'));
+  assert.match(point, /info\.capture != IntPtr\.Zero && GetAncestor\(info\.capture, GA_ROOT\)\.ToInt64\(\) != guard\.hwnd/);
 });
