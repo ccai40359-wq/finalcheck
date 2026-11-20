@@ -250,6 +250,65 @@ Linux 真机验证：最小项目 `checkQ1` → `coverageGap: (none)`、`finding
 跳过的 16 条全是 Windows 专属机制（ACL 受限令牌沙箱、findstr 回退、Git Bash 解析），
 Linux 上本就不适用。
 
+### agent 工具链真机 E2E（WSL2）
+
+除了跑测试，还单独验了「模型真调用工具时能不能用」：
+
+| 能力 | 结果 |
+|---|---|
+| `run_command` 基本执行（`echo` / `pwd`） | ✅ |
+| bash 数组 `arr=(a b c)` + `${#arr[@]}` | ✅ 真 bash，不是 dash |
+| bash `$'a\tb'` 转义 | ✅ |
+| bash `$((3+4))` 算术 | ✅ |
+| bash 进程替换 `diff <(echo a) <(echo b)` | ✅ |
+| bash `[[ ]]` 字符串比较 | ✅ |
+| 管道 / 重定向 | ✅ |
+| 项目外绝对路径 `/etc/passwd` | ✅ 被 `path-outside` 拒 |
+| 敏感路径 `~/.ssh` | ✅ 被 `sensitive-path` 拒 |
+| 项目内 `read_file` | ✅ |
+| 没 rg 时 `grep_code` 回退 | ✅ `grep (GNU)`，支持正则，无 literal-only 限制 |
+| 有 rg 时 `grep_code` | ✅ `ripgrep` |
+
+**结论：`run_command` 在 Linux 上真的是 bash 语义（数组/`$'...'`/进程替换全通过）**，
+这是「一种 shell、一套语法」这个承诺在 Linux 上成立的关键证据。
+
+### 我引入的一个严重回归（已修）
+
+加 POSIX 绝对路径支持后，`> /dev/null`、`2>/dev/null` 被当成「项目外文件」整条拒绝：
+
+```
+echo hi > /dev/null     → path-outside 拒绝
+echo hi 2>/dev/null     → path-outside 拒绝
+```
+
+这是 bash 里**最常见的写法**（模型也天天写），比「漏拦」更糟 —— 一条命令里只要带
+一个 `2>/dev/null` 就全废。修法：`/dev/null`、`/dev/stdout`、`/dev/stdin`、
+`/dev/stderr`、`/dev/tty`、`/dev/fd/N` 这类设备文件放行（它们不是「项目外的文件」）。
+已补回归测试锁住。
+
+教训：**宽化一个「默认拒绝」的闸，必须同步枚举所有合法例外**，
+否则会把日常写法全禁掉。这类回归只有真机跑才会暴露（Windows 上 `> /dev/null`
+写法会被 cmd 解释成 `2>nul`，路径闸根本看不到 `/dev/null`）。
+
+### 发现但**未修**的既有缺陷（不是移植引入）
+
+**`~` 词首被误判成路径，导致 `echo ~` 这类命令被拒。**
+
+```
+echo ~            → path-outside 拒绝（但 echo ~ 只是打印字符串，不访问文件）
+echo a=~b         → path-outside 拒绝（=~ 是 bash 正则运算符，不是家目录）
+```
+
+规则本身是对的边界（`cat ~/.bashrc` 在 workspace 模式该拒），
+问题在于**无法区分「命令参数里的路径」和「数据里的字面量」**。
+Windows 上同样存在（`~` 展开成 `C:\Users\...` 后也是项目外）。
+
+修它需要策略层设计决策（比如：只对「读/写类命令的词」做路径展开，
+不对 `echo`/`printf`/`=` 右侧做）。**超出移植范围，留给后续**。
+影响面：模型想查家目录路径时会拿到一个明确的拒绝（不是静默失败），
+可以改用 `$HOME` 或直接读项目内文件绕过。
+
+
 ### 怎么在 WSL 里复现这套验证
 
 ```bash

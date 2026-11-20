@@ -623,6 +623,10 @@ function literalPathsIn(text) {
     const value = (pm[1] || '').trim();
     if (!value || value === '/') continue;                 // 单独一个 `/` 不算
     if (/^\/[a-zA-Z]$/.test(value)) continue;              // `ls /b` 这类单字母开关
+    // 设备文件不是「项目外文件」：`> /dev/null`、`2>/dev/null`、`> /dev/stdout`
+    // 是 bash 里最常见的写法（模型也天天写）。不放行的话，只要命令里带一个
+    // `2>/dev/null` 就整条被拒 —— 2026-11-20 WSL 真机实测踩到，比漏拦更糟。
+    if (/^\/dev\/(?:null|zero|stdin|stdout|stderr|tty|fd\/\d+)$/.test(value)) continue;
     if (value.includes('*') || value.includes('?') || value.includes('$')) continue; // 通配/变量不猜
     found.push(value);
   }

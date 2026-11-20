@@ -345,3 +345,28 @@ test('linux: POSIX 绝对路径必须在项目边界闸里被识别（曾经整�
     assert.equal(r.matchedRule, 'path-outside');
   }
 });
+
+// ---------------------------------------------------------------- /dev/null 例外
+
+test('linux: /dev/null 等设备文件不是「项目外路径」（否则 2>/dev/null 全部被拒）', async () => {
+  const { createPolicy, checkCommandPaths } = await import('../desktop/src/main/policy.mjs');
+  if (process.platform === 'win32') return; // 这条只在 POSIX 上成立
+  const p = createPolicy({ projectPath: '/tmp/proj', mode: 'workspace' });
+  // 2026-11-20 WSL 真机踩到的回归：加了 POSIX 绝对路径支持后，
+  // `> /dev/null` / `2>/dev/null` 被当成「项目外文件」整条拒绝。
+  // 这是 bash 最常见写法，比漏拦更糟 —— 必须放行。
+  for (const cmd of [
+    'echo hi > /dev/null',
+    'echo hi 2>/dev/null',
+    'ls . 2>/dev/null || true',   // 项目内目录 + 2>/dev/null 的组合
+    'echo x > /dev/stdout',
+    'cat < /dev/stdin'
+  ]) {
+    const r = checkCommandPaths(p, cmd, '/tmp/proj');
+    assert.equal(r.ok, true, `${cmd} 不该因 /dev/* 被拒`);
+  }
+  // 但真正的项目外路径仍然要拒
+  const bad = checkCommandPaths(p, 'cat /etc/passwd', '/tmp/proj');
+  assert.equal(bad.ok, false);
+  assert.equal(bad.matchedRule, 'path-outside');
+});
