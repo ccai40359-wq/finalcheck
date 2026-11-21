@@ -6,6 +6,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.29.6] - 2026-11-21
+
+### Fixed
+
+- The gold overlay is back while the assistant controls your computer: the screen tint and the mini chat window in the top-right corner now appear again in installed builds (they never showed outside dev mode due to a packaging-only code elimination, now pinned by a regression test).
+
 ## [0.29.5] - 2026-11-21
 
 ### Fixed

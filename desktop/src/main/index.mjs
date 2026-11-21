@@ -1,7 +1,9 @@
 import { app, BrowserWindow, ipcMain, protocol, screen, shell } from 'electron';
 import { registerMediaScheme, installMediaProtocol } from './media-protocol.mjs';
 import { setSnapshotRenderer } from './capture.mjs';
-import { onComputerUseModeChange } from './computer-use.mjs'; // 0.29.2：CU 模式开关 → 全屏遮罩 + 主窗迷你化
+// 注意：computer-use 模块与 agent-service 一样是运行时经 engineUrl 从 REPO_ROOT 加载的
+// （bundle 不内联它）——这里不能用静态 import：electron-vite 会把整条 CU 遮罩订阅摇树掉
+// （0.29.2-0.29.5 打包版金色遮罩从未显示过，根因即此）。订阅见下方 whenReady 里的动态加载。
 
 // Windows 的「原生遮挡检测」会在窗口被别的窗口盖住时把页面判定为 hidden：
 // Chromium 随即停掉 requestAnimationFrame、把定时器节流到 ~1s，用户切回来就觉得“卡”。
@@ -400,8 +402,15 @@ app.whenReady().then(async () => {
   createWindow();
   installExternalLinkGuards(); // 点消息里的链接要开系统浏览器，不能把主窗口导航走
   // 0.29.2：CU 模式开关 → 全屏遮罩 + 主窗右上角迷你化（computer-use 模块在首次可操作截图/动作时进入，
-  // 撤销授权 / 回合收尾 / 用户点停止时退出）
-  onComputerUseModeChange((active) => { try { active ? enterCuMode() : exitCuMode(); } catch { /* 遮罩故障不影响 CU 本体 */ } });
+  // 撤销授权 / 回合收尾 / 用户点停止时退出）。
+  // 必须动态加载与 agent-tools 同一个模块实例（engineUrl 指向 REPO_ROOT 的文件拷贝，
+  // 和 backend.mjs:56 同款模式）——静态 import 的绑定会被摇树删除（0.29.5 及之前打包版遮罩不显示的根因）。
+  void (async () => {
+    try {
+      const { onComputerUseModeChange } = await import(engineUrl('desktop/src/main/computer-use.mjs'));
+      onComputerUseModeChange((active) => { try { active ? enterCuMode() : exitCuMode(); } catch { /* 遮罩故障不影响 CU 本体 */ } });
+    } catch { /* 模块加载失败不影响 CU 本体（工具走 loadDesktopTools 自己的实例） */ }
+  })();
   updater.ensureUpdater(); // dev 下内部直接返回 null（不 import、不联网）
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });

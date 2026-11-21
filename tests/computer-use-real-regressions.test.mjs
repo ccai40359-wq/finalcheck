@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const repoRoot = path.resolve(import.meta.dirname, '..');
 const inputSrc = readFileSync(path.join(repoRoot, 'desktop/src/main/desktop-input-win.mjs'), 'utf8');
@@ -90,4 +91,19 @@ test('cu-real: foreground drift arbitration auto-refocuses granted targets and y
 test('cu-real: native point checks include an existing mouse-capture owner', () => {
   const point = inputSrc.slice(inputSrc.indexOf('static void AssertPoint'), inputSrc.indexOf('static POINT ReadCursor'));
   assert.match(point, /info\.capture != IntPtr\.Zero && GetAncestor\(info\.capture, GA_ROOT\)\.ToInt64\(\) != guard\.hwnd/);
+});
+
+// 0.29.6 打包回归钉：index.mjs 对 computer-use 必须用 engineUrl 动态加载，禁止静态 import。
+// 0.29.2-0.29.5 打包版金色遮罩从未显示过——静态 import 的 onComputerUseModeChange 订阅被
+// electron-vite 摇树删除（bundle 里 enterCuMode/CU_OVERLAY_HTML 全消失），dev 模式正常所以只在安装版暴露。
+test('打包钉：index.mjs 的 CU 遮罩订阅必须走 engineUrl 动态加载（静态 import 会被摇树删）', async () => {
+  const { readFileSync } = await import('node:fs');
+  const pathMod = await import('node:path');
+  const repo = pathMod.resolve(pathMod.dirname(fileURLToPath(import.meta.url)), '..');
+  const src = readFileSync(pathMod.join(repo, 'desktop/src/main/index.mjs'), 'utf8');
+  assert.ok(!/import\s*\{[^}]*onComputerUseModeChange[^}]*\}\s*from\s*'\.\/computer-use\.mjs'/.test(src),
+    '禁止静态 import computer-use（会被 electron-vite 摇树删）');
+  assert.ok(src.includes("await import(engineUrl('desktop/src/main/computer-use.mjs'))"),
+    '订阅必须动态加载同一模块实例（engineUrl 与 agent-tools 的运行时实例同路径）');
+  assert.ok(src.includes('enterCuMode() : exitCuMode()'), '进入/退出分支仍在');
 });
