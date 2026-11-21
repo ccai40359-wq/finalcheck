@@ -404,12 +404,44 @@ node desktop/scripts/install-playwright-linux.mjs
 
 | 项 | 为什么必须在 Linux 上 |
 |---|---|
-| 真打 AppImage / deb | electron-builder 的 Linux target 需要 Linux 宿主（或用 Docker） |
+| deb 包真打 + `dpkg -i` 安装实测 | AppImage 已真打+真跑（见下）；deb 首次打挂在元数据缺失（已补 author.email/homepage），重试待跑通 |
 | `git` / `bash` 依赖实测 | 声明了 depends，但没在干净 Ubuntu 上验过装完能不能起 |
-| UI 截图逐屏核对 | 字体渲染、DPI、窗口装饰在不同发行版差异大 |
+| UI 截图逐屏核对 | 字体渲染、DPI、窗口装饰在不同发行版差异大（WSL2/WSLg 下已过一轮） |
 | `policy.mjs` 的 POSIX 分支 | 路径分隔符、`~` 展开、软链接解析的行为差异 |
 | 多尺寸图标 + 字体栈 | 目前只有 `build/icon.png` 一个尺寸；Linux 需要 16/32/48/64/128/256 的多尺寸 |
 | Playwright `--with-deps` | 要在干净 Ubuntu 上跑一次，确认系统库装全（libnss3/libatk/libgbm 等） |
+
+## 端到端用户体验验证（2026-11-21，WSL2 + WSLg，9/9 PASS ×2）
+
+**源码运行与打包 AppImage 两条形态各跑一遍完整用户旅程**（`FC_DIAG` 式 CDP 驱动 + 每步截图断言）：
+
+| 步骤 | 结果 |
+|---|---|
+| 启动 → 中文界面、模型已配置（deepseek-v4.1-flash-eco） | ✅ |
+| 发「你好」→ 真模型回复（含工具卡片：Terminal/Read） | ✅ |
+| `/` 菜单出现 **/new 新对话** 与 **/resume 选老会话**（新增的立即执行型命令） | ✅ |
+| `/new` 立刻清空开新会话 → 再问一句收到回复 | ✅ |
+| `/resume` 弹会话选择器（标题/轮数/时间、当前会话高亮）→ 切回老会话旧消息完整 | ✅ |
+| `kill -9` 进程重启 → 会话都在、切回内容完整 | ✅ |
+| PAGE_ERRORS | 0 |
+
+打包版：`fc-0.28.0.AppImage`（147MB，electron-builder，npmmirror 镜像出包），
+`--appimage-extract-and-run`（WSL 缺 libfuse2 的兜底）+ `--no-sandbox` 全流程同 9/9。
+
+### 这轮挖出的环境/工程事实
+
+- **dev 模式数据根是 `desktop/`**（`index.mjs:25`：`path.resolve(__dirname,'..','..')`）——
+  放 `~/.config/FinalCheck` 的 config/projects **只有打包版（userData）或 `FINALCHECK_UI_SELFCHECK=1` 才会被读**。
+  自检模式就是为此设计的：`FINALCHECK_UI_SELFCHECK=1` → userData 隔离到 `$TMP/fc-ui-selfcheck`（固定目录，可预置）。
+- **打包版进程名是 `finalcheck`**（`executableName`），`pkill electron` 杀不到它；残留实例会占单实例锁，新实例静默退出（`gotLock=false` 直接 quit）→ 表现为「CDP 起不来」。
+- **Windows 侧 C 盘满（Temp 86G）会造成 wsl.exe 输出中转假象**（空输出 / tr write error），与 WSL 内真实状态无关——排查时先看 `df -h /c`。
+- electron-updater 在 Linux 上查 GitHub releases 报 `latest-linux.yml` 404（v0.29.1 没传该资产）→ 非致命噪声，但自动更新对 Linux 包同样是坏的（与 Windows 端已知问题同源）。
+- `ensureDefaultProject()` 在启动链两处调用（`index.mjs:224` / `backend.mjs:92`）无并发保护，实测会建出两个同名默认项目（竞态，Windows 上因已有默认项目未现形）。
+
+### /new 与 /resume（对齐 claude CLI 的会话切换）
+
+- `app-helpers.mjs COMMANDS` + `App.jsx chooseSlash`：UI 动作命令**立即执行**（与 /compact /workflow 的「只插入文本」分流）；
+- `/resume` 渲染会话选择器浮层（当前项目、按更新时间倒序、Esc/点背景关闭）。
 
 ## 已知非阻塞问题
 
