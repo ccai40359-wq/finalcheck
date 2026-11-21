@@ -204,6 +204,7 @@ const recordAudit = async () => {};
 
 let sessionId = null;
 let history = [];
+let currentModel = model;
 
 function newLocalSession() {
   return sessions.newSession(t('新会话')).then((s) => {
@@ -291,7 +292,7 @@ async function runTurn(text) {
       config: {
         baseUrl: prov.baseUrl,
         apiKey: prov.apiKey,
-        model,
+        model: currentModel,
         providerId: prov.id,
         toolConcurrency: Number(cfg.toolConcurrency) || 8
       },
@@ -367,7 +368,11 @@ function printWelcome() {
   console.log();
 }
 
-const SLASH_COMMANDS = ['/help', '/new', '/resume', '/sessions', '/exit', '/quit'];
+const SLASH_COMMANDS = ['/help', '/new', '/resume', '/sessions', '/model', '/exit', '/quit'];
+const SLASH_DESCS = {
+  '/help': '全部命令', '/new': '开新会话', '/resume': '选老会话继续', '/sessions': '列出会话',
+  '/model': '切换模型（本会话起生效）', '/exit': '退出', '/quit': '退出'
+};
 const rl = readline.createInterface({
   input: process.stdin,
   output: process.stdout,
@@ -379,6 +384,34 @@ const rl = readline.createInterface({
     return [hits.length ? hits : SLASH_COMMANDS, line];
   }
 });
+
+// ---- 实时斜杠菜单（学 Hermes/CC）：输入 / 立即弹出，边打字边过滤 ----
+// readline 负责输入行本身；菜单画在它下面：存光标 → 逐行清写 → 恢复光标，定高防残影。
+const MENU_HEIGHT = SLASH_COMMANDS.length;
+let menuOn = false;
+function menuRender() {
+  if (process.stdin.isTTY !== true || inputClosed) return;
+  const line = rl.line || '';
+  if (turning || asking || !line.startsWith('/')) { menuClear(); return; }
+  const matches = SLASH_COMMANDS.filter((c) => c.startsWith(line.toLowerCase()));
+  const rows = [];
+  for (const c of (matches.length ? matches : SLASH_COMMANDS)) {
+    rows.push(`${DIM}  /${RESET}${GOLD[0]}${c.slice(1).padEnd(9, ' ')}${RESET} ${DIM}${SLASH_DESCS[c] || ''}${RESET}`);
+  }
+  while (rows.length < MENU_HEIGHT) rows.push('');
+  process.stdout.write('\x1b7');
+  for (const row of rows) process.stdout.write(`\n\x1b[2K${row}`);
+  process.stdout.write('\x1b8');
+  menuOn = true;
+}
+function menuClear() {
+  if (!menuOn) return;
+  process.stdout.write('\x1b7');
+  for (let i = 0; i < MENU_HEIGHT; i++) process.stdout.write('\n\x1b[2K');
+  process.stdout.write('\x1b8');
+  menuOn = false;
+}
+rl.on('keypress', () => { setImmediate(() => menuRender()); });
 
 async function doResume() {
   const list = (await sessions.listSessions() || []).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)).slice(0, 10);
@@ -424,6 +457,7 @@ async function drainQueue() {
 }
 
 async function handleLine(line) {
+  menuClear();
   const text = String(line || '').trim();
   if (!text) return;
   if (text.startsWith('/')) {
@@ -436,6 +470,18 @@ async function handleLine(line) {
       for (const s of list) console.log(`  ${(s.title || t('未命名会话')).slice(0, 40)}  ${s.turns ?? 0} 轮`);
       return;
     }
+    if (cmd === '/model') {
+      console.log(`  当前模型：${currentModel}`);
+      modelIds.forEach((id, i) => console.log(`  [${i + 1}] ${id}${id === currentModel ? '  ←' : ''}`));
+      process.stdout.write('选择编号（回车取消）：');
+      const ans = await askLine();
+      const n = parseInt(String(ans).trim(), 10);
+      if (Number.isFinite(n) && n >= 1 && n <= modelIds.length) {
+        currentModel = modelIds[n - 1];
+        dimLine(`已切到 ${currentModel}（下一回合生效）`);
+      } else dimLine('（取消）');
+      return;
+    }
     if (cmd === '/resume') { await doResume(); return; }
     console.log(`未知命令 ${cmd}（/help 查看可用命令）`);
     return;
@@ -446,7 +492,7 @@ async function handleLine(line) {
   process.stdout.write(`${DIM}${'─'.repeat(40)}${RESET}\n${CYAN}●${RESET} ${text}\n`);
   await runTurn(text);
   if (process.stdin.isTTY === true) {
-    process.stdout.write(`${DIM}⚜ ${prov.name}/${model} │ ${String(sessionId || '').slice(0, 8)}${RESET}\n`);
+    process.stdout.write(`${DIM}⚜ ${prov.name}/${currentModel} │ ${String(sessionId || '').slice(0, 8)}${RESET}\n`);
   }
 }
 
@@ -471,6 +517,12 @@ rl.on('SIGINT', () => {
 });
 
 // ---- 启动 ----
+if (process.env.FC_TTY_DEBUG === '1') {
+  console.error(`[tty] isTTY=${process.stdin.isTTY} isRaw=${process.stdin.isRaw} envTTYSIZE=${process.env.TERM || ''}`);
+}
+if (process.stdin.isTTY === true && process.stdin.isRaw !== true) {
+  try { process.stdin.setRawMode(true); } catch { /* 某些环境不支持 */ }
+}
 printWelcome();
 if (process.stdin.isTTY !== true) dimLine('（非交互模式：从 stdin 逐行读，EOF 或 /exit 结束）');
 await newLocalSession();
