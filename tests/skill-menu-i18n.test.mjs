@@ -2,6 +2,7 @@
 // skills:list IPC 必须把 descriptionEn 透传给渲染层（保留旧的 description/cn/name 字段）。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -30,6 +31,11 @@ test('skillDescription: zh → 中文（即使有英文）', () => {
 });
 
 test('skills:list IPC 返回每项 descriptionEn，且保留旧字段', async () => {
+  // 隔离本机 ~/.agents/skills：本测试钉 42=40 内置+2 自动化技能，互通文件夹并入会改变计数
+  process.env.FINALCHECK_COMMON_SKILLS_DIR = path.join(os.tmpdir(), 'fc-test-no-common-' + Date.now());
+  const { clearSkillsCache } = await import('../src/playbooks.mjs');
+  clearSkillsCache();
+  try {
   const handlers = new Map();
   const ipcMain = {
     handle(channel, fn) { handlers.set(channel, fn); },
@@ -55,6 +61,10 @@ test('skills:list IPC 返回每项 descriptionEn，且保留旧字段', async ()
     assert.ok(item.description, `${item.id} 缺旧字段 description`);
     assert.ok(String(item.descriptionEn || '').trim(), `${item.id} 缺 descriptionEn`);
     assert.ok(!CJK.test(item.descriptionEn), `${item.id} descriptionEn 不应含中文：${item.descriptionEn}`);
+  }
+  } finally {
+    delete process.env.FINALCHECK_COMMON_SKILLS_DIR;
+    clearSkillsCache();
   }
 });
 

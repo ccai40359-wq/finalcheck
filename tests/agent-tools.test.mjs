@@ -31,6 +31,11 @@ function fakePermissions({ allow = true } = {}) {
 }
 
 test('agent-tools: list_playbooks 返回 52 类摘要（内置 50 + 用户级 computer-use/browser-use）', async () => {
+  // 隔离本机 ~/.agents/skills（互通文件夹并入后计数受真机环境影响）：钉的行为只来自 desktop/skills
+  process.env.FINALCHECK_COMMON_SKILLS_DIR = path.join(os.tmpdir(), 'fc-test-no-common-' + Date.now());
+  const { clearSkillsCache } = await import('../src/playbooks.mjs');
+  clearSkillsCache();
+  try {
   const tools = createAgentTools({ repoRoot, permissions: fakePermissions() });
   const r = await tools.list_playbooks({});
   assert.equal(r.total, 52);
@@ -44,6 +49,10 @@ test('agent-tools: list_playbooks 返回 52 类摘要（内置 50 + 用户级 co
   assert.ok(cu, 'computer-use 应在 list_playbooks 目录里');
   assert.equal(cu.id, 'computer-use');
   assert.equal(cu.entry, 'SKILL.md');
+  } finally {
+    delete process.env.FINALCHECK_COMMON_SKILLS_DIR;
+    clearSkillsCache();
+  }
 });
 
 test('agent-tools: read_playbook 能读到用户级 computer-use 技能正文', async () => {

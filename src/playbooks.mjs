@@ -3,6 +3,7 @@
 // - 入口 SKILL.md 自带文件路由，附属手册用 file + offset 续读（大文件不整块塞进上下文）
 // - 路径监狱：topic 只能命中目录清单，file 只能命中该目录 readdir 出来的文件名
 import { readdir, readFile, realpath, stat } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -13,11 +14,18 @@ export const PLAYBOOKS_ROOT = path.join(REPO_ROOT, 'playbooks');
 // ---- 三级技能目录（对齐 Claude Code / Codex / ZCode 的 Agent Skills 口径）----
 //   builtin：仓库 playbooks/<域>/（web-vuln、dev-fix、…，域内仍是编号目录）
 //   user   ：FINALCHECK_SKILLS_DIR（缺省 <repo>/desktop/skills/）下的扁平 <slug>/SKILL.md
+//   common ：跨 agent 互通文件夹 ~/.agents/skills/（与 ZCode / Claude Code 同源同格式；
+//            FINALCHECK_COMMON_SKILLS_DIR 可覆盖，目录不存在=静默无技能）
 //   project：<被审项目>/.finalcheck/skills/ 下的扁平 <slug>/SKILL.md
-// 同名冲突就近覆盖：project > user > builtin。用户/项目技能不要求编号前缀。
+// 同名冲突就近覆盖：project > user（FC 自带 desktop/skills 优先于 common 里的同名） > builtin。
+// 用户/项目技能不要求编号前缀。
 
 export function userSkillsRoot() {
   return process.env.FINALCHECK_SKILLS_DIR || path.join(REPO_ROOT, 'desktop', 'skills');
+}
+
+export function commonSkillsRoot() {
+  return process.env.FINALCHECK_COMMON_SKILLS_DIR || path.join(os.homedir(), '.agents', 'skills');
 }
 
 export function projectSkillsRoot(projectDir) {
@@ -84,12 +92,18 @@ export async function loadSkills({ projectDir = null } = {}) {
   if (!skillsCache.has(key)) {
     skillsCache.set(key, (async () => {
       const builtin = await buildBuiltinDomains().catch(() => []);
-      const user = await buildLooseCatalog(userSkillsRoot(), 'user').catch(() => []);
+      // user 层两个来源：FC 自带（desktop/skills）+ 跨 agent 互通文件夹（~/.agents/skills）。
+      // 同名时 FC 自带优先（它是 FC 语境下人工维护的版本）——先按 norm 键去重，FC 自带留、互通让。
+      const own = await buildLooseCatalog(userSkillsRoot(), 'user').catch(() => []);
+      const common = await buildLooseCatalog(commonSkillsRoot(), 'user').catch(() => []);
+      const norm = (s) => String(s || '').replace(/[^a-z0-9]/gi, '').toLowerCase();
+      const ownKeys = new Set();
+      for (const e of own) { ownKeys.add(norm(e.name)); ownKeys.add(norm(e.dir)); }
+      const user = [...own, ...common.filter((e) => !ownKeys.has(norm(e.name)) && !ownKeys.has(norm(e.dir)))];
       const pRoot = projectSkillsRoot(projectDir);
       const project = pRoot ? await buildLooseCatalog(pRoot, 'project').catch(() => []) : [];
       // 就近覆盖 project > user > builtin：两遍算法——先登记每个键的最高层级，
       // 再只保留「自己所有键都没有被更高层级占用」的条目（name/dir 双键不留残影）。
-      const norm = (s) => String(s || '').replace(/[^a-z0-9]/gi, '').toLowerCase();
       const keyRank = new Map();
       for (const [rank, list] of [[0, builtin], [1, user], [2, project]]) {
         for (const e of list) {

@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { loadSkills, readPlaybook, clearSkillsCache } from '../src/playbooks.mjs';
 
 async function skillDir(root, slug, body) {
@@ -87,4 +88,87 @@ test('三级技能：project > user 覆盖同名；内置目录仍在；read 走
     delete process.env.FINALCHECK_SKILLS_DIR;
     clearSkillsCache();
   }
+});
+
+// 0.29.5：跨 agent 互通文件夹 ~/.agents/skills（ZCode / Claude Code 同款）。FINALCHECK_COMMON_SKILLS_DIR 可覆盖。
+// 优先级：FC 自带 desktop/skills > 互通文件夹；同名时 FC 自带留、互通让。
+test('common 文件夹：并入 user 层；FC 自带同名优先；不存在的目录静默为空', async (t) => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'fc-common-skills-'));
+  const ownRoot = path.join(tmp, 'own-skills');
+  const commonRoot = path.join(tmp, 'common-skills');
+  await skillDir(ownRoot, 'fix-s3-key', [
+    '---', 'name: fix-s3-key', 'description: Use when S3 密钥需要轮换（FC 自带版）。',
+    '---', '', '# S3 密钥轮换（FC 自带）',
+  ].join('\n'));
+  await skillDir(commonRoot, 'fix-s3-key', [
+    '---', 'name: fix-s3-key', 'description: Use when S3 密钥需要轮换（互通文件夹版）。',
+    '---', '', '# S3 密钥轮换（互通）',
+  ].join('\n'));
+  await skillDir(commonRoot, 'fc-computer-use', [
+    '---', 'name: fc-computer-use', 'description: Use when driving a desktop GUI on Windows (click/type/screenshot).',
+    '---', '', '# Computer Use（互通）',
+  ].join('\n'));
+  await skillDir(commonRoot, 'fc-browser-use', [
+    '---', 'name: fc-browser-use', 'description: Use when testing or driving a web page in a real browser.',
+    '---', '', '# Browser Use（互通）',
+  ].join('\n'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+
+  process.env.FINALCHECK_SKILLS_DIR = ownRoot;
+  process.env.FINALCHECK_COMMON_SKILLS_DIR = commonRoot;
+  clearSkillsCache();
+  try {
+    const skills = await loadSkills({});
+    const user = skills.filter((s) => s.scope === 'user');
+    assert.equal(user.filter((s) => s.name === 'fix-s3-key').length, 1, '同名只留一条');
+    assert.match(user.find((s) => s.name === 'fix-s3-key').description, /FC 自带版/, '同名时 FC 自带胜出');
+    assert.ok(user.some((s) => s.name === 'fc-computer-use'), '互通文件夹的 computer-use 进目录');
+    assert.ok(user.some((s) => s.name === 'fc-browser-use'), '互通文件夹的 browser-use 进目录');
+    assert.equal(user.filter((s) => s.name === 'fc-computer-use').length, 1, '无残影');
+
+    const r = await readPlaybook({ topic: 'fc-computer-use', catalog: skills });
+    assert.match(r.content, /Computer Use（互通）/, '互通技能正文按 __root 可读');
+  } finally {
+    delete process.env.FINALCHECK_SKILLS_DIR;
+    delete process.env.FINALCHECK_COMMON_SKILLS_DIR;
+    clearSkillsCache();
+  }
+});
+
+test('common 文件夹：目录不存在=静默无技能，不影响自带与内置', async (t) => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'fc-common-absent-'));
+  const ownRoot = path.join(tmp, 'own-skills');
+  await skillDir(ownRoot, 'only-own', [
+    '---', 'name: only-own', 'description: Use when 只有自带目录的场景。',
+    '---', '', '# 自带正文',
+  ].join('\n'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  process.env.FINALCHECK_SKILLS_DIR = ownRoot;
+  process.env.FINALCHECK_COMMON_SKILLS_DIR = path.join(tmp, 'does-not-exist');
+  clearSkillsCache();
+  try {
+    const skills = await loadSkills({});
+    const user = skills.filter((s) => s.scope === 'user');
+    assert.equal(user.length, 1, '不存在的互通目录不产生条目也不报错');
+    assert.equal(user[0].name, 'only-own');
+    assert.ok(skills.some((s) => s.scope === 'builtin'), '内置不受影响');
+  } finally {
+    delete process.env.FINALCHECK_SKILLS_DIR;
+    delete process.env.FINALCHECK_COMMON_SKILLS_DIR;
+    clearSkillsCache();
+  }
+});
+
+// 打包回归钉：安装包必须带上 desktop/skills（0.29.4 漏拷 → 打包版斜杠菜单无 CU/BU），
+// 且打包版 REPO_ROOT=resources 时 userSkillsRoot() 恰好解析到 resources/desktop/skills。
+test('打包钉：extraResources 拷 skills → desktop/skills；commonSkillsRoot 指向 ~/.agents/skills', async () => {
+  const { readFileSync } = await import('node:fs');
+  const pathMod = await import('node:path');
+  const repo = pathMod.resolve(pathMod.dirname(fileURLToPath(import.meta.url)), '..');
+  const pkg = JSON.parse(readFileSync(pathMod.join(repo, 'desktop', 'package.json'), 'utf8'));
+  const hit = (pkg.build.extraResources || []).find((e) => e.from === 'skills' && e.to === 'desktop/skills');
+  assert.ok(hit, 'desktop/package.json extraResources 必须含 skills → desktop/skills');
+  const { commonSkillsRoot } = await import('../src/playbooks.mjs');
+  delete process.env.FINALCHECK_COMMON_SKILLS_DIR;
+  assert.equal(commonSkillsRoot(), pathMod.join(os.homedir(), '.agents', 'skills'), '默认互通目录=home/.agents/skills');
 });

@@ -6,6 +6,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.29.5] - 2026-11-21
+
+### Fixed
+
+- The installer now ships the skills directory (computer-use / browser-use and friends): packaging previously skipped it, so the installed app's slash menu was missing the desktop/browser automation skills (visible in dev, absent when installed).
+- Skills now load from the cross-agent shared folder `~/.agents/skills` (same source and format as ZCode / Claude Code): skills placed there appear in the slash menu and load by name; FC's own skills win on name conflicts.
+
 ## [0.29.4] - 2026-11-21
 
 ### Added
