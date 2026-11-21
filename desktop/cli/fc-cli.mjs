@@ -54,13 +54,15 @@ const LOGO_LINES = [
 
 // 回合等待指示器（学 CC 的转菊；只在 TTY 下动，管道模式安静）
 const SPIN_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-const spinner = { timer: null, frame: 0, label: '思考中…' };
+const spinner = { timer: null, frame: 0, label: '思考中…', startAt: 0 };
 function spinnerStart(label) {
   if (process.stdin.isTTY !== true || spinner.timer) return;
   spinner.label = label || '思考中…';
+  spinner.startAt = Date.now();
   spinner.timer = setInterval(() => {
     spinner.frame = (spinner.frame + 1) % SPIN_FRAMES.length;
-    process.stdout.write(`\r\x1b[2K${DIM}${SPIN_FRAMES[spinner.frame]} ${spinner.label}${RESET}  `);
+    const secs = Math.floor((Date.now() - spinner.startAt) / 1000);
+    process.stdout.write(`\r\x1b[2K${DIM}${SPIN_FRAMES[spinner.frame]} ${spinner.label} ${secs ? secs + 's' : ''}${RESET}  `);
   }, 110);
 }
 function spinnerStop() {
@@ -125,16 +127,29 @@ sessions.setSessionDirResolver(() => CLI_SESSIONS_DIR);
 const policyModeOf = (v) => (v === 'off' ? 'off' : v === 'readonly' ? 'readonly' : 'workspace');
 const policy = createPolicy({ projectPath: argDir, mode: policyModeOf(cfg.sandboxMode) });
 
-// 终端审批（学 CC 的权限询问）：打印请求摘要，y 确认 / 其它拒绝
+// 终端审批（学 CC 的权限卡）：框式展示 + y 允许一次 / a 本会话同类不再问 / n 拒绝
+let sessionAllowAll = false;
 async function terminalApproval(req) {
-  let summary = '';
+  let tool = 'tool';
+  let detail = '';
   try {
     const o = typeof req === 'string' ? null : req;
-    summary = o ? JSON.stringify(o).slice(0, 300) : String(req).slice(0, 300);
-  } catch { summary = String(req).slice(0, 300); }
-  process.stdout.write(`\n${YELLOW}需要批准：${summary}${RESET}\n批准？(y/N) `);
-  const ok = await askLine();
-  return /^y(es)?$/i.test(ok.trim()) ? 'allowed-once' : 'denied';
+    if (o) {
+      tool = o.tool || 'tool';
+      detail = String(o.summary || o.target || '').slice(0, 120);
+    } else {
+      detail = String(req).slice(0, 120);
+    }
+  } catch { detail = String(req).slice(0, 120); }
+  if (sessionAllowAll) {
+    dimLine(`  · ${tool} 已按「本会话不再询问」放行`);
+    return 'allowed-once';
+  }
+  process.stdout.write('\n' + box([`${tool}:  ${detail}`], `需要批准 · ${tool}`) + '\n');
+  process.stdout.write(`${YELLOW}[y] 允许一次   [a] 本会话同类不再问   [n/Esc] 拒绝${RESET}\n> `);
+  const ans = (await askLine()).trim().toLowerCase();
+  if (ans === 'a') { sessionAllowAll = true; return 'allowed-once'; }
+  return /^y(es)?$/.test(ans) ? 'allowed-once' : 'denied';
 }
 
 // 单行提问（/resume 选编号、终端审批）：优先从输入队列取（管道模式下应答行早就排进来了），
@@ -172,15 +187,41 @@ let turning = false;
 
 function dimLine(s) { process.stdout.write(`${DIM}${s}${RESET}\n`); }
 
+// 工具显示名（学 CC 的 Bash/Read/Edit/Grep）
+const TOOL_LABEL = { run_command: 'Bash', read_file: 'Read', edit_file: 'Edit', write_file: 'Write', grep_code: 'Grep', list_dir: 'List' };
+function toolLabel(name) { return TOOL_LABEL[name] || name || 'tool'; }
+// 从 args JSON 里抽人类可读的主参数（run_command→command，read_file→path…）
+function toolArgsPreview(name, argsText) {
+  let main = '';
+  try {
+    const o = JSON.parse(String(argsText || '{}'));
+    main = o.command || o.path || o.pattern || o.query || o.content || '';
+  } catch { main = String(argsText || ''); }
+  main = String(main).replace(/\s+/g, ' ').trim().slice(0, 100);
+  return main || String(argsText || '').replace(/\s+/g, ' ').slice(0, 80);
+}
+let lastUsage = null;
+
 function handleEvent(ev) {
   if (!ev || !ev.kind) return;
   switch (ev.kind) {
     case 'tool-start':
       spinnerStop();
-      dimLine(`  ⏺ ${ev.name}(${String(ev.args || '').replace(/\s+/g, ' ').slice(0, 110)})`);
+      dimLine(`  ⏺ ${toolLabel(ev.name)}(${toolArgsPreview(ev.name, ev.args)})`);
       break;
     case 'tool-end':
-      if (ev.ok === false && !ev.cancelled) dimLine(`  ✗ ${ev.name} 失败（${ev.ms ?? '?'}ms）`);
+      if (ev.ok === false && !ev.cancelled) {
+        const rawErr = ev.error ?? ev.result ?? '';
+        const err = (typeof rawErr === 'string' ? rawErr : JSON.stringify(rawErr)).split('\n')[0].slice(0, 110);
+        process.stdout.write(`${RED}  ✗ ${toolLabel(ev.name)} 失败（${ev.ms ?? '?'}ms）${err ? ' ' + err : ''}${RESET}\n`);
+      } else if (ev.result !== undefined && ev.result !== null) {
+        const r = ev.result;
+        const s = typeof r === 'string'
+          ? r
+          : String(r?.stdout ?? r?.summary ?? r?.text ?? r?.output ?? r?.content ?? JSON.stringify(r));
+        const preview = s.split('\n').filter((x) => x.trim()).slice(0, 2).map((x) => x.slice(0, 110)).join(' ⏎ ');
+        if (preview) dimLine(`    ${preview}`);
+      }
       break;
     case 'warning':
       spinnerStop();
@@ -200,6 +241,7 @@ function handleEvent(ev) {
 async function runTurn(text) {
   turning = true;
   let anyToken = false;
+  lastUsage = null;
   spinnerStart('思考中…');
   try {
     const tools = createAgentTools({
@@ -230,7 +272,8 @@ async function runTurn(text) {
       cwd: argDir,
       signal: turnAbort.current.signal,
       onToken: (d) => { if (!anyToken) spinnerStop(); anyToken = true; process.stdout.write(String(d)); },
-      onEvent: handleEvent
+      onEvent: handleEvent,
+      onUsage: (u) => { lastUsage = u || lastUsage; }
     });
     spinnerStop();
     if (anyToken) process.stdout.write('\n');
@@ -240,10 +283,8 @@ async function runTurn(text) {
       return;
     }
     if (out?.cancelled) dimLine('  [已中止]');
-    if (out?.usage) {
-      const u = out.usage;
-      dimLine(`  [tokens ↑${u.prompt ?? '?'} ↓${u.completion ?? '?'} · ${out.roundsUsed ?? '?'} 轮]`);
-    }
+    const u = lastUsage || out?.usage || null;
+    if (u) dimLine(`  [tokens ↑${u.prompt ?? '—'} ↓${u.completion ?? '—'} · ${out?.roundsUsed ?? '?'} 轮]`);
     await sessions.appendTurn(sessionId, text, {
       content: out?.answer ?? out?.partialContent ?? '',
       reasoning: out?.reasoning ?? '',
@@ -288,16 +329,22 @@ function printWelcome() {
   console.log(box([
     '直接输入 = 对话；跑命令过 FC 三道闸（敏感路径 / 项目边界 / 删除目标）',
     '/new 开新会话   /resume 选老会话   /sessions 列出   /help 全部   /exit 退出',
-    'Ctrl+C 中止本回合；再按一次退出'
+    '输入 / 后按 Tab 补全命令 · Ctrl+C 中止本回合 · 再按一次退出'
   ], '开始'));
   console.log();
 }
 
+const SLASH_COMMANDS = ['/help', '/new', '/resume', '/sessions', '/exit', '/quit'];
 const rl = readline.createInterface({
   input: process.stdin,
   output: process.stdout,
   prompt: `${DIM}>${RESET} `,
-  terminal: process.stdin.isTTY === true
+  terminal: process.stdin.isTTY === true,
+  completer: (line) => {
+    if (!line.startsWith('/')) return [[], line];
+    const hits = SLASH_COMMANDS.filter((c) => c.startsWith(line));
+    return [hits.length ? hits : SLASH_COMMANDS, line];
+  }
 });
 
 async function doResume() {
