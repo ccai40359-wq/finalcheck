@@ -6,6 +6,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.29.1] - 2026-11-21
+
+### Fixed
+
+- Browser actions check the target again when a control is replaced, reused, or covered to avoid clicking or typing in the wrong place.
+- Desktop actions translate screenshot coordinates and verify the window and focus before sending input.
+- The assistant can now read page status messages and console errors that occur during page startup.
+- A failed browser or desktop action stops later actions of the same kind in its batch, so a failed form entry cannot lead to submission.
+
+### Improved
+
+- Opening a page now returns its controls in the same call, and browser clicks and desktop actions can include the resulting page structure or screenshot.
+
 ## [0.29.0] - 2026-11-21
 
 Desktop-control release: the AI can now see your screen, move the mouse and type on the keyboard (for non-browser apps like Word, Excel, system settings), and it can click buttons and fill forms in a web page the way a person would. The whole permission design follows Claude Code's approach.
