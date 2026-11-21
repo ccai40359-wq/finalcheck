@@ -204,6 +204,7 @@ export default function App() {
   const askCardsRef = useRef([]); // 与 askCards 同步：回合收尾/停止回调里读最新值
   const [confirmBox, setConfirmBox] = useState(null); // 自定义确认框：{text, resolve}
   const [rowMenu, setRowMenu] = useState(null); // 会话右键菜单：{x,y,session,project}
+  const [resumeOpen, setResumeOpen] = useState(false); // /resume 选老会话浮层
   const [renameBox, setRenameBox] = useState(null); // {session,value}
   const [moveOpen, setMoveOpen] = useState(false);
   // 工作区展开状态（{ [projectId]: boolean }）：可同时展开多个；当前项目默认展开，别的项目点开才展开。
@@ -1137,6 +1138,14 @@ export default function App() {
   };
   const chooseSlash = (item) => {
     if (!item) return;
+    // UI 动作命令：立即执行，不插入文本 —— /new 立刻开新会话、/resume 弹会话选择器（对齐 claude CLI 的节奏）
+    if (item.type === 'command' && (item.id === 'new' || item.id === 'resume')) {
+      setInput('');
+      setMenu(null);
+      if (item.id === 'new') void newSession();
+      else setResumeOpen(true);
+      return;
+    }
     // 只替换「光标前那个 /token」，保留前面已经写好的文字（dsh 式）
     const m = input.match(/(^|\s)\/([a-z0-9-]*)$/i);
     const head = m ? input.slice(0, m.index) + (m[1] || '') : input;
@@ -1171,7 +1180,7 @@ export default function App() {
 
   // 浮层（模型菜单 / 供应商子菜单 / 会话右键菜单）：点外部关闭；Esc 关闭任何打开的浮层
   useEffect(() => {
-    if (!menu && !providerMenu && !rowMenu) return;
+    if (!menu && !providerMenu && !rowMenu && !resumeOpen) return;
     const onDown = (e) => {
       if (menu === 'model' && modelMenuRef.current && !modelMenuRef.current.contains(e.target)) {
         setMenu(null);
@@ -1188,6 +1197,7 @@ export default function App() {
       setProviderMenu(false);
       setRowMenu(null);
       setMoveOpen(false);
+      setResumeOpen(false);
     };
     document.addEventListener('mousedown', onDown, true);
     window.addEventListener('keydown', onKey);
@@ -1195,7 +1205,7 @@ export default function App() {
       document.removeEventListener('mousedown', onDown, true);
       window.removeEventListener('keydown', onKey);
     };
-  }, [menu, providerMenu, rowMenu]);
+  }, [menu, providerMenu, rowMenu, resumeOpen]);
 
   // 手动入队：把当前输入（含粘贴块 / 附件）压进当前会话的队列，不打断正在跑的回合
   const enqueueCurrent = () => {
@@ -1810,6 +1820,31 @@ export default function App() {
         onRenameChange={(value) => setRenameBox({ ...renameBox, value })}
         onSaveRename={saveRename} onCloseRename={() => setRenameBox(null)}
       />
+      {/* /resume 选老会话：当前项目的会话选择器（对齐 claude CLI 的 /resume） */}
+      {resumeOpen && (
+        <div className="fixed inset-0 z-[70] bg-black/30" onMouseDown={() => setResumeOpen(false)}>
+          <div
+            className="glass-pop absolute left-1/2 top-1/2 w-[min(520px,86vw)] max-h-[70vh] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-2xl p-1.5 pop-in"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div className="px-2.5 py-2 text-[12px] font-medium text-ink/80">{t('选择会话')}</div>
+            {sessions.length === 0 ? (
+              <div className="px-2.5 py-4 text-[11px] text-mute">{t('当前项目还没有历史会话')}</div>
+            ) : sessions.map((s) => (
+              <button
+                key={s.id}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={async () => { setResumeOpen(false); await openSession(s.id); }}
+                className={`w-full flex items-center gap-2 px-2.5 py-[8px] rounded-lg transition-colors ${s.id === activeId ? 'bg-gold/12' : 'hover:bg-lift/5'}`}
+              >
+                <span className="min-w-0 flex-1 truncate text-left text-[12px] text-ink/85">{s.title || t('未命名会话')}</span>
+                <span className="shrink-0 text-[10px] text-mute">{s.turns ?? 0} {t('轮')}</span>
+                <span className="shrink-0 text-[10px] text-mute">{s.updatedAt ? new Date(s.updatedAt).toLocaleString() : ''}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

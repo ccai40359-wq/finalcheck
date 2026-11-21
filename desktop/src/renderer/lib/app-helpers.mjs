@@ -267,5 +267,7 @@ export const EFFORTS = [
 ];
 export const COMMANDS = [
   { type: 'command', id: 'compact', name: 'compact', cn: '压缩上下文', description: '把当前对话压成摘要，后续只带摘要 + 最近 6 条' },
-  { type: 'command', id: 'workflow', name: 'workflow', cn: '多 agent 工作流', description: '你自己写步骤，引擎按依赖并行调度多个子代理' }
+  { type: 'command', id: 'workflow', name: 'workflow', cn: '多 agent 工作流', description: '你自己写步骤，引擎按依赖并行调度多个子代理' },
+  { type: 'command', id: 'new', name: 'new', cn: '新对话', description: '立刻开一个新会话（当前项目）' },
+  { type: 'command', id: 'resume', name: 'resume', cn: '选老会话', description: '弹出当前项目的会话列表，挑一个继续聊' }
 ];
