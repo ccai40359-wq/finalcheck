@@ -73,9 +73,24 @@ export function registerSystemIpc({ ipcMain, getWin, engineUrl, store, getHooksC
     return scanDownload(dir, { excludes: [] });
   });
   ipcMain.handle('finalcheck:skills:list', async () => {
-    const { loadCatalog, catalogSummary } = await import(engineUrl('src/playbooks.mjs'));
+    const { loadCatalog, loadSkills, catalogSummary } = await import(engineUrl('src/playbooks.mjs'));
     const catalog = await loadCatalog();
-    return catalogSummary(catalog).map((x) => ({ id: x.id, name: x.name, cn: x.cn, description: x.triggers, descriptionEn: x.descriptionEn || '' }));
+    // 斜杠菜单不只列 web-vuln 40 类：系统提示没覆盖到的技能也要能被用户点名——
+    // 自动化技能（playbooks/automation，computer-use / browser-use）与用户级/项目级技能
+    // （FINALCHECK_SKILLS_DIR 或 desktop/skills、<项目>/.finalcheck/skills）都并入列表尾部。
+    // web-vuln（audit 轨系统提示已带）与 dev-fix（dev 轨系统提示已带）不重复进菜单。
+    const extras = await loadSkills({}).catch(() => []);
+    const CJK = /[\u3400-\u9fff]/;
+    const known = new Set(catalog.map((e) => String(e.name || '').toLowerCase()));
+    const merged = [
+      ...catalog,
+      ...extras
+        .filter((e) => e.scope !== 'builtin' || (e.domain !== 'web-vuln' && e.domain !== 'dev-fix'))
+        .filter((e) => !known.has(String(e.name || '').toLowerCase()))
+        // 用户级技能目录名是英文 slug（cn===name），中文菜单没有可读标签 → 用中文触发描述当标签
+        .map((e) => (CJK.test(String(e.cn || '')) ? e : { ...e, cn: e.triggers || e.cn }))
+    ];
+    return catalogSummary(merged).map((x) => ({ id: x.id, name: x.name, cn: x.cn, description: x.triggers, descriptionEn: x.descriptionEn || '' }));
   });
 
   // ---- 权限台账（fail-closed 闭集审批） ----

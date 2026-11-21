@@ -30,15 +30,28 @@ function fakePermissions({ allow = true } = {}) {
   };
 }
 
-test('agent-tools: list_playbooks 返回 50 类摘要', async () => {
+test('agent-tools: list_playbooks 返回 52 类摘要（内置 50 + 用户级 computer-use/browser-use）', async () => {
   const tools = createAgentTools({ repoRoot, permissions: fakePermissions() });
   const r = await tools.list_playbooks({});
-  assert.equal(r.total, 50);
-  assert.equal(r.categories.length, 50);
+  assert.equal(r.total, 52);
+  assert.equal(r.categories.length, 52);
   const ssrf = r.categories.find((c) => c.id === '11');
   assert.equal(ssrf.name, 'ssrf');
   assert.ok(ssrf.triggers.includes('URL'));
   assert.ok(ssrf.fileCount >= 2);
+  // 用户级技能（desktop/skills）也在注册表里，可按 slug 读取
+  const cu = r.categories.find((c) => c.name === 'computer-use');
+  assert.ok(cu, 'computer-use 应在 list_playbooks 目录里');
+  assert.equal(cu.id, 'computer-use');
+  assert.equal(cu.entry, 'SKILL.md');
+});
+
+test('agent-tools: read_playbook 能读到用户级 computer-use 技能正文', async () => {
+  const tools = createAgentTools({ repoRoot, permissions: fakePermissions() });
+  const r = await tools.read_playbook({ topic: 'computer-use' });
+  assert.ok(!r.error, `computer-use 应可读（实际：${r.error || 'ok'}）`);
+  assert.match(r.content, /computer_request_access/, '正文要包含授权规程');
+  assert.match(r.content, /screenshot_id/, '正文要包含截图 id 规程');
 });
 
 test('agent-tools: read_playbook 走注册表（中文类目也认）', async () => {
