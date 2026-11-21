@@ -16,6 +16,7 @@ const clickActions = new Map([
 const otherActions = new Set(['move', 'drag', 'left_click_drag', 'scroll', 'type', 'key', 'focus']);
 let latestScreenshot = null;
 let operationQueue = Promise.resolve();
+let lastAutoRefocusAt = 0; // 0.29.3：前台漂移自动拉回的限频（1.2s），防止循环抢前台锁死用户
 
 // ---- CU 模式广播（0.29.2）：全屏遮罩 + 主窗迷你化的开关信号，由 index.mjs 订阅 ----
 let cuModeActive = false;
@@ -242,7 +243,7 @@ async function runAction(action, params) {
   if (!clickActions.has(action) && !otherActions.has(action)) return { ok: false, error: `不认识的桌面动作：${action}` };
   const state = await desktopContext();
   if (!state.ok) return { ok: false, error: state.reason };
-  const { foreground } = state;
+  let foreground = state.foreground;
   if (!foreground) return deny('foreground-mismatch', '无法确认前台窗口。请重新截图。');
   const blocked = checkPolicy(foreground, action);
   if (blocked) return blocked;
@@ -264,10 +265,45 @@ async function runAction(action, params) {
     ? sameWindow(shot.foreground, foreground)
     : sameObservation(shot.foreground, foreground);
   if (!observationOk) {
-    latestScreenshot = null;
-    return deny('foreground-mismatch', keyboard
-      ? '键盘焦点所在的窗口与截图记录的不是同一个。请重新截图。'
-      : '截图所记录的前台窗口已变化。请切回目标窗口并重新截图。', foreground);
+    // 0.29.3：前台漂移仲裁。r5/r6 实测：托盘/浏览器反复抢前台时，一律拒绝会让多步操作
+    // 全军覆没（deniedBy 风暴）；而 run_command 自写注入脚本又绕过安全层、还把微信搞锁死。
+    // 正确形态：目标窗口仍在且已授权 → 限频（1.2s）自动拉回前台再核一次；拉不回来 =
+    // 用户/系统在持续占用 → paused 让位（绝不与用户抢前台、绝不循环重试）。
+    const now = Date.now();
+    const hwnd = shot.foreground?.hwnd;
+    let foregroundNow = foreground;
+    let recovered = false;
+    let attempted = false;
+    if (hwnd && now - lastAutoRefocusAt > 1200) {
+      attempted = true;
+      lastAutoRefocusAt = now;
+      const winInfo = await input.windowInfo(hwnd).catch(() => null);
+      const target = winInfo ? withPolicy(winInfo) : null;
+      if (target && matchesProcess(target.process, shot.foreground.process)) {
+        // 目标已验过授权与身份，此处的 focus 只是把被抢走的前台要回来，guard 留空
+        await input.focusWindow(hwnd, { target, guard: null });
+        const after = await desktopContext();
+        if (after.ok && after.foreground && sameWindow(after.foreground, shot.foreground)) {
+          foreground = after.foreground;
+          foregroundNow = after.foreground;
+          recovered = true;
+        }
+      }
+    }
+    if (attempted && !recovered) {
+      latestScreenshot = null;
+      return {
+        ok: false, paused: true, deniedBy: 'user-active',
+        error: `前台被「${foregroundNow?.process ?? '其它应用'}」持续占用（两次拉回「${shot.foreground.process}」都没成功），已暂停让位。请完成你的操作后回复「继续」，我会接着做。`,
+        foreground: brief(foregroundNow)
+      };
+    }
+    if (!recovered) {
+      latestScreenshot = null;
+      return deny('foreground-mismatch', keyboard
+        ? '键盘焦点所在的窗口与截图记录的不是同一个。请重新截图。'
+        : '截图所记录的前台窗口已变化。请切回目标窗口并重新截图。', foreground);
+    }
   }
   if (!sameDisplay(shot.display, primaryDisplay()) || !canUseDisplay(shot.display, state) ||
     !sameBounds(shot.virtualScreen, state.virtualScreen)) {

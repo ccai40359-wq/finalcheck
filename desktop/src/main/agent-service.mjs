@@ -1955,6 +1955,12 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
       budgetWarned = true;
       onEvent?.({ kind: 'budget-warning', turnsLeft: maxTurns - turn, tokensLeft: Math.max(0, maxTurnTokens - turnTokens) });
     }
+    // 0.29.3：预算保留报告轮——最后一轮禁止开新操作，立即基于已收集证据出结论。
+    // 四场闭环实测：50 轮上限耗尽时「结论常常来不及写」，覆盖率瓶颈由此缓解。
+    if (Number.isFinite(maxTurns) && turn === maxTurns - 1) {
+      convo.push({ role: 'user', content: '【系统】工具轮次即将耗尽（这是最后一轮）：不要再调用任何工具或开始新的测试/验证，立即基于以上已收集的全部证据输出最终结论，并明确列出「未覆盖 / 未能验证」清单。' });
+      onEvent?.({ kind: 'warning', message: t('预算还剩最后 1 轮：已注入收尾指令（禁止开新操作，立即出结论）。') });
+    }
     applySteer(); // 用户中途注入（Steer）：先并入本轮上下文，再发起下一次请求
     await refreshLiveConfig(); // 下一次模型请求前重新解析：运行中改模型/供应商从这里开始生效（已输出的内容不重跑）
     await compactNow(); // 每轮请求前按 token 做两级压缩，防 40 轮把网关上下文撑爆

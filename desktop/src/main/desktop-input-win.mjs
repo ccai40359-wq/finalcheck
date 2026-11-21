@@ -328,6 +328,7 @@ public class FcCu {
       case "CTRL": case "CONTROL": case "^": return 0x11;
       case "ALT": case "%": return 0x12;
       case "SHIFT": case "+": return 0x10;
+      case "WIN": case "META": case "LWIN": return 0x5B; // 0.29.3：Win 组合键（如 Win+Space 切输入法）
       default: return 0;
     }
   }

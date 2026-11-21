@@ -78,6 +78,15 @@ test('cu-real: guarded key validates one chord and checks foreground and child f
   assert.match(inputSrc, /AssertForeground\(guard, false, true\);/);
 });
 
+test('cu-real: foreground drift arbitration auto-refocuses granted targets and yields to the user', () => {
+  // 0.29.3：前台漂移仲裁（微信六轮迭代的产物）——r5/r6 实测托盘/浏览器抢前台时一律拒绝会让
+  // 多步操作全军覆没；run_command 自写注入脚本则绕过安全层还把微信搞锁死。
+  assert.match(cuSrc, /0\.29\.3：前台漂移仲裁/);
+  assert.match(cuSrc, /now - lastAutoRefocusAt > 1200/); // 自动拉回前台限频，防循环抢前台锁死用户
+  assert.match(cuSrc, /paused: true, deniedBy: 'user-active'/); // 拉不回来 = 用户占用 → 让位不硬抢
+  assert.match(cuSrc, /input\.focusWindow\(hwnd, \{ target, guard: null \}\)/);
+});
+
 test('cu-real: native point checks include an existing mouse-capture owner', () => {
   const point = inputSrc.slice(inputSrc.indexOf('static void AssertPoint'), inputSrc.indexOf('static POINT ReadCursor'));
   assert.match(point, /info\.capture != IntPtr\.Zero && GetAncestor\(info\.capture, GA_ROOT\)\.ToInt64\(\) != guard\.hwnd/);

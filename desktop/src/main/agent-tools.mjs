@@ -1088,6 +1088,25 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
       const { env } = scrubEnv(process.env);
       // background:true = 起常驻服务后立刻返回（不让父命令等子进程退出）；
       // 其余命令走空闲输出看门狗：连续 idle 毫秒无输出才转后台，长任务只要还在输出就不设上限。
+      // 0.29.3：模拟键鼠/前台类命令纳入 CU 权限——否则一条 run_command 就能绕过 computer_* 的
+      // 三层防线（tier/授权/前台复核；基准 r5/r6 实测会话用它自写注入脚本绕空了安全层，还把
+      // 微信搞锁死）。AttachThreadInput/SetWindowsHookEx 无条件拒绝：输入队列纠缠会把目标
+      // 应用锁到无法点击。误伤防护：仅在命令处于「编译/执行」上下文（Add-Type/csc/powershell/
+      // python/ctypes/rundll32）且注入关键词同时出现时拦截——纯 grep/检索这些词不拦。
+      const INJECTION_KEYWORDS = /keybd_event|SendInput|mouse_event|SetForegroundWindow|AttachThreadInput|SetWindowsHookEx|System\.Windows\.Forms\.SendKeys|SetCursorPos/i;
+      const INJECTION_COMPILER = /Add-Type|csc(\.exe)?[\s"']|powershell|pwsh|python\s|ctypes|rundll32/i;
+      if (INJECTION_KEYWORDS.test(cmd) && INJECTION_COMPILER.test(cmd)) {
+        if (/AttachThreadInput|SetWindowsHookEx/i.test(cmd)) {
+          return { error: '命令包含 AttachThreadInput / SetWindowsHookEx——会把目标应用的输入队列与脚本线程纠缠（实测曾把微信锁死到无法点击），无条件拒绝。键鼠注入请走 computer_* 工具。', deniedBy: 'policy' };
+        }
+        let injectionGranted = [];
+        if (typeof getDesktopToolsAsync === 'function') {
+          try { injectionGranted = (await getDesktopToolsAsync())?.computerUse?.grantedApps?.() ?? []; } catch { /* ignore */ }
+        }
+        if (!injectionGranted.length) {
+          return { error: '命令在模拟键鼠/前台操作（keybd_event/SendInput/SetForegroundWindow 等）。这会绕过桌面操作的三层安全防线——必须先 computer_request_access 获得桌面操作授权（CU 会话内放行），或改用 computer_* 工具。', deniedBy: 'policy' };
+        }
+      }
       const idleMs = args?.idle_ms ?? args?.idleMs ?? commandIdleMs ?? DEFAULT_COMMAND_IDLE_MS;
       const sandboxMode = policy?.mode || 'off';
       // 沙箱默认关闭（2026-11-17 决策，理由见 sandboxEnabled 注释）：

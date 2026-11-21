@@ -6,7 +6,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
-## [0.29.2] - 2026-11-21
+## [0.29.3] - 2026-11-21
+
+### Fixed
+
+- When the foreground is snatched by another app mid-task, the assistant automatically brings the target window back (rate-limited) and continues, instead of failing every step; when it detects you are actively using the machine it yields and pauses — reply "continue" to resume.
+- Commands that simulate keyboard/mouse input (keybd_event/SendInput etc.) now require desktop-operation authorization before they can run, closing the loophole around the computer-use safety layers; AttachThreadInput / SetWindowsHookEx commands are rejected unconditionally.
+- When the tool-turn budget is nearly exhausted, a wrap-up instruction is injected automatically: the final turn is for conclusions and an explicit not-covered list — no more half-finished runs without a report.
+
+### Added
+
+- Keyboard actions support Win combinations (e.g. Win+Space to switch input method).
 
 ### Added
 
