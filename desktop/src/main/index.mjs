@@ -1,6 +1,7 @@
-import { app, BrowserWindow, ipcMain, protocol, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, protocol, screen, shell } from 'electron';
 import { registerMediaScheme, installMediaProtocol } from './media-protocol.mjs';
 import { setSnapshotRenderer } from './capture.mjs';
+import { onComputerUseModeChange } from './computer-use.mjs'; // 0.29.2：CU 模式开关 → 全屏遮罩 + 主窗迷你化
 
 // Windows 的「原生遮挡检测」会在窗口被别的窗口盖住时把页面判定为 hidden：
 // Chromium 随即停掉 requestAnimationFrame、把定时器节流到 ~1s，用户切回来就觉得“卡”。
@@ -198,6 +199,90 @@ function installExternalLinkGuards() {
   });
 }
 
+// ---- CU 模式（0.29.2，对标 Claude Code 桌面端）：操控期间全屏遮罩提示 + 主窗缩到右上角固定 ----
+// 遮罩必须 focusable:false + 点击穿透，否则会抢走目标应用的前台，CU 的前台校验会全线拒绝。
+// 停止入口在右上角迷你窗的红色横幅（finalcheck.cuStop → ipc-agent 撤授权 + 中止回合）。
+let cuOverlay = null;
+let cuSavedBounds = null;
+let cuWasMaximized = false;
+let cuModeOn = false; // 遮罩/横幅重注入的开关（渲染层 reload 后 did-finish-load 会重注入，审查 P1-2）
+const CU_OVERLAY_HTML = `<!doctype html><html><head><meta charset="utf-8"><style>
+  html,body{margin:0;height:100%;background:rgba(10,10,12,.28);overflow:hidden;
+    font-family:system-ui,'Segoe UI','Microsoft YaHei',sans-serif;user-select:none}
+  .banner{position:fixed;top:18px;left:22px;display:flex;align-items:center;gap:10px;
+    background:rgba(139,30,30,.92);color:#ffe2e2;padding:10px 18px;border-radius:10px;
+    font-size:14px;font-weight:600;letter-spacing:.5px;box-shadow:0 4px 18px rgba(0,0,0,.45)}
+  .dot{width:10px;height:10px;border-radius:50%;background:#ff5c5c;animation:pulse 1.1s infinite}
+  .hint{font-size:11px;font-weight:400;opacity:.85;margin-left:6px}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+</style></head><body>
+  <div class="banner"><span class="dot"></span>FinalCheck 正在操控电脑
+    <span class="hint">在右上角小窗点「停止」可中止</span></div>
+</body></html>`;
+
+function injectCuBanner() {
+  win?.webContents.executeJavaScript(`(function(){
+    if (document.getElementById('fc-cu-stop')) return 'exists';
+    const bar = document.createElement('div');
+    bar.id = 'fc-cu-stop';
+    bar.style.cssText = 'position:fixed;top:0;left:0;right:0;height:28px;z-index:2147483647;background:#8b1e1e;color:#ffe2e2;font:600 12px/28px system-ui,sans-serif;text-align:center;cursor:pointer;user-select:none';
+    bar.textContent = '● FinalCheck 操控中 — 点击停止并恢复';
+    bar.onclick = function(){ window.finalcheck && window.finalcheck.cuStop && window.finalcheck.cuStop(); };
+    document.body.appendChild(bar);
+    return 'injected';
+  })()`).catch(() => { /* 渲染层未就绪：cuModeOn 期间 did-finish-load 会重注入 */ });
+}
+
+function enterCuMode() {
+  try {
+    if (process.env.FINALCHECK_WINDOW_BG === '1') return; // 后台驱动模式：不建遮罩、不动窗口
+    if (!win || win.isDestroyed()) return;
+    cuModeOn = true;
+    const { width, height } = screen.getPrimaryDisplay().bounds;
+    if (!cuOverlay || cuOverlay.isDestroyed()) {
+      cuOverlay = new BrowserWindow({
+        x: 0, y: 0, width, height,
+        frame: false, transparent: true, resizable: false, movable: false,
+        hasShadow: false, skipTaskbar: true,
+        focusable: false, // 关键：绝不抢前台，否则 CU 的前台校验拒绝一切动作
+        alwaysOnTop: true,
+        webPreferences: { sandbox: true, backgroundThrottling: false }
+      });
+      cuOverlay.setAlwaysOnTop(true, 'screen-saver');
+      cuOverlay.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+      cuOverlay.setIgnoreMouseEvents(true, { forward: true }); // 全屏点击穿透：你的鼠标照常用，事件照达底层窗口
+      cuOverlay.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(CU_OVERLAY_HTML));
+    }
+    cuOverlay.showInactive();
+    // 主窗缩到右上角固定（对话照常可用：会话状态在主进程，窗口变小不影响聊天）
+    if (!cuSavedBounds) {
+      cuWasMaximized = win.isMaximized();
+      if (cuWasMaximized) win.unmaximize();
+      cuSavedBounds = win.getBounds();
+    }
+    const wa = screen.getPrimaryDisplay().workArea;
+    win.setAlwaysOnTop(true, 'screen-saver');
+    win.setBounds({ x: wa.x + wa.width - 372, y: wa.y + 8, width: 360, height: Math.min(520, wa.height - 16) });
+    injectCuBanner();
+  } catch { /* 遮罩/迷你化失败不影响 CU 本体动作 */ }
+}
+
+function exitCuMode() {
+  try {
+    cuModeOn = false;
+    if (cuOverlay && !cuOverlay.isDestroyed()) cuOverlay.destroy();
+    cuOverlay = null;
+    if (win && !win.isDestroyed()) {
+      win.setAlwaysOnTop(false);
+      win.webContents.executeJavaScript(`(function(){const b=document.getElementById('fc-cu-stop');if(b)b.remove();})()`).catch(() => {});
+      if (cuSavedBounds) win.setBounds(cuSavedBounds);
+      if (cuWasMaximized) win.maximize();
+    }
+    cuSavedBounds = null;
+    cuWasMaximized = false;
+  } catch { /* ignore */ }
+}
+
 function createWindow() {
   win = new BrowserWindow({
     width: 1280, height: 820, minWidth: 980,
@@ -231,6 +316,8 @@ function createWindow() {
   });
   if (process.env.ELECTRON_RENDERER_URL) win.loadURL(process.env.ELECTRON_RENDERER_URL);
   else win.loadFile(path.join(__dirname, '../renderer/index.html'));
+  // 0.29.2：CU 模式激活期间渲染层重载后重注入停止横幅（唯一停止入口不能丢）
+  win.webContents.on('did-finish-load', () => { if (cuModeOn) injectCuBanner(); });
   if (process.env.FINALCHECK_WINDOW_BG === '1') {
     win.once('ready-to-show', () => { try { win?.showInactive(); } catch { /* 销毁竞态忽略 */ } });
   }
@@ -312,6 +399,9 @@ app.whenReady().then(async () => {
 
   createWindow();
   installExternalLinkGuards(); // 点消息里的链接要开系统浏览器，不能把主窗口导航走
+  // 0.29.2：CU 模式开关 → 全屏遮罩 + 主窗右上角迷你化（computer-use 模块在首次可操作截图/动作时进入，
+  // 撤销授权 / 回合收尾 / 用户点停止时退出）
+  onComputerUseModeChange((active) => { try { active ? enterCuMode() : exitCuMode(); } catch { /* 遮罩故障不影响 CU 本体 */ } });
   updater.ensureUpdater(); // dev 下内部直接返回 null（不 import、不联网）
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });

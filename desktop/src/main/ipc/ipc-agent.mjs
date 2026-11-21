@@ -210,7 +210,8 @@ export function registerAgentIpc({
     let outcome = 'error';
     try {
       const result = await runAgentChat({ messages, sessionId, chatAbort });
-      outcome = result?.cancelled || result?.interrupted ? 'stopped' : result?.error ? 'error' : 'ok';
+      // 0.29.2：到点收尾单独标 'deadline'，不在界面上冒充「用户已停止」
+      outcome = result?.deadlineHit ? 'deadline' : result?.cancelled || result?.interrupted ? 'stopped' : result?.error ? 'error' : 'ok';
       return result;
     } catch (e) {
       // 回合级异常（配置读失败 / 引擎模块导入失败 / 初始化顺序错误…）：
@@ -226,7 +227,16 @@ export function registerAgentIpc({
       // runAgentChat returns after its assistant has been persisted. The old invoke Promise
       // disappears on renderer reload; this independent notification closes reattached runs.
       try { getWin()?.webContents.send('finalcheck:agent-event', { sessionId, runId: chatAbort.snapshot.runId, seq: ++chatAbort.snapshot.seq, ev: { kind: 'run-settled', outcome } }); } catch { /* renderer may be reloading */ }
+      // 0.29.2：回合收尾即退出 CU 模式（遮罩 + 迷你窗恢复）；下一回合用到桌面操作会重新进入
+      void (async () => { try { (await loadDesktopTools())?.computerUse?.endComputerUseSession?.(); } catch { /* ignore */ } })();
     }
+  });
+
+  // 0.29.2：CU 模式停止按钮（迷你窗横幅）→ 中止本会话所有活跃回合 + 撤销应用授权（遮罩/迷你窗随模式退出恢复）
+  ipcMain.handle('finalcheck:cu-stop', async () => {
+    for (const ab of state.activeChats.values()) { try { ab.abort(); } catch { /* ignore */ } }
+    try { (await loadDesktopTools())?.computerUse?.revokeApps?.(); } catch { /* ignore */ }
+    return true;
   });
 
   // agent-chat 的实现：注册在上面（异常清理包在外层），这里只负责一个回合的正文

@@ -4,7 +4,7 @@ import { desktopCapturer, screen, nativeImage } from 'electron';
 import * as input from './desktop-input-win.mjs';
 import { tierForApp, checkActionAllowed, AccessLedger, describeTier } from './computer-use-policy.mjs';
 import {
-  actionPoints, matchesImageGeometry, matchesProcess, overlapBounds, sameBounds, sameObservation, selectCaptureSource, thumbnailSize
+  actionPoints, matchesImageGeometry, matchesProcess, overlapBounds, sameBounds, sameObservation, sameWindow, selectCaptureSource, thumbnailSize
 } from './computer-use-geometry.mjs';
 
 const ledger = new AccessLedger();
@@ -17,6 +17,20 @@ const otherActions = new Set(['move', 'drag', 'left_click_drag', 'scroll', 'type
 let latestScreenshot = null;
 let operationQueue = Promise.resolve();
 
+// ---- CU 模式广播（0.29.2）：全屏遮罩 + 主窗迷你化的开关信号，由 index.mjs 订阅 ----
+let cuModeActive = false;
+let cuModeListener = null;
+export function onComputerUseModeChange(cb) {
+  cuModeListener = typeof cb === 'function' ? cb : null;
+  if (cuModeActive) { try { cb?.(true); } catch { /* 订阅方故障不影响桌面操作 */ } }
+}
+function setCuMode(active) {
+  if (cuModeActive === active) return;
+  cuModeActive = active;
+  try { cuModeListener?.(active); } catch { /* UI 故障不影响桌面操作 */ }
+}
+export function endComputerUseSession() { latestScreenshot = null; setCuMode(false); }
+
 function withDesktopOperation(operation) {
   const result = operationQueue.then(operation);
   operationQueue = result.catch(() => {});
@@ -27,6 +41,7 @@ export function grantedApps() { return ledger.list(); }
 export function grantApps(names) { return ledger.grant(names); }
 export function revokeApps() {
   latestScreenshot = null;
+  setCuMode(false);
   return ledger.revokeAll();
 }
 
@@ -129,6 +144,7 @@ async function capture({ target = 'screen', windowTitle = '', maxWidth = 1560 } 
   const canAct = !observationOnlyReason;
   const buf = isWindow ? image.toPNG() : image.toJPEG(92);
   if (!buf.length) return { ok: false, error: '截图编码失败。' };
+  if (canAct && !isWindow) setCuMode(true);
 
   latestScreenshot = {
     screenshotId, canAct, observationOnlyReason, display, width, height,
@@ -240,9 +256,18 @@ async function runAction(action, params) {
   if (!shot?.canAct || shot.screenshotId !== params.screenshotId) {
     return deny('screenshot-required', shot?.observationOnlyReason || '请传入最近一次可用于操作的主显示器截图 ID。', foreground);
   }
-  if (!sameObservation(shot.foreground, foreground)) {
+  const keyboard = action === 'type' || action === 'key';
+  // 0.29.2：键盘动作只认窗口身份（hwnd+pid）——打字本身会改窗口标题（未保存脏标记 *），
+  // title 严格比对会把「自己刚打出来的标题变化」误判成前台切换，文本编辑类任务每打一段就被拒一次。
+  // 防误点的关键防线不变：键盘焦点必须还是截图时的那个（下面 focusHwnd 检查 + C# 注入层 focus 复核）。
+  const observationOk = keyboard
+    ? sameWindow(shot.foreground, foreground)
+    : sameObservation(shot.foreground, foreground);
+  if (!observationOk) {
     latestScreenshot = null;
-    return deny('foreground-mismatch', '截图所记录的前台窗口已变化。请切回目标窗口并重新截图。', foreground);
+    return deny('foreground-mismatch', keyboard
+      ? '键盘焦点所在的窗口与截图记录的不是同一个。请重新截图。'
+      : '截图所记录的前台窗口已变化。请切回目标窗口并重新截图。', foreground);
   }
   if (!sameDisplay(shot.display, primaryDisplay()) || !canUseDisplay(shot.display, state) ||
     !sameBounds(shot.virtualScreen, state.virtualScreen)) {
@@ -250,7 +275,6 @@ async function runAction(action, params) {
     return deny('screenshot-required', '显示器布局已变化。请重新截图。', foreground);
   }
 
-  const keyboard = action === 'type' || action === 'key';
   if (keyboard && (!foreground.focusHwnd || foreground.focusHwnd !== shot.focusHwnd)) {
     latestScreenshot = null;
     return deny('foreground-mismatch', '截图所记录的键盘焦点已变化或无法确认。请重新截图。', foreground);
@@ -278,6 +302,7 @@ async function runAction(action, params) {
     latestScreenshot = null;
     throw error;
   }
+  setCuMode(true);
   return actionResult(action, foreground);
 }
 
@@ -322,6 +347,7 @@ async function dispatchAction(action, params, [first, second], guard) {
 
 export function shutdown() {
   latestScreenshot = null;
+  setCuMode(false);
   input.shutdownInput();
 }
 

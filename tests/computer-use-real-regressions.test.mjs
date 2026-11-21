@@ -65,10 +65,17 @@ test('cu-real: guarded key validates one chord and checks foreground and child f
   const guarded = key.slice(key.indexOf('if (repeat < 1'));
   assert.match(guarded, /repeat > 100/);
   assert.match(guarded, /GuardedKeyEvents\(keyName\)/);
-  assert.match(guarded, /AssertForeground\(guard, true, true\);\s+Submit\(events, events\.Length \/ 2\)/);
+  // 0.29.2：键盘入口不再比 title（打字会加未保存脏标记 *，title 变化是自己造成的）；
+  // 身份由 hwnd+pid 保证，落点由 focus 复核保证；指针路径（false, true）不受影响。
+  assert.match(guarded, /AssertForeground\(guard, true, false\);\s+Submit\(events, events\.Length \/ 2\)/);
   assert.doesNotMatch(guarded, /SendKeys/);
+  assert.match(inputSrc.slice(inputSrc.indexOf('public static void TypeText'), inputSrc.indexOf('public static bool GuardedFocus')), /AssertForeground\(guard, true, false\);\s*\r?\n\s*foreach/);
   assert.match(cuSrc, /before\?\.foreground\?\.focusHwnd === foreground\?\.focusHwnd/);
   assert.match(cuSrc, /if \(!keyboard\) latestScreenshot = null;/);
+  // 0.29.2：JS 层键盘动作只认窗口身份（hwnd+pid），指针动作仍走含 title 的完整比对
+  assert.match(cuSrc, /const observationOk = keyboard\s*\r?\n\s*\? sameWindow\(shot\.foreground, foreground\)\s*\r?\n\s*: sameObservation\(shot\.foreground, foreground\);/);
+  // 0.29.2：指针路径的 title 复核必须保持——键盘放宽不允许外溢到指针
+  assert.match(inputSrc, /AssertForeground\(guard, false, true\);/);
 });
 
 test('cu-real: native point checks include an existing mouse-capture owner', () => {

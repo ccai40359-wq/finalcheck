@@ -6,7 +6,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
-## [0.29.1] - 2026-11-21
+## [0.29.2] - 2026-11-21
+
+### Added
+
+- While the assistant controls your desktop, a translucent overlay says "FinalCheck is controlling your computer" and the main window shrinks to a pinned mini panel in the top-right corner, so you can keep chatting or stop with one click.
+
+### Fixed
+
+- Typing in document apps is no longer blocked: the title change caused by the unsaved marker is not mistaken for a window switch, so continuous typing and saving work without re-screenshotting every step.
+- Launching GUI apps like Notepad no longer stalls the conversation, and turns with an explicit time limit now finish on time and say so.
+
+### Improved
+
+- The browser waits for the page to actually settle before reading its structure, so asynchronously loading pages no longer show an empty "Loading" shell.
+- When a page re-render invalidates control references, the assistant first tries to re-locate the same control by its signature instead of re-scanning the whole page.
 
 ### Fixed
 

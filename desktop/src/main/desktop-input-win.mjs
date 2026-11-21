@@ -398,14 +398,17 @@ public class FcCu {
     var events = GuardedKeyEvents(keyName);
     for (int i = 0; i < repeat; i++) {
       if (i > 0) System.Threading.Thread.Sleep(40);
-      AssertForeground(guard, true, true);
+      // 0.29.2：键盘动作入口不比 title（打字会加未保存脏标记 *，逐字符层本来就是 false）；
+      // 窗口身份由 hwnd+pid 保证，键盘落点由 focus 复核保证。
+      AssertForeground(guard, true, false);
       Submit(events, events.Length / 2);
     }
   }
 
   public static void TypeText(string text, Guard guard) {
     if (guard != null && (text.Length == 0 || text.Length > 4096)) throw new InvalidOperationException("Type accepts 1 to 4096 UTF-16 code units per action.");
-    AssertForeground(guard, true, true);
+    // 0.29.2：同上——入口不比 title；窗口身份 hwnd+pid，键盘落点 guard.focusHwnd。
+    AssertForeground(guard, true, false);
     foreach (char c in text) {
       AssertForeground(guard, true, false);
       Submit(UnicodeEvent(c, UNICODE), UnicodeEvent(c, UNICODE | KEYUP));

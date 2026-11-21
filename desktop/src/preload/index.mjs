@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld('finalcheck', {
   exportDiagnostics: () => ipcRenderer.invoke('finalcheck:diagnostics:export'),
   demoPath: () => ipcRenderer.invoke('finalcheck:demo:path'),
   windowCtl: (action) => ipcRenderer.invoke('finalcheck:window-ctl', action),
+  cuStop: () => ipcRenderer.invoke('finalcheck:cu-stop'),
   audit: (dir, opts) => ipcRenderer.invoke('finalcheck:audit', dir, opts),
   scanDownload: (dir) => ipcRenderer.invoke('finalcheck:scan-download', dir),
   probe: (url, opts) => ipcRenderer.invoke('finalcheck:probe', url, opts),

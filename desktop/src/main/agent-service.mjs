@@ -921,17 +921,34 @@ export async function consumeStream(res, onToken, onEvent, ctl, onChunk = null) 
 /**
  * 静默看门狗：只统计「距上一个字节」的时间——任何数据块都会 touch() 重置，连续 ms 毫秒
  * 一个字节都没有才 abort。这不是工作时长上限：只要还有字节在流动，跑多久都不杀。
- * ms<=0 时完全关闭。半程（如 180s 配置下的第 90s）只发一次 activity 提示，不中断。
+ * ms<=0 且无 deadline 时完全关闭。半程（如 180s 配置下的第 90s）只发一次 activity 提示，不中断。
+ * 0.29.2 增加可选 deadline（绝对时间戳）：回合墙钟（显式 maxTurnMs）到点触发 onDeadline——
+ * 即使字节还在流（慢思考）回合也不能越过墙钟；补上「maxTurnMs 只在回合间隙检查、
+ * 卡在单个请求里永远到不了检查点」的洞（基准实测两场 46/51min 挂死即此洞）。
  */
-function startSilenceWatchdog(ms, { abort, onHint } = {}) {
+function startSilenceWatchdog(ms, { abort, onHint, onDeadline = null, deadline = null } = {}) {
   const limit = Number(ms);
-  if (!Number.isFinite(limit) || limit <= 0) return { touch() {}, stop() {} };
-  const half = Math.floor(limit / 2);
+  const hasDeadline = Number.isFinite(deadline);
+  if ((!Number.isFinite(limit) || limit <= 0) && !hasDeadline) return { touch() {}, stop() {} };
   let timer = null;
   let hintTimer = null;
+  let mode = 'silence';
+  const half = Number.isFinite(limit) && limit > 0 ? Math.floor(limit / 2) : 0;
   const arm = () => {
     if (timer) clearTimeout(timer);
-    timer = setTimeout(() => { timer = null; abort?.(); }, limit);
+    const now = Date.now();
+    let delay = Number.isFinite(limit) && limit > 0 ? limit : Infinity;
+    mode = 'silence';
+    if (hasDeadline) {
+      const remaining = deadline - now;
+      if (remaining < delay) { delay = Math.max(0, remaining); mode = 'deadline'; }
+    }
+    if (!Number.isFinite(delay)) return; // 双双无限 → 不武装（不可达：limit>0 与 hasDeadline 必居其一）
+    timer = setTimeout(() => {
+      timer = null;
+      if (mode === 'deadline') onDeadline?.();
+      else abort?.();
+    }, delay);
   };
   const armHint = () => {
     if (hintTimer) clearTimeout(hintTimer);
@@ -1775,6 +1792,7 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
   const speedThreshold = Math.min(tokenBudget.compactThreshold, inTurnCap);
   let turnTokens = 0;
   let toolWaitMs = 0; // 工具执行时间不计入模型预算：工作流可能跑 30-50 分钟，算进去等于必超
+  if (process.env.FC_DEBUG_DEADLINE === '1') console.error('[turn-entry-debug]', JSON.stringify({ maxTurnMs, toolWaitMs: 0, roleMode, messages: messages.length }));
   let budgetStop = null; // 'time' | 'tokens' | null
   let budgetWarned = false;
   // 压缩熔断：连续 3 次失败就不再压，只发一次 compact-warning（未知事件 UI 会忽略）
@@ -1925,6 +1943,7 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
   });
   for (let turn = 0; turn < maxTurns; turn++) {
     turnsUsed = turn + 1;
+    if (process.env.FC_DEBUG_DEADLINE === '1') console.error('[loop-debug]', JSON.stringify({ turn, msIn: Date.now() - turnStart }));
     const elapsedMs = Math.max(0, Date.now() - turnStart - toolWaitMs); // 只算模型/等待时间
     if (elapsedMs >= maxTurnMs || turnTokens >= maxTurnTokens) {
       budgetStop = elapsedMs >= maxTurnMs ? 'time' : 'tokens';
@@ -1949,10 +1968,21 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
       signal?.addEventListener('abort', onOuterAbort, { once: true });
       const watchdog = WATCHDOG_MS > 0 ? setTimeout(() => ctl.abort(), WATCHDOG_MS) : null; // 旧「总时长」看门狗：默认不设；显式 config.watchdogMs 才启用
       let silenceHit = false;
+      let deadlineHit = false;
       // 静默看门狗：从「请求发出」那一刻开始计时（首字节之前也算静默），每收到一个数据块 touch() 重置。
       // 它只杀「连续 N 秒零字节」，不设任何工作时长上限；noLimits（子代理）同样启用。
+      // 0.29.2：显式 maxTurnMs 时叠加回合 deadline——卡在单个请求里也能被收尾。
+      // deadline 对齐回合预算口径——「工具执行时间不计」（与回合间隙检查同一把尺，1779 行注释）：
+      // 工具重的回合不再一进请求就到点被杀（审查 P1-1：工具 300ms、模型 0ms 时绝对墙钟会在
+      // 1ms 内把请求掐掉，证据拿得到、总结拿不到）。只限制模型/流式时间。
+      const deadline = Number.isFinite(maxTurnMs)
+        ? Date.now() + Math.max(1, maxTurnMs - Math.max(0, Date.now() - turnStart - toolWaitMs))
+        : null;
+      if (process.env.FC_DEBUG_DEADLINE === '1') console.error('[deadline-debug]', JSON.stringify({ attempt, maxTurnMs, toolWaitMs, deadlineIn: deadline ? deadline - Date.now() : null }));
       const silence = startSilenceWatchdog(SILENCE_MS, {
         abort: () => { silenceHit = true; ctl.abort(); },
+        onDeadline: () => { deadlineHit = true; ctl.abort(); },
+        deadline,
         onHint: () => onEvent?.({ kind: 'activity', label: t('网关已静默 {s}s…', { s: silenceSec(SILENCE_MS / 2) }), request: turn + 1, attempt })
       });
       let retryReason = '';
@@ -2025,6 +2055,17 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
               onEvent?.({ kind: 'activity', label: t('网关只发心跳 {s}s…', { s: silentSec }), heartbeat: true, request: turn + 1, attempt });
             }
           });
+          if (streamOut.aborted && deadlineHit) {
+            // 0.29.2：回合墙钟到点（显式 maxTurnMs）——不冒充用户中断，按预算收尾并给明确话术
+            onEvent?.({ kind: 'turn-end', ms: Date.now() - turnStart, deadline: true });
+            onEvent?.({ kind: 'warning', message: t('本轮到达时间上限（{s}s），已按现状收尾。', { s: Math.round(maxTurnMs / 1000) }) });
+            return {
+              interrupted: true, deadlineHit: true,
+              partialContent: streamOut.content || '', answer: '', trace,
+              warnings, reasoning: reasoningAll || undefined, usage: lastUsage || undefined,
+              workedMs: Date.now() - turnStart
+            };
+          }
           if (streamOut.aborted && silenceHit) {
             // 静默看门狗中止了读取：本次尝试记为可重试失败，已流出的部分不落账（重试会重新给全文）
             streamOut = null;
@@ -2046,6 +2087,12 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
         }
       } catch (e) {
         if (signal?.aborted) { onEvent?.({ kind: 'turn-end', ms: Date.now() - turnStart, interrupted: true }); return { cancelled: true, interrupted: true, partialContent: '', answer: '', trace, reasoning: reasoningAll || undefined, usage: lastUsage || undefined }; }
+        if (deadlineHit) {
+          // 墙钟在请求未出流时就到点：同样按预算收尾，不进重试
+          onEvent?.({ kind: 'turn-end', ms: Date.now() - turnStart, deadline: true });
+          onEvent?.({ kind: 'warning', message: t('本轮到达时间上限（{s}s），已按现状收尾。', { s: Math.round(maxTurnMs / 1000) }) });
+          return { interrupted: true, deadlineHit: true, partialContent: '', answer: '', trace, warnings, reasoning: reasoningAll || undefined, usage: lastUsage || undefined, workedMs: Date.now() - turnStart };
+        }
         retryReason = silenceHit
           ? SILENCE_REASON
           : (e?.name === 'TimeoutError' || /abort/i.test(e?.message || '') ? t('连接超时（{s}s）', { s: watchdogSec(WATCHDOG_MS) }) : (e?.message || 'fetch failed'));

@@ -9,6 +9,7 @@ const WORLD_ID = 1742;
 const CONSOLE_LEVELS = ['verbose', 'info', 'warning', 'error'];
 const NO_BROWSER = '浏览器还没打开，先调用 browser_navigate';
 const NAVIGATING = '页面正在导航，完成后请调用 browser_snapshot 获取当前页面';
+const webRequestSessions = new WeakMap(); // session -> { pending: Set<requestId> }（fc-browser-use partition 专属）
 
 let active = null;
 
@@ -20,6 +21,9 @@ function assertNavigableUrl(raw) {
   throw new Error(`只允许 http/https 或本地文件路径，收到：${url.slice(0, 60)}`);
 }
 
+// 0.29.2：settle 判定改用隔离世界里的 MutationObserver 计数 + resource 条目——
+// fetch/XHR 完成后的 DOM 更新必然使 mutations 增长，比 debugger 注入计数器可靠（实测 debugger
+// 在离屏 sandbox 窗口上 attach/sendCommand 超时）。详见 waitSettled。
 function ensureWindow({ width, height }) {
   if (isOpen()) return active;
   const window = new BrowserWindow({
@@ -37,8 +41,31 @@ function ensureWindow({ width, height }) {
   });
   const state = { window, messages: [], request: 0, generation: 0, action: 0, navigating: false };
   const contents = window.webContents;
+  // 0.29.2：在飞请求计数（session.webRequest，按请求 id 精确增减）——waitSettled 用它判断
+  // 「页面自己发起的请求是否都回来了」。fetch/XHR 在飞时 DOM 一片平静，只有这个信号能看到它。
+  // 会话级只挂一次（partition 专属、无其它使用方）；主帧导航开始时清空在飞计数（重定向链残留自愈）。
+  {
+    const ses = window.webContents.session;
+    if (!webRequestSessions.has(ses)) {
+      const pending = new Set();
+      const wr = ses.webRequest;
+      const filter = { urls: ['*://*/*'] };
+      wr.onBeforeRequest(filter, (d, cb) => { pending.add(String(d.id)); cb({}); });
+      // onCompleted/onErrorOccurred 的监听器没有 callback 形参——多调一次会让请求管线卡死
+      wr.onCompleted(filter, (d) => pending.delete(String(d.id)));
+      wr.onErrorOccurred(filter, (d) => pending.delete(String(d.id)));
+      webRequestSessions.set(ses, { pending });
+    }
+    state.netPending = () => webRequestSessions.get(ses).pending.size;
+  }
   contents.on('did-start-navigation', (details, _url, _samePage, mainFrame) => {
-    if (details.isMainFrame ?? mainFrame) state.generation++;
+    if (details.isMainFrame ?? mainFrame) {
+      state.generation++;
+      // 0.29.2：换页即作废旧文档的 ref 缓存——重绑定只允许在同一个文档内发生，
+      // 杜绝「另一个页面上恰好同签名的控件」被误绑（审查 P0-1 的跨页变体）。
+      contents.executeJavaScriptInIsolatedWorld(WORLD_ID, [{ code: 'delete globalThis[Symbol.for("finalcheck.browser-use")]' }], false).catch(() => { /* 旧 world 尚不存在 */ });
+      if (active === state) { try { webRequestSessions.get(window.webContents.session)?.pending.clear(); } catch { /* ignore */ } }
+    }
   });
   contents.on('did-frame-navigate', (_event, _url, _code, _status, mainFrame) => {
     if (mainFrame) state.messages.length = 0;
@@ -82,18 +109,30 @@ function createPageState(salt) {
   const textInputTypes = new Set(['email', 'number', 'password', 'search', 'tel', 'text', 'url']);
   const skipTags = new Set(['noscript', 'script', 'style', 'template']);
 
+  // 0.29.2：节点被移除时不再直接删除 ref——保留 entry 并标记 dead，让 tryRebind 拿得到身份
+  // 签名做「同一控件找回」；真找不到（重绑失败）时 stale 照旧拒绝。
+  let mutationCount = 0;
   function invalidateRemoved(records) {
     for (const record of records) {
       for (const removed of record.removedNodes) {
         if (removed.nodeType !== Node.ELEMENT_NODE) continue;
-        refs.delete(elementRefs.get(removed));
-        for (const child of removed.querySelectorAll('*')) refs.delete(elementRefs.get(child));
+        const deadRef = elementRefs.get(removed);
+        if (deadRef) { const entry = refs.get(deadRef); if (entry) entry.dead = true; }
+        for (const child of removed.querySelectorAll('*')) {
+          const childRef = elementRefs.get(child);
+          if (childRef) { const childEntry = refs.get(childRef); if (childEntry) childEntry.dead = true; }
+        }
       }
     }
   }
 
-  const observer = new MutationObserver(invalidateRemoved);
+  const observer = new MutationObserver((records) => { invalidateRemoved(records); mutationCount++; });
   observer.observe(document, { childList: true, subtree: true });
+  // 0.29.2：淘汰 ref 时优先清已失效（dead）的条目，减少重渲染页面误淘汰活 ref 的概率
+  function evictRef() {
+    for (const key of refs.keys()) { if (refs.get(key)?.dead) { refs.delete(key); return; } }
+    refs.delete(refs.keys().next().value);
+  }
 
   function refFor(element, identity) {
     let ref = elementRefs.get(element);
@@ -102,7 +141,7 @@ function createPageState(salt) {
     ref = `e${salt}-${(++sequence).toString(36)}`;
     elementRefs.set(element, ref);
     refs.set(ref, { element, identity });
-    if (refs.size > maxRefs) refs.delete(refs.keys().next().value);
+    if (refs.size > maxRefs) evictRef();
     return ref;
   }
 
@@ -226,11 +265,15 @@ function createPageState(salt) {
         stack.push({ element: child, depth: childDepth });
       }
     }
-    return { title: document.title, url: location.href, tree: lines.join('\n'), nodeCount: lines.length, truncated };
+    return { title: document.title, url: location.href, tree: lines.join('\n'), nodeCount: lines.length, truncated,
+      rebindDebug: globalThis.__fcRebind || null,
+      probe: { mutations: mutationCount, ready: document.readyState, resources: performance.getEntriesByType('resource').length } };
   }
 
   function checkAction(ref, entry) {
-    if (!isAttached(ref, entry)) return stale();
+    if (!isAttached(ref, entry)) {
+      if (!tryRebind(ref, entry)) return stale();
+    }
     const { element, identity } = entry;
     const editable = element.isContentEditable && !element.parentElement?.isContentEditable;
     const role = roleOf(element, element.localName, editable);
@@ -241,6 +284,39 @@ function createPageState(salt) {
     if (!visible(element) || element.closest('[aria-hidden="true"]')) return failure('元素不可见');
     if (disabled(element)) return failure('元素已禁用');
     return null;
+  }
+
+  // 0.29.2：ref 失效时先尝试「身份重绑定」。页面重渲染会整体替换 DOM 节点（React/Vue 常态），
+  // 旧 ref 持有的元素已死，但「同一个控件」几乎总还在。用快照时记录的身份签名（角色/名称/
+  // 属性/祖先上下文）在全文档找唯一匹配：恰好 1 个 → 原地改 entry 重绑同一个 ref，省一次
+  // snapshot 往返；0 个或 ≥2 个（同名控件无法区分，绑错会静默点错）→ 保持 stale，fail-closed。
+  function tryRebind(ref, entry) {
+    const signature = entry?.identity;
+    if (!signature) return false;
+    invalidateRemoved(observer.takeRecords());
+    const candidates = document.querySelectorAll('button,a,input,textarea,select,summary,[role],[onclick],[contenteditable]');
+    const matches = [];
+    for (const el of candidates) {
+      if (!el.isConnected) continue;
+      const tag = el.localName.toLowerCase();
+      const editable = el.isContentEditable && !el.parentElement?.isContentEditable;
+      const role = roleOf(el, tag, editable);
+      if (!actionTags.has(tag) && !actionRoles.has(role) && !editable && !el.hasAttribute('onclick')) continue;
+      if (!visible(el) || disabled(el)) continue;
+      if (identityOf(el, role, labelOf(el, role, true), linkTarget(el)) !== signature) continue;
+      matches.push(el);
+    }
+    if (matches.length !== 1) {
+      globalThis.__fcRebind = { ok: false, matches: matches.length, scanned: candidates.length, sigLen: signature.length };
+      return false;
+    }
+    const el = matches[0];
+    entry.element = el;
+    entry.dead = false;
+    elementRefs.set(el, ref);
+    refs.set(ref, entry);
+    globalThis.__fcRebind = { ok: true, matches: 1 };
+    return true;
   }
 
   function receivesClick(element) {
@@ -344,7 +420,8 @@ function createPageState(salt) {
     return { ok: true, value: String(editable ? element.textContent : element.value).slice(0, 40) };
   }
 
-  return { snapshot: readTree, click: clickElement, typeInto: typeInElement };
+  return { snapshot: readTree, click: clickElement, typeInto: typeInElement,
+    netProbe: () => ({ ready: document.readyState, mutations: mutationCount, resources: performance.getEntriesByType('resource').length }) };
 }
 
 const pageStateSource = createPageState.toString();
@@ -365,6 +442,29 @@ export function close() {
   if (state && !state.window.isDestroyed()) state.window.destroy();
 }
 
+// 0.29.2：loadURL 完成 ≠ 页面可用（SPA 异步渲染 + 接口取数，实测快照常停在「正在加载」）。
+// 三重平静判定：主帧不在加载/等响应 + document readyState=complete + 资源条目数稳定
+// （fetch/XHR 完成会新增 performance resource 条目），连续两次平静才交快照；上限 maxMs，
+// 快页面通常 1-2 次轮询（约 240ms）就过，慢接口最多等 maxMs。
+async function waitSettled(state, maxMs = 2000) {
+  const start = Date.now();
+  let calm = 0;
+  let last = null;
+  while (Date.now() - start < maxMs) {
+    await setTimeout(120);
+    if (!active || active !== state || state.window.isDestroyed()) return;
+    const contents = state.window.webContents;
+    const busy = contents.isLoading() || contents.isWaitingForResponse() || (state.netPending ? state.netPending() > 0 : false);
+    const page = await runInPage(state, 'netProbe');
+    const p = (page && page.ok !== false) ? page : null;
+    const pageBusy = !p || p.ready !== 'complete';
+    const changed = !!(last && p && (p.mutations !== last.mutations || p.resources !== last.resources));
+    last = p || last;
+    calm = (!busy && !pageBusy && !changed) ? calm + 1 : 0;
+    if (calm >= 2) return;
+  }
+}
+
 export async function navigate(url, { show = false, width = 1280, height = 900, waitMs = 0, observe = false } = {}) {
   const target = assertNavigableUrl(url);
   const state = ensureWindow({ width, height });
@@ -375,6 +475,7 @@ export async function navigate(url, { show = false, width = 1280, height = 900, 
     if (show) window.show();
     await window.loadURL(target);
     if (waitMs > 0) await setTimeout(waitMs);
+    await waitSettled(state);
     if (state !== active || state.request !== request) return { ok: false, error: NAVIGATING };
     const generation = state.generation;
     const result = { ok: true, url: window.webContents.getURL(), title: window.webContents.getTitle() };
