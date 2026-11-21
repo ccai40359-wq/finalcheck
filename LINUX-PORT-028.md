@@ -73,10 +73,12 @@ if (!sandbox && sandboxOn) return { error: '已拒绝在宿主机执行' };
 
 ```json
 "linux": { "target": ["AppImage", "deb"], "executableName": "finalcheck", "category": "Development" }
-"deb": { "depends": ["bash", "git", "ripgrep"] }
+"deb": { "depends": ["bash", "git", "ripgrep", "bubblewrap", "socat"] }
 ```
 
-`deb` 声明 `bash` 依赖是必须的 —— `run_command` 靠它。
+`deb` 声明 `bash` 依赖是必须的 —— `run_command` 靠它。`bubblewrap` + `socat` 是沙箱硬依赖（真机已验）。
+AppImage 没法声明系统依赖：缺了就走 `probeSandbox()` 的 fail-visible 链（明确报「缺什么 + 给 apt 命令」，
+不会静默假装有沙箱）。
 
 脚本：`dist:linux`（AppImage + deb）、`dist:linux:dir`、`fetch:rg:linux`。
 
@@ -272,6 +274,65 @@ Linux 上本就不适用。
 **结论：`run_command` 在 Linux 上真的是 bash 语义（数组/`$'...'`/进程替换全通过）**，
 这是「一种 shell、一套语法」这个承诺在 Linux 上成立的关键证据。
 
+### 沙箱真机验证（2026-11-20，bubblewrap 0.9.0 + socat 1.8.0，全 PASS）
+
+`scripts/linux/verify-sandbox.mjs`（入库，可用 `FC_DIAG=1` 看实际包装命令）。两层 15 项：
+
+**A. 内核层（wrapCommand 直连 bwrap）**
+
+| 项 | 结果 |
+|---|---|
+| `probeSandbox` available | ✅ |
+| bwrap 启动、沙箱内命令能跑 | ✅（AppArmor / userns 环境坑没有出现） |
+| 白名单内（项目目录）可写 | ✅ |
+| 写 `/etc` 被拦（白名单外只读） | ✅ 且宿主上**真的没有**出现探针文件 |
+| 写 `~` 被拦（家目录不在写白名单） | ✅ 同样验了宿主无泄漏 |
+| denyRead 目录被读隔离（tmpfs 盖住） | ✅ 哨兵文件在沙箱里不可见 —— **这是 Windows ACL 沙箱没有的能力** |
+| 沙箱内是真 bash（数组语法） | ✅ |
+| `curl example.com` 被拦 | ✅ |
+| `curl registry.npmjs.org` 放行（200） | ✅（宿主基线 200，排除 WSL 断网干扰） |
+
+**B. FC 集成层（`run_command` + `aclSandbox`）**
+
+| 项 | 结果 |
+|---|---|
+| `ensureLinuxSandboxProbe` available | ✅ |
+| 命令走沙箱执行、无降级宿主机警告 | ✅ |
+| 项目外路径先被应用层闸拦（防御纵深顺序：policy 在 bwrap 前） | ✅ |
+
+### 实际包装命令（FC_DIAG=1 抓到的，机制记录）
+
+```
+bwrap --new-session --die-with-parent
+  --unshare-net --unshare-pid --unshare-user --cap-drop ALL
+  --bind /tmp/claude-http-<hash>.sock /tmp/claude-http-<hash>.sock   # 宿主代理的 unix socket 桥进来
+  --ro-bind / /                                   # 全盘只读
+  --bind <每条 allowWrite 一条 rw bind>           # 项目目录、/tmp、~/.npm、~/.cache
+  --tmpfs ~/.ssh …                                # denyRead 目录 → tmpfs 盖住
+  --ro-bind /dev/null <敏感单文件>                # denyRead 单文件（.docker/config.json、.gitconfig…）
+  --dev /dev --proc /proc
+  -- /usr/bin/bash -c '<桥接脚本 + apply-seccomp + 用户命令>'
+```
+
+桥接脚本（沙箱内）：
+
+1. 起两个 socat 桥：`TCP-LISTEN:3128 → UNIX-CONNECT:<socket>`（HTTP）与 `TCP-LISTEN:1080 → …`（SOCKS）。
+   **数据路径 = 沙箱进程 → TCP localhost:3128（沙箱内 socat）→ unix socket（跨 namespace，靠 bind mount）→
+   宿主代理进程 → 域名白名单判定 → 出网。** 白名单在宿主侧执行，沙箱内根本出不去。
+2. `HTTP(S)_PROXY / ALL_PROXY / GRPC_PROXY` 全指向 `http://srt.<b64user>:<一次性token>@localhost:3128`
+   （凭据每次 initialize 轮换）；连 `GIT_SSH_COMMAND`（socat ProxyCommand）、`FTP_PROXY`(socks5h:1080)、
+   `DOCKER_*`、`CLOUDSDK_*` 都覆盖了，Java 走 `JAVA_TOOL_OPTIONS -javaagent:…/srt-proxy-agent.jar` ——
+   环境变量代理 Java 不认，库自带 agent 补上。
+3. 等 `/proc/net/sockstat` 里两个监听都起来（最多 30s），`trap` 退出时杀掉两个 socat。
+4. 用户命令最后包在 `apply-seccomp`（库自带，按架构选二进制）里执行，再拦一层（嵌套 userns 等）。
+
+### 安装依赖
+
+```bash
+sudo apt-get install -y bubblewrap socat   # deb 安装的用户不需要：depends 已声明
+node scripts/linux/verify-sandbox.mjs      # 装完自检
+```
+
 ### 我引入的一个严重回归（已修）
 
 加 POSIX 绝对路径支持后，`> /dev/null`、`2>/dev/null` 被当成「项目外文件」整条拒绝：
@@ -312,6 +373,9 @@ Windows 上同样存在（`~` 展开成 `C:\Users\...` 后也是项目外）。
 ### 怎么在 WSL 里复现这套验证
 
 ```bash
+# 0) 沙箱依赖（真机验证要用；WSL 默认没装）
+sudo apt-get install -y bubblewrap socat
+
 # 1) 复制到 WSL 原生盘（跨 /mnt/d 跑 Node 慢，且 git worktree 在 /mnt 下解析不了）
 mkdir -p ~/fc && cd /mnt/d/rcw-geo/wt-linux-028 \
   && tar -cf - --exclude=node_modules --exclude=.git . | (cd ~/fc && tar -xf -)
@@ -325,7 +389,10 @@ node scripts/ensure-sqlite-binding.mjs
 # 4) 跑全量
 cd ~/fc && node --test tests/*.test.mjs
 
-# 5) 截图兜底（可选）
+# 5) 沙箱真机自检（15 项；FC_DIAG=1 可看实际 bwrap 包装命令）
+node scripts/linux/verify-sandbox.mjs
+
+# 6) 截图兜底（可选）
 node desktop/scripts/install-playwright-linux.mjs
 ```
 
@@ -338,8 +405,6 @@ node desktop/scripts/install-playwright-linux.mjs
 | 项 | 为什么必须在 Linux 上 |
 |---|---|
 | 真打 AppImage / deb | electron-builder 的 Linux target 需要 Linux 宿主（或用 Docker） |
-| **bwrap 真机执行** | WSL 里 `bubblewrap`/`socat` 未装（需 sudo）。已验：配置构造与降级链 24 项全 PASS，且库本身报出「bwrap not installed」+ 给出 apt 命令；**真 bwrap 调用仍待装包后验** |
-| **网络白名单真机验** | 要在真机上确认 npm install / pip install / 网关请求都通，而 `curl example.com` 被拦 |
 | `git` / `bash` 依赖实测 | 声明了 depends，但没在干净 Ubuntu 上验过装完能不能起 |
 | UI 截图逐屏核对 | 字体渲染、DPI、窗口装饰在不同发行版差异大 |
 | `policy.mjs` 的 POSIX 分支 | 路径分隔符、`~` 展开、软链接解析的行为差异 |
