@@ -6,6 +6,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.29.4] - 2026-11-21
+
+### Added
+
+- Desktop screenshots now work in two stages: take a full-screen shot to locate the area, then capture a small region (input boxes, menus) at the screen's native resolution — text is sharp enough to verify character-by-character, coordinates map 1:1 with no conversion, so the assistant no longer retries blindly when reading small on-screen text.
+
+### Improved
+
+- Bulk self-check screenshots no longer flood the conversation: screenshots within one reply collapse into a single "Check screenshots ×N" counter (collapsed by default); expanding it keeps each screenshot openable in the right-hand panel.
+- Removed the colored dots next to Settings; a gold "Update v{version}" button appears when a new version is found — click to download, then one click to restart and install.
+- Updated desktop-control guidance: prefer clicking large on-screen buttons for send/submit actions (some apps, e.g. WeChat, silently ignore Enter shortcuts), and confirm keyboard focus is in the target input before typing.
+
 ## [0.29.3] - 2026-11-21
 
 ### Fixed

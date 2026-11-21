@@ -30,6 +30,7 @@ import Composer from './components/Composer.jsx';
 import CompactionStatus from './components/CompactionStatus.jsx';
 import Dialogs from './components/Dialogs.jsx';
 import { IDLE as COMPACTION_IDLE, reduce as reduceCompaction } from './lib/compaction.mjs';
+import { SIDEBAR_UPDATE_INITIAL, reduceSidebarUpdateEvent } from './lib/sidebar-update.mjs';
 import { OPEN_STEP_EVENT } from './lib/spawn-agent.mjs';
 // 兼容原来的模块出口（外部若按旧路径取这两个函数/组件仍可用）
 export { needsFirstRunSetup, formatDemoAuditSummary } from './lib/app-helpers.mjs';
@@ -223,7 +224,7 @@ export default function App() {
   const providersRef = useRef([]);
   useEffect(() => { providersRef.current = (cfg?.providers || []); }, [cfg]);
   const [cfgLoaded, setCfgLoaded] = useState(false);
-  const [updateVersion, setUpdateVersion] = useState(''); // 有新版本时在 Settings 入口点红点
+  const [sidebarUpdate, setSidebarUpdate] = useState(SIDEBAR_UPDATE_INITIAL); // 侧栏金色 Update 按钮（0.29.4 起替代红点）
   // 首次使用向导：本会话内可「稍后配置」跳过（存 localStorage）
   const [setupDismissed, setSetupDismissed] = useState(() => {
     try { return typeof localStorage !== 'undefined' && localStorage.getItem('fc.setupSkipped') === '1'; } catch { return false; }
@@ -1000,15 +1001,32 @@ export default function App() {
     });
   }, [y]);
 
-  // 更新提示：后台检查发现新版本时，在左下角 Settings 入口点一个小红点（不打断对话）
+  // 更新提示：后台检查发现新版本时，左下角 Settings 行出金色「Update v{version}」按钮（不打断对话）。
+  // 下载/安装状态跟随主进程既有 update 事件（progress / downloaded / error），不新增协议；
+  // 事件 → 状态是纯函数 reduceSidebarUpdateEvent（lib/sidebar-update.mjs，tests/ 直测）。
   useEffect(() => {
     if (!y?.onUpdateEvent) return undefined;
     return y.onUpdateEvent((ev) => {
       if (!ev || typeof ev !== 'object') return;
-      if (ev.type === 'available') setUpdateVersion(String(ev.version || ''));
-      else if (ev.type === 'not-available') setUpdateVersion('');
+      setSidebarUpdate((prev) => reduceSidebarUpdateEvent(prev, ev));
     });
   }, [y]);
+
+  // 侧栏 Update 按钮动作：download → 既有 finalcheck:update:download 流程（与 SettingsPage 同一 IPC）；
+  // install → finalcheck:update:install。不 openExternal、不硬编码 owner/repo（updater-state.mjs 红线）。
+  const handleSidebarUpdateAction = async (action) => {
+    if (action === 'download') {
+      if (!y?.updateDownload) return;
+      setSidebarUpdate((prev) => ({ ...prev, phase: 'downloading', percent: 0 })); // 与 SettingsPage 一致：不等首个 progress 事件
+      try {
+        const r = await y.updateDownload();
+        if (r && !r.ok) setSidebarUpdate((prev) => reduceSidebarUpdateEvent(prev, { type: 'error', message: r.error }));
+      } catch { /* 失败态由 error 事件兜底；按钮回「Update v{v}」可重试 */ }
+    } else if (action === 'install') {
+      if (!y?.updateInstall) return;
+      try { await y.updateInstall(); } catch { /* 安装失败由主进程日志记录 */ }
+    }
+  };
 
   // 权限审批：主进程推送待确认条目（run_command 等）→ 聊天流渲染确认条；多条排队（并行子代理）
   useEffect(() => {
@@ -1704,7 +1722,8 @@ export default function App() {
         y={y} booted={booted} page={page} projects={projects} activeProjectId={activeProjectId}
         activeId={activeId} sessions={sessions} projectSessions={projectSessions}
         showAllSessions={showAllSessions} showArchived={showArchived}
-        runningIds={runningIds} updateVersion={updateVersion} isProjectExpanded={isProjectExpanded}
+        runningIds={runningIds} sidebarUpdate={sidebarUpdate} onUpdateAction={handleSidebarUpdateAction}
+        isProjectExpanded={isProjectExpanded}
         setShowAllSessions={setShowAllSessions} setShowArchived={setShowArchived}
         onNewSession={newSession} onAddProject={addProject} onToggleProject={toggleProject}
         onOpenSession={openProjectSession} onNewSessionInProject={newSessionInProject}

@@ -260,5 +260,10 @@ export const EN_CHAT = {
   '下一页': 'Next',
   '第 {n} 页': 'Page {n}',
   '无法打开：{msg}': 'Cannot open: {msg}',
-  '正在加载转换后的页面…': 'Loading converted pages…'
+  '正在加载转换后的页面…': 'Loading converted pages…',
+
+  // AI 自查截图分组（默认收起的计数条）
+  '检查截图 ×{n}': 'Check screenshots ×{n}',
+  '收起检查截图': 'Collapse check screenshots',
+  '展开检查截图（AI 自查证据，点击单张可在右侧打开）': 'Expand check screenshots (AI self-check evidence; click one to open it on the right)'
 };

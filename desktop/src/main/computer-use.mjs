@@ -4,7 +4,7 @@ import { desktopCapturer, screen, nativeImage } from 'electron';
 import * as input from './desktop-input-win.mjs';
 import { tierForApp, checkActionAllowed, AccessLedger, describeTier } from './computer-use-policy.mjs';
 import {
-  actionPoints, matchesImageGeometry, matchesProcess, overlapBounds, sameBounds, sameObservation, sameWindow, selectCaptureSource, thumbnailSize
+  actionPoints, matchesImageGeometry, matchesProcess, normalizeRegion, overlapBounds, sameBounds, sameObservation, sameWindow, selectCaptureSource, thumbnailSize
 } from './computer-use-geometry.mjs';
 
 const ledger = new AccessLedger();
@@ -105,11 +105,25 @@ export function captureScreen(options = {}) {
   });
 }
 
-async function capture({ target = 'screen', windowTitle = '', maxWidth = 1560 } = {}) {
+// 0.29.4：region 截图（两段式：全屏导航 → 区域读字）。
+// region = {x,y,width,height} 物理像素整数（主显示器左上角为原点）：
+// 按屏幕原生物理尺寸取帧（绕过 thumbnailSize 的 0.609 缩放帽），nativeImage.crop 零重采样裁剪，
+// 输出图像尺寸 == region 尺寸，坐标 1:1 映射回屏幕（mapScreenshotPoint 的 region 分支）。
+// ⚠️ shot.bounds 必须保持全屏物理 bounds（原生层 captureBounds.Matches(PrimaryBounds()) 断言依赖它），
+// region 只存独立字段，绝不写进 bounds。
+async function capture({ target = 'screen', windowTitle = '', maxWidth = 1560, region = null } = {}) {
   const isWindow = target === 'window';
   const display = primaryDisplay();
+  if (region) {
+    if (isWindow) return { ok: false, error: 'region 只支持全屏截图（target 用默认的 screen）。' };
+    const checked = normalizeRegion(region, display.bounds);
+    if (checked.error) return { ok: false, error: checked.error };
+    region = checked.region;
+  }
   const before = isWindow ? null : await desktopContext();
-  const requestedSize = thumbnailSize(display.bounds, maxWidth);
+  const requestedSize = region
+    ? { width: display.bounds.width, height: display.bounds.height }
+    : thumbnailSize(display.bounds, maxWidth);
   const sources = await desktopCapturer.getSources({
     types: isWindow ? ['window'] : ['screen'],
     thumbnailSize: requestedSize,
@@ -123,7 +137,15 @@ async function capture({ target = 'screen', windowTitle = '', maxWidth = 1560 } 
   const after = await desktopContext();
   const foreground = after.foreground;
   const original = image.getSize();
-  if (original.width > requestedSize.width) image = image.resize({ width: requestedSize.width, quality: 'best' });
+  if (region) {
+    // 取不到原生分辨率的帧就放弃裁剪：任何重采样都会破坏 1:1 坐标映射，宁可报错也不给错图。
+    if (original.width !== requestedSize.width || original.height !== requestedSize.height) {
+      return { ok: false, error: `无法按原生分辨率取帧（得到 ${original.width}x${original.height}，需要 ${requestedSize.width}x${requestedSize.height}）。请改用不带 region 的全屏截图。` };
+    }
+    image = image.crop({ x: region.x, y: region.y, width: region.width, height: region.height });
+  } else if (original.width > requestedSize.width) {
+    image = image.resize({ width: requestedSize.width, quality: 'best' });
+  }
   const { width, height } = image.getSize();
 
   let observationOnlyReason = null;
@@ -133,7 +155,7 @@ async function capture({ target = 'screen', windowTitle = '', maxWidth = 1560 } 
     observationOnlyReason = '截图期间未能确认同一个前台窗口。请重截主显示器。';
   } else if (!sameDisplay(display, primaryDisplay()) || !canUseDisplay(display, before) ||
     !canUseDisplay(display, after) || !sameBounds(before.virtualScreen, after.virtualScreen) ||
-    !matchesImageGeometry({ width, height }, display.bounds)) {
+    !matchesImageGeometry({ width, height }, display.bounds, region)) {
     observationOnlyReason = '无法确认截图与物理屏幕的坐标对应。当前截图仅供查看。';
   } else if (!overlapBounds(foreground.bounds, display.bounds)) {
     observationOnlyReason = '主显示器截图未覆盖前台窗口。请将窗口移到主显示器后重新截图。';
@@ -150,12 +172,14 @@ async function capture({ target = 'screen', windowTitle = '', maxWidth = 1560 } 
   latestScreenshot = {
     screenshotId, canAct, observationOnlyReason, display, width, height,
     bounds: display.bounds, foreground, virtualScreen: after.virtualScreen,
-    focusHwnd: before?.foreground?.focusHwnd === foreground?.focusHwnd ? foreground?.focusHwnd : null
+    focusHwnd: before?.foreground?.focusHwnd === foreground?.focusHwnd ? foreground?.focusHwnd : null,
+    region: region ?? null
   };
   return {
     ok: true, buf, mime: isWindow ? 'image/png' : 'image/jpeg', width, height, screenshotId, canAct,
     observationOnlyReason,
-    scale: isWindow ? original.width / width : display.bounds.width / width,
+    scale: isWindow ? original.width / width : (region ? 1 : display.bounds.width / width),
+    region: region ?? null,
     source: { id: source.id, name: source.name },
     sourceCount: sources.length,
     foreground: brief(foreground),

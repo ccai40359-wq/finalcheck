@@ -1178,10 +1178,13 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
     };
 
     const captureComputerScreenshot = async (computerUse, args) => {
-      const r = await computerUse.captureScreen({
+      // region 只在传了的时候才进 options：不带 region 的调用保持与 0.29.3 完全一致的转发形状。
+      const options = {
         target: args?.target === 'window' ? 'window' : 'screen',
         windowTitle: String(args?.window_title || '')
-      });
+      };
+      if (args?.region != null) options.region = args.region;
+      const r = await computerUse.captureScreen(options);
       if (!r.ok) return { ...r, error: r.error || '截图失败' };
       const fg = r.foreground
         ? `当前前台：${r.foreground.process}「${r.foreground.title}」· 权限 ${r.foreground.tierLabel}` +
@@ -1189,12 +1192,15 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
         : '读不到前台应用（可能被系统保护）';
       const canAct = r.canAct === true && typeof r.screenshotId === 'string' && r.screenshotId.length > 0;
       const guidance = canAct
-        ? '动手时传这张全屏图的 screenshot_id，坐标直接用图上的像素。'
+        ? (r.region
+          ? `这是 region 区域截图（原生分辨率 ${r.region.width}x${r.region.height}，无缩放）。动手时传这张图的 screenshot_id，坐标直接用图上的像素（1:1 映射回屏幕）。`
+          : '动手时传这张全屏图的 screenshot_id，坐标直接用图上的像素。')
         : '这张图仅供观察。动手前让目标应用处于前台，并获取可操作的全屏截图。';
       return {
         ok: true,
         width: r.width,
         height: r.height,
+        region: r.region ?? null,
         screenshot_id: canAct ? r.screenshotId : null,
         canAct,
         observationOnlyReason: r.observationOnlyReason,

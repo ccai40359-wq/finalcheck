@@ -6,6 +6,7 @@ import { renderMarkdown } from './md.jsx';
 import { PdfPager } from './PdfPager.jsx';
 import { planPanelLayout, clampPanelWidth, shouldClosePanel } from '../lib/panel-layout.mjs';
 import { useWindowWidth } from '../lib/use-window-width.mjs';
+import { partitionArtifacts, shotGroupView, SHOT_GROUP_DEFAULT_EXPANDED } from '../lib/artifact-groups.mjs';
 
 export const PREVIEW_EXTS = new Set([
   '.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp',
@@ -26,7 +27,9 @@ export const extOf = (p) => {
   return i >= 0 ? s.slice(i).toLowerCase() : '';
 };
 
-/** 从 trace 里挑出「本轮生成/修改过的、可预览的」文件（edit_file / write_file） */
+/** 从 trace 里挑出「本轮生成/修改过的、可预览的」文件（edit_file / write_file / present_artifact / capture_screenshot）
+ *  capture_screenshot 打 shot:true 标记（AI 自查证据，渲染层收成「检查截图 ×N」分组条，见 lib/artifact-groups.mjs）；
+ *  返回值仍是扁平数组，签名与调用方（MessageList / TraceCards 生态）保持兼容。 */
 export function collectArtifacts(trace) {
   const out = [];
   const seen = new Set();
@@ -36,28 +39,57 @@ export function collectArtifacts(trace) {
     if (!r || typeof r !== 'object' || r.error || !r.path) continue;
     if (!PREVIEW_EXTS.has(extOf(r.path)) || seen.has(r.path)) continue;
     seen.add(r.path);
-    out.push({ path: r.path, name: r.title || r.file || String(r.path).split(/[\\/]/).pop(), added: r.added, removed: r.removed });
+    out.push({
+      path: r.path,
+      name: r.title || r.file || String(r.path).split(/[\\/]/).pop(),
+      added: r.added, removed: r.removed,
+      shot: entry.tool === 'capture_screenshot'
+    });
   }
   return out;
 }
 
+// 单个产物 chip：edit_file / write_file / present_artifact 与展开后的截图 chip 走同一渲染与 onOpen 链路
+function artifactChip(a, activePath, onOpen) {
+  const ext = extOf(a.path);
+  const isImg = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp'].includes(ext);
+  return (
+    <button key={a.path} onClick={() => onOpen(a.path)} title={a.path}
+      className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[11px] font-mono transition-colors ${activePath === a.path ? 'bg-gold/12 text-goldSoft' : 'bg-lift/[0.035] text-mute hover:bg-lift/[0.06] hover:text-goldSoft'}`}>
+      <span className="text-goldDeep">{isImg ? '▣' : ext === '.html' || ext === '.htm' ? '◇' : VIDEO_RE.test(ext) ? '▶' : SLIDES_RE.test(ext) ? '▦' : '▤'}</span>
+      <span className="max-w-[220px] truncate text-ink/85">{a.name}</span>
+      {a.added != null ? <span className="text-jade">+{a.added}</span> : null}
+      {a.removed != null ? <span className="text-red-400">-{a.removed}</span> : null}
+    </button>
+  );
+}
+
 export function ArtifactChips({ artifacts, activePath, onOpen }) {
+  // WF2：AI 自查截图分组。展开态是每条消息自己的（组件随消息键重建，不跨会话继承）；默认收起。
+  const [shotsOpen, setShotsOpen] = useState(SHOT_GROUP_DEFAULT_EXPANDED);
   if (!artifacts?.length) return null;
+  const { regular, shotGroup } = partitionArtifacts(artifacts);
+  const group = shotGroupView(shotGroup, shotsOpen);
+  if (!regular.length && !group) return null;
   return (
     <div className="mt-2.5 flex flex-wrap gap-1.5">
-      {artifacts.map((a) => {
-        const ext = extOf(a.path);
-        const isImg = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp'].includes(ext);
-        return (
-          <button key={a.path} onClick={() => onOpen(a.path)} title={a.path}
-            className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[11px] font-mono transition-colors ${activePath === a.path ? 'bg-gold/12 text-goldSoft' : 'bg-lift/[0.035] text-mute hover:bg-lift/[0.06] hover:text-goldSoft'}`}>
-            <span className="text-goldDeep">{isImg ? '▣' : ext === '.html' || ext === '.htm' ? '◇' : VIDEO_RE.test(ext) ? '▶' : SLIDES_RE.test(ext) ? '▦' : '▤'}</span>
-            <span className="max-w-[220px] truncate text-ink/85">{a.name}</span>
-            {a.added != null ? <span className="text-jade">+{a.added}</span> : null}
-            {a.removed != null ? <span className="text-red-400">-{a.removed}</span> : null}
+      {regular.map((a) => artifactChip(a, activePath, onOpen))}
+      {group ? (
+        <div className="w-full">
+          {/* 分组条只是计数按钮：收起态 DOM 不渲染任何 chip / 图片标签，点开才展开 N 个 chip */}
+          <button onClick={() => setShotsOpen((v) => !v)}
+            title={group.expanded ? t('收起检查截图') : t('展开检查截图（AI 自查证据，点击单张可在右侧打开）')}
+            className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[11px] font-mono transition-colors bg-gold/[0.10] text-goldSoft hover:bg-gold/[0.18]">
+            <span aria-hidden="true" className="text-goldDeep">{group.expanded ? '▾' : '▸'}</span>
+            <span>{t(group.labelKey, group.params)}</span>
           </button>
-        );
-      })}
+          {group.expanded ? (
+            <div className="mt-1.5 flex flex-wrap gap-1.5">
+              {group.chips.map((a) => artifactChip(a, activePath, onOpen))}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }

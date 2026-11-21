@@ -51,9 +51,34 @@ export function thumbnailSize(bounds, maxWidth) {
   };
 }
 
-export function matchesImageGeometry(image, physical) {
+export function matchesImageGeometry(image, physical, region = null) {
+  // 0.29.4：region 截图按「图像尺寸 == region 尺寸」校验（原生分辨率 1:1，没有整屏比例关系）。
+  if (region) return image.width === region.width && image.height === region.height;
   return image.width > 1 && image.height > 1 &&
     Math.abs(image.height - image.width * physical.height / physical.width) <= 1;
+}
+
+// region 参数（0.29.4）：{x,y,width,height} 物理像素整数，以主显示器左上角为原点。
+// 只校验不 clamp：非整数 / 负数 / 宽或高 < 2 / 超出显示器范围都直接报错，绝不悄悄改参数。
+export function normalizeRegion(region, bounds) {
+  if (!region || typeof region !== 'object' || Array.isArray(region)) {
+    return { error: 'region 必须是 {x, y, width, height} 对象（物理像素整数）。' };
+  }
+  for (const key of ['x', 'y', 'width', 'height']) {
+    if (!Number.isSafeInteger(region[key])) {
+      return { error: `region.${key} 必须是整数（物理像素），收到 ${JSON.stringify(region[key] ?? null)}。` };
+    }
+    if (region[key] < 0) {
+      return { error: `region.${key} 不能为负数（region 以主显示器左上角为原点）。` };
+    }
+  }
+  if (region.width < 2 || region.height < 2) {
+    return { error: 'region 的 width 与 height 都不能小于 2（物理像素）。' };
+  }
+  if (region.x + region.width > bounds.width || region.y + region.height > bounds.height) {
+    return { error: `region 超出主显示器范围（物理 ${bounds.width}x${bounds.height}）：需要 x+width ≤ ${bounds.width} 且 y+height ≤ ${bounds.height}。` };
+  }
+  return { region: { x: region.x, y: region.y, width: region.width, height: region.height } };
 }
 
 function mapAxis(value, imageLength, physicalLength, origin) {
@@ -65,7 +90,14 @@ function mapAxis(value, imageLength, physicalLength, origin) {
 }
 
 export function mapScreenshotPoint(snapshot, x, y) {
-  const { width, height, bounds } = snapshot;
+  const { width, height, bounds, region } = snapshot;
+  // 0.29.4：region 截图 1:1——图像像素 (px,py) 对应屏幕物理点 bounds 原点 + region 偏移 + (px,py)。
+  if (region) {
+    return {
+      x: mapAxis(x, width, region.width, bounds.x + region.x),
+      y: mapAxis(y, height, region.height, bounds.y + region.y)
+    };
+  }
   return {
     x: mapAxis(x, width, bounds.width, bounds.x),
     y: mapAxis(y, height, bounds.height, bounds.y)

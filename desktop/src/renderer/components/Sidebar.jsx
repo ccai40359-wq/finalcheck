@@ -3,13 +3,33 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { t } from '../i18n/core.mjs';
 import { prettyTitle, relTime } from '../lib/app-helpers.mjs';
+import { sidebarUpdateButton } from '../lib/sidebar-update.mjs';
 import { IconPlusCircle, IconFolderPlus, IconFolder, IconPlus, IconTrash, IconArchive, IconUnarchive, IconGear, Spinner } from './Icons.jsx';
 
 const SESSION_PREVIEW = 5; // 每个工作区默认露出几条会话，其余走 Show more
 
+// 金色 Update 按钮（0.29.4 起替代旧红点/绿点）：只在发现新版本时渲染（无更新=不渲染）。
+// available → 「Update v{v}」点击下载；downloading → 「下载中 {p}%」禁点（进度详情在 Settings 页）；
+// downloaded → 「重启并安装」。动作走 App 传入的既有下载/安装流程，不 openExternal。
+function SidebarUpdateButton({ state, onAction }) {
+  const view = sidebarUpdateButton(state);
+  if (!view.visible) return null;
+  const label = t(view.labelKey, view.params);
+  const title = view.disabled
+    ? t('下载中 {percent}%', view.params)
+    : (view.action === 'install' ? t('重启并安装') : t('有新版本 v{v}', view.params));
+  return (
+    <button onClick={() => { if (!view.disabled && view.action) onAction?.(view.action); }}
+      disabled={view.disabled} title={title}
+      className="ml-auto shrink-0 rounded-md bg-gold/[0.14] px-2 py-1 text-[11px] font-medium leading-none text-goldSoft hover:bg-gold/[0.24] transition-colors disabled:opacity-70 disabled:hover:bg-gold/[0.14]">
+      {label}
+    </button>
+  );
+}
+
 export default function Sidebar({
   y, booted, page, projects, activeProjectId, activeId, sessions, projectSessions,
-  showAllSessions, showArchived, runningIds, updateVersion, isProjectExpanded,
+  showAllSessions, showArchived, runningIds, sidebarUpdate, onUpdateAction, isProjectExpanded,
   setShowAllSessions, setShowArchived,
   onNewSession, onAddProject, onToggleProject, onOpenSession, onNewSessionInProject,
   onRemoveProject, onArchiveSession, onOpenRowMenu, onSettings,
@@ -177,18 +197,16 @@ export default function Sidebar({
         })}
       </div>
 
-      {/* 底部：Settings + 连接状态点 */}
+      {/* 底部：Settings + 金色 Update 按钮（0.29.4 起替代旧红点/绿点）。
+          绿点（IPC 存活）删除：断连提示不静默消失——Settings 页已有等效提示
+          （App.jsx 全局琥珀横幅在 Settings 页同样渲染 + SettingsPage 卡片 ErrorNote）。 */}
       <div className="px-2 py-2 border-t border-lift/[0.06] flex items-center gap-1">
         <button onClick={onSettings}
           className={`flex-1 flex items-center gap-2 rounded-lg px-2 py-1.5 text-[13px] transition-colors ${
             page === 'settings' ? 'bg-lift/[0.06] text-goldSoft' : 'text-mute hover:text-ink hover:bg-lift/[0.045]'}`}>
           <IconGear active={page === 'settings'} />Settings
-          {updateVersion ? (
-            <span title={updateVersion ? t('有新版本 v{v}', { v: updateVersion }) : t('有新版本')}
-              className="ml-auto w-1.5 h-1.5 rounded-full bg-red-400 shrink-0" />
-          ) : null}
         </button>
-        <span title={y ? t('IPC 已连接') : t('IPC 不可用')} className={`w-1.5 h-1.5 rounded-full ${y ? 'bg-jade' : 'bg-red-400/70'}`} />
+        <SidebarUpdateButton state={sidebarUpdate} onAction={onUpdateAction} />
       </div>
       </div>
     </aside>
