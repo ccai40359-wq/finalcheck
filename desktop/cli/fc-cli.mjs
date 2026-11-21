@@ -25,6 +25,51 @@ const YELLOW = '\x1b[33m';
 const CYAN = '\x1b[36m';
 const RESET = '\x1b[0m';
 
+// ---- 终端图形（学 CC / Hermes CLI）：显示宽度按 CJK=2 算，框线才对得齐 ----
+function displayWidth(s) {
+  let w = 0;
+  for (const ch of String(s)) {
+    w += /[\u1100-\u115F\u2E80-\uA4CF\uAC00-\uD7A3\uF900-\uFAFF\uFE30-\uFE6F\uFF00-\uFF60\uFFE0-\uFFE6\u4E00-\u9FFF\u3000-\u303F]/.test(ch) ? 2 : 1;
+  }
+  return w;
+}
+const padTo = (s, width) => String(s) + ' '.repeat(Math.max(0, width - displayWidth(s)));
+function box(lines, title = '') {
+  const w = Math.max(...lines.map((l) => displayWidth(l)), displayWidth(title)) + 2;
+  const top = title
+    ? `╭─ ${title} ${'─'.repeat(Math.max(1, w - displayWidth(title) - 1))}╮`
+    : `╭${'─'.repeat(w)}╮`;
+  const body = lines.map((l) => `│ ${padTo(l, w)} │`).join('\n');
+  return `${top}\n${body}\n╰${'─'.repeat(w)}╯`;
+}
+
+const LOGO_LINES = [
+  ' ███████╗ ██████╗',
+  ' ██╔════╝██╔════╝',
+  ' █████╗  ██║',
+  ' ██╔══╝  ██║',
+  ' ██║     ╚██████╗',
+  ' ╚═╝      ╚═════╝'
+];
+
+// 回合等待指示器（学 CC 的转菊；只在 TTY 下动，管道模式安静）
+const SPIN_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+const spinner = { timer: null, frame: 0, label: '思考中…' };
+function spinnerStart(label) {
+  if (process.stdin.isTTY !== true || spinner.timer) return;
+  spinner.label = label || '思考中…';
+  spinner.timer = setInterval(() => {
+    spinner.frame = (spinner.frame + 1) % SPIN_FRAMES.length;
+    process.stdout.write(`\r\x1b[2K${DIM}${SPIN_FRAMES[spinner.frame]} ${spinner.label}${RESET}  `);
+  }, 110);
+}
+function spinnerStop() {
+  if (!spinner.timer) return;
+  clearInterval(spinner.timer);
+  spinner.timer = null;
+  process.stdout.write('\r\x1b[2K');
+}
+
 const argDir = path.resolve(process.argv[2] || process.cwd());
 if (!fsSync.existsSync(argDir)) {
   console.error(`项目目录不存在：${argDir}`);
@@ -131,12 +176,14 @@ function handleEvent(ev) {
   if (!ev || !ev.kind) return;
   switch (ev.kind) {
     case 'tool-start':
+      spinnerStop();
       dimLine(`  ⏺ ${ev.name}(${String(ev.args || '').replace(/\s+/g, ' ').slice(0, 110)})`);
       break;
     case 'tool-end':
       if (ev.ok === false && !ev.cancelled) dimLine(`  ✗ ${ev.name} 失败（${ev.ms ?? '?'}ms）`);
       break;
     case 'warning':
+      spinnerStop();
       process.stdout.write(`${YELLOW}⚠ ${ev.message || ''}${RESET}\n`);
       break;
     case 'compact-boundary':
@@ -153,6 +200,7 @@ function handleEvent(ev) {
 async function runTurn(text) {
   turning = true;
   let anyToken = false;
+  spinnerStart('思考中…');
   try {
     const tools = createAgentTools({
       repoRoot: argDir,
@@ -181,9 +229,10 @@ async function runTurn(text) {
       sessionId,
       cwd: argDir,
       signal: turnAbort.current.signal,
-      onToken: (d) => { anyToken = true; process.stdout.write(String(d)); },
+      onToken: (d) => { if (!anyToken) spinnerStop(); anyToken = true; process.stdout.write(String(d)); },
       onEvent: handleEvent
     });
+    spinnerStop();
     if (anyToken) process.stdout.write('\n');
     if (out?.error) {
       process.stdout.write(`${RED}${out.error}${RESET}\n`);
@@ -205,21 +254,44 @@ async function runTurn(text) {
     history.push({ role: 'user', content: text });
     history.push({ role: 'assistant', content: out?.answer ?? out?.partialContent ?? '', trace: out?.trace ?? [] });
   } catch (e) {
+    spinnerStop();
     process.stdout.write('\n');
     process.stdout.write(`${RED}回合异常：${String(e?.message || e)}${RESET}\n`);
   } finally {
+    spinnerStop();
     turning = false;
     turnAbort.current = null;
   }
 }
 
 const HELP = [
-  `${BOLD}FinalCheck CLI${RESET}  项目：${argDir}`,
-  `模型：${prov.name} / ${model}    会话存档：${CLI_SESSIONS_DIR}`,
-  '',
   '直接输入 = 对话；模型可以读写本目录、跑命令（过 FC 三道闸：敏感路径/项目边界/删除目标）。',
-  `${CYAN}/new${RESET} 开新会话    ${CYAN}/resume${RESET} 选老会话继续    ${CYAN}/sessions${RESET} 只列出    ${CYAN}/exit${RESET} 退出    Ctrl+C 中止本回合/退出`
+  '/new 开新会话    /resume 选老会话继续    /sessions 只列出    /exit 退出    Ctrl+C 中止本回合/退出'
 ].join('\n');
+
+function printWelcome() {
+  const info = [
+    `${BOLD}FinalCheck CLI${RESET}`,
+    `${DIM}终端里的交付前验收助手（学 Claude Code 交互）${RESET}`,
+    '',
+    `模型  ${prov.name} / ${model}`,
+    `项目  ${argDir}`,
+    `会话  ${CLI_SESSIONS_DIR}`
+  ];
+  const width = Math.max(...LOGO_LINES.map((l) => displayWidth(l)));
+  const rows = Math.max(LOGO_LINES.length, info.length);
+  for (let i = 0; i < rows; i++) {
+    const logoPart = CYAN + padTo(LOGO_LINES[i] || '', width) + RESET;
+    process.stdout.write(logoPart + '   ' + (info[i] || '') + '\n');
+  }
+  console.log();
+  console.log(box([
+    '直接输入 = 对话；跑命令过 FC 三道闸（敏感路径 / 项目边界 / 删除目标）',
+    '/new 开新会话   /resume 选老会话   /sessions 列出   /help 全部   /exit 退出',
+    'Ctrl+C 中止本回合；再按一次退出'
+  ], '开始'));
+  console.log();
+}
 
 const rl = readline.createInterface({
   input: process.stdin,
@@ -315,7 +387,7 @@ rl.on('SIGINT', () => {
 });
 
 // ---- 启动 ----
-console.log(HELP);
+printWelcome();
 if (process.stdin.isTTY !== true) dimLine('（非交互模式：从 stdin 逐行读，EOF 或 /exit 结束）');
 await newLocalSession();
 if (process.stdin.isTTY === true) rl.prompt();
