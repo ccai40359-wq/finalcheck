@@ -44,15 +44,45 @@ function box(lines, title = '') {
 }
 
 const LOGO_LINES = [
-  ' ███████╗ ██████╗',
-  ' ██╔════╝██╔════╝',
-  ' █████╗  ██║',
-  ' ██╔══╝  ██║',
-  ' ██║     ╚██████╗',
-  ' ╚═╝      ╚═════╝'
+  [' ███████╗ ██████╗', 0],
+  [' ██╔════╝██╔════╝', 0],
+  [' █████╗  ██║', 1],
+  [' ██╔══╝  ██║', 1],
+  [' ██║     ╚██████╗', 2],
+  [' ╚═╝      ╚═════╝', 2]
 ];
 
 // 回合等待指示器（学 CC 的转菊；只在 TTY 下动，管道模式安静）
+// ---- Hermes 式细节：金色渐变 / 工具 emoji / shell 命令摘要 / 工具输出饰符 ----
+const GOLD = ['\x1b[38;2;255;215;0m', '\x1b[38;2;255;191;0m', '\x1b[38;2;205;127;50m']; // #FFD700/#FFBF00/#CD7F32
+const TOOL_EMOJI = { run_command: '⚙️', read_file: '📄', edit_file: '✏️', write_file: '📝', grep_code: '🔍', list_dir: '📂' };
+
+// shell 命令摘要（学 display.py summarize_shell_command 的简化版）：
+// 剥重定向、跳过 cd/export/echo 哨兵段、多段时「首段 (+N)」
+const SHELL_SILENT_HEADS = new Set(['cd', 'pushd', 'popd', 'export', 'set', 'unset', 'source', '.', 'true', 'false', ':', 'head', 'tail', 'wc', 'sort', 'uniq', 'column', 'less', 'more']);
+function shellSummarize(command) {
+  const original = String(command || '').replace(/\s+/g, ' ').trim();
+  if (!original) return '';
+  const segments = original.split(/&&|\|\||;|\|/).map((s) => s.trim()).filter(Boolean);
+  const stripRedir = (s) => s.replace(/\s*\d*(?:>>?|<)\s*\S+/g, ' ').replace(/\s*\d*>&\d+/g, ' ').trim();
+  const headWord = (s) => (s.split(/\s+/)[0] || '');
+  const core = [];
+  for (const seg of segments) {
+    const cleaned = stripRedir(seg);
+    if (!cleaned) continue;
+    if (SHELL_SILENT_HEADS.has(headWord(cleaned))) continue;
+    if (/^echo\s+(-{2,}|.*\$[?{])/.test(cleaned)) continue; // echo $? 这类哨兵
+    core.push(cleaned);
+  }
+  if (!core.length) return original;
+  if (core.length === 1) return core[0];
+  return `${core[0]} (+${core.length - 1})`;
+}
+
+function versionOf() {
+  try { return JSON.parse(fsSync.readFileSync(path.join(ROOT, 'desktop/package.json'), 'utf8')).version || ''; } catch { return ''; }
+}
+
 const SPIN_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 const spinner = { timer: null, frame: 0, label: '思考中…', startAt: 0 };
 function spinnerStart(label) {
@@ -207,7 +237,7 @@ function handleEvent(ev) {
   switch (ev.kind) {
     case 'tool-start':
       spinnerStop();
-      dimLine(`  ⏺ ${toolLabel(ev.name)}(${toolArgsPreview(ev.name, ev.args)})`);
+      dimLine(`  ⏺ ${TOOL_EMOJI[ev.name] || '⚡'} ${toolLabel(ev.name)}(${shellSummarize(toolArgsPreview(ev.name, ev.args))})`);
       break;
     case 'tool-end':
       if (ev.ok === false && !ev.cancelled) {
@@ -220,7 +250,7 @@ function handleEvent(ev) {
           ? r
           : String(r?.stdout ?? r?.summary ?? r?.text ?? r?.output ?? r?.content ?? JSON.stringify(r));
         const preview = s.split('\n').filter((x) => x.trim()).slice(0, 2).map((x) => x.slice(0, 110)).join(' ⏎ ');
-        if (preview) dimLine(`    ${preview}`);
+        if (preview) dimLine(`    ┊ ${preview}`);
       }
       break;
     case 'warning':
@@ -319,12 +349,15 @@ function printWelcome() {
     `项目  ${argDir}`,
     `会话  ${CLI_SESSIONS_DIR}`
   ];
-  const width = Math.max(...LOGO_LINES.map((l) => displayWidth(l)));
+  const width = Math.max(...LOGO_LINES.map(([l]) => displayWidth(l)));
   const rows = Math.max(LOGO_LINES.length, info.length);
   for (let i = 0; i < rows; i++) {
-    const logoPart = CYAN + padTo(LOGO_LINES[i] || '', width) + RESET;
+    const [logoLine, tone] = LOGO_LINES[i] || ['', 0];
+    const logoPart = (LOGO_LINES[i] ? GOLD[tone] : '') + padTo(logoLine, width) + RESET;
     process.stdout.write(logoPart + '   ' + (info[i] || '') + '\n');
   }
+  const ver = versionOf();
+  if (ver) process.stdout.write(`${DIM}v${ver} · 单文件 CLI · 引擎与桌面端同源${RESET}\n`);
   console.log();
   console.log(box([
     '直接输入 = 对话；跑命令过 FC 三道闸（敏感路径 / 项目边界 / 删除目标）',
@@ -409,8 +442,12 @@ async function handleLine(line) {
   }
   if (!sessionId) await newLocalSession();
   turnAbort.current = new AbortController();
-  process.stdout.write(`${DIM}──── ${new Date().toLocaleTimeString()} ────${RESET}\n`);
+  // Hermes 式提交回显：分隔线 + ● 原文行
+  process.stdout.write(`${DIM}${'─'.repeat(40)}${RESET}\n${CYAN}●${RESET} ${text}\n`);
   await runTurn(text);
+  if (process.stdin.isTTY === true) {
+    process.stdout.write(`${DIM}⚜ ${prov.name}/${model} │ ${String(sessionId || '').slice(0, 8)}${RESET}\n`);
+  }
 }
 
 function finish() {
