@@ -434,9 +434,20 @@ public class FcCu {
     if (guard != null && (text.Length == 0 || text.Length > 4096)) throw new InvalidOperationException("Type accepts 1 to 4096 UTF-16 code units per action.");
     // 0.29.2：同上——入口不比 title；窗口身份 hwnd+pid，键盘落点 guard.focusHwnd。
     AssertForeground(guard, true, false);
+    // 0.30.4 真机实证：此循环此前**零延时**把整串 Unicode 码点糊进队列，微信（Qt 自绘）
+    // 处理不过来直接丢字——实测发出去的「你好，这是徐潇的…」变成「你好， ， 是徐潇的…」
+    // （「这」丢失、多出一个逗号），随后模型为核字拍了 22 次极小块 region，整场 47 次调用。
+    // 修法=模拟真人节奏：每字符 15ms（约 60 字/秒上限，真人打这句话要 3-5 秒，用户无感），
+    // 给目标应用的输入队列足够喘息。鼠标点击/拖拽/按键重复本来就有 20-80ms 延时，唯独打字漏了。
+    // ⚠️ C# 没有类型推断的 const：必须写 const int（写成 const charDelayMs = 15 会让
+    // 整个 Add-Type 编译失败 → 注入宿主起不来 → 所有截图/动作全挂，真机实测被抓到）。
+    const int charDelayMs = 15;
+    int i = 0;
     foreach (char c in text) {
       AssertForeground(guard, true, false);
       Submit(UnicodeEvent(c, UNICODE), UnicodeEvent(c, UNICODE | KEYUP));
+      // 最后一个字符后不必再等（调用方紧接着发送按钮点击）
+      if (++i < text.Length) System.Threading.Thread.Sleep(charDelayMs);
     }
   }
 

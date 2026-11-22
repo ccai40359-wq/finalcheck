@@ -385,7 +385,14 @@ function checkPolicy(foreground, action) {
   if (!ledger.isGranted(foreground.process)) {
     return {
       ok: false, deniedBy: 'access', needAccess: foreground.process, foreground: brief(foreground),
-      error: `应用「${foreground.process}」还没有获得操作授权。请先调用 computer_request_access。`
+      // 0.30.5：真机实证——模型要切前台时经常忘记「当前占着前台的窗口也得授权」，
+      // 于是去试 Alt+Tab / 点任务栏，浪费 6-7 次调用（r3 实测）。这里直接把该授权谁说出来，
+      // 并给出一次到位的调用形状，省掉摸索。
+      error: `应用「${foreground.process}」还没有获得操作授权。` +
+        (action === 'focus'
+          ? `要把目标窗口切到前台，必须先获得当前占用前台的「${foreground.process}」的授权——一次调用把两者都带上：computer_request_access { apps: ["${foreground.process}", "<目标应用>"] }，然后再 focus，不要用 Alt+Tab 或点任务栏（会被遮挡/时效校验拦下）。`
+          : '请先调用 computer_request_access。'),
+      hint: action === 'focus' ? 'grant-foreground-plus-target' : null
     };
   }
   return null;
@@ -434,35 +441,30 @@ function actionResult(action, foreground) {
  * - 观测：目标窗口自己的 UIA 子树（名字 + 值）。UIA 不适用（微信/Electron）→ R10 快速失败。
  * - R7：超时返回 ok:true/matched:false/timedOut:true，绝不是 ok:false。
  */
-export async function waitFor(waitFor = {}) {
-  const condition = String(waitFor?.condition ?? '').trim();
-  const selector = String(waitFor?.target?.selector ?? '').trim();
-  const value = typeof waitFor?.value === 'string' ? waitFor.value : '';
-  const timeoutMs = normalizeTimeout(waitFor?.timeout_ms);
+export async function waitFor(request = {}) {
+  const condition = String(request?.condition ?? '').trim();
+  const selector = String(request?.target?.selector ?? '').trim();
+  const value = typeof request?.value === 'string' ? request.value : '';
+  const timeoutMs = normalizeTimeout(request?.timeout_ms);
   const state = await desktopContext();
   if (!state.ok) {
-    return { ok: true, matched: false, timedOut: false, attempts: 0, elapsedMs: 0, windowClosed: true, reason: state.reason };
+    return { ok: true, matched: false, timedOut: false, attempts: 0, elapsedMs: 0, windowClosed: false, unobservable: true, reason: state.reason };
   }
   const foreground = state.foreground;
-  const hwnd = Number(waitFor?.target?.hwnd) || Number(foreground?.hwnd) || 0;
+  const hwnd = Number(request?.target?.hwnd) || Number(foreground?.hwnd) || 0;
   if (!hwnd) {
-    return { ok: true, matched: false, timedOut: false, attempts: 0, elapsedMs: 0, windowClosed: true, reason: '无法确定等待目标的窗口句柄' };
+    return { ok: true, matched: false, timedOut: false, attempts: 0, elapsedMs: 0, windowClosed: false, unobservable: true, reason: '无法确定等待目标的窗口句柄' };
   }
   // R10：进程没有 UIA 树（微信/Electron/Chromium）→ 一次就返回，不硬等满超时
-  const processName = Number(waitFor?.target?.hwnd) ? (await input.windowInfo(hwnd).catch(() => null))?.process : foreground?.process;
+  const target = hwnd === foreground?.hwnd ? foreground : await input.windowInfo(hwnd).catch(() => null);
+  const processName = target?.process;
   const failFast = makeFailFast(condition, processName, { cache: uiaVerdicts });
   const result = await waitForCondition({
     condition, selector, value, timeoutMs,
     observe: async () => {
-      // hwnd 存活 + pid 匹配：投递途中窗口关闭 → 立即返回（R10）
-      const info = await input.windowInfo(hwnd).catch(() => null);
-      if (!info?.hwnd || info.hwnd !== hwnd) return { windowAlive: false, hasUiaTree: false, elements: [], values: [] };
-      const obs = await uiaObserve(hwnd, { maxNodes: 400 });
-      if (!obs.ok) {
-        // 宿主失败/超时：按「这次没观测到」处理（不立刻判死，交给循环与预算）
-        return { windowAlive: true, hasUiaTree: false, elements: [], values: [] };
-      }
-      return { windowAlive: obs.windowAlive, hasUiaTree: true, elements: obs.elements, values: obs.values };
+      const obs = await uiaObserve(hwnd, { maxNodes: 400, pid: target?.pid });
+      if (!obs.ok) return { hasUiaTree: false, reason: obs.message };
+      return { ...obs, hasUiaTree: obs.windowAlive };
     },
     failFast
   });
@@ -489,7 +491,7 @@ export function performAction(action, params = {}) {
 
 async function runAction(action, params) {
   if (!clickActions.has(action) && !otherActions.has(action)) return { ok: false, error: `不认识的桌面动作：${action}` };
-  const state = await desktopContext();
+  let state = await desktopContext();
   if (!state.ok) return { ok: false, error: state.reason };
   let foreground = state.foreground;
   if (!foreground) return deny('foreground-mismatch', '无法确认前台窗口。请重新截图。');
@@ -527,11 +529,16 @@ async function runAction(action, params) {
       lastAutoRefocusAt = now;
       const winInfo = await input.windowInfo(hwnd).catch(() => null);
       const target = winInfo ? withPolicy(winInfo) : null;
-      if (target && matchesProcess(target.process, shot.foreground.process)) {
-        // 目标已验过授权与身份，此处的 focus 只是把被抢走的前台要回来，guard 留空
+      if (sameWindow(target, shot.foreground) && matchesProcess(target.process, shot.foreground.process)) {
+        const denied = checkPolicy(target, action);
+        if (denied) return denied;
+        if (shot !== latestScreenshot) {
+          return deny('screenshot-required', '截图已失效，请重新截图。', target);
+        }
         await input.focusWindow(hwnd, { target, guard: null });
         const after = await desktopContext();
         if (after.ok && after.foreground && sameWindow(after.foreground, shot.foreground)) {
+          state = after;
           foreground = after.foreground;
           foregroundNow = after.foreground;
           recovered = true;
@@ -542,6 +549,10 @@ async function runAction(action, params) {
           if (recheck) {
             latestScreenshot = null;
             return recheck;
+          }
+          if (shot !== latestScreenshot || (!keyboard && !sameObservation(shot.foreground, foreground))) {
+            latestScreenshot = null;
+            return deny('screenshot-required', '窗口或截图已变化，请重新截图再操作。', foreground);
           }
         }
       }
@@ -647,6 +658,9 @@ async function runAction(action, params) {
     if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) continue;
     let top = null;
     try { top = await input.windowAtPoint(point.x, point.y); } catch { top = null; }
+    if (shot !== latestScreenshot) {
+      return deny('screenshot-required', '截图已失效，请重新截图。', foreground);
+    }
     const blocker = occludedBy(top, foreground);
     if (!blocker) continue;
     if (uiaEligible) {
@@ -655,6 +669,10 @@ async function runAction(action, params) {
       // 此前写成 if (viaUia)——tryUiaClick 失败也返回对象，条件恒真 → break 出循环 →
       // 落到函数尾部 dispatchAction，等于把点击打在遮挡窗上（0.29.7 遮挡防线被绕过）。
       uiaAttempted = viaUia;
+      if (!viaUia.ok && !viaUia.notPerformed) {
+        latestScreenshot = null;
+        return deny('action-outcome-unknown', '无法确认动作是否已经生效，请先重新截图核对，再决定下一步。', foreground, { uia: { code: viaUia.code, reason: viaUia.error } });
+      }
       if (viaUia?.ok) break; // 已用无障碍接口完成，不再走 SendInput（也不存在遮挡拒绝）
     }
     return deny('occluded', `目标被「${blocker}」遮挡，请移开遮挡窗口或调整布局后重新截图再操作。` +
@@ -689,8 +707,7 @@ async function runAction(action, params) {
 // 不依赖像素可见性（FromPoint 在被遮挡时返回的是遮挡窗元素——真机实测，见 uia-adapter 头注释）。
 // 归属/授权：runAction 上游已完成 tier 检查 + checkActionAllowed + ledger.isGranted（UIA 不绕过任何一层），
 // 这里再自行复刻 hwnd+pid 归属断言（C# 侧 GetWindowThreadProcessId + GA_ROOT，不依赖 AssertPoint）。
-// 失败分类严守 R3：只有「动作肯定没发生」的错误才回退 SendInput（no-pattern/element-not-found/
-// stale-element/ownership-mismatch）；invoke 发出后的超时/RPC 错误绝不回退（会双击，微信重复发送）。
+// 遮挡分支在 UIA 失败后停止。未知结果要求重新观测，以免重复提交。
 async function tryUiaClick(foreground, point) {
   const started = Date.now();
   try {
@@ -709,13 +726,15 @@ async function tryUiaClick(foreground, point) {
       };
     }
     const classified = classifyUiaError(r.code);
-    // 探测结论学习：no-uia-root / pid-changed 说明这个应用没有可用树 → 记住 skip，后续动作零延迟。
-    if (r.code === 'element-not-found' && /no-uia-root|window-closed/i.test(String(r.message ?? ''))) {
+    // 探测结论学习：只有 no-uia-root（这个应用压根没有无障碍树）才值得永久记 skip，
+    // 后续动作零延迟。0.30.3 修正：窗口关闭（window-closed）是**瞬态**——应用可能被重开、
+    // 窗口可能重建，永久 skip 会让该进程再也不能 UIA 穿透（审查发现 A）。
+    if (r.code === 'element-not-found' && /no-uia-root/i.test(String(r.message ?? ''))) {
       rememberUiaVerdict(uiaVerdicts, foreground.process, 'skip');
     }
-    return { ok: false, code: r.code, error: r.message, fallbackAllowed: classified.fallbackAllowed };
+    return { ok: false, code: r.code, error: r.message, notPerformed: classified.notPerformed };
   } catch (error) {
-    return { ok: false, code: 'host-error', error: String(error?.message || error), fallbackAllowed: false };
+    return { ok: false, code: 'host-error', error: String(error?.message || error), notPerformed: false };
   }
 }
 

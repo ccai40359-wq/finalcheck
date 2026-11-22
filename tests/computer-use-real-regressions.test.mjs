@@ -70,7 +70,11 @@ test('cu-real: guarded key validates one chord and checks foreground and child f
   // 身份由 hwnd+pid 保证，落点由 focus 复核保证；指针路径（false, true）不受影响。
   assert.match(guarded, /AssertForeground\(guard, true, false\);\s+Submit\(events, events\.Length \/ 2\)/);
   assert.doesNotMatch(guarded, /SendKeys/);
-  assert.match(inputSrc.slice(inputSrc.indexOf('public static void TypeText'), inputSrc.indexOf('public static bool GuardedFocus')), /AssertForeground\(guard, true, false\);\s*\r?\n\s*foreach/);
+  // 0.30.4：断言入口仍有前台校验 + foreach 逐字符（中间新增了延时说明注释，不再是紧邻两行，故用 appearance 包裹）
+  const typeBody = inputSrc.slice(inputSrc.indexOf('public static void TypeText'), inputSrc.indexOf('public static bool GuardedFocus'));
+  assert.match(typeBody, /AssertForeground\(guard, true, false\);[\s\S]{0,1200}foreach \(char c in text\)/,
+    'TypeText 入口必须前台校验，随后逐字符投递');
+  assert.match(typeBody, /AssertForeground\(guard, true, false\);\s*\r?\n\s*Submit\(UnicodeEvent/, '每个字符投递前都要复核前台');
   assert.match(cuSrc, /before\?\.foreground\?\.focusHwnd === foreground\?\.focusHwnd/);
   // 0.29.7（A3 反过度思考）：指针动作成功后不再强制作废截图（同一窗口连续操作可复用 screenshot_id）；
   // 安全网仍在：下一次动作前 sameObservation 全量比对 + 注入层 AssertForeground/AssertPoint 复核。

@@ -174,7 +174,7 @@ test('wait: makeFailFast 对 UIA 富应用返回 null（正常轮询）', () => 
   assert.equal(makeFailFast('element-exists', 'unknownapp', { cache: new Map() }), null); // 未知先正常探
 });
 
-test('wait: 观测抛出 → 按窗口失效处理（element-gone 命中；其它如实返回）', async () => {
+test('wait: 观测失败不能证明窗口关闭', async () => {
   const h = clockHarness();
   const gone = await waitForCondition({
     condition: 'element-gone', selector: 'Save', timeoutMs: 5000,
@@ -182,8 +182,9 @@ test('wait: 观测抛出 → 按窗口失效处理（element-gone 命中；其�
     observe: async () => { throw new Error('UIA host down'); }
   });
   assert.equal(gone.ok, true);
-  assert.equal(gone.matched, true);
-  assert.equal(gone.windowClosed, true);
+  assert.equal(gone.matched, false);
+  assert.equal(gone.windowClosed, false);
+  assert.equal(gone.unobservable, true);
   assert.match(gone.reason, /UIA host down/);
 
   const exists = await waitForCondition({
@@ -193,8 +194,8 @@ test('wait: 观测抛出 → 按窗口失效处理（element-gone 命中；其�
   });
   assert.equal(exists.ok, true);
   assert.equal(exists.matched, false);
-  assert.equal(exists.timedOut, false);
-  assert.equal(exists.windowClosed, true);
+  assert.equal(exists.timedOut, true);
+  assert.equal(exists.windowClosed, false);
 });
 
 test('wait: 默认参数（不传 timeout/poll）与常量一致', async () => {
@@ -240,12 +241,10 @@ test('钉 R7: 工具层把 wait 结果合并进动作结果，超时不改写 ok
 test('钉: computer-use 的 waitFor 使用进程适用性做 R10 快速失败，且 hwnd 存活复检', () => {
   const fn = cuSrc.slice(cuSrc.indexOf('export async function waitFor('), cuSrc.indexOf('export function performAction'));
   assert.match(fn, /makeFailFast\(condition, processName, \{ cache: uiaVerdicts \}\)/);
-  assert.match(fn, /const info = await input\.windowInfo\(hwnd\)\.catch\(\(\) => null\);/);
-  assert.match(fn, /if \(!info\?\.hwnd \|\| info\.hwnd !== hwnd\) return \{ windowAlive: false/);
   // 观测走 UIA 子树（不是像素/截图）
-  assert.match(fn, /uiaObserve\(hwnd, \{ maxNodes: 400 \}\)/);
+  assert.match(fn, /uiaObserve\(hwnd, \{ maxNodes: 400, pid: target\?\.pid \}\)/);
   // 超时预算归一在入口就做
-  assert.match(fn, /normalizeTimeout\(waitFor\?\.timeout_ms\)/);
+  assert.match(fn, /normalizeTimeout\(request\?\.timeout_ms\)/);
 });
 
 test('钉: UIA observe 只读（枚举名字/值，不 Invoke、不改窗口状态）', () => {
@@ -259,5 +258,5 @@ test('钉: UIA observe 只读（枚举名字/值，不 Invoke、不改窗口状�
 });
 
 test('钉: 观测预算默认 400 节点（防超大 UIA 树拖住轮询）', () => {
-  assert.match(cuSrc, /uiaObserve\(hwnd, \{ maxNodes: 400 \}\)/);
+  assert.match(cuSrc, /uiaObserve\(hwnd, \{ maxNodes: 400, pid: target\?\.pid \}\)/);
 });

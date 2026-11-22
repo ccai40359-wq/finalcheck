@@ -6,6 +6,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.30.4] - 2026-11-22
+
+### Improved
+
+- Desktop control now follows a five-stage workflow: **resolve the target → capture the target window directly (no full-screen first) → keep one screenshot across consecutive actions → re-verify only after result-bearing actions (send/save/delete) → use region capture only to read small text**. Sending one WeChat message used to mean a full-screen shot plus repeated cropping to find tiny glyphs; a window capture now returns the whole window in one shot, and coordinates are in-image pixels converted automatically. Full-screen capture keeps five legitimate uses: unknown target window, need screen-relative layout, target minimized, target is FinalCheck itself, suspected tray/system popup interference.
+
+## [0.30.3] - 2026-11-22
+
+### Fixed
+
+- The horizontal scrollbar at the bottom of a conversation is gone: a wide table in a reply used to stretch the whole message area, adding a page-wide bar underneath (only conversations containing tables showed it; text-only ones didn't). Tables now scroll inside their own box and still show everything.
+- Visual self-checking now has a stop-loss: after finishing a page or deck the assistant used to take dozens of screenshots picking at pixels (34 screenshots in one measured task). It now finishes the artifact first, reviews once, and self-checks at most 3 rounds per artifact, then delivers and lists known unfixed details; only severe issues (clipped content, overlapping elements, blank screen, misalignment) keep triggering fixes, while font weight and 1px radius tweaks happen once and move on.
+- Three accessibility-passthrough false judgements: (1) when an app window was closed (rather than genuinely having no accessibility tree) it permanently remembered "no passthrough for this app", which survived restarts — now only a confirmed tree-less app is remembered; (2) self-drawn apps return "tree readable but zero elements", which used to count as "the element really disappeared" and made waits report success — now "confirmed gone" and "unreadable" are distinct; (3) an unknown process name used to mean "unsupported" — it is now handed to a real probe.
+
 ## [0.30.1] - 2026-11-22
 
 ### Fixed

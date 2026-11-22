@@ -52,7 +52,10 @@ export const UIA_NO_TREE_PATTERNS = [
  */
 export function uiaApplicability(processName, { cache } = {}) {
   const name = String(processName ?? '').trim().replace(/\.exe$/i, '').toLowerCase();
-  if (!name) return 'skip';
+  // 0.30.3（审查发现 C）：进程名拿不到 ≠ 这个应用没有 UIA 树。此前返回 'skip' 会让
+  // wait_for 直接快速失败报 no-uia-tree（显式 target.hwnd + windowInfo 瞬时失败时误判）。
+  // 返回 'unknown'：表示「没信息」，交给实际探测（探一次后由 rememberUiaVerdict 学习）。
+  if (!name) return 'unknown';
   if (cache && cache.get(name)) return cache.get(name);
   if (UIA_NO_TREE_PATTERNS.some((re) => re.test(name))) return 'skip';
   if (UIA_RICH_PATTERNS.some((re) => re.test(name))) return 'uia';
@@ -66,14 +69,11 @@ export function rememberUiaVerdict(cache, processName, verdict) {
   if (name) cache.set(name, verdict);
 }
 
-// ---- 错误分类（回退表）----
-// P0：只有「动作肯定没发生」的错误才允许回退 SendInput。invoke 已经发出后的超时/RPC 错误
-// 绝不回退——那会变成双击（微信场景下就是重复发送消息）。
-export const UIA_FALLBACK_CODES = new Set(['no-pattern', 'element-not-found', 'stale-element', 'ownership-mismatch']);
+// These errors are reported before the control action starts.
+const UIA_NOT_PERFORMED = new Set(['no-pattern', 'element-not-found', 'stale-element', 'ownership-mismatch']);
 export function classifyUiaError(code) {
   const c = String(code ?? '').trim();
-  const fallbackAllowed = UIA_FALLBACK_CODES.has(c);
-  return { code: c || 'unknown', fallbackAllowed };
+  return { code: c || 'unknown', notPerformed: UIA_NOT_PERFORMED.has(c) };
 }
 
 // ---- 哪些动作允许走 UIA（只做单击左键；不做拖拽/滚动/右键/中键/连击）----
@@ -246,44 +246,63 @@ public class FcUia {
 
   // 0.30.0（特性 3）：wait-for 的观测快照——枚举目标窗口子树里「有名字的元素」与「文本值」。
   // output: OK|alive=1|names=...|values=...（names/values 用 U+0001 分隔，避免与 '|' 衝突）
-  public static string Observe(long hwnd, int maxNodes) {
+  public static string Observe(long hwnd, int maxNodes, int expectedPid) {
     IntPtr h = new IntPtr(hwnd);
-    if (!IsWindow(h)) return "OK|alive=0|names=|values=";
+    if (!IsWindow(h)) return "CLOSED";
+    uint actualPid;
+    if (GetWindowThreadProcessId(h, out actualPid) == 0) return "ERR|window-query";
+    if (expectedPid > 0 && actualPid != (uint)expectedPid) return "CLOSED";
     AutomationElement root;
-    try { root = AutomationElement.FromHandle(h); } catch { return "OK|alive=0|names=|values="; }
-    if (root == null) return "OK|alive=0|names=|values=";
+    try { root = AutomationElement.FromHandle(h); } catch { return "ERR|no-uia-root"; }
+    if (root == null) return "ERR|no-uia-root";
     var names = new List<string>();
     var values = new List<string>();
     var stack = new Stack<AutomationElement>();
     stack.Push(root);
+    bool complete = true;
     int visited = 0;
     int budget = maxNodes > 0 ? maxNodes : 400;
     while (stack.Count > 0 && visited < budget) {
       AutomationElement el = stack.Pop();
       if (el == null) continue;
       visited++;
-      string name = SafeName(el);
-      if (name.Length > 0 && name.Length < 120) names.Add(name);
+      try {
+        string name = el.Current.Name;
+        if (!String.IsNullOrEmpty(name)) {
+          if (name.Length < 120) names.Add(EncodeField(name));
+          else complete = false;
+        }
+      } catch { complete = false; }
       // 文本值：ValuePattern 或 TextPattern 的当前值（后者取 DocumentRange 的文本，可能很长——截断）
       try {
         ValuePattern vp = (ValuePattern)el.GetCurrentPattern(ValuePattern.Pattern);
         string v = vp.Current.Value;
-        if (v != null) values.Add(v.Length > 400 ? v.Substring(0, 400) : v);
+        if (v != null) values.Add(EncodeField(v.Length > 400 ? v.Substring(0, 400) : v));
       } catch { }
       try {
         TextPattern tp = (TextPattern)el.GetCurrentPattern(TextPattern.Pattern);
         string t = tp.DocumentRange.GetText(400);
-        if (!string.IsNullOrEmpty(t)) values.Add(t);
+        if (!string.IsNullOrEmpty(t)) values.Add(EncodeField(t));
       } catch { }
       AutomationElement child = null;
-      try { child = TreeWalker.ControlViewWalker.GetFirstChild(el); } catch { child = null; }
+      try { child = TreeWalker.ControlViewWalker.GetFirstChild(el); } catch { complete = false; child = null; }
       int guard = 0;
       while (child != null && guard++ < 200) {
         stack.Push(child);
-        try { child = TreeWalker.ControlViewWalker.GetNextSibling(child); } catch { child = null; }
+        try { child = TreeWalker.ControlViewWalker.GetNextSibling(child); } catch { complete = false; child = null; }
       }
+      if (child != null) complete = false;
     }
-    return "OK|alive=1|names=" + string.Join("", names.ToArray()) + "|values=" + string.Join("", values.ToArray());
+    complete = complete && stack.Count == 0;
+    // 0.30.3（审查发现 B）：第五段 = 遍历到的节点数。自绘/深树应用会返回 OBS|1|||
+    // （complete=true 但零个有名字元素）——不看节点数就无法区分「树是真的空」与
+    // 「根本没读到树」，wait_for 的 element-gone 会误报 matched。
+    return "OBS|" + (complete ? "1" : "0") + "|" + string.Join(",", names.ToArray()) + "|" +
+      string.Join(",", values.ToArray()) + "|" + visited;
+  }
+
+  static string EncodeField(string value) {
+    return Convert.ToBase64String(Encoding.UTF8.GetBytes(value));
   }
 
   public static string Invoke(long hwnd, int pid, int x, int y) {
@@ -333,7 +352,7 @@ public class FcUia {
     } catch (COMException ex) {
       return "ERR|" + (started ? "invoke-rpc-error" : "com-error") + "|" + ex.Message.Replace("|", " ");
     } catch (InvalidOperationException ex) {
-      return "ERR|no-pattern|" + ex.Message.Replace("|", " ");
+      return "ERR|" + (started ? "invoke-rpc-error" : "no-pattern") + "|" + ex.Message.Replace("|", " ");
     } catch (Exception ex) {
       return "ERR|" + (started ? "invoke-rpc-error" : "com-error") + "|" + ex.GetType().Name + ":" + ex.Message.Replace("|", " ");
     }
@@ -350,7 +369,7 @@ while ($true) {
     switch ($cmd.op) {
       "probe" { Write-Output ([FcUia]::Probe([long]$cmd.hwnd)) }
       "invoke" { Write-Output ([FcUia]::Invoke([long]$cmd.hwnd, [int]$cmd.pid, [int]$cmd.x, [int]$cmd.y)) }
-      "observe" { Write-Output ([FcUia]::Observe([long]$cmd.hwnd, [int]$cmd.maxNodes)) }
+      "observe" { Write-Output ([FcUia]::Observe([long]$cmd.hwnd, [int]$cmd.maxNodes, [int]$cmd.pid)) }
       default { Write-Output ("ERR|host-error|unknown op: " + $cmd.op) }
     }
   } catch {
@@ -496,18 +515,25 @@ function withTimeout(promise, ms) {
 }
 
 /** 0.30.0（特性 3）：wait-for 观测快照。返回 { ok, windowAlive, elements, values }。 */
-export async function uiaObserve(hwnd, { maxNodes = 400 } = {}) {
+export async function uiaObserve(hwnd, { maxNodes = 400, pid = 0 } = {}) {
   try {
     await ensureUiaReady();
-    const line = await withTimeout(sendUia({ op: 'observe', hwnd: Number(hwnd), maxNodes }), 8000);
+    const line = await withTimeout(sendUia({ op: 'observe', hwnd: Number(hwnd), maxNodes, pid }), 8000);
     const text = String(line ?? '');
-    if (!text.startsWith('OK|')) return { ok: false, code: 'host-error', message: text || '空响应' };
-    const parts = text.slice(3).split('|');
-    const alive = parts[0] === 'alive=1';
-    const namesRaw = parts.find((p) => p.startsWith('names='));
-    const valuesRaw = parts.find((p) => p.startsWith('values='));
-    const split = (raw) => (raw ? raw.slice(raw.indexOf('=') + 1).split('').filter(Boolean) : []);
-    return { ok: true, windowAlive: alive, elements: split(namesRaw), values: split(valuesRaw) };
+    if (text === 'CLOSED') return { ok: true, windowAlive: false, elements: [], values: [] };
+    const fields = text.split('|');
+    if (fields.length < 4 || fields[0] !== 'OBS' || !['0', '1'].includes(fields[1])) {
+      return { ok: false, code: 'host-error', message: text || '空响应' };
+    }
+    const decode = (field) => field ? field.split(',').map((item) => Buffer.from(item, 'base64').toString('utf8')) : [];
+    // 0.30.3（审查发现 B）：第五段是遍历节点数（老宿主没有这一段 → visited=null，按老行为处理）。
+    // visited<=1 表示「只看到根节点、一个子元素都没读到」——这种树不可信，不能据此断言元素消失。
+    const visitedRaw = fields.length >= 5 ? Number(fields[4]) : NaN;
+    const visited = Number.isFinite(visitedRaw) ? visitedRaw : null;
+    return {
+      ok: true, windowAlive: true, complete: fields[1] === '1',
+      elements: decode(fields[2]), values: decode(fields[3]), visited
+    };
   } catch (error) {
     return { ok: false, code: String(error?.message) === 'timeout' ? 'timeout' : 'host-error', message: String(error?.message || error) };
   }

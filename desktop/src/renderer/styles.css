@@ -458,6 +458,10 @@ h1, h2, .brand, .font-kai {
   font-size: 0.86em;
   display: block;
   overflow-x: auto;
+  /* 0.30.2：表格自身可横滑，但绝不能把父容器撑宽——否则整个消息区底部出现横条。
+     复现条件：会话里只要有一条宽表格就中招，纯文字会话看不出来。 */
+  max-width: 100%;
+  box-sizing: border-box;
 }
 .md th, .md td {
   border: 1px solid rgb(var(--fc-gold) / 0.35);

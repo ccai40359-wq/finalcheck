@@ -2,7 +2,7 @@
 //
 // 真机前提（D:/fc-bench-0291/uia-poc/）：AutomationElement.FromPoint 在被遮挡时返回**遮挡窗**元素
 // （z-order 命中测试），因此穿透必须走「目标 hwnd FromHandle → 自己的子树几何命中 → 归属断言 → Invoke」。
-// 本文件钉住：三态适用性 / 回退表 / 协议解析 / 动作白名单 / 源码分支顺序 / P0 R2+R3 / 契约透传。
+// 本文件钉住：三态适用性 / 执行结果分类 / 协议解析 / 动作白名单 / 源码分支顺序 / P0 R2+R3 / 契约透传。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -34,11 +34,13 @@ test('uiaApplicability: 无 UIA 树的应用 → skip（微信/Electron/Chromium
   }
 });
 
-test('uiaApplicability: 未知进程 → unknown（可探一次再学习）；空名 → skip', () => {
+test('uiaApplicability: 未知进程 → unknown（可探一次再学习）；空名也是 unknown 不是 skip', () => {
   assert.equal(uiaApplicability('mysteryapp'), 'unknown');
-  assert.equal(uiaApplicability(''), 'skip');
-  assert.equal(uiaApplicability(null), 'skip');
-  assert.equal(uiaApplicability(undefined), 'skip');
+  // 0.30.3（审查发现 C）：「拿不到进程名」不等于「这个应用没有 UIA 树」。
+  // 此前空名返回 'skip'，会让 wait_for 直接快速失败报 no-uia-tree（误判）。
+  assert.equal(uiaApplicability(''), 'unknown', '空名应表示「无信息」而非「确定无树」');
+  assert.equal(uiaApplicability(null), 'unknown');
+  assert.equal(uiaApplicability(undefined), 'unknown');
 });
 
 test('uiaApplicability: 按进程名缓存（学习结果直接生效，不改全局表）', () => {
@@ -66,21 +68,21 @@ test('uiaApplicability: 白名单与排除表互斥（同一个名字不会同�
   }
 });
 
-// ---- classifyUiaError 回退表 ----
+// ---- classifyUiaError 执行结果分类 ----
 
-test('classifyUiaError: 只有 no-pattern/element-not-found/stale-element/ownership-mismatch 允许回退', () => {
+test('classifyUiaError: 只有 no-pattern/element-not-found/stale-element/ownership-mismatch 可确认为未执行', () => {
   for (const code of ['no-pattern', 'element-not-found', 'stale-element', 'ownership-mismatch']) {
-    assert.deepEqual(classifyUiaError(code), { code, fallbackAllowed: true }, code);
+    assert.deepEqual(classifyUiaError(code), { code, notPerformed: true }, code);
   }
 });
 
 test('classifyUiaError: invoke 发出后的超时/RPC 错误绝不回退（会双击，微信重复发送）', () => {
   for (const code of ['invoke-rpc-error', 'timeout', 'com-error', 'host-error', 'unknown']) {
     const r = classifyUiaError(code);
-    assert.equal(r.fallbackAllowed, false, `${code} 不得回退`);
+    assert.equal(r.notPerformed, false, `${code} 不得回退`);
   }
-  assert.deepEqual(classifyUiaError(''), { code: 'unknown', fallbackAllowed: false });
-  assert.deepEqual(classifyUiaError(null), { code: 'unknown', fallbackAllowed: false });
+  assert.deepEqual(classifyUiaError(''), { code: 'unknown', notPerformed: false });
+  assert.deepEqual(classifyUiaError(null), { code: 'unknown', notPerformed: false });
 });
 
 // ---- 动作白名单 ----
@@ -246,10 +248,7 @@ test('钉：成功走 UIA 后不再 SendInput（否则会在遮挡窗上再点�
   assert.doesNotMatch(body, /dispatchAction/);
 });
 
-test('钉：UIA 失败后按回退表决定——允许回退才落 SendInput，否则抛错不作废截图逻辑不变', () => {
-  // tryUiaClick 返回 fallbackAllowed（由 classifyUiaError 决定）；只有 !uiaEligible 或 skip 才直接 deny
-  assert.match(cuSrc, /const classified = classifyUiaError\(r\.code\);/);
-  assert.match(cuSrc, /fallbackAllowed: classified\.fallbackAllowed/);
+test('UIA 失败会分类并记录进程适用性', () => {
   // 无 UIA 根 → 学习为 skip（后续动作零延迟）
   assert.match(cuSrc, /rememberUiaVerdict\(uiaVerdicts, foreground\.process, 'skip'\)/);
   assert.match(cuSrc, /rememberUiaVerdict\(uiaVerdicts, foreground\.process, 'uia'\)/);
@@ -355,4 +354,43 @@ test('0.30.1 钉子：遮挡穿透只允许基于目标窗口自身截图（全�
   assert.match(runActionBody, /&& Boolean\(shot\.windowRect\)/, 'uiaEligible 必须要求窗口自身捕获的截图');
   // 全屏/region 截图没有 windowRect → 走不到 UIA，必然落到 occluded 拒绝
   assert.match(runActionBody, /const uiaEligible = uiaClickEligible\(action\)/);
+});
+
+// ---- 0.30.3：审查 agent 找出的三条必修回归钉 ----
+
+test('0.30.3 A：window-closed 是瞬态，不得永久记 skip（只有 no-uia-root 才记）', () => {
+  const tryUiaBody = cuSrc.slice(cuSrc.indexOf('async function tryUiaClick'), cuSrc.indexOf('async function dispatchPostType'));
+  assert.match(tryUiaBody, /rememberUiaVerdict\(uiaVerdicts, foreground\.process, 'skip'\)/, 'no-uia-root 仍要学 skip');
+  assert.doesNotMatch(tryUiaBody, /no-uia-root\|window-closed/, 'window-closed 不得计入永久 skip（应用重开就废了）');
+});
+
+test('0.30.3 B：观测带节点数，visited<=1 的树不可信（防 element-gone 误报）', async () => {
+  const { evaluateWaitCondition } = await import('../desktop/src/main/wait-for.mjs');
+  // 自绘/深树应用的典型返回：complete=true 但只遍历到根节点
+  const shallow = evaluateWaitCondition('element-gone',
+    { windowAlive: true, hasUiaTree: true, complete: true, elements: [], values: [], visited: 1 },
+    { selector: '发送' });
+  assert.equal(shallow.matched, false, 'visited<=1 时不能断言元素已消失');
+  assert.equal(shallow.unobservable, true);
+  // 正常树（遍历到多个节点且确实没有该元素）→ 才是真消失
+  const real = evaluateWaitCondition('element-gone',
+    { windowAlive: true, hasUiaTree: true, complete: true, elements: ['其他'], values: [], visited: 42 },
+    { selector: '发送' });
+  assert.equal(real.matched, true);
+  // 老宿主无 visited 字段 → 跳过该判断（保持旧行为）
+  const legacy = evaluateWaitCondition('element-gone',
+    { windowAlive: true, hasUiaTree: true, complete: true, elements: ['其他'], values: [] },
+    { selector: '发送' });
+  assert.equal(legacy.matched, true, '老宿主兼容不变');
+});
+
+test('0.30.3 C：拿不到进程名 = unknown（不是 skip，不能直接快速失败）', async () => {
+  const { uiaApplicability } = await import('../desktop/src/main/uia-adapter.mjs');
+  const { makeFailFast } = await import('../desktop/src/main/wait-for.mjs');
+  assert.equal(uiaApplicability(''), 'unknown');
+  // 空进程名时不能返回「一次就返回」的 failFast（那会误报 no-uia-tree）
+  const ff = makeFailFast('element-gone', '');
+  assert.equal(ff, null, '空进程名不得触发快速失败');
+  // 明确的 no-tree 应用（微信）仍要快速失败
+  assert.notEqual(makeFailFast('element-gone', 'weixin'), null, '微信仍快速失败（真实无树）');
 });

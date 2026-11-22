@@ -20,6 +20,7 @@ import { assertArtifactPath } from './artifact-gate.mjs';
 import { createSandboxedRun, sandboxAvailability, sandboxCompatible } from './sandbox.mjs';
 // 工作流兜底提示走双语词典（zh 原样返回，en 查表）
 import { t } from '../renderer/i18n/core.mjs';
+import { checkProbeBudget, checkScreenshotBudget, isProbeCommand, workflowBudgetFromEnv, WORKFLOW_BUDGET_INITIAL } from './cu-workflow-budget.mjs';
 
 const PREVIEW_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp', '.html', '.htm', '.pdf', '.mp4', '.m4v', '.webm', '.mov', '.ogv', '.pptx', '.ppt', '.pps', '.ppsx', '.odp', '.key', '.docx', '.doc', '.odt', '.rtf', '.txt', '.md', '.json', '.js', '.mjs', '.css', '.csv', '.log', '.xml', '.yml', '.yaml']);
 
@@ -531,6 +532,11 @@ export function collectInjectedScriptBodies(cmd, cwd = null) {
 
 export function createAgentTools({ repoRoot, permissions, recordAudit = async () => {}, playbookRoot, runWorkflow = null, projectPath = null, policy = null, hooksConfig = null, hooksRunner = null, sessionId = null, cwd = null, signal = null, commandIdleMs = DEFAULT_COMMAND_IDLE_MS, askUser = null, todoWrite = null, spawnAgent = null, onActivity = null, requireAuditIntent = null, shellAppRoot = null, aclSandbox = undefined, userStatedTier = null, getDesktopToolsAsync = null } = {}) {
   let askedThisTurn = false; // 本回合已经通过 ask_user 问过用户（验收前置闸据此放行）
+  // 0.30.4 CU 工作流配额（引擎侧硬约束）：按一次 createAgentTools 实例（≈一个回合）计数。
+  // 每秒 2 次全屏 / 2 次 region / 1 次窗口探测，超出直接拒绝并给替代动作——真机实证
+  // 换模型后（flash 类）对长上下文里的软提示不敏感，一次任务曾拍 33 张图、21 次 run_command 查窗口。
+  const cuWorkflowBudget = workflowBudgetFromEnv();
+  const cuWorkflowUsed = { ...WORKFLOW_BUDGET_INITIAL };
   if (!repoRoot) throw new Error('createAgentTools 需要 repoRoot');
   const engineUrl = (rel) => pathToFileURL(path.join(repoRoot, rel)).href;
   // 验收前置闸：只有「能向用户提问」的主 agent 才强制先问档位/维度。
@@ -1187,6 +1193,15 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
         }
       }
       const idleMs = args?.idle_ms ?? args?.idleMs ?? commandIdleMs ?? DEFAULT_COMMAND_IDLE_MS;
+      // 0.30.4：窗口探测配额——computer_screenshot target:"window" 已返回 hwnd/rect，
+      // 再单独 Get-Process/tasklist/Add-Type 查窗口是纯浪费（真机实测一轮跑了 21 次 run_command）。
+      if (isProbeCommand(cmd)) {
+        const probeVerdict = checkProbeBudget({ used: cuWorkflowUsed, budget: cuWorkflowBudget, command: cmd });
+        if (!probeVerdict.allowed) {
+          return { error: probeVerdict.error, deniedBy: probeVerdict.deniedBy, hint: probeVerdict.hint };
+        }
+        cuWorkflowUsed.probes += 1;
+      }
       const sandboxMode = policy?.mode || 'off';
       // 沙箱默认关闭（2026-11-17 决策，理由见 sandboxEnabled 注释）：
       // 命令统一走宿主机 Git Bash，一种 shell、一套语法。
@@ -1257,6 +1272,13 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
     };
 
     const captureComputerScreenshot = async (computerUse, args) => {
+      // 0.30.4 工作流硬配额（引擎侧，不靠提示词）：真机实证改提示词后模型仍会先拍全屏、
+      // 反复 region 逐字验尸。按「效率优先」原则在工具层拒绝浪费型用法，并给出替代动作。
+      const kind = args?.region != null ? 'region' : (args?.target === 'window' ? 'window' : 'screen');
+      const verdict = checkScreenshotBudget({ kind, used: cuWorkflowUsed, budget: cuWorkflowBudget, reason: args?.reason });
+      if (!verdict.allowed) {
+        return { ok: false, error: verdict.error, deniedBy: verdict.deniedBy, hint: verdict.hint };
+      }
       // region/hwnd 只在传了的时候才进 options：不带参数的调用保持与 0.29.3 一致的转发形状。
       const options = {
         target: args?.target === 'window' ? 'window' : 'screen',
@@ -1266,6 +1288,9 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
       if (args?.hwnd != null) options.hwnd = args.hwnd;
       const r = await computerUse.captureScreen(options);
       if (!r.ok) return { ...r, error: r.error || '截图失败' };
+      // 配额只在成功截图后计数（失败不占额度，允许重试）
+      if (kind === 'region') cuWorkflowUsed.regions += 1;
+      else if (kind === 'screen') cuWorkflowUsed.screenShots += 1;
       const fg = r.foreground
         ? `当前前台：${r.foreground.process}「${r.foreground.title}」· 权限 ${r.foreground.tierLabel}` +
           (r.foreground.granted ? '（已授权）' : '（未授权，动手前先 computer_request_access）')
@@ -1359,6 +1384,72 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
         return { ...result, note: '动作已执行，操作后截图失败。', observationError: observation };
       } catch (e) {
         return { ...result, note: '动作已执行，操作后截图失败。', observationError: { error: e?.message || String(e) } };
+      }
+    });
+
+    // 0.30.5 实验 1（复合动作）：一次调用执行有序多动作，省掉「每动作一次模型往返」。
+    // 依据：Anthropic batch action / OpenAI computer_call actions 数组 / cua run_steps 同形态。
+    // 我们的真机数据：工具执行只占 7%，93% 是模型往返——所以这是唯一有效杠杆。
+    // 安全边界：首错即停 + 每步重新校验 + 不跨窗口（同一 screenshot_id）+ 上限 8 步。
+    tools.computer_sequence = withDesktopTool('computerUse', async (computerUse, args) => {
+      const { screenshot_id: screenshotId, steps: rawSteps, observe: observeArg, observe_after_each: observeEach, observe_after_all: observeAll } = args || {};
+      const { validateSequence, planSequence, summarizeSequenceResult } = await import('./cu-sequence.mjs');
+      const bad = validateSequence(rawSteps);
+      if (bad) return { error: bad, deniedBy: 'invalid-argument' };
+      const steps = rawSteps || [];
+      const plan = planSequence(steps, { observeAfterEach: observeEach === true });
+
+      const completedResults = [];
+      let failed = null;
+      let idx = 0;
+      for (const step of steps) {
+        const { action, observe: _o, observe: _obs, ...params } = step || {};
+        // 每一步都走与 computer_action 完全相同的入口（tier/授权/前台/坐标/遮挡/UIA 全部照旧）——
+        // 序列不是「快路径」，只是把多次往返合成一次，安全检查一步不少。
+        const r = await computerUse.performAction(String(action), { ...params, screenshotId });
+        if (!r.ok) {
+          failed = { index: idx, action: String(action), error: r.error || '动作失败', deniedBy: r.deniedBy, detail: r };
+          break;
+        }
+        completedResults.push({ step: idx + 1, action: String(action), ok: true, foregroundAtAction: r.foregroundAtAction });
+        idx += 1;
+      }
+
+      const wantObserve = observeArg === true || observeAll === true || plan.finalObserve;
+      const base = {
+        ok: failed == null,
+        mode: 'sequence',
+        total: steps.length,
+        completed: completedResults.length,
+        steps: completedResults,
+        failed: failed ? { step: failed.index + 1, action: failed.action, error: failed.error, deniedBy: failed.deniedBy } : null
+      };
+      if (failed) {
+        // 首错即停：把"已生效的步数"和"界面可能已变化"如实告诉模型（防重复执行前面的动作）
+        return { ...base, error: `第 ${failed.index + 1} 步（${failed.action}）失败：${failed.error}`, ...(failed.deniedBy ? { deniedBy: failed.deniedBy } : {}),
+          note: summarizeSequenceResult({ steps, completed: completedResults.length, failed, lastObservation: null }) };
+      }
+      if (!wantObserve) {
+        return { ...base, note: summarizeSequenceResult({ steps, completed: completedResults.length, failed: null, lastObservation: null }) };
+      }
+      try {
+        const { __images, ...observation } = await captureComputerScreenshot(computerUse);
+        const canAct = observation.ok && observation.canAct === true;
+        const lastObservation = {
+          canAct,
+          screenshotId: canAct ? observation.screenshot_id : null,
+          reason: canAct ? null : (observation.observationOnlyReason || '目标不在前台')
+        };
+        return {
+          ...base,
+          note: summarizeSequenceResult({ steps, completed: completedResults.length, failed: null, lastObservation }),
+          observation: canAct ? observation : null,
+          observationOnly: canAct ? null : observation,
+          ...(canAct ? { screenshot_id: observation.screenshot_id, __images } : { __images })
+        };
+      } catch (e) {
+        return { ...base, note: summarizeSequenceResult({ steps, completed: completedResults.length, failed: null, lastObservation: null }),
+          observationError: { error: e?.message || String(e) } };
       }
     });
 

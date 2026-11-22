@@ -125,7 +125,7 @@ export default function MessageList({
     <div className="flex-1 min-h-0 flex" data-testid="message-host">
       {/* 消息滚动列：验收单浮层 absolute 覆盖在本列内，不占布局宽度 */}
       <div className="relative min-w-0 flex-1">
-      <div ref={scrollRef} data-testid="message-scroll" className="h-full overflow-y-auto px-5 py-4"
+      <div ref={scrollRef} data-testid="message-scroll" className="h-full overflow-y-auto overflow-x-hidden px-5 py-4"
         onScroll={handleScroll}>
         {/* 全宽文档式排版：消息/输入区同宽（≥90% 容器宽） */}
         <div className="w-full max-w-[96%] mx-auto space-y-4">

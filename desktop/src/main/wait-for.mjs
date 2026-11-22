@@ -67,15 +67,19 @@ export function evaluateWaitCondition(condition, observation, { selector = '', v
   const val = String(value ?? '');
   // 0.30.1：观测是否可信 = 有 UIA 树。没有树时 elements 恒为空，若不区分，
   // element-gone 会把「根本看不见」误判成「元素确实消失了」——wait_for 成功误报的根因。
-  const observed = obs.hasUiaTree !== false; // 调用方没给 hasUiaTree 时按可信处理（兼容老调用形状）
+  // 0.30.3（审查发现 B）：自绘/深树应用会给出 complete=true 但零元素（OBS|1|||）。
+  // visited<=1 = 只看到根节点、一个子元素都没读到 → 这种树不可信，不能据此断言元素消失。
+  // （老宿主没有 visited 字段 → Number.isFinite 为假，跳过此判断，保持旧行为。）
+  const treeTrustworthy = !(Number.isFinite(obs.visited) && obs.visited <= 1);
+  const observed = obs.hasUiaTree !== false && obs.windowAlive === true && treeTrustworthy;
   if (condition === 'element-exists') {
-    const hit = Boolean(sel) && elements.some((name) => name === sel || name.includes(sel));
+    const hit = observed && Boolean(sel) && elements.some((name) => name === sel || name.includes(sel));
     return { matched: hit, windowClosed: obs.windowAlive === false, unobservable: !observed };
   }
   if (condition === 'element-gone') {
     if (obs.windowAlive === false) return { matched: true, windowClosed: true }; // R10：窗口没了 = 元素也没了
     // ⚠️ 观测不到 ≠ 元素消失：必须明确不命中（unobservable），不能报 matched。
-    if (!observed) return { matched: false, windowClosed: false, unobservable: true };
+    if (!observed || obs.complete === false || !Array.isArray(obs.elements) || !sel) return { matched: false, windowClosed: false, unobservable: true };
     const hit = !elements.some((name) => name === sel || name.includes(sel));
     return { matched: hit, windowClosed: false };
   }
@@ -96,7 +100,7 @@ export function evaluateWaitCondition(condition, observation, { selector = '', v
  * @param {string} [opts.value]
  * @param {number} [opts.timeoutMs]
  * @param {number} [opts.pollMs]
- * @param {() => Promise<object>} opts.observe 返回 observation 快照（抛错视为窗口失效）
+ * @param {() => Promise<object>} opts.observe 返回 observation 快照（抛错视为本次不可观测）
  * @param {() => number} [opts.now] Date.now 注入
  * @param {(ms:number) => Promise<void>} [opts.sleep] 等待注入
  * @param {(obs:object) => boolean} [opts.failFast] 快速失败判定（R10：无 UIA 树 / 窗口已关）
@@ -119,14 +123,11 @@ export async function waitForCondition({
     try {
       obs = await observe();
     } catch (error) {
-      // 观测抛出（UIA 宿主失败/窗口已销毁）→ 按窗口失效处理（R10 立即返回）
-      return {
-        ok: true, matched: condition === 'element-gone', timedOut: false, attempts,
-        elapsedMs: now() - startedAt, windowClosed: true, reason: String(error?.message || error)
-      };
+      obs = { hasUiaTree: false, reason: String(error?.message || error) };
     }
     last = evaluateWaitCondition(condition, obs, { selector, value });
-    if (last.matched) {
+    const unsupported = !last.windowClosed && failFast?.(obs);
+    if (last.matched && !(unsupported && condition === 'element-gone')) {
       return {
         ok: true, matched: true, timedOut: false, attempts,
         elapsedMs: now() - startedAt, windowClosed: last.windowClosed === true
@@ -140,10 +141,10 @@ export async function waitForCondition({
         reason: '目标窗口已关闭'
       };
     }
-    if (typeof failFast === 'function' && failFast(obs)) {
+    if (unsupported) {
       return {
         ok: true, matched: false, timedOut: false, attempts,
-        elapsedMs: now() - startedAt, windowClosed: false, reason: 'no-uia-tree'
+        elapsedMs: now() - startedAt, windowClosed: false, unobservable: true, reason: 'no-uia-tree'
       };
     }
     if (now() - startedAt >= budget) {
@@ -151,7 +152,8 @@ export async function waitForCondition({
       return {
         ok: true, matched: false, timedOut: true, attempts,
         elapsedMs: now() - startedAt, windowClosed: false,
-        reason: `等待 ${budget}ms 未命中`
+        unobservable: last.unobservable === true,
+        reason: last.unobservable ? (obs?.reason || '无法完整观测目标窗口') : `等待 ${budget}ms 未命中`
       };
     }
     await sleep(interval);
