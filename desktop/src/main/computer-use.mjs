@@ -12,7 +12,7 @@ import {
   actionPoints, matchesImageGeometry, matchesProcess, normalizeRegion, occludedBy, overlapBounds, sameBounds, sameObservation, sameWindow, selectCaptureSource, thumbnailSize
 } from './computer-use-geometry.mjs';
 import { createWindowCapture, windowSourceId } from './computer-window-capture.mjs';
-import { detectWinapp, winappScreenshotCommand } from './winapp-cli.mjs';
+import { detectWinapp, winappScreenshotCommand, parseWinappScreenshotJson } from './winapp-cli.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -207,15 +207,18 @@ async function captureScreenFrame({ maxWidth = 1560, region = null, fallbackNote
   };
 }
 
-// ② winapp ui screenshot --hwnd <hwnd>（微软 winappcli，可选增强；WGC 优先、旧系统回退
-// PrintWindow，--capture-screen 才是拍屏幕——这里只拍窗口自身）。输出是窗口原生物理尺寸 PNG。
+// ② winapp ui screenshot -w <hwnd> -o <file> --json（微软 winappcli v0.8.0，可选增强；
+// WGC 优先、旧系统回退 PrintWindow，--capture-screen 才是拍屏幕——这里只拍窗口自身）。
+// 输出是窗口原生物理尺寸 PNG；--json 里的 Width/Height 用于交叉校验（防黑图/拍错窗当成功）。
 async function winappScreenshotViaCli(exe, hwnd) {
   const out = path.join(os.tmpdir(), `finalcheck-winapp-${Number(hwnd)}-${Date.now()}.png`);
   const cmd = winappScreenshotCommand(exe, hwnd, out);
   try {
-    await execFileAsync(cmd.file, cmd.args, { timeout: 20000, windowsHide: true });
+    const r = await execFileAsync(cmd.file, cmd.args, { timeout: 20000, windowsHide: true });
+    // winapp 的 JSON 在 stdout；部分版本会混入警告行 → parse 失败就当无元数据（不阻断）
+    const meta = parseWinappScreenshotJson(r?.stdout);
     const png = fs.readFileSync(out);
-    return { ok: png.length > 0, png };
+    return { ok: png.length > 0, png, meta };
   } finally {
     try { fs.unlinkSync(out); } catch { /* 临时文件清不掉就留给系统清理 */ }
   }

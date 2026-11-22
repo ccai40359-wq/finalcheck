@@ -6,6 +6,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.29.10] - 2026-11-22
+
+### Fixed
+
+- Fixed the second fallback path for window screenshots: the Microsoft winapp CLI was invoked with two non-existent flags (`--hwnd`/`--out`), so it would fail silently even when installed. Now uses its official flags (`-w`/`-o`/`--json`) and cross-checks the returned window dimensions — a wrong window or black frame is discarded and falls back to full-screen instead of being reported as success.
+
 ## [0.29.9] - 2026-11-22
 
 ### Fixed

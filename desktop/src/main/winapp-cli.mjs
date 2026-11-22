@@ -49,8 +49,24 @@ export async function detectWinapp() {
   return probing;
 }
 
-/** ② 级命令组装（纯函数）：winapp ui screenshot --hwnd <hwnd> --out <file>。
- *  默认 WGC 可拍遮挡窗，旧系统回退 PrintWindow；--capture-screen 才是拍屏幕（我们不用）。 */
+/** ② 级命令组装（纯函数）。winapp v0.8.0 真实参数（核实到源码 UiScreenshotCommand.cs）：
+ *  -w/--window <十进制或 0x hwnd>、-o/--output <file>、--json（返回 FilePath/Width/Height/Hwnd）。
+ *  ⚠️ 曾写成 --hwnd/--out（这两个参数不存在）→ 未知参数被拒、②级永远失败（0.29.8 真 bug）。
+ *  ⚠️ 目标最小化时 winapp 会先 SW_RESTORE 再拍（改变窗口可见状态）——调用方必须按 IsIconic
+ *  直落③级，否则会打扰用户（computer-use.mjs 已如此）。
+ *  默认 WGC 可拍遮挡窗、旧系统回退 PrintWindow；--capture-screen 是拍屏幕（我们不用）。 */
 export function winappScreenshotCommand(exe, hwnd, outPath) {
-  return { file: exe, args: ['ui', 'screenshot', '--hwnd', String(hwnd), '--out', outPath] };
+  return { file: exe, args: ['ui', 'screenshot', '-w', String(hwnd), '-o', outPath, '--json'] };
+}
+
+/** 解析 winapp screenshot 的 --json 输出（容错：非 JSON 或无尺寸=null）。
+ *  返回 { filePath, width, height }——用于尺寸校验，防黑图/拍错窗被当成功。 */
+export function parseWinappScreenshotJson(stdout) {
+  try {
+    const j = JSON.parse(String(stdout || '').trim());
+    const w = Number(j?.Width);
+    const h = Number(j?.Height);
+    if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return null;
+    return { filePath: String(j?.FilePath || ''), width: w, height: h };
+  } catch { return null; }
 }

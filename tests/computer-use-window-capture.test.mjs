@@ -1,6 +1,6 @@
 // computer_screenshot target:'window' 主路径切「窗口自身捕获」（0.29.7-beta WF）：
 // ① desktopCapturer 窗口 thumbnail（WGC，按 hwnd 匹配源，thumbnailSize=窗口原生物理尺寸）
-// → ② winapp ui screenshot --hwnd（可选增强，运行时探测，缺失即跳过）
+// → ② winapp ui screenshot -w <hwnd> -o <file> --json（可选增强，运行时探测，缺失即跳过）
 // → ③ 现行 screen 捕获（永远兜底；最小化直接走 ③ 并注明）。
 // P0 红线：shot.bounds 语义不得改（0.29.4 同款钉）；windowRect 只存独立字段；
 // B（遮挡拒绝）行为不得放松——窗口捕获解决「看」，点击遮挡区域仍被拒。
@@ -190,7 +190,7 @@ test('isNativeWindowSize: ±1px 容差内算原生（certainty B 实测），超
 test('winapp 命令组装与候选路径（可选增强，绝不硬依赖）', () => {
   assert.deepEqual(
     winappScreenshotCommand('C:\\winapp\\winapp.exe', 12345, 'D:\\tmp\\out.png'),
-    { file: 'C:\\winapp\\winapp.exe', args: ['ui', 'screenshot', '--hwnd', '12345', '--out', 'D:\\tmp\\out.png'] }
+    { file: 'C:\\winapp\\winapp.exe', args: ['ui', 'screenshot', '-w', '12345', '-o', 'D:\\tmp\\out.png', '--json'] }
   );
   assert.ok(winappCandidatePaths().every((p) => p.toLowerCase().includes('winapp')));
 });
@@ -219,7 +219,7 @@ test('钉：screen 捕获永远兜底（③），最小化直接走 ③，窗口
   assert.match(cuSrc, /return captureScreenFrame\(\{\s*\r?\n\s*maxWidth: 1560, region: null,/);
   // 编排层把 winapp 定位成可选：探测不到 → null（绝不硬依赖）
   assert.match(wcSrc, /winappDetect/);
-  assert.match(cuSrc, /import \{ detectWinapp, winappScreenshotCommand \} from '\.\/winapp-cli\.mjs';/);
+  assert.match(cuSrc, /import \{ detectWinapp, winappScreenshotCommand, parseWinappScreenshotJson \} from '\.\/winapp-cli\.mjs';/);
 });
 
 test('钉：遮挡拒绝（0.29.7 B）未放松——windowAtPoint + occludedBy 校验链原样保留', () => {
@@ -311,4 +311,24 @@ test('contract: 不传 hwnd 的 window 调用转发形状不变；screen 调用�
   assert.equal(fallback.windowSource, 'screen');
   assert.match(fallback.note, /目标已最小化/);
   assert.equal(fallback.screenshot_id, null, 'observation-only 不得给 screenshot_id');
+});
+
+// 0.29.10：winapp ②级参数真值回归（0.29.8 写成 --hwnd/--out，v0.8.0 不认→②级必失败）
+test('winapp CLI 参数钉：screenshot 必须用 -w/--window 与 -o/--output（不得回到 --hwnd/--out）', async () => {
+  const { winappScreenshotCommand, parseWinappScreenshotJson } = await import('../desktop/src/main/winapp-cli.mjs');
+  const cmd = winappScreenshotCommand('C:/fake/winapp.exe', 2230588, 'C:/tmp/out.png');
+  assert.equal(cmd.file, 'C:/fake/winapp.exe');
+  assert.deepEqual(cmd.args, ['ui', 'screenshot', '-w', '2230588', '-o', 'C:/tmp/out.png', '--json']);
+  assert.ok(!cmd.args.includes('--hwnd'), '不得使用不存在的 --hwnd 参数');
+  assert.ok(!cmd.args.includes('--out'), '不得使用不存在的 --out 参数');
+});
+
+test('parseWinappScreenshotJson：正常 JSON 取尺寸；脏输出/空/缺字段 → null', async () => {
+  const { parseWinappScreenshotJson } = await import('../desktop/src/main/winapp-cli.mjs');
+  assert.deepEqual(parseWinappScreenshotJson('{"FilePath":"a.png","Width":1200,"Height":800}'),
+    { filePath: 'a.png', width: 1200, height: 800 });
+  assert.equal(parseWinappScreenshotJson('warning: something\n'), null, '非 JSON 不抛错、返回 null');
+  assert.equal(parseWinappScreenshotJson(''), null);
+  assert.equal(parseWinappScreenshotJson('{"Width":0,"Height":0}'), null, '零尺寸视为无效');
+  assert.equal(parseWinappScreenshotJson('{"FilePath":"a.png"}'), null, '缺尺寸视为无效');
 });

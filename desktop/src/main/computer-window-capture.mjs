@@ -72,10 +72,19 @@ export function createWindowCapture({ getSources, winappDetect, winappScreenshot
       let r = null;
       try { r = await winappScreenshot(winapp.exe, hwnd); } catch { r = null; }
       if (r?.ok && Buffer.isBuffer(r.png) && r.png.length > 0) {
+        // 交叉校验：winapp --json 报的尺寸与解码图尺寸须一致（防拍到别的东西/黑图当成功）。
+        // meta 缺失（旧版/警告混入 stdout）不算失败——退回解码尺寸校验。
+        const meta = r.meta && Number.isFinite(r.meta.width) && Number.isFinite(r.meta.height) ? r.meta : null;
+        if (meta) {
+          const w = Math.abs(meta.width - requested.width) <= WINDOW_NATIVE_TOLERANCE_PX;
+          const h = Math.abs(meta.height - requested.height) <= WINDOW_NATIVE_TOLERANCE_PX;
+          if (!w || !h) return null; // 元数据说不是这个窗口 → 不采用，走 ③
+        }
         let image = null;
         try { image = createImage(r.png); } catch { image = null; }
         if (image && typeof image.isEmpty === 'function' && !image.isEmpty() &&
-          isNativeWindowSize(image.getSize(), requested)) {
+          isNativeWindowSize(image.getSize(), requested) &&
+          (!meta || isNativeWindowSize(image.getSize(), { width: meta.width, height: meta.height }))) {
           return { level: 'winapp', image };
         }
       }
