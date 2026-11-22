@@ -6,6 +6,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.29.8] - 2026-11-22
+
+### Added
+
+- Desktop-control screenshots now support「capture the window itself」: a target window half-covered by other windows still yields its own full content, text readable character-by-character — verified working on self-drawn apps like WeChat; seeing and clicking are now separate: you see the whole window, but clicks into occluded regions are still rejected with the reason.
+- A minimized target automatically falls back to full-screen capture with an explanatory note; the three-level capture chain always keeps a fallback.
+
+### Fixed
+
+- Top-right mini chat window content adaptation completed: session header hidden, paddings compacted, long URLs and sentences force-wrapped — the conversation is 100% visible and readable at 360px (previously only the sidebar was hidden; title truncation and horizontal clipping remained).
+- Coordinate mapping by window origin (verified by real click calibration: menu open and status-bar caret position both matched prediction); unsupported scenes (minimized/multi-screen) are clearly refused instead of giving wrong coordinates.
+
 ## [0.29.7] - 2026-11-22
 
 ### Added

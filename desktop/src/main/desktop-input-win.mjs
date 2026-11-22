@@ -52,6 +52,8 @@ public class FcCu {
     public string title { get; set; }
     public long focusHwnd { get; set; }
     public Bounds bounds { get; set; }
+    // 0.29.7-beta：窗口是否最小化（WGC 帧冻结、desktopCapturer 源也消失——窗口捕获直接走全屏兜底）
+    public bool iconic { get; set; }
   }
 
   public class Guard {
@@ -70,6 +72,7 @@ public class FcCu {
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT rect);
+  [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
   [DllImport("user32.dll")] public static extern bool GetGUIThreadInfo(uint threadId, ref GUITHREADINFO info);
   [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT p);
   [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr h, uint flags);
@@ -155,7 +158,7 @@ public class FcCu {
     catch (Win32Exception) { return null; }
     return new Window {
       hwnd = h.ToInt64(), pid = pid, process = processName, title = WindowTitle(h),
-      focusHwnd = FocusHandle(thread), bounds = WindowBounds(h)
+      focusHwnd = FocusHandle(thread), bounds = WindowBounds(h), iconic = IsIconic(h)
     };
   }
 

@@ -614,3 +614,13 @@ button, [role="button"] {
    开关用 body.fc-cu-mini（主进程 CU 模式注入/移除），不用 @media 窗口宽度——
    本仓布局纪律是容器/状态驱动，不是窗口宽度（右栏展开时窗口宽内容窄）。 */
 body.fc-cu-mini .fc-sidebar { display: none !important; }
+
+/* ---- CU 迷你形态内容适配（0.29.7）：360px 下对话 100% 可见可读 ----
+   ① 会话标题头隐藏（金色停止条已占顶部，标题在迷你宽度只会截断成噪音）
+   ② 消息区内边距压缩（桌面版 px-5 在 360px 太奢侈）
+   ③ 横向零裁剪：长 token/URL 强制折行，所有列 min-width:0 */
+body.fc-cu-mini .fc-chat-header { display: none !important; }
+body.fc-cu-mini { overflow-x: hidden; }
+body.fc-cu-mini main.chat-veil, body.fc-cu-mini main.chat-veil * { min-width: 0; }
+body.fc-cu-mini [data-testid="message-scroll"] { padding: 10px 10px 8px; }
+body.fc-cu-mini [data-testid="message-scroll"] * { overflow-wrap: anywhere; }

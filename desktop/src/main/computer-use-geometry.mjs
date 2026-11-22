@@ -120,8 +120,37 @@ export function mapScreenshotPoint(snapshot, x, y) {
   };
 }
 
+// ---- 0.29.7-beta：窗口自身捕获（WGC）的坐标映射 ----
+// 标定结论（2026-11-22 本机 Win11 23H2 实测，证据 D:/fc-bench-0291/wgc-poc/cert-log.json 与
+// cert-occl-b-occluded-notepad.png）：
+// 1. desktopCapturer 窗口源 id 形如 window:<hwnd>:0，中间数字 == GetWindowRect 的 hwnd（6/6 全匹配）。
+// 2. WGC thumbnail 尺寸 ≈ GetWindowRect 物理尺寸（±1px：ZCode 2576x1408→2576x1407、记事本
+//    1200x800→1199x800），明显不是 DWMWA_EXTENDED_FRAME_BOUNDS（ZCode EFB 宽 2560 < 缩略图 2576）
+//    → 图像 (0,0) 对齐 GetWindowRect 原点，WGC 帧含不可见的 DWM resize 边框。
+// 3. 边框偏移标定常数 = {x:0, y:0}（图像原点即 GetWindowRect 原点），再由真机点击标定复核
+//    （0297beta-click-calibration-*，若后续真机测出系统性偏差再改这里）。
+export const WINDOW_FRAME_OFFSET = { x: 0, y: 0 };
+// 原生分辨率判定容差：实测 WGC 返回尺寸与请求相差 1px，超过 2px 视为被重采样（拒绝，走兜底）。
+export const WINDOW_NATIVE_TOLERANCE_PX = 2;
+
+export function mapWindowPoint(windowRect, x, y) {
+  const { x: originX, y: originY, width, height, imageWidth, imageHeight } = windowRect ?? {};
+  if (!Number.isSafeInteger(imageWidth) || imageWidth < 1 ||
+    !Number.isSafeInteger(imageHeight) || imageHeight < 1) {
+    throw new TypeError('windowRect 需要 imageWidth/imageHeight（截图实际像素尺寸）。');
+  }
+  return {
+    x: mapAxis(x, imageWidth, width, originX + WINDOW_FRAME_OFFSET.x),
+    y: mapAxis(y, imageHeight, height, originY + WINDOW_FRAME_OFFSET.y)
+  };
+}
+
 export function actionPoints(action, params, snapshot) {
-  const mapPoint = (x, y) => mapScreenshotPoint(snapshot, x, y);
+  // 0.29.7-beta：窗口自身捕获的截图带 windowRect 独立字段——图内像素按窗口原点映射回屏幕物理坐标；
+  // 全屏/region 截图仍走原映射（shot.bounds 语义不变）。
+  const mapPoint = snapshot?.windowRect
+    ? (x, y) => mapWindowPoint(snapshot.windowRect, x, y)
+    : (x, y) => mapScreenshotPoint(snapshot, x, y);
   if (action === 'drag' || action === 'left_click_drag') {
     return [
       mapPoint(params.x1 ?? params.fromX ?? params.x, params.y1 ?? params.fromY ?? params.y),

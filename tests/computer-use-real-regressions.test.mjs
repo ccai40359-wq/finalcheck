@@ -153,6 +153,12 @@ test('打包钉：CU 遮罩金色化+横幅屏幕顶部居中+提示 ESC；ESC �
   const css = readFileSync(pathMod.join(repo, 'desktop/src/renderer/styles.css'), 'utf8');
   assert.ok(css.includes('body.fc-cu-mini .fc-sidebar { display: none !important; }'),
     '迷你形态开关=body.fc-cu-mini（CU 生命周期驱动，不用 @media 窗口宽度——composer-narrow 布局纪律）');
+  assert.ok(css.includes('body.fc-cu-mini .fc-chat-header { display: none !important; }'),
+    '迷你形态隐藏会话标题头（360px 下标题只会截断成噪音）');
+  assert.ok(css.includes('body.fc-cu-mini [data-testid="message-scroll"] * { overflow-wrap: anywhere; }'),
+    '迷你形态长 token 必须折行——横向零裁剪（用户验收：对话 100% 显示完全）');
+  const header = readFileSync(pathMod.join(repo, 'desktop/src/renderer/components/ChatHeader.jsx'), 'utf8');
+  assert.ok(header.includes('fc-chat-header'), 'ChatHeader 必须带 fc-chat-header 类钩子');
   assert.ok(src.includes("classList.add('fc-cu-mini')") && src.includes("classList.remove('fc-cu-mini')"),
     '主进程负责挂/摘 fc-cu-mini（注入/恢复两个方向都要有）');
 });

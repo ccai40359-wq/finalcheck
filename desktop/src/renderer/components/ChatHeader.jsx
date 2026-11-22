@@ -12,8 +12,8 @@ export default function ChatHeader({
   const activeTitle = prettyTitle(sessions.find((s) => s.id === activeId)?.title) || (activeId ? activeProject?.name : 'New Session');
   return (
     <>
-      {/* 顶栏：当前会话标题 */}
-      <div className="shrink-0 h-10 flex items-center px-5 border-b border-edge/60">
+      {/* 顶栏：当前会话标题（CU 迷你形态下由 body.fc-cu-mini 整体隐藏） */}
+      <div className="fc-chat-header shrink-0 h-10 flex items-center px-5 border-b border-edge/60">
         <span className="font-kai text-sm text-goldSoft truncate">{activeTitle || 'FinalCheck'}</span>
         {(() => { const cur = sessions.find((x) => x.id === activeId); return cur?.archived ? (
           <button onClick={() => onArchiveSession(cur, activeProjectId)} title={t('这条会话已归档（历史和记忆都还在），点一下恢复')}

@@ -1,11 +1,20 @@
 // Electron 截图与 Windows 输入之间的授权和坐标校验。
 import { randomUUID } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { promisify } from 'node:util';
 import { desktopCapturer, screen, nativeImage } from 'electron';
 import * as input from './desktop-input-win.mjs';
 import { tierForApp, checkActionAllowed, AccessLedger, describeTier } from './computer-use-policy.mjs';
 import {
   actionPoints, matchesImageGeometry, matchesProcess, normalizeRegion, occludedBy, overlapBounds, sameBounds, sameObservation, sameWindow, selectCaptureSource, thumbnailSize
 } from './computer-use-geometry.mjs';
+import { createWindowCapture, windowSourceId } from './computer-window-capture.mjs';
+import { detectWinapp, winappScreenshotCommand } from './winapp-cli.mjs';
+
+const execFileAsync = promisify(execFile);
 
 const ledger = new AccessLedger();
 const clickActions = new Map([
@@ -110,26 +119,33 @@ export function captureScreen(options = {}) {
 // 按屏幕原生物理尺寸取帧（绕过 thumbnailSize 的 0.609 缩放帽），nativeImage.crop 零重采样裁剪，
 // 输出图像尺寸 == region 尺寸，坐标 1:1 映射回屏幕（mapScreenshotPoint 的 region 分支）。
 // ⚠️ shot.bounds 必须保持全屏物理 bounds（原生层 captureBounds.Matches(PrimaryBounds()) 断言依赖它），
-// region 只存独立字段，绝不写进 bounds。
-async function capture({ target = 'screen', windowTitle = '', maxWidth = 1560, region = null } = {}) {
-  const isWindow = target === 'window';
+// region 只存独立字段，绝不写进 bounds。0.29.7-beta 起窗口 rect 同样只存独立字段 windowRect。
+async function capture({ target = 'screen', windowTitle = '', maxWidth = 1560, region = null, hwnd = null } = {}) {
+  if (target === 'window') {
+    if (region) return { ok: false, error: 'region 只支持全屏截图（target 用默认的 screen）。' };
+    return captureWindowFrame({ windowTitle, hwnd });
+  }
+  return captureScreenFrame({ maxWidth, region });
+}
+
+// ③ 现行 screen 捕获（screen 永远兜底：窗口模式的 ①② 不可用时也落到这里）。
+async function captureScreenFrame({ maxWidth = 1560, region = null, fallbackNote = '' } = {}) {
   const display = primaryDisplay();
   if (region) {
-    if (isWindow) return { ok: false, error: 'region 只支持全屏截图（target 用默认的 screen）。' };
     const checked = normalizeRegion(region, display.bounds);
     if (checked.error) return { ok: false, error: checked.error };
     region = checked.region;
   }
-  const before = isWindow ? null : await desktopContext();
+  const before = await desktopContext();
   const requestedSize = region
     ? { width: display.bounds.width, height: display.bounds.height }
     : thumbnailSize(display.bounds, maxWidth);
   const sources = await desktopCapturer.getSources({
-    types: isWindow ? ['window'] : ['screen'],
+    types: ['screen'],
     thumbnailSize: requestedSize,
     fetchWindowIcons: false
   });
-  const { source, error } = selectCaptureSource(sources, { target: isWindow ? 'window' : 'screen', displayId: display.id, windowTitle });
+  const { source, error } = selectCaptureSource(sources, { target: 'screen', displayId: display.id });
   if (error) return { ok: false, error };
 
   let image = source.thumbnail;
@@ -149,9 +165,7 @@ async function capture({ target = 'screen', windowTitle = '', maxWidth = 1560, r
   const { width, height } = image.getSize();
 
   let observationOnlyReason = null;
-  if (isWindow) {
-    observationOnlyReason = '窗口截图仅供查看。请截取主显示器后再执行桌面动作。';
-  } else if (!sameObservation(before.foreground, foreground)) {
+  if (!sameObservation(before.foreground, foreground)) {
     observationOnlyReason = '截图期间未能确认同一个前台窗口。请重截主显示器。';
   } else if (!sameDisplay(display, primaryDisplay()) || !canUseDisplay(display, before) ||
     !canUseDisplay(display, after) || !sameBounds(before.virtualScreen, after.virtualScreen) ||
@@ -165,25 +179,164 @@ async function capture({ target = 'screen', windowTitle = '', maxWidth = 1560, r
 
   const screenshotId = randomUUID();
   const canAct = !observationOnlyReason;
-  const buf = isWindow ? image.toPNG() : image.toJPEG(92);
+  const buf = image.toJPEG(92);
   if (!buf.length) return { ok: false, error: '截图编码失败。' };
-  if (canAct && !isWindow) setCuMode(true);
+  if (canAct) setCuMode(true);
 
   latestScreenshot = {
     screenshotId, canAct, observationOnlyReason, display, width, height,
+    // 0.29.4 P0 红线：bounds 仍是全屏物理 bounds；region/windowRect 都是独立字段，不进 bounds。
     bounds: display.bounds, foreground, virtualScreen: after.virtualScreen,
     focusHwnd: before?.foreground?.focusHwnd === foreground?.focusHwnd ? foreground?.focusHwnd : null,
+    windowSource: 'screen',
+    windowRect: null,
     region: region ?? null
   };
   return {
-    ok: true, buf, mime: isWindow ? 'image/png' : 'image/jpeg', width, height, screenshotId, canAct,
+    ok: true, buf, mime: 'image/jpeg', width, height, screenshotId, canAct,
     observationOnlyReason,
-    scale: isWindow ? original.width / width : (region ? 1 : display.bounds.width / width),
+    scale: region ? 1 : display.bounds.width / width,
+    windowSource: 'screen',
+    windowRect: null,
     region: region ?? null,
     source: { id: source.id, name: source.name },
     sourceCount: sources.length,
     foreground: brief(foreground),
-    virtualScreen: after.virtualScreen ?? null
+    virtualScreen: after.virtualScreen ?? null,
+    note: fallbackNote || null
+  };
+}
+
+// ② winapp ui screenshot --hwnd <hwnd>（微软 winappcli，可选增强；WGC 优先、旧系统回退
+// PrintWindow，--capture-screen 才是拍屏幕——这里只拍窗口自身）。输出是窗口原生物理尺寸 PNG。
+async function winappScreenshotViaCli(exe, hwnd) {
+  const out = path.join(os.tmpdir(), `finalcheck-winapp-${Number(hwnd)}-${Date.now()}.png`);
+  const cmd = winappScreenshotCommand(exe, hwnd, out);
+  try {
+    await execFileAsync(cmd.file, cmd.args, { timeout: 20000, windowsHide: true });
+    const png = fs.readFileSync(out);
+    return { ok: png.length > 0, png };
+  } finally {
+    try { fs.unlinkSync(out); } catch { /* 临时文件清不掉就留给系统清理 */ }
+  }
+}
+
+// ①→② 级窗口捕获（依赖注入见 computer-window-capture.mjs；null = 两级都不可用 → ③ 兜底）。
+const captureWindowImage = createWindowCapture({
+  getSources: (options) => desktopCapturer.getSources(options),
+  winappDetect: () => detectWinapp(),
+  winappScreenshot: winappScreenshotViaCli,
+  createImage: (png) => nativeImage.createFromBuffer(png)
+});
+
+// 0.29.7-beta：target='window' 主路径切「窗口自身捕获」（WGC）。
+// 入参 hwnd（可选）缺省 = 当前前台目标窗口；window_title 走源列表定位后同样解析成 hwnd。
+// 链：① desktopCapturer 窗口 thumbnail（按 hwnd 匹配源，thumbnailSize=窗口原生物理尺寸）
+//     ② winapp ui screenshot --hwnd（运行时探测，缺失即跳过）
+//     ③ captureScreenFrame（永远兜底；最小化直接走 ③ 并在 note 注明）
+// shot.bounds 语义不变（全屏物理 bounds）；windowRect 存独立字段（0.29.4 region 同款思路）。
+async function captureWindowFrame({ windowTitle = '', hwnd = null } = {}) {
+  const display = primaryDisplay();
+  const before = await desktopContext();
+  if (!before.ok) return { ok: false, error: before.reason };
+
+  let target = null;
+  if (hwnd != null && hwnd !== '') {
+    const n = Number(hwnd);
+    if (!Number.isSafeInteger(n) || n <= 0) return { ok: false, error: 'hwnd 必须是正整数。' };
+    target = await input.windowInfo(n).catch(() => null);
+    if (!target?.hwnd) return { ok: false, error: `找不到 hwnd=${n} 对应的窗口（可能已关闭）。` };
+  } else if (String(windowTitle).trim()) {
+    // 标题片段 → 源列表定位 → 源 id 解析 hwnd（certainty A：id 中间数字 == GetWindowRect 的 hwnd）
+    // → windowInfo 校验目标仍存在。
+    let sources = [];
+    try {
+      sources = await desktopCapturer.getSources({ types: ['window'], thumbnailSize: { width: 0, height: 0 }, fetchWindowIcons: false });
+    } catch { sources = []; }
+    const { source, error } = selectCaptureSource(sources, { target: 'window', displayId: display.id, windowTitle });
+    if (error) return { ok: false, error };
+    const parsed = /^window:(\d+):\d+$/.exec(source.id);
+    if (!parsed) return { ok: false, error: `截图源 id 无法解析出窗口句柄（${source.id}）。` };
+    target = await input.windowInfo(Number(parsed[1])).catch(() => null);
+    if (!target?.hwnd) return { ok: false, error: '匹配到的窗口已关闭或不可查询。' };
+  } else {
+    target = before.foreground;
+    if (!target?.hwnd) return { ok: false, error: '无法确定目标窗口：请传 hwnd，或让目标处于前台后重试。' };
+  }
+
+  const rect = target.bounds;
+  if (!rect || !Number.isSafeInteger(rect.width) || !Number.isSafeInteger(rect.height) ||
+    rect.width < 2 || rect.height < 2) {
+    return { ok: false, error: '目标窗口没有有效的物理矩形（可能已最小化或正被系统收起）。' };
+  }
+
+  // 最小化：WGC 帧冻结拍不到、源也从列表消失（certainty PoC 实测）→ 直接走 ③ 全屏兜底。
+  let got = null;
+  if (target.iconic !== true) {
+    got = await captureWindowImage({ hwnd: target.hwnd, rect }).catch(() => null);
+  }
+  if (!got) {
+    return captureScreenFrame({
+      maxWidth: 1560, region: null,
+      fallbackNote: target.iconic === true
+        ? '目标已最小化，窗口捕获不可用，已回退全屏。'
+        : '窗口捕获不可用（窗口源未找到/被重采样，或 winapp 缺失/失败），已回退全屏。'
+    });
+  }
+
+  const after = await desktopContext();
+  const foreground = after.foreground;
+  const { image, level } = got;
+  const original = image.getSize();
+  const width = original.width;
+  const height = original.height;
+  if (width < 2 || height < 2) return { ok: false, error: '窗口截图尺寸无效。' };
+
+  // canAct 只在「目标窗口就是前台窗口」时给出：动手链路的 every 校验（sameObservation /
+  // AssertForeground / B 遮挡拒绝）照旧生效——窗口捕获解决「看」，B 解决「点」。
+  let observationOnlyReason = null;
+  if (!sameWindow(target, foreground)) {
+    observationOnlyReason = '窗口截图仅供观察：目标窗口当前不在前台。请先把它切到前台再动手。';
+  } else if (!sameObservation(before.foreground, foreground)) {
+    observationOnlyReason = '截图期间未能确认同一个前台窗口。请重截。';
+  } else if (!sameDisplay(display, primaryDisplay()) || !canUseDisplay(display, before) ||
+    !canUseDisplay(display, after) || !sameBounds(before.virtualScreen, after.virtualScreen)) {
+    observationOnlyReason = '无法确认截图与物理屏幕的坐标对应。当前截图仅供观察。';
+  } else if (foreground.tier === 'read') {
+    observationOnlyReason = '当前前台应用属于只读级别。';
+  }
+
+  const screenshotId = randomUUID();
+  const canAct = !observationOnlyReason;
+  const buf = image.toPNG();
+  if (!buf.length) return { ok: false, error: '截图编码失败。' };
+  if (canAct) setCuMode(true);
+
+  latestScreenshot = {
+    screenshotId, canAct, observationOnlyReason, display, width, height,
+    // 0.29.4 P0 红线：bounds 仍是全屏物理 bounds（原生层 captureBounds.Matches(PrimaryBounds())
+    // 断言依赖它）；窗口 rect 存独立字段 windowRect（带 imageWidth/imageHeight 供 mapWindowPoint
+    // 做 scale 映射），绝不写进 bounds。
+    bounds: display.bounds, foreground, virtualScreen: after.virtualScreen,
+    focusHwnd: before?.foreground?.focusHwnd === foreground?.focusHwnd ? foreground?.focusHwnd : null,
+    windowSource: level,
+    windowRect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height, imageWidth: width, imageHeight: height },
+    region: null
+  };
+  return {
+    ok: true, buf, mime: 'image/png', width, height, screenshotId, canAct,
+    observationOnlyReason,
+    scale: rect.width / width,
+    windowSource: level,
+    windowRect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+    region: null,
+    source: { id: windowSourceId(target.hwnd), name: target.title ?? '' },
+    foreground: brief(foreground),
+    virtualScreen: after.virtualScreen ?? null,
+    note: `已用窗口自身捕获（${level === 'winapp' ? 'winapp CLI' : 'WGC 窗口 thumbnail'}）看清全貌；` +
+      (canAct
+        ? '被遮挡区域的点击仍会被拒绝（遮挡校验），需要用户移开遮挡窗或调整布局。'
+        : '动手前需将目标切到前台。被遮挡区域的点击仍会被拒绝（遮挡校验）。')
   };
 }
 

@@ -18,7 +18,17 @@ test('versions: repository root and desktop package stay aligned', () => {
 test('versions: CHANGELOG has an entry for the desktop package version', () => {
   const desktopPkg = JSON.parse(readFileSync(path.join(root, 'desktop', 'package.json'), 'utf8'));
   const changelog = readFileSync(path.join(root, 'CHANGELOG.md'), 'utf8');
-  assert.ok(changelog.includes(`## [${desktopPkg.version}]`), `CHANGELOG.md must contain ${desktopPkg.version}`);
+  // 预发布版本（0.29.7-beta.1 等）不发 Release、单独出包给用户实测，CHANGELOG 条目随下一个
+  // 正式版本（如 0.30.0）一起写——此时按基础版本校验，避免 beta 被迫补写 CHANGELOG。
+  const [baseVersion] = String(desktopPkg.version).split('-');
+  const expected = baseVersion === desktopPkg.version
+    ? `## [${desktopPkg.version}]`
+    : `## [${baseVersion}]`;
+  assert.ok(changelog.includes(expected), `CHANGELOG.md must contain ${expected}`);
+  // 正式版本仍然必须精确匹配，不得借 beta 逻辑蒙混
+  if (baseVersion === desktopPkg.version) {
+    assert.ok(changelog.includes(`## [${desktopPkg.version}]`), `CHANGELOG.md must contain ${desktopPkg.version}`);
+  }
 });
 
 test('versions: both READMEs advertise the same test count', () => {
