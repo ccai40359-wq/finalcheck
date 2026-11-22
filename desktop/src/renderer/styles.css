@@ -608,3 +608,9 @@ button, [role="button"] {
 @media (prefers-reduced-motion: reduce) {
   .fc-sidebar { transition: none; }
 }
+
+/* ---- CU 迷你对话窗（0.29.7）：操控模式把主窗缩到 360px，此时只留对话流+输入框 ----
+   设计缺陷修复：此前只是把整套桌面版布局硬缩，侧栏把 360px 吃光、对话区完全看不见。
+   开关用 body.fc-cu-mini（主进程 CU 模式注入/移除），不用 @media 窗口宽度——
+   本仓布局纪律是容器/状态驱动，不是窗口宽度（右栏展开时窗口宽内容窄）。 */
+body.fc-cu-mini .fc-sidebar { display: none !important; }

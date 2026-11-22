@@ -161,6 +161,16 @@ public class FcCu {
 
   public static Window ForegroundInfo() { return WindowInfo(GetForegroundWindow()); }
 
+  // 0.29.7（遮挡校验）：物理坐标 (x,y) 落点的顶层窗口。WindowFromPoint 返回命中的（可能是子）窗口，
+  // 取 GA_ROOT 得到顶层归属；调用方拿它与目标窗口比 hwnd/pid 判断落点是否被别的应用压住。
+  public static Window PointOwner(int x, int y) {
+    IntPtr hit = WindowFromPoint(new POINT { X = x, Y = y });
+    if (hit == IntPtr.Zero) return null;
+    IntPtr root = GetAncestor(hit, GA_ROOT);
+    if (root == IntPtr.Zero) root = hit;
+    return WindowInfo(root);
+  }
+
   static void AssertForeground(Guard guard, bool keyboard, bool checkTitle) {
     if (guard == null) return;
     IntPtr foreground = GetForegroundWindow();
@@ -481,6 +491,11 @@ while ($true) {
         $window = [FcCu]::WindowInfo([IntPtr][long]$cmd.hwnd)
         Write-Output ("OK|" + (ConvertTo-Json -InputObject $window -Depth 4 -Compress))
       }
+      "point-owner" {
+        $owner = [FcCu]::PointOwner([int]$cmd.x, [int]$cmd.y)
+        if ($null -eq $owner) { Write-Output "OK|" }
+        else { Write-Output ("OK|" + (ConvertTo-Json -InputObject $owner -Depth 4 -Compress)) }
+      }
       "cursor" { Write-Output ("OK|" + [FcCu]::CursorPos()) }
       "move" { [FcCu]::MoveAbs([int]$cmd.x, [int]$cmd.y, $guard); Write-Output "OK|" }
       "click" { [FcCu]::Click([int]$cmd.x, [int]$cmd.y, [string]$cmd.button, [int]$cmd.count, $guard); Write-Output "OK|" }
@@ -628,6 +643,16 @@ export async function foregroundInfo() {
 
 export async function windowInfo(hwnd) {
   return JSON.parse(await send({ op: 'window', hwnd }));
+}
+
+/** 0.29.7（遮挡校验）：物理坐标 (x,y) 落点的顶层窗口（WindowFromPoint 的 GA_ROOT），
+ *  带 hwnd/pid/process/title/bounds；落点没有窗口（极少见）返回 null。
+ *  供 computer-use 在指针动作前做遮挡校验（落点顶层窗口必须属于目标 hwnd/同进程）。 */
+export async function windowAtPoint(x, y) {
+  const r = await send({ op: 'point-owner', x: Math.round(x), y: Math.round(y) });
+  const text = String(r ?? '').trim();
+  if (!text) return null;
+  try { return JSON.parse(text); } catch { return null; }
 }
 
 export async function cursorPosition() {

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, protocol, screen, shell } from 'electron';
+import { app, BrowserWindow, globalShortcut, ipcMain, protocol, screen, shell } from 'electron';
 import { registerMediaScheme, installMediaProtocol } from './media-protocol.mjs';
 import { setSnapshotRenderer } from './capture.mjs';
 // 注意：computer-use 模块与 agent-service 一样是运行时经 engineUrl 从 REPO_ROOT 加载的
@@ -209,17 +209,18 @@ let cuSavedBounds = null;
 let cuWasMaximized = false;
 let cuModeOn = false; // 遮罩/横幅重注入的开关（渲染层 reload 后 did-finish-load 会重注入，审查 P1-2）
 const CU_OVERLAY_HTML = `<!doctype html><html><head><meta charset="utf-8"><style>
-  html,body{margin:0;height:100%;background:rgba(10,10,12,.28);overflow:hidden;
+  html,body{margin:0;height:100%;background:rgba(214,158,52,.15);overflow:hidden;
     font-family:system-ui,'Segoe UI','Microsoft YaHei',sans-serif;user-select:none}
-  .banner{position:fixed;top:18px;left:22px;display:flex;align-items:center;gap:10px;
-    background:rgba(139,30,30,.92);color:#ffe2e2;padding:10px 18px;border-radius:10px;
-    font-size:14px;font-weight:600;letter-spacing:.5px;box-shadow:0 4px 18px rgba(0,0,0,.45)}
-  .dot{width:10px;height:10px;border-radius:50%;background:#ff5c5c;animation:pulse 1.1s infinite}
+  .banner{position:fixed;top:18px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:10px;
+    background:rgba(26,20,8,.88);color:#f2c566;padding:10px 18px;border-radius:10px;
+    font-size:14px;font-weight:600;letter-spacing:.5px;box-shadow:0 4px 18px rgba(0,0,0,.45);
+    border:1px solid rgba(242,197,102,.4)}
+  .dot{width:10px;height:10px;border-radius:50%;background:#f2c566;animation:pulse 1.1s infinite}
   .hint{font-size:11px;font-weight:400;opacity:.85;margin-left:6px}
   @keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
 </style></head><body>
   <div class="banner"><span class="dot"></span>FinalCheck 正在操控电脑
-    <span class="hint">在右上角小窗点「停止」可中止</span></div>
+    <span class="hint">按 ESC 或点右上角小窗「停止」可中止</span></div>
 </body></html>`;
 
 function injectCuBanner() {
@@ -227,10 +228,11 @@ function injectCuBanner() {
     if (document.getElementById('fc-cu-stop')) return 'exists';
     const bar = document.createElement('div');
     bar.id = 'fc-cu-stop';
-    bar.style.cssText = 'position:fixed;top:0;left:0;right:0;height:28px;z-index:2147483647;background:#8b1e1e;color:#ffe2e2;font:600 12px/28px system-ui,sans-serif;text-align:center;cursor:pointer;user-select:none';
-    bar.textContent = '● FinalCheck 操控中 — 点击停止并恢复';
+    bar.style.cssText = 'position:fixed;top:0;left:0;right:0;height:28px;z-index:2147483647;background:rgba(26,20,8,.92);color:#f2c566;border-bottom:1px solid rgba(242,197,102,.4);font:600 12px/28px system-ui,sans-serif;text-align:center;cursor:pointer;user-select:none';
+    bar.textContent = '● FinalCheck 操控中 — 点此停止（按 ESC 也可）';
     bar.onclick = function(){ window.finalcheck && window.finalcheck.cuStop && window.finalcheck.cuStop(); };
     document.body.appendChild(bar);
+    document.body.classList.add('fc-cu-mini'); // 迷你形态：隐藏侧栏，只留对话流+输入框
     return 'injected';
   })()`).catch(() => { /* 渲染层未就绪：cuModeOn 期间 did-finish-load 会重注入 */ });
 }
@@ -266,17 +268,25 @@ function enterCuMode() {
     win.setAlwaysOnTop(true, 'screen-saver');
     win.setBounds({ x: wa.x + wa.width - 372, y: wa.y + 8, width: 360, height: Math.min(520, wa.height - 16) });
     injectCuBanner();
+    // 用户拍板：ESC = 全局退出操控（等同点「停止」）。仅在 CU 模式期间注册，退出即注销。
+    // 代价：CU 期间你在任何应用里按 ESC 都会停止操控——这是明确的取舍。
+    try {
+      globalShortcut.register('Escape', () => {
+        try { win?.webContents.executeJavaScript('window.finalcheck&&window.finalcheck.cuStop&&window.finalcheck.cuStop()').catch(() => {}); } catch { /* ignore */ }
+      });
+    } catch { /* 注册失败不影响 CU 本体 */ }
   } catch { /* 遮罩/迷你化失败不影响 CU 本体动作 */ }
 }
 
 function exitCuMode() {
   try {
     cuModeOn = false;
+    try { globalShortcut.unregister('Escape'); } catch { /* ignore */ }
     if (cuOverlay && !cuOverlay.isDestroyed()) cuOverlay.destroy();
     cuOverlay = null;
     if (win && !win.isDestroyed()) {
       win.setAlwaysOnTop(false);
-      win.webContents.executeJavaScript(`(function(){const b=document.getElementById('fc-cu-stop');if(b)b.remove();})()`).catch(() => {});
+      win.webContents.executeJavaScript(`(function(){const b=document.getElementById('fc-cu-stop');if(b)b.remove();document.body.classList.remove('fc-cu-mini');})()`).catch(() => {});
       if (cuSavedBounds) win.setBounds(cuSavedBounds);
       if (cuWasMaximized) win.maximize();
     }

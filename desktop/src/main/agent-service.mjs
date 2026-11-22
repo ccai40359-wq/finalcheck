@@ -224,7 +224,7 @@ export const TOOLS_SCHEMA = [
   { type: 'function', function: { name: 'list_playbooks', description: '列出方法论库的全部类目（编号/中文名/英文名/触发词/文件数）。两类内容都有：01-40 漏洞复核手法（渗透测试/越权/注入/SSRF/反序列化等），41-50 修复技能（密钥轮换/注入修复/依赖升级/提示注入防护/沙箱限额/数据脱敏等）。什么时候该调用它：① 不确定该用哪类手法时；② 按 audit_project 报告的 nextSteps 拿到 topic 编号但不确定对应哪一类时；③ 交付验收（L2/L3）里要判某个高危「到底能不能被真利用」、或要动手修某个审计发现时。**别凭规则名或凭感觉判真假——先看一眼目录**', parameters: { type: 'object', properties: {} } } },
   { type: 'function', function: { name: 'read_playbook', description: '读方法论库的一类技能包。topic 传类目编号或英文名（如 11 / ssrf / sql-injection）；01-40 是漏洞复核手法，41-50 是修复技能（dev 轨修审计发现时用）。默认返回 SKILL.md 入口（含文件路由）；附属手册用 file 指定、大文件用 offset/limit 续读', parameters: { type: 'object', properties: { topic: { type: 'string', description: '类目编号或英文名，如 11 / ssrf / idor / jwt / wafbypass / vuln-report-generate' }, file: { type: 'string', description: '可选：该类目目录下的具体文件名（可先用 topic 读入口看 files 列表）' }, offset: { type: 'number', description: '可选：从第几个字符开始读，默认 0' }, limit: { type: 'number', description: '可选：本次最多读多少字符，默认 14000，上限 30000' } }, required: ['topic'] } } },
   { type: 'function', function: { name: 'read_file', description: '读取单个文本文件，自动带行号，大文件用 offset/limit 续读。⚠️ 这是读文件的唯一正确方式：不要用 run_command 的 cat/type/head/tail 读文件（shell 读不到项目外的文件，也不会给你行号）。要找某个字符串/函数/报错出在哪 → 用 grep_code，不要用它逐个文件翻。', parameters: { type: 'object', properties: { path: { type: 'string', description: '文件绝对路径。' + PATH_JSON_HINT }, offset: { type: 'number', description: '可选：从第几个字符开始，默认 0' }, limit: { type: 'number', description: '可选：本次最多读多少字符，默认 20000，上限 40000' } }, required: ['path'] } } },
-  { type: 'function', function: { name: 'edit_file', description: '精确修改文件：把 old_string 替换成 new_string（old_string 必须在文件中唯一，否则拒绝）。改前先 read_file；改后返回 +N/-M 与 diff。需要用户审批', parameters: { type: 'object', properties: { path: { type: 'string', description: '文件绝对路径。' + PATH_JSON_HINT }, old_string: { type: 'string', description: '要替换的原文本（含缩进，必须唯一）' }, new_string: { type: 'string', description: '替换后的文本（可为空字符串=删除）' } }, required: ['path', 'old_string', 'new_string'] } } },
+  { type: 'function', function: { name: 'edit_file', description: '精确修改文件：把 old_string 替换成 new_string（old_string 必须在文件中唯一，否则拒绝）。仅编辑已有文件前需要先 read_file 看清原文（新建文件直接用 write_file，不要先读一个还不存在的路径）；改后返回 +N/-M 与 diff。需要用户审批', parameters: { type: 'object', properties: { path: { type: 'string', description: '文件绝对路径。' + PATH_JSON_HINT }, old_string: { type: 'string', description: '要替换的原文本（含缩进，必须唯一）' }, new_string: { type: 'string', description: '替换后的文本（可为空字符串=删除）' } }, required: ['path', 'old_string', 'new_string'] } } },
   { type: 'function', function: { name: 'write_file', description: '新建或整体覆盖文本文件（≤2MB），返回 +N/-M 与 diff。父目录必须已存在；需要用户审批', parameters: { type: 'object', properties: { path: { type: 'string', description: '文件绝对路径。' + PATH_JSON_HINT }, content: { type: 'string', description: '完整文件内容' } }, required: ['path', 'content'] } } },
   { type: 'function', function: { name: 'present_artifact', description: '把生成/修改好的 png / html / pdf / 视频（mp4/webm/mov）/ PPT·Word（pptx/docx，右侧一页一页展示）/ 文本文件登记为右侧可预览产物（用户点一下就在右侧打开）。生成了网页/图片/视频/幻灯片后调用它', parameters: { type: 'object', properties: { path: { type: 'string', description: '文件绝对路径。' + PATH_JSON_HINT }, title: { type: 'string', description: '可选：展示标题' } }, required: ['path'] } } },
   {
@@ -351,8 +351,8 @@ export const SUBAGENT_TOOLS_SCHEMA = AGENT_TOOLS_SCHEMA.filter((tool) => SUBAGEN
 
 const AUTOMATION_GUIDANCE = [
   '电脑与网页操作优先用专用工具。网页操作统一走 browser_*：browser_navigate 默认同时返回 snapshot，用其中最新的 ref 点击或输入。预计点击会改变页面时传 observe:true；旧 ref 失效或需要缩小范围时，再调用 browser_snapshot，可用 query 找元素。',
-  '桌面软件先用 computer_request_access 请求应用授权。用户同意后，让目标应用处在前台，调用 computer_screenshot 获取 canAct=true 的主显示器全屏截图，再把 screenshot_id 传给 computer_action。需要坐标时直接用图上的原始像素，缩放由工具处理。只有目标窗口和键盘焦点保持一致、截图仍有效时，安全的连续按键才可以复用该 ID。',
-  '提交、保存及其它重要界面变化后，检查页面或桌面确实出现了预期结果。可用 observe:true 在同一调用中获取操作后的观察；截图或页面观察失败时，先区分动作与观察的结果。同一次回复中某个自动化工具失败时，后续同类调用会跳过。按错误和已执行结果重新判断下一步，避免盲目重复截图或重放动作。终端和编辑器操作优先使用 run_command 或文件工具。',
+  '桌面软件先用 computer_request_access 请求应用授权。用户同意后，让目标应用处在前台，调用 computer_screenshot 获取 canAct=true 的主显示器全屏截图，再把 screenshot_id 传给 computer_action。需要坐标时直接用图上的原始像素，缩放由工具处理。同一窗口内连续点击/输入这类连续操作，直接复用当前 screenshot_id 连续发动作，不要每点一下就重新截图；目标窗口、键盘焦点或界面布局变了才需要重新截一张。',
+  '提交、保存、删除类动作后必须复查——重新截图或用 observe:true 看清预期结果确实出现；普通指针动作之间不必逐步复查。截图或页面观察失败时，先区分动作与观察的结果。同一次回复中某个自动化工具失败时，后续同类调用会跳过。按错误和已执行结果重新判断下一步，避免盲目重复截图或重放动作。终端和编辑器操作优先使用 run_command 或文件工具。',
   '桌面键鼠实战教条（微信等应用实测）：提交/发送/保存类动作优先点击界面上的大按钮，Enter/Ctrl+Enter 等快捷键只是兜底（微信实测 Enter/Ctrl+Enter 会静默失效，看起来发了其实没发）。键盘动作（type/key）前先确认焦点在目标控件上——先点一下输入框，或观察光标/内容有没有变化；焦点看不见、按错了也不报错，所以不能靠「按了没反应再试一次」蒙。读不清缩略图里的小字时用 computer_screenshot 的 region 两段式：先全屏定位大概位置，再用 region 拍一块原生分辨率的小图读文字细节，坐标按小图像素直接传。'
 ].join('\n');
 
@@ -402,7 +402,8 @@ const SYSTEM_BASE = [
 const SYSTEM_DEV_BASE = [
   '你是 FinalCheck（终检）开发助手：帮用户写代码、改代码、做工具、排查问题。人类指令优先——用户明确要求的事直接动手做，不要用验收/审计纪律反问、推脱或要求先跑检查；拿不准的技术选型先选一个合理的默认并继续做，做完在结尾用一句话说明可替换点。',
   '发现必须带证据说话：改了什么贴 diff/输出，报错贴原文，不编造测试结果——没跑就说没跑。',
-  '动手顺序：先 read_file 看清原文再改（edit_file 的 old_string 必须唯一，做最小替换）；新建文件用 write_file；改动尽量小而聚焦，一次一个目标，改完立即跑最小验证（语法检查 / 定向单测 / 启动冒烟）并把输出贴给用户。',
+  '动手顺序：编辑已有文件前先 read_file 看清原文再改（edit_file 的 old_string 必须唯一，做最小替换）；新建文件直接 write_file（不要为写新文件先去读一个还不存在的路径）；改动尽量小而聚焦，一次一个目标，改完立即跑最小验证（语法检查 / 定向单测 / 启动冒烟）并把输出贴给用户。',
+  '单命令短路（2026-11-22 实测：起一个端口服务用了 9 次调用、还自造了一个一次性脚本）：能一条 run_command 直接完成的动作（起服务/开端口/装依赖/发请求/查进程/看文件内容/跑一段验证），第一个工具调用就是那条 run_command——不写 todo、不读无关文件、不自造一次性脚本（用 python -c / node -e 内联，常驻服务加 background:true），做完验证直接报告，不要先列计划再动手。',
   '修审计发现时按技能修：audit_project 报出的每类问题（S3 密钥轮换 / S1 路由鉴权 / S2 注入 / S4 依赖 / A1 权限收敛 / A2 提示注入 / A3 沙箱限额 / A4 数据脱敏 / H1 交接 / O1 运维）先 read_playbook(topic=对应编号 41-50) 读修复技能，按其「修复步骤」执行、按其「验证」段重跑对应 gate 确认归零。',
   '多条独立发现并行修：≥3 条互不依赖的审计发现（不同文件/不同规则）→ run_workflow 扇出修复——每条发现一个独立子代理（prompt 写明「先 read_playbook(topic=对应编号) 读修复技能再动手」），depends_on 全部空数组并行；最后一步汇总「各发现修没修好 + 重跑 gate 的结果」。修复失败的发现如实列「未修好 + 原因」，不许为了结论好看硬说修完。',
   '需要并行查证/多路改造时用 run_workflow 分头跑（步骤 3-8 个，每步一个独立子代理；不需要上游结果就写 depends_on: [] 并行）；单文件小改动不要用工作流，自己直接做更快。每步 name 用职位名（4-10 字），不许写「步骤 1」。',
@@ -475,7 +476,7 @@ const EMPTY_NUDGE_DIGEST_ITEMS = 12;
 // 想久，结果两次都是 0 个文件、~460 秒全烧在思考上。
 // 现在改成：reasoning 用「周期重复检测」抓真复读；长度帽抬到 200k 只做兜底，且兜底时给的是
 // 「想太久了」的催收（不消耗不限额度），不是判死。
-const REASONING_LOOP_CAP = 200000;   // 思考流硬帽（兜底）：正常长思考实测最多 12 万，200k 留足余量
+const REASONING_LOOP_CAP = 80000;    // 思考流硬帽（兜底）：0.29.7 实测单回合 reasoning 最高 25.7 万字符全是空转；80k 触帽不判死，走「想太久」催收要求立即出动作
 const REASONING_DUP_MIN = 3000;      // 低于此长度不做重复检测（太短的思考本来就没法判断周期）
 const REASONING_DUP_CHECK = 800;     // 每新增这么多字扫一次（避免每块都跑 indexOf）
 const REASONING_DUP_MAX_QUERIES = 60; // 单次检测最多查这么多个候选周期（防止长文本上 O(n²)）
@@ -674,6 +675,10 @@ function countTrailingRepeats(seg, probe, cap = 8) {
 const STUCK_ROUNDS = 5; // 连续 5 轮同一个错误 → 提示跳出
 const STUCK_MAX_NUDGES = 2; // 同一指纹最多提示 2 次（第 3 次起不再打扰）
 const STUCK_SIG_MAX = 120;
+// 轻闸两条（0.29.7 反过度思考）：只提醒不判停，与上面的死磕检测互补——那个抓「改写法撞同一错误」，
+// 这两条抓「磨蹭」与「高频动作工具原地连败」。
+const SINGLE_TOOL_STREAK_NUDGE = 4; // 连续 ≥4 轮每次只调 1 个工具且无 computer_* 成功 → 提醒直接行动
+const ACTION_FAIL_NUDGE_AT = 3;     // run_command/computer_action 同一错误签名累计失败第 3 次 → 提醒换路径
 
 /** 从一轮工具结果里提取失败指纹；没有失败返回 null */
 export function extractFailureSig(toolResults) {
@@ -1812,6 +1817,10 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
   let lastErrorSig = null; // 上一轮的失败指纹（同一类报错 = 同一指纹）
   let stuckRounds = 0; // 连续「同一个错误没解开」的轮数
   let stuckNudges = 0; // 跳出圈提示的次数（同一指纹最多提几次，避免刷屏）
+  // 轻闸两条（0.29.7 反过度思考）：一回合各自最多提醒一次/一签名
+  let singleToolStreak = 0; // 连续「单工具调用且无 computer_* 成功」的轮数
+  let singleToolNudged = false; // 轻闸①已提醒过就不再打扰
+  const actionFailCounts = new Map(); // 轻闸②：run_command/computer_action 按错误签名累计失败次数
   let forceAnswerNoTools = false; // 下一次请求带 tool_choice='none'（第二次补交用，成功发出后复位）
   let argsTruncatedRetried = false; // finish_reason=length 且带 tool_calls：整轮重发一次（参数半截，一律不执行）
   let argsRepaired = false; // 参数非法 JSON：纠错一次（把那一个调用回给模型重发），再失败才报错
@@ -2152,7 +2161,7 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
     if (longThink) {
       if (longThinkNudges < MAX_LONG_THINK_NUDGES) {
         longThinkNudges += 1;
-        const nudge = '你这一轮思考过长（已超过长度上限被截断），但没有任何代码或工具产出。思考时不要反复推演方案取舍——先把文件写出来，再用实际渲染/测试结果判断好不好，边做边改。现在就动手：直接调用工具推进，不要再做长段规划。';
+        const nudge = '你这一轮思考过长（已超过长度上限被截断），但没有任何代码或工具产出。立即给出下一步动作：直接调用工具推进（写文件/跑命令/贴出已有结论都行），不要再做长段推演或方案取舍。';
         convo.push({ role: 'user', content: `[系统] ${nudge}` });
         onEvent?.({ kind: 'warning', message: t('模型思考过长（不是复读），已截断并催收推进（{n}/{max}）', { n: longThinkNudges, max: MAX_LONG_THINK_NUDGES }) });
         onEvent?.({ kind: 'activity', label: t('思考过长，催收推进（{n}/{max}）…', { n: longThinkNudges, max: MAX_LONG_THINK_NUDGES }) });
@@ -2378,6 +2387,46 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
         convo.push({ role: 'user', content: `[系统] ${nudge}` });
         onEvent?.({ kind: 'warning', message: t('连续 {n} 轮卡在同一个错误，已提示跳出当前思路（{k}/{max}）', { n: stuckRounds, k: stuckNudges, max: STUCK_MAX_NUDGES }) });
         onEvent?.({ kind: 'activity', label: t('检测到死磕同一个错误，已提示换思路…') });
+      }
+    }
+    // ---- 轻闸①（0.29.7 反过度思考）：连续多轮每次只调 1 个工具且没有 computer_* 成功 → 提醒直接行动 ----
+    // 真机实证：长回合里大量「回复只带 1 个工具调用」（宣传片任务 529 步中 353 步如此）。不判停、
+    // 不判错，一回合最多提醒一次；下一轮 ≥2 个调用或有 computer_* 成功就清零。
+    {
+      const hadComputerSuccess = toolResults.some((r) =>
+        /^computer_/.test(String(r?.trace?.tool || '')) && r?.trace?.result && typeof r.trace.result === 'object' && r.trace.result.ok !== false);
+      if (toolCalls.length === 1 && !hadComputerSuccess) singleToolStreak += 1;
+      else singleToolStreak = 0;
+      if (singleToolStreak >= SINGLE_TOOL_STREAK_NUDGE && !singleToolNudged) {
+        singleToolNudged = true;
+        singleToolStreak = 0;
+        const nudge = `你已经连续 ${SINGLE_TOOL_STREAK_NUDGE} 轮每次只调用一个工具，且没有桌面操作成功。直接给下一步动作，不要只思考：互不依赖的调用合并到同一次回复里一起发（读/查/命令会并发执行），或直接报告已有结论。`;
+        convo.push({ role: 'user', content: `[系统] ${nudge}` });
+        onEvent?.({ kind: 'warning', message: t('连续 {n} 轮单工具调用且无桌面操作成功，已提醒直接行动', { n: SINGLE_TOOL_STREAK_NUDGE }) });
+        onEvent?.({ kind: 'activity', label: t('已提醒：合并调用、减少单步往返…') });
+      }
+    }
+    // ---- 轻闸②（0.29.7）：run_command/computer_action 同一错误签名累计失败 ≥3 次 → 提醒换路径 ----
+    // 与死磕检测的区别：只盯这两个高频动作工具、按「同类失败」累计（不必连续）、每个签名一回合只提醒一次。
+    {
+      for (const r of toolResults) {
+        const toolName = String(r?.trace?.tool || '');
+        if (toolName !== 'run_command' && toolName !== 'computer_action') continue;
+        const result = r?.trace?.result;
+        const failed = !!result && typeof result === 'object'
+          && (typeof result.error === 'string' && !!result.error.trim()
+            || (Number.isFinite(Number(result.code)) && Number(result.code) !== 0)
+            || result.ok === false);
+        if (!failed) continue;
+        const sig = extractFailureSig([r]) || String(result?.error || result?.deniedBy || 'unknown').slice(0, STUCK_SIG_MAX);
+        const n = (actionFailCounts.get(sig) || 0) + 1;
+        actionFailCounts.set(sig, n);
+        if (n >= ACTION_FAIL_NUDGE_AT && (n - ACTION_FAIL_NUDGE_AT) % ACTION_FAIL_NUDGE_AT === 0) {
+          const nudge = `${toolName} 已经 ${n} 次失败在同一个错误上：「${sig}」。停止重试同类操作，改用其它路径达成目标，或用 ask_user 向用户说明情况。`;
+          convo.push({ role: 'user', content: `[系统] ${nudge}` });
+          onEvent?.({ kind: 'warning', message: t('{tool} 同类失败已到 {n} 次，已提醒换路径或 ask_user', { tool: toolName, n }) });
+          onEvent?.({ kind: 'activity', label: t('检测到同类操作反复失败，已提示换路径…') });
+        }
       }
     }
     // 回合内折叠统一在下一次请求前的 compactNow 里做（成批折叠，保护前缀缓存；见 nextFoldAt）。

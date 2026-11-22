@@ -138,22 +138,25 @@ const distinctLong = (sections) => {
   return t;
 };
 
-test('repetition: 思考流 12 万字互不相同 → 不判死、不标复读（r11 实测误杀）', async () => {
-  // r11 实测：12 万字思考里 40/60/80/120 字滑窗最高频片段只出现 1-2 次 = 真的只是想了很久。
-  // 旧逻辑（>60k 就当复读判死）会让开放式任务 0 产出，这条是防回归。
-  const text = distinctLong(1500); // ~14 万字：超过旧 60k 帽（旧逻辑必误杀），但不到 200k 硬帽
-  assert.ok(text.length > 120000, `夹具要超过 12 万字（实际 ${text.length}）`);
-  assert.ok(text.length < 200000, `但也不能到 200k 硬帽（实际 ${text.length}）`);
+test('repetition: 思考流 7 万字互不相同 → 不判死、不标复读、不标想太久（r11 实测误杀防回归）', async () => {
+  // r11 实测：互不相同的长思考是「真的只是想了很久」，不是复读——旧逻辑（>60k 就当复读判死）
+  // 会让开放式任务 0 产出，这条是防回归。0.29.7 硬帽降到 80k：夹具取 7 万字（超过旧 60k 帽，
+  // 仍低于新 80k 帽），互不相同的长思考既不判复读也不催收。
+  const text = distinctLong(800); // ~7.5 万字：超过旧 60k 帽（旧逻辑必误杀），不到 80k 新硬帽
+  assert.ok(text.length > 60000, `夹具要超过 6 万字（实际 ${text.length}）`);
+  assert.ok(text.length < 80000, `但不能到 80k 硬帽（实际 ${text.length}）`);
   const out = await run([thinkChunk(text)]);
-  assert.equal(out.reasoning.length > 120000, true);
+  assert.equal(out.reasoning.length > 60000, true);
   assert.ok(!out.repetitive, '互不相同的长思考不得判成复读');
-  assert.ok(!out.longThink, '不到 200k 硬帽，也不该标「想太久」');
+  assert.ok(!out.longThink, '不到 80k 硬帽，也不该标「想太久」');
   assert.ok(!out.aborted, '不能被冒充成用户中断');
 });
 
-test('repetition: 思考流触及 200k 硬帽但无复读 → longThink（不是 repetitive）', async () => {
-  const text = distinctLong(5000); // ~20 万字以上，必然触 200k 硬帽
-  assert.ok(text.length > 200000, `夹具要超过 20 万字（实际 ${text.length}）`);
+test('repetition: 思考流触及 80k 硬帽但无复读 → longThink（不是 repetitive；0.29.7 反过度思考）', async () => {
+  // 0.29.7：真机实测单回合 reasoning 最高 25.7 万字符全是空转，硬帽从 200k 降到 80k——
+  // 触帽不判死，标 longThink 走「立即给出下一步动作」的催收（MAX_LONG_THINK_NUDGES 次内继续回合）。
+  const text = distinctLong(1200); // ~11 万字以上，必然触 80k 硬帽
+  assert.ok(text.length > 80000, `夹具要超过 8 万字（实际 ${text.length}）`);
   const out = await run([thinkChunk(text)]);
   assert.equal(out.longThink, true, '触硬帽要标 longThink');
   assert.ok(!out.repetitive, '没有周期复读就不能说它是复读（会诱导模型误报「我之前循环了」）');

@@ -3,7 +3,7 @@
 import path from 'node:path';
 import os from 'node:os';
 import { stat } from 'node:fs/promises';
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
@@ -470,6 +470,64 @@ export const GREP_CODE_SCHEMA = {
 
 // todo_write 的 CC 式三条规则（并轨时追加到 AGENT_ONLY_TOOLS_SCHEMA 里 todo_write 的 description 末尾）
 export const TODO_CC_RULES_TEXT = 'CC 式规则：① 同一时间恰好一个 in_progress（工具层会自动把多余的 running 降回 pending 并提示）；② 测试失败/实现不全/有未解决错误时禁止标 done——保持 running，并新建一条写清「需要解决什么」；③ 做完一条立刻调用 todo_write 更新状态，不要攒批';
+
+// ---- 0.29.7 注入闸脚本文件扫描 ----
+// 真机实证的缺口：模型写 final_send.ps1 后 `powershell -NoProfile -File D:/CUBUtesting/final_send.ps1`
+// ——关键词全在脚本文件里、命令行只有 powershell，闸扫不到。修法：命令行命中编译/执行上下文时，
+// 把 -File/-f 引用的本地脚本与内联 heredoc 正文一并纳入同一对 INJECTION_KEYWORDS×INJECTION_COMPILER
+// 判定。文件不存在/读不到 → 放行（保持现状，不新增失败模式）。
+const INJECTED_SCRIPT_MAX_BYTES = 512 * 1024; // 注入脚本不会更长；避免把大文件整个读进来
+const INJECTION_COMPILER_TOKEN = /(?:^|[\s"'&(])(?:powershell|pwsh|python3?|cscript(?:\.exe)?)\b/i;
+
+function readScriptBody(rawPath, cwd) {
+  try {
+    const p = String(rawPath || '').trim().replace(/^"+|"+$/g, '').replace(/^'+|'+$/g, '');
+    if (!p || /^https?:/i.test(p) || p.includes('\u0000')) return null;
+    const abs = path.isAbsolute(p) ? p : path.join(cwd || process.cwd(), p);
+    const st = statSync(abs);
+    if (!st.isFile() || st.size > INJECTED_SCRIPT_MAX_BYTES) return null;
+    return { abs, body: readFileSync(abs, 'utf8') };
+  } catch { return null; } // 文件不存在/读不到 → 放行
+}
+
+/**
+ * 收集命令引用的脚本正文（-File/-f 指向的本地文件 + 内联 heredoc 代码块）。
+ * -f 只认编译/执行器（powershell/pwsh/python/cscript）所在命令段内的出现，避免 `grep -f` 之类误伤。
+ * @param {string} cmd 完整命令串
+ * @param {string|null} [cwd] 相对路径的解析基准（run_command 的 cwd）
+ * @returns {{files:string[], bodies:string[]}} files 仅为可读文件（body 非空才计入）
+ */
+export function collectInjectedScriptBodies(cmd, cwd = null) {
+  const files = [];
+  const bodies = [];
+  const text = String(cmd || '');
+  if (!text) return { files, bodies };
+  // ① -File/-f 引用的本地脚本（按 && || ; | 换行切段，段内必须出现编译/执行器才抽 -f*）
+  for (const seg of text.split(/&&|\|\||;|\||\r?\n/)) {
+    const s = seg.trim();
+    if (!s || !INJECTION_COMPILER_TOKEN.test(s)) continue;
+    const flagRe = /(?:^|[\s"'&(])-f(?:ile)?\s+(?:"([^"]+)"|'([^']+)'|([^\s'"&|;<>]+))/gi;
+    let m;
+    while ((m = flagRe.exec(s))) {
+      const found = readScriptBody(m[1] || m[2] || m[3], cwd);
+      if (found?.body) { files.push(found.abs); bodies.push(found.body); }
+    }
+  }
+  // ② 内联 heredoc 正文（<<[-]TAG … TAG）：python - <<'PY' 这类把脚本贴在命令里的写法
+  const lines = text.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i += 1) {
+    const h = /<<-?\s*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?\s*$/.exec(lines[i]);
+    if (!h) continue;
+    const body = [];
+    let closed = false;
+    for (let j = i + 1; j < lines.length; j += 1) {
+      if (lines[j].trim() === h[1]) { closed = true; i = j; break; }
+      body.push(lines[j]);
+    }
+    if (closed && body.length) bodies.push(body.join('\n'));
+  }
+  return { files, bodies };
+}
 
 export function createAgentTools({ repoRoot, permissions, recordAudit = async () => {}, playbookRoot, runWorkflow = null, projectPath = null, policy = null, hooksConfig = null, hooksRunner = null, sessionId = null, cwd = null, signal = null, commandIdleMs = DEFAULT_COMMAND_IDLE_MS, askUser = null, todoWrite = null, spawnAgent = null, onActivity = null, requireAuditIntent = null, shellAppRoot = null, aclSandbox = undefined, userStatedTier = null, getDesktopToolsAsync = null } = {}) {
   let askedThisTurn = false; // 本回合已经通过 ask_user 问过用户（验收前置闸据此放行）
@@ -1092,11 +1150,16 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
       // 三层防线（tier/授权/前台复核；基准 r5/r6 实测会话用它自写注入脚本绕空了安全层，还把
       // 微信搞锁死）。AttachThreadInput/SetWindowsHookEx 无条件拒绝：输入队列纠缠会把目标
       // 应用锁到无法点击。误伤防护：仅在命令处于「编译/执行」上下文（Add-Type/csc/powershell/
-      // python/ctypes/rundll32）且注入关键词同时出现时拦截——纯 grep/检索这些词不拦。
+      // python/ctypes/rundll32/cscript）且注入关键词同时出现时拦截——纯 grep/检索这些词不拦。
+      // 0.29.7：关键词可能不在命令行而在被引用的脚本文件里（真机实证：powershell -File
+      // final_send.ps1，命令行干净、文件里全是 SendInput）。命令行命中编译/执行上下文时，把
+      // -File/-f 引用的本地脚本与内联 heredoc 正文一并纳入同一对判定；文件读不到 → 放行（保持现状）。
       const INJECTION_KEYWORDS = /keybd_event|SendInput|mouse_event|SetForegroundWindow|AttachThreadInput|SetWindowsHookEx|System\.Windows\.Forms\.SendKeys|SetCursorPos/i;
-      const INJECTION_COMPILER = /Add-Type|csc(\.exe)?[\s"']|powershell|pwsh|python\s|ctypes|rundll32/i;
-      if (INJECTION_KEYWORDS.test(cmd) && INJECTION_COMPILER.test(cmd)) {
-        if (/AttachThreadInput|SetWindowsHookEx/i.test(cmd)) {
+      const INJECTION_COMPILER = /Add-Type|csc(\.exe)?[\s"']|cscript(\.exe)?[\s"']|powershell|pwsh|python\s|ctypes|rundll32/i;
+      const injected = collectInjectedScriptBodies(cmd, runCwd);
+      const injectionPayload = [cmd, ...injected.bodies].join('\n');
+      if (INJECTION_COMPILER.test(cmd) && INJECTION_KEYWORDS.test(injectionPayload)) {
+        if (/AttachThreadInput|SetWindowsHookEx/i.test(injectionPayload)) {
           return { error: '命令包含 AttachThreadInput / SetWindowsHookEx——会把目标应用的输入队列与脚本线程纠缠（实测曾把微信锁死到无法点击），无条件拒绝。键鼠注入请走 computer_* 工具。', deniedBy: 'policy' };
         }
         let injectionGranted = [];

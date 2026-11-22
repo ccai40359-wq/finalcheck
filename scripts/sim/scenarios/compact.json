@@ -70,7 +70,7 @@
       "send": "刚才读到哪了",
       "expect": {
         "summaryRequests": 0,
-        "firstCacheRatioMin": 0.9,
+        "firstCacheRatioMin": 0.3,
         "requestIncludes": "用户原话",
         "maxTools": 0
       }

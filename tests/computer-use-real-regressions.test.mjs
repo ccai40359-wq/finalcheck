@@ -72,11 +72,41 @@ test('cu-real: guarded key validates one chord and checks foreground and child f
   assert.doesNotMatch(guarded, /SendKeys/);
   assert.match(inputSrc.slice(inputSrc.indexOf('public static void TypeText'), inputSrc.indexOf('public static bool GuardedFocus')), /AssertForeground\(guard, true, false\);\s*\r?\n\s*foreach/);
   assert.match(cuSrc, /before\?\.foreground\?\.focusHwnd === foreground\?\.focusHwnd/);
-  assert.match(cuSrc, /if \(!keyboard\) latestScreenshot = null;/);
+  // 0.29.7（A3 反过度思考）：指针动作成功后不再强制作废截图（同一窗口连续操作可复用 screenshot_id）；
+  // 安全网仍在：下一次动作前 sameObservation 全量比对 + 注入层 AssertForeground/AssertPoint 复核。
+  const runActionBody = cuSrc.slice(cuSrc.indexOf('async function runAction'), cuSrc.indexOf('function validateActionArguments'));
+  assert.doesNotMatch(runActionBody, /if \(!keyboard\) latestScreenshot = null;/);
+  assert.match(runActionBody, /catch \(error\) \{\s*\r?\n\s*latestScreenshot = null;\s*\r?\n\s*throw error;/); // 失败路径仍作废（状态未知 → 强制重截）
   // 0.29.2：JS 层键盘动作只认窗口身份（hwnd+pid），指针动作仍走含 title 的完整比对
   assert.match(cuSrc, /const observationOk = keyboard\s*\r?\n\s*\? sameWindow\(shot\.foreground, foreground\)\s*\r?\n\s*: sameObservation\(shot\.foreground, foreground\);/);
   // 0.29.2：指针路径的 title 复核必须保持——键盘放宽不允许外溢到指针
   assert.match(inputSrc, /AssertForeground\(guard, false, true\);/);
+});
+
+// ---- 0.29.7（B）遮挡校验：点击前校验落点顶层窗口（WindowFromPoint）必须属于目标 hwnd/同进程 ----
+test('cu-real: pointer actions verify the top window at the landing point and name the occluder on denial', () => {
+  // C# 侧：point-owner 查询用 WindowFromPoint + GA_ROOT（与 AssertPoint 同一套结构，DPI 已配置）
+  assert.match(inputSrc, /public static Window PointOwner\(int x, int y\)/);
+  const pointOwner = inputSrc.slice(inputSrc.indexOf('public static Window PointOwner'), inputSrc.indexOf('static POINT ReadCursor'));
+  assert.match(pointOwner, /WindowFromPoint\(new POINT \{ X = x, Y = y \}\)/);
+  assert.match(pointOwner, /GetAncestor\(hit, GA_ROOT\)/);
+  assert.match(inputSrc, /"point-owner" \{/);
+  // JS 侧：runAction 指针路径在派发前逐点校验；命中遮挡 → deniedBy 'occluded' 并点名遮挡窗，不自动最小化
+  const runActionBody = cuSrc.slice(cuSrc.indexOf('async function runAction'), cuSrc.indexOf('function validateActionArguments'));
+  assert.match(runActionBody, /input\.windowAtPoint\(point\.x, point\.y\)/);
+  assert.match(runActionBody, /occludedBy\(top, foreground\)/);
+  assert.match(runActionBody, /deny\('occluded'/);
+  assert.match(runActionBody, /请移开遮挡窗口或调整布局/);
+  assert.doesNotMatch(runActionBody, /ShowWindow|SW_MINIMIZE|minimize/i); // 绝不自动最小化遮挡窗
+  // keyboard 路径不涉及：遮挡校验在 validateActionArguments 之后、按 points 循环，键盘动作没有 points
+});
+
+test('cu-real: occlusion is judged on window ownership, not foreground (no refocus reuse)', () => {
+  // 遮挡不是前台漂移：不复用 auto-refocus 路径（0.29.3 限频仲裁保持独立）
+  assert.match(cuSrc, /0\.29\.7（遮挡校验）：指针动作落点的顶层窗口/);
+  const geometrySrc = cuSrc; // occludedBy 从 geometry 导入
+  assert.match(geometrySrc, /occludedBy, overlapBounds/);
+  assert.match(cuSrc, /now - lastAutoRefocusAt > 1200/); // refocus 仲裁原样保留
 });
 
 test('cu-real: foreground drift arbitration auto-refocuses granted targets and yields to the user', () => {
@@ -106,4 +136,23 @@ test('打包钉：index.mjs 的 CU 遮罩订阅必须走 engineUrl 动态加载�
   assert.ok(src.includes("await import(engineUrl('desktop/src/main/computer-use.mjs'))"),
     '订阅必须动态加载同一模块实例（engineUrl 与 agent-tools 的运行时实例同路径）');
   assert.ok(src.includes('enterCuMode() : exitCuMode()'), '进入/退出分支仍在');
+});
+
+// 0.29.7 用户拍板的 UI 三条（金色化/屏幕顶部居中/ESC 全局退出）+ 迷你对话窗
+test('打包钉：CU 遮罩金色化+横幅屏幕顶部居中+提示 ESC；ESC 全局注册在 CU 模式期间', async () => {
+  const { readFileSync } = await import('node:fs');
+  const pathMod = await import('node:path');
+  const repo = pathMod.resolve(pathMod.dirname(fileURLToPath(import.meta.url)), '..');
+  const src = readFileSync(pathMod.join(repo, 'desktop/src/main/index.mjs'), 'utf8');
+  assert.ok(src.includes("background:rgba(214,158,52,.15)"), '全屏蒙层必须是金色淡染（不再是黑）');
+  assert.ok(src.includes('left:50%;transform:translateX(-50%)'), '横幅必须屏幕顶部居中');
+  assert.ok(src.includes('color:#f2c566'), '横幅/停止条文字必须是金色');
+  assert.ok(src.includes('按 ESC 或点右上角小窗'), '提示必须写明 ESC 可中止');
+  assert.ok(src.includes("globalShortcut.register('Escape'"), 'CU 模式期间注册全局 ESC');
+  assert.ok(src.includes("globalShortcut.unregister('Escape'"), '退出 CU 模式必须注销 ESC');
+  const css = readFileSync(pathMod.join(repo, 'desktop/src/renderer/styles.css'), 'utf8');
+  assert.ok(css.includes('body.fc-cu-mini .fc-sidebar { display: none !important; }'),
+    '迷你形态开关=body.fc-cu-mini（CU 生命周期驱动，不用 @media 窗口宽度——composer-narrow 布局纪律）');
+  assert.ok(src.includes("classList.add('fc-cu-mini')") && src.includes("classList.remove('fc-cu-mini')"),
+    '主进程负责挂/摘 fc-cu-mini（注入/恢复两个方向都要有）');
 });

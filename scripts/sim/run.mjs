@@ -84,8 +84,10 @@ const gw = await startGateway({
   cassette: mode === 'replay' ? path.resolve(opt('--replay')) : path.join(outDir, 'cassette.json'),
   respond: (body, { kind }) => {
     const take = (list) => {
-      // 带 match 的回复：只在请求里最后一条用户消息（或子代理任务）匹配时使用
-      const lastUser = [...(body.messages || [])].reverse().find((m) => m.role === 'user');
+      // 带 match 的回复：只在请求里最后一条用户消息（或子代理任务）匹配时使用。
+      // 0.29.7：引擎的轻闸/催收会注入 [系统] 开头的提醒消息（反过度思考/死磕/复读催收），
+      // 那些是透明提醒、不是用户说的话——剧本按用户原话匹配，跳过它们（否则一次注入就让剧本脱轨）。
+      const lastUser = [...(body.messages || [])].reverse().find((m) => m.role === 'user' && !(typeof m.content === 'string' && m.content.startsWith('[系统]')));
       const text = typeof lastUser?.content === 'string' ? lastUser.content : JSON.stringify(lastUser?.content ?? '');
       const idx = list.findIndex((r) => !r.match || new RegExp(r.match).test(text));
       if (idx < 0) return null;

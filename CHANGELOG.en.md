@@ -6,6 +6,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.29.7] - 2026-11-22
+
+### Added
+
+- Revamped computer-control visuals: gold screen tint, gold reminder banner centered at the top of the screen, and a true mini chat window in the top-right corner (current conversation + composer only, no sidebar); press ESC at any time to stop control.
+- Anti-detour: tasks doable with a single command (start a server, check a process) now execute that command first — the same probe task went from 9 calls/75s to 2 calls/16s; multi-file long tasks measured 50% faster with no quality loss.
+
+### Fixed
+
+- Clicks validate the landing point first: an occluded target is now clearly reported as「blocked by window X」instead of clicking into the occluding window (keyboard paths unaffected).
+- Simulating keyboard/mouse via script files (e.g. powershell -File xxx.ps1) now also requires desktop-control authorization — closing the「keywords inside the script file」bypass (observed in the wild).
+- Repeating the same failing operation 3 times now suggests switching paths or asking you; thinking without acting gets a nudge to output the next step; excessive thinking is reined in earlier (200k → 80k chars).
+- Updated screenshot guidance: consecutive clicks/typing reuse the current screenshot; forced re-verification only after submit/save/delete — halving image round-trips.
+
 ## [0.29.6] - 2026-11-21
 
 ### Fixed

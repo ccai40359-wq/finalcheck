@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  actionPoints, mapScreenshotPoint, matchesImageGeometry, matchesProcess, overlapBounds, sameBounds,
+  actionPoints, mapScreenshotPoint, matchesImageGeometry, matchesProcess, occludedBy, overlapBounds, sameBounds,
   sameObservation, sameWindow, selectCaptureSource, thumbnailSize
 } from '../desktop/src/main/computer-use-geometry.mjs';
 
@@ -82,4 +82,33 @@ test('display comparisons include offsets and require visible overlap with the f
   assert.ok(overlapBounds(bounds, { x: -50, y: 0, width: 120, height: 400 }));
   assert.equal(overlapBounds(bounds, { x: 0, y: 0, width: 120, height: 400 }), false);
   assert.equal(overlapBounds(bounds, { x: -50, y: 0, width: 0, height: 400 }), false);
+});
+
+// ---- 0.29.7 遮挡校验：落点顶层窗口必须属于目标窗口（同 hwnd / 子窗口 / 同进程） ----
+test('occlusion: 落点顶层就是目标窗口或其子窗口的根 → 放行', () => {
+  const target = { hwnd: 100, pid: 40, process: 'editor', title: 'Draft' };
+  assert.equal(occludedBy({ hwnd: 100, pid: 40, process: 'editor', title: 'Draft' }, target), null);
+  // 落点在目标窗口的子窗口上时 WindowFromPoint→GA_ROOT 仍返回目标 hwnd
+  assert.equal(occludedBy({ hwnd: 100, pid: 40, process: 'editor', title: 'Draft' }, target), null);
+});
+
+test('occlusion: 同进程的另一个顶层窗口（弹窗）→ 放行', () => {
+  const target = { hwnd: 100, pid: 40, process: 'editor', title: 'Draft' };
+  assert.equal(occludedBy({ hwnd: 200, pid: 40, process: 'editor', title: 'Popup' }, target), null);
+});
+
+test('occlusion: 别的应用压在上面 → 返回遮挡窗口名（优先标题）', () => {
+  const target = { hwnd: 100, pid: 40, process: 'editor', title: 'Draft' };
+  assert.equal(occludedBy({ hwnd: 300, pid: 90, process: 'explorer', title: '任务视图' }, target), '任务视图');
+  assert.equal(occludedBy({ hwnd: 300, pid: 90, process: 'explorer', title: '   ' }, target), 'explorer');
+  assert.equal(occludedBy({ hwnd: 300, pid: 90 }, { hwnd: 100, pid: 40 }), '其它窗口');
+});
+
+test('occlusion: 查询结果无效或为空 → 不拦（不新增失败模式）', () => {
+  const target = { hwnd: 100, pid: 40, process: 'editor', title: 'Draft' };
+  assert.equal(occludedBy(null, target), null);
+  assert.equal(occludedBy(undefined, target), null);
+  assert.equal(occludedBy({}, target), null);
+  assert.equal(occludedBy({ hwnd: 0, pid: 0 }, target), null);
+  assert.equal(occludedBy('junk', target), null);
 });

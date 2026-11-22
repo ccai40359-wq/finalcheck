@@ -24,6 +24,22 @@ export function matchesProcess(processName, expected) {
   return !normalize(expected) || normalize(processName) === normalize(expected);
 }
 
+// 0.29.7（遮挡校验）：指针动作落点的顶层窗口（WindowFromPoint 的 GA_ROOT）必须属于目标窗口
+// ——同 hwnd（落点在目标窗口或其子窗口上）或同进程（同一应用的另一个顶层窗口，如弹窗）。
+// 不是 → 返回遮挡窗口的显示名（调用方据此拒绝动作并点名遮挡窗）；是 → 返回 null 放行。
+// 注意：遮挡不是前台漂移（那走 auto-refocus 限频仲裁），这里只判定、只拒绝，绝不自动最小化遮挡窗。
+// 查询结果无效（没有 hwnd/pid）→ 返回 null 不拦（不新增失败模式，与「文件读不到→放行」同一原则）。
+export function occludedBy(topWindow, target) {
+  if (!topWindow || typeof topWindow !== 'object') return null;
+  const hwnd = Number(topWindow.hwnd) || 0;
+  const pid = Number(topWindow.pid) || 0;
+  if (!hwnd && !pid) return null;
+  if (target?.hwnd && hwnd === Number(target.hwnd)) return null;
+  if (target?.pid && pid === Number(target.pid)) return null;
+  const label = String(topWindow.title ?? '').trim() || String(topWindow.process ?? '').trim();
+  return label || '其它窗口';
+}
+
 export function selectCaptureSource(sources, { target, displayId, windowTitle }) {
   if (target === 'screen') {
     const matches = sources.filter((source) => String(source.display_id) === String(displayId));

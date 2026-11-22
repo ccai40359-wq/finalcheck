@@ -4,7 +4,7 @@ import { desktopCapturer, screen, nativeImage } from 'electron';
 import * as input from './desktop-input-win.mjs';
 import { tierForApp, checkActionAllowed, AccessLedger, describeTier } from './computer-use-policy.mjs';
 import {
-  actionPoints, matchesImageGeometry, matchesProcess, normalizeRegion, overlapBounds, sameBounds, sameObservation, sameWindow, selectCaptureSource, thumbnailSize
+  actionPoints, matchesImageGeometry, matchesProcess, normalizeRegion, occludedBy, overlapBounds, sameBounds, sameObservation, sameWindow, selectCaptureSource, thumbnailSize
 } from './computer-use-geometry.mjs';
 
 const ledger = new AccessLedger();
@@ -241,7 +241,7 @@ function actionResult(action, foreground) {
   const keyboard = action === 'type' || action === 'key';
   const note = keyboard
     ? '已发送键盘输入。相同窗口和键盘焦点可沿用截图 ID。需要核对结果时请重新截图。'
-    : '动作已发送。请重新截图确认结果。';
+    : '动作已发送。同一窗口内连续点击/输入可沿用截图 ID 连续操作；提交/保存/删除类动作完成后请重新截图复查结果。';
   return { ok: true, action, foregroundAtAction: brief(foreground), note };
 }
 
@@ -354,8 +354,26 @@ async function runAction(action, params) {
   const invalidArguments = validateActionArguments(action, params);
   if (invalidArguments) return { ok: false, error: invalidArguments };
 
-  // 指针动作后重新观察。只有成功的键盘输入可以沿用截图。
-  if (!keyboard) latestScreenshot = null;
+  // 0.29.7（遮挡校验）：指针动作落点的顶层窗口（WindowFromPoint 的 GA_ROOT）必须属于目标窗口
+  // （同 hwnd / 子窗口 / 同进程），否则直接拒绝并点名遮挡窗口——绝不自动最小化遮挡窗。
+  // 这不是前台问题，与 0.29.3 前台仲裁（auto-refocus 限频 1.2s）各走各的：遮挡不复用 refocus 路径。
+  // 真机实证：绿按钮区域被别的窗口压住时，模型曾自写脚本像素扫描到 pixels=0 才 ABORT；这里让它
+  // 一步拿到明确原因。查询失败/结果无效不拦（occludedBy 返回 null），不新增失败模式。
+  for (const point of points) {
+    if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) continue;
+    let top = null;
+    try { top = await input.windowAtPoint(point.x, point.y); } catch { top = null; }
+    const blocker = occludedBy(top, foreground);
+    if (blocker) {
+      return deny('occluded', `目标被「${blocker}」遮挡，请移开遮挡窗口或调整布局后重新截图再操作。`, foreground);
+    }
+  }
+
+  // 0.29.7（A3 反过度思考）：指针动作成功后不再强制作废截图——同一窗口内连续点击/输入可复用当前
+  // screenshot_id（真机实测截图/看图占 27% 调用）。安全网不变：下一次动作前仍做 sameObservation
+  // （hwnd+pid+title+bounds）核对，注入层 AssertForeground/AssertPoint 再复核一次，漂移/遮挡当场拒。
+  // 提交/保存/删除类动作由提示词纪律要求重新截图复查（AUTOMATION_GUIDANCE + actionResult note）。
+  // 回滚点：在 dispatchAction 之前恢复「指针动作成功后立即作废截图」的旧行为，即回到每动作强制重截。
   try {
     await dispatchAction(action, params, points, guard);
   } catch (error) {
