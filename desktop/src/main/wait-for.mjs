@@ -65,22 +65,27 @@ export function evaluateWaitCondition(condition, observation, { selector = '', v
   const values = Array.isArray(obs.values) ? obs.values.map((s) => String(s)) : [];
   const sel = String(selector ?? '').trim();
   const val = String(value ?? '');
+  // 0.30.1：观测是否可信 = 有 UIA 树。没有树时 elements 恒为空，若不区分，
+  // element-gone 会把「根本看不见」误判成「元素确实消失了」——wait_for 成功误报的根因。
+  const observed = obs.hasUiaTree !== false; // 调用方没给 hasUiaTree 时按可信处理（兼容老调用形状）
   if (condition === 'element-exists') {
     const hit = Boolean(sel) && elements.some((name) => name === sel || name.includes(sel));
-    return { matched: hit, windowClosed: obs.windowAlive === false };
+    return { matched: hit, windowClosed: obs.windowAlive === false, unobservable: !observed };
   }
   if (condition === 'element-gone') {
     if (obs.windowAlive === false) return { matched: true, windowClosed: true }; // R10：窗口没了 = 元素也没了
+    // ⚠️ 观测不到 ≠ 元素消失：必须明确不命中（unobservable），不能报 matched。
+    if (!observed) return { matched: false, windowClosed: false, unobservable: true };
     const hit = !elements.some((name) => name === sel || name.includes(sel));
     return { matched: hit, windowClosed: false };
   }
   if (condition === 'value-equals') {
-    return { matched: values.some((v) => v === val), windowClosed: obs.windowAlive === false };
+    return { matched: observed && values.some((v) => v === val), windowClosed: obs.windowAlive === false, unobservable: !observed };
   }
   if (condition === 'value-contains') {
-    return { matched: Boolean(val) && values.some((v) => v.includes(val)), windowClosed: obs.windowAlive === false };
+    return { matched: observed && Boolean(val) && values.some((v) => v.includes(val)), windowClosed: obs.windowAlive === false, unobservable: !observed };
   }
-  return { matched: false, windowClosed: obs.windowAlive === false };
+  return { matched: false, windowClosed: obs.windowAlive === false, unobservable: !observed };
 }
 
 /**

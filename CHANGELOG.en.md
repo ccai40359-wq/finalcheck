@@ -6,6 +6,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.30.1] - 2026-11-22
+
+### Fixed
+
+- Closed a hole that could land clicks on the occluding window: when using the accessibility interface for covered targets, a failed call previously fell through to a normal click — i.e. clicking the window that covers yours. Failures are now always refused with the reason instead of blind-firing.
+- Re-authorize after pulling the target back: following an automatic refocus, a fresh permission and target check now runs (previously the policy was checked once at the start, so a revoked grant during the turn could still act).
+- Occlusion passthrough only trusts the target window's own capture: with a full-screen screenshot you see the occluder, and passing its coordinates through the accessibility interface would hit a different control inside the target; only window-self captures may traverse now, everything else falls back to the explicit occlusion refusal.
+- Wait conditions no longer report false positives: when the UI cannot be read (apps without an accessibility tree, e.g. WeChat), "wait for element to disappear" previously returned "already gone" immediately — "confirmed gone", "unobservable" and "timed out" are now distinct, with the middle case waiting out the budget and saying why.
+
 ## [0.30.0] - 2026-11-22
 
 ### Added

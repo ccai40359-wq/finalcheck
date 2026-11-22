@@ -312,3 +312,47 @@ test('contract: 遮挡拒绝带 uia 诊断信息（applicable/reason）；ok:fal
   assert.equal(r.deniedBy, 'occluded');
   assert.deepEqual(r.uia, { applicable: 'skip', reason: null });
 });
+
+// ---- 0.30.1：审查发现的三条真 bug 回归钉 ----
+
+test('P0 回归：UIA 失败绝不落到 dispatchAction（此前 if(viaUia) 恒真 → 点在遮挡窗）', () => {
+  // 遮挡分支里必须只认「UIA 成功」，失败/未知一律 break 掉循环后立刻 occluded 拒绝。
+  assert.match(runActionBody, /if \(viaUia\?\.ok\) break;/, '只有 UIA 成功才 break 出循环');
+  assert.doesNotMatch(runActionBody, /if \(viaUia\) \{/, '禁止旧的恒真判断（tryUiaClick 失败也返回对象）');
+  // 遮挡分支的 return deny('occluded') 必须在 UIA 尝试之后（结构上保证失败必拒）
+  const occludedAt = runActionBody.indexOf("return deny('occluded'");
+  const uiaAt = runActionBody.indexOf('uiaAttempted = viaUia;');
+  assert.ok(uiaAt > 0 && occludedAt > uiaAt, 'occluded 拒绝必须在 UIA 尝试之后');
+});
+
+test('P0 回归：前台漂移恢复后必须重新鉴权（checkPolicy 重跑）', () => {
+  const recovery = runActionBody.slice(
+    runActionBody.indexOf('const target = winInfo ? withPolicy(winInfo) : null;'),
+    runActionBody.indexOf('if (attempted && !recovered)')
+  );
+  assert.match(recovery, /recovered = true;/);
+  assert.match(recovery, /const recheck = checkPolicy\(foreground, action\);/, '恢复后必须重跑策略/授权检查');
+  assert.match(recovery, /if \(recheck\) \{/, '重检不通过必须返回拒绝');
+});
+
+test('P0 回归：wait_for 把「观测不到」与「元素消失」区分开（不再误报成功）', async () => {
+  const { evaluateWaitCondition } = await import('../desktop/src/main/wait-for.mjs');
+  // 无 UIA 树（观测不可信）时，element-gone 绝不能报 matched
+  const noTree = evaluateWaitCondition('element-gone', { windowAlive: true, hasUiaTree: false, elements: [], values: [] }, { selector: '发送' });
+  assert.equal(noTree.matched, false, '无 UIA 树时不能声称元素已消失');
+  assert.equal(noTree.unobservable, true, '必须标记为不可观测');
+  // 有树且确实没有该元素 → 才是真消失
+  const gone = evaluateWaitCondition('element-gone', { windowAlive: true, hasUiaTree: true, elements: ['其他'], values: [] }, { selector: '发送' });
+  assert.equal(gone.matched, true);
+  assert.equal(gone.unobservable, undefined);
+  // 窗口关闭 → 视为消失（既有语义不变）
+  const closed = evaluateWaitCondition('element-gone', { windowAlive: false, hasUiaTree: false, elements: [], values: [] }, { selector: '发送' });
+  assert.equal(closed.matched, true, '窗口没了 = 元素也没了（R10 语义保留）');
+  assert.equal(closed.windowClosed, true);
+});
+
+test('0.30.1 钉子：遮挡穿透只允许基于目标窗口自身截图（全屏/region 截图不得穿透）', () => {
+  assert.match(runActionBody, /&& Boolean\(shot\.windowRect\)/, 'uiaEligible 必须要求窗口自身捕获的截图');
+  // 全屏/region 截图没有 windowRect → 走不到 UIA，必然落到 occluded 拒绝
+  assert.match(runActionBody, /const uiaEligible = uiaClickEligible\(action\)/);
+});

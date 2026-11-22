@@ -535,6 +535,14 @@ async function runAction(action, params) {
           foreground = after.foreground;
           foregroundNow = after.foreground;
           recovered = true;
+          // 0.30.1 P0：拉回后必须对新状态**重新鉴权**——此后所有动作都作用在这个 foreground 上，
+          // 而 runAction 开头的 checkPolicy 只对最初的前台跑过一次。若目标在此期间被撤销授权，
+          // 不重跑就会让动作在未授权状态下执行（withPolicy 只刷新了 granted 快照，没做策略判定）。
+          const recheck = checkPolicy(foreground, action);
+          if (recheck) {
+            latestScreenshot = null;
+            return recheck;
+          }
         }
       }
     }
@@ -625,10 +633,14 @@ async function runAction(action, params) {
   //   ① 本次动作是单击左键（uiaClickEligible；拖拽/滚动/右键/中键/连击一律不走 UIA）
   //   ② 进程适用性判定为 'uia' 或 'unknown'（skip 直接拒绝，延迟增量 = 0，绝不试探）
   //   ③ 目标窗口自己的 UIA 子树在该点有可 Invoke 元素且归属断言通过（uiaInvokeAt/hostVerified）
-  // 三者任一不成立 → 回到 0.29.7 的 occluded 拒绝（行为不放松）。
+  //   ④ 0.30.1：截图必须是**目标窗口自身捕获**（shot.windowRect 存在）——全屏/region 截图看到的是
+  //      遮挡者，其坐标语义是「屏幕上这一点」，据此穿透会点到目标窗口里另一个控件（审查指出的
+  //      「穿透点用错截图」）。可见位置用全屏截图的普通点击照常工作，只是不享受遮挡穿透。
+  // 任一不成立 → 回到 0.29.7 的 occluded 拒绝（行为不放松）。
   const uiaEligible = uiaClickEligible(action)
     && points.length === 1
     && input.inputSupported()
+    && Boolean(shot.windowRect) // ④ 仅窗口自身捕获的截图可穿透
     && uiaApplicability(foreground.process, { cache: uiaVerdicts }) !== 'skip';
   let uiaAttempted = null;
   for (const point of points) {
@@ -639,10 +651,11 @@ async function runAction(action, params) {
     if (!blocker) continue;
     if (uiaEligible) {
       const viaUia = await tryUiaClick(foreground, point);
-      if (viaUia) {
-        uiaAttempted = viaUia;
-        break; // 已用无障碍接口完成，不再走 SendInput（也不存在遮挡拒绝）
-      }
+      // 0.30.1 P0：只有 UIA **成功**才结束本点；失败/结果未知一律落到下面的 occluded 拒绝。
+      // 此前写成 if (viaUia)——tryUiaClick 失败也返回对象，条件恒真 → break 出循环 →
+      // 落到函数尾部 dispatchAction，等于把点击打在遮挡窗上（0.29.7 遮挡防线被绕过）。
+      uiaAttempted = viaUia;
+      if (viaUia?.ok) break; // 已用无障碍接口完成，不再走 SendInput（也不存在遮挡拒绝）
     }
     return deny('occluded', `目标被「${blocker}」遮挡，请移开遮挡窗口或调整布局后重新截图再操作。` +
       (uiaEligible
