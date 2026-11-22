@@ -1155,9 +1155,25 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
       // final_send.ps1，命令行干净、文件里全是 SendInput）。命令行命中编译/执行上下文时，把
       // -File/-f 引用的本地脚本与内联 heredoc 正文一并纳入同一对判定；文件读不到 → 放行（保持现状）。
       const INJECTION_KEYWORDS = /keybd_event|SendInput|mouse_event|SetForegroundWindow|AttachThreadInput|SetWindowsHookEx|System\.Windows\.Forms\.SendKeys|SetCursorPos/i;
+      // 0.30.0（追加项 5，用户拍板）：窗口状态变更组 = **无条件拒绝**（不看 CU 授权）。
+      // 它要解决的是「模型反复写 .ps1 刷屏做窗口激活/置顶」的绕路（真实会话日志：write_file .tmp_*.ps1
+      // → powershell -File → taskkill 循环），授权放行等于给一条绕过口。只禁「改变窗口状态」的调用；
+      // 只读诊断（GetWindowText/EnumWindows/GetWindowRect/GetWindowLong/Get-Process/IsWindowVisible）
+      // 一律放行——排查窗口问题必须还能用 run_command。
+      const WINDOW_STATE_KEYWORDS = /SetWindowPos|ShowWindow|AppActivate|SwitchToThisWindow|SetWindowPlacement|MoveWindow|SetForegroundWindow/i;
       const INJECTION_COMPILER = /Add-Type|csc(\.exe)?[\s"']|cscript(\.exe)?[\s"']|powershell|pwsh|python\s|ctypes|rundll32/i;
       const injected = collectInjectedScriptBodies(cmd, runCwd);
       const injectionPayload = [cmd, ...injected.bodies].join('\n');
+      const windowStateHit = INJECTION_COMPILER.test(cmd) && WINDOW_STATE_KEYWORDS.test(injectionPayload)
+        ? (injectionPayload.match(WINDOW_STATE_KEYWORDS) || [])[0]
+        : null;
+      if (windowStateHit) {
+        return {
+          error: `命令在改变窗口状态（命中 ${windowStateHit}）。窗口激活/置顶/移动/查找必须用 computer_* 工具：computer_action focus（传 hwnd）激活窗口，computer_screenshot target:"window" 找窗口（可传 window_title/hwnd），点进窗口内部用 computer_action click。run_command + 脚本路不允许做窗口操作——真实会话里写 .ps1 反复刷新窗口把界面卡到一顿一顿、几十轮都没完成一次窗口切换；有 CU 授权也一样拒绝。只读诊断（GetWindowText/EnumWindows/GetWindowRect/Get-Process）不受此限。`,
+          deniedBy: 'policy',
+          redirect: 'computer_focus_or_window_screenshot'
+        };
+      }
       if (INJECTION_COMPILER.test(cmd) && INJECTION_KEYWORDS.test(injectionPayload)) {
         if (/AttachThreadInput|SetWindowsHookEx/i.test(injectionPayload)) {
           return { error: '命令包含 AttachThreadInput / SetWindowsHookEx——会把目标应用的输入队列与脚本线程纠缠（实测曾把微信锁死到无法点击），无条件拒绝。键鼠注入请走 computer_* 工具。', deniedBy: 'policy' };
@@ -1304,12 +1320,35 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
     });
 
     tools.computer_action = withDesktopTool('computerUse', async (computerUse, args) => {
-      const { action: rawAction, screenshot_id: screenshotId, scale: _scale, observe, ...params } = args || {};
+      const { action: rawAction, screenshot_id: screenshotId, scale: _scale, observe, wait_for: waitFor, ...params } = args || {};
       const action = String(rawAction || '').trim();
       if (!action) return { error: '缺少 action' };
+      // 0.30.0（特性 3）：wait_for 参数先校验（校验失败=参数错，不动手）
+      if (waitFor != null) {
+        const { validateWaitFor } = await import('./wait-for.mjs');
+        const bad = validateWaitFor(waitFor);
+        if (bad) return { error: bad };
+      }
       const r = await computerUse.performAction(action, { ...params, screenshotId });
       if (!r.ok) return { ...r, error: r.error || '桌面动作失败' };
       const result = { ...r, foreground: r.foregroundAtAction };
+      // 0.30.0（特性 3，R7）：动作已执行 → wait_for 单独求值。超时返回 ok:true/matched:false/timedOut:true
+      // 并与动作结果合并（绝不因为超时把整体判成 ok:false——那会 stopAutomation 杀掉后续动作）。
+      if (waitFor != null && typeof computerUse.waitFor === 'function') {
+        try {
+          const waited = await computerUse.waitFor(waitFor);
+          result.wait = waited;
+          if (waited?.timedOut) {
+            result.note = `${String(result.note || '').trim()} 等待界面变化超时（${waited.elapsedMs}ms）：动作是否生效请重新截图确认。`.trim();
+          } else if (waited?.matched) {
+            result.note = `${String(result.note || '').trim()} 已等到界面变化。`.trim();
+          }
+        } catch (e) {
+          result.waitError = { error: e?.message || String(e) };
+        }
+      } else if (waitFor != null) {
+        result.waitError = { error: '当前环境不支持等待条件' };
+      }
       if (observe !== true) return result;
 
       try {

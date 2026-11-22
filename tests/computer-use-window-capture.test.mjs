@@ -248,7 +248,10 @@ test('钉：computer_screenshot schema 暴露 hwnd；AUTOMATION_GUIDANCE 新增�
   );
   assert.match(guidance, /target:"window"/);
   assert.match(guidance, /拍得到被遮挡的内容/);
-  assert.match(guidance, /点击落在遮挡者上会被拒绝/);
+  // 0.30.0：文案从「被遮挡一律拒绝」改为「UIA 富应用用无障碍接口穿透；其它应用仍拒绝」——
+  // 用户拍板的产品决策，两半都必须钉住（防止后续又被改回一律拒绝）。
+  assert.match(guidance, /UIA 富应用.*无障碍接口.*直接点中/);
+  assert.match(guidance, /其它应用.*仍拒绝并点名遮挡窗/);
   // 两处引用（audit/dev）仍指向同一 const
   const references = serviceSrc.split('\n').filter((l) => l.trim() === 'AUTOMATION_GUIDANCE,').length;
   assert.equal(references, 2);

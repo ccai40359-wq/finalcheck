@@ -6,6 +6,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.30.0] - 2026-11-22
+
+### Added
+
+- Covered windows are now clickable: apps with standard controls (Notepad, Calculator, Office) are driven through the system accessibility interface, so the target control is hit even when another window sits on top of it; apps without an accessibility tree (WeChat, Electron/browsers) are still refused with the blocking window named.
+- Background typing: for verified classic Win32 programs (Notepad and friends) text can be delivered without stealing your foreground window; the result is marked as unverified delivery and states what is excluded (chords, WeChat/Electron always use normal key injection).
+- Actions can wait for UI changes: computer_action accepts "wait for element to appear / disappear / text equals / text contains", 5s by default and 30s max; a timeout returns an explicit "timed out, not matched" instead of a failure, and later actions continue.
+
+### Fixed
+
+- The gold overlay and the top-right mini window no longer disappear when you interrupt control and the assistant yields: they stay until the turn really ends or you press ESC (previously replying "continue" and running a command left the screen uncovered for a long time).
+- Window activation, topmost and move operations must go through the computer-control tools: scripts calling SetWindowPos/ShowWindow/SetForegroundWindow/AppActivate/SwitchToThisWindow to change window state are refused with a pointer to focus/click, ending the "keep writing scripts to poke windows, UI stutters, dozens of wasted turns" loop; read-only inspection (window titles, enumeration, process checks) is unaffected.
+
 ## [0.29.10] - 2026-11-22
 
 ### Fixed

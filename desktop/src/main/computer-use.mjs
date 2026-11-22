@@ -13,6 +13,11 @@ import {
 } from './computer-use-geometry.mjs';
 import { createWindowCapture, windowSourceId } from './computer-window-capture.mjs';
 import { detectWinapp, winappScreenshotCommand, parseWinappScreenshotJson } from './winapp-cli.mjs';
+import {
+  classifyUiaError, rememberUiaVerdict, shutdownUia, uiaApplicability, uiaClickEligible, uiaInvokeAt, uiaObserve
+} from './uia-adapter.mjs';
+import { hasChordModifiers, postDeliveryDecision, postDeliveryResult } from './post-delivery.mjs';
+import { makeFailFast, normalizeTimeout, waitForCondition } from './wait-for.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -26,20 +31,42 @@ const otherActions = new Set(['move', 'drag', 'left_click_drag', 'scroll', 'type
 let latestScreenshot = null;
 let operationQueue = Promise.resolve();
 let lastAutoRefocusAt = 0; // 0.29.3：前台漂移自动拉回的限频（1.2s），防止循环抢前台锁死用户
+// 0.30.0（特性 1）：进程名 → 'uia'|'skip' 的适用性缓存（避免每动作 COM 遍历；探测结论学一次）
+const uiaVerdicts = new Map();
 
 // ---- CU 模式广播（0.29.2）：全屏遮罩 + 主窗迷你化的开关信号，由 index.mjs 订阅 ----
+// 0.30.0（追加项 4，真 bug 修复）：遮罩表示「CU 会话进行中」，不是「刚成功执行了一个动作」。
+// 0.29.3 的 paused 让位（前台被用户占用 → 让位等「继续」）只作废截图，但回合收尾的
+// endComputerUseSession 会退遮罩 → 用户回复「继续」后模型先跑 run_command/read_file 时，
+// 屏幕长时间没有遮罩/迷你窗（真机反馈）。修法：paused 时置 pauseHold，回合收尾遇到
+// pauseHold 只作废截图、保留遮罩，并清掉 pauseHold（一次性续期：下一个回合收尾正常退出）。
+// 只有「会话真正结束」（回合收尾且没有 paused 续期）或「用户主动中止」（ESC/cu-stop/revoke/
+// shutdown）才退遮罩。
 let cuModeActive = false;
 let cuModeListener = null;
+let pauseHold = false;
 export function onComputerUseModeChange(cb) {
   cuModeListener = typeof cb === 'function' ? cb : null;
   if (cuModeActive) { try { cb?.(true); } catch { /* 订阅方故障不影响桌面操作 */ } }
 }
 function setCuMode(active) {
+  // 0.30.0：任何显式的模式切换都清掉 paused 续期标记——成功恢复动作（active=true）说明会话已经在动，
+  // 不需要再为「等继续」续命；真正的退出（active=false）更是终态。
+  pauseHold = false;
   if (cuModeActive === active) return;
   cuModeActive = active;
   try { cuModeListener?.(active); } catch { /* UI 故障不影响桌面操作 */ }
 }
-export function endComputerUseSession() { latestScreenshot = null; setCuMode(false); }
+export function resumeCuMode() {
+  // 0.30.0：显式恢复入口（ipc-agent 在用户「继续」且上一轮 paused 时可调用）。
+  // 当前实现采用「paused 保留遮罩」方案，正常路径不需要它；保留导出用于外部恢复/自检。
+  if (!cuModeActive) setCuMode(true);
+}
+export function endComputerUseSession() {
+  latestScreenshot = null;
+  if (pauseHold) { pauseHold = false; return; } // 0.30.0：paused 让位后的续期——遮罩留着，下一回合收尾再退
+  setCuMode(false);
+}
 
 function withDesktopOperation(operation) {
   const result = operationQueue.then(operation);
@@ -338,8 +365,8 @@ async function captureWindowFrame({ windowTitle = '', hwnd = null } = {}) {
     virtualScreen: after.virtualScreen ?? null,
     note: `已用窗口自身捕获（${level === 'winapp' ? 'winapp CLI' : 'WGC 窗口 thumbnail'}）看清全貌；` +
       (canAct
-        ? '被遮挡区域的点击仍会被拒绝（遮挡校验），需要用户移开遮挡窗或调整布局。'
-        : '动手前需将目标切到前台。被遮挡区域的点击仍会被拒绝（遮挡校验）。')
+        ? '被遮挡时：UIA 富应用可用无障碍接口直接点中（不依赖像素可见性），其它应用仍拒绝并点名遮挡窗。'
+        : '动手前需将目标切到前台。被遮挡时：UIA 富应用可用无障碍接口直接点中，其它应用仍会被拒绝并点名遮挡窗。')
   };
 }
 
@@ -364,8 +391,8 @@ function checkPolicy(foreground, action) {
   return null;
 }
 
-function deny(deniedBy, error, foreground) {
-  return { ok: false, deniedBy, error, foreground: brief(foreground) };
+function deny(deniedBy, error, foreground, extra = null) {
+  return { ok: false, deniedBy, error, foreground: brief(foreground), ...(extra || {}) };
 }
 
 function foregroundGuard(foreground) {
@@ -399,6 +426,47 @@ function actionResult(action, foreground) {
     ? '已发送键盘输入。相同窗口和键盘焦点可沿用截图 ID。需要核对结果时请重新截图。'
     : '动作已发送。同一窗口内连续点击/输入可沿用截图 ID 连续操作；提交/保存/删除类动作完成后请重新截图复查结果。';
   return { ok: true, action, foregroundAtAction: brief(foreground), note };
+}
+
+/**
+ * 0.30.0（特性 3）：wait-for 求值（工具层的 computer_action.wait_for 调它）。
+ * - 目标 hwnd：waitFor.target.hwnd 或当前前台窗口（缺省）。
+ * - 观测：目标窗口自己的 UIA 子树（名字 + 值）。UIA 不适用（微信/Electron）→ R10 快速失败。
+ * - R7：超时返回 ok:true/matched:false/timedOut:true，绝不是 ok:false。
+ */
+export async function waitFor(waitFor = {}) {
+  const condition = String(waitFor?.condition ?? '').trim();
+  const selector = String(waitFor?.target?.selector ?? '').trim();
+  const value = typeof waitFor?.value === 'string' ? waitFor.value : '';
+  const timeoutMs = normalizeTimeout(waitFor?.timeout_ms);
+  const state = await desktopContext();
+  if (!state.ok) {
+    return { ok: true, matched: false, timedOut: false, attempts: 0, elapsedMs: 0, windowClosed: true, reason: state.reason };
+  }
+  const foreground = state.foreground;
+  const hwnd = Number(waitFor?.target?.hwnd) || Number(foreground?.hwnd) || 0;
+  if (!hwnd) {
+    return { ok: true, matched: false, timedOut: false, attempts: 0, elapsedMs: 0, windowClosed: true, reason: '无法确定等待目标的窗口句柄' };
+  }
+  // R10：进程没有 UIA 树（微信/Electron/Chromium）→ 一次就返回，不硬等满超时
+  const processName = Number(waitFor?.target?.hwnd) ? (await input.windowInfo(hwnd).catch(() => null))?.process : foreground?.process;
+  const failFast = makeFailFast(condition, processName, { cache: uiaVerdicts });
+  const result = await waitForCondition({
+    condition, selector, value, timeoutMs,
+    observe: async () => {
+      // hwnd 存活 + pid 匹配：投递途中窗口关闭 → 立即返回（R10）
+      const info = await input.windowInfo(hwnd).catch(() => null);
+      if (!info?.hwnd || info.hwnd !== hwnd) return { windowAlive: false, hasUiaTree: false, elements: [], values: [] };
+      const obs = await uiaObserve(hwnd, { maxNodes: 400 });
+      if (!obs.ok) {
+        // 宿主失败/超时：按「这次没观测到」处理（不立刻判死，交给循环与预算）
+        return { windowAlive: true, hasUiaTree: false, elements: [], values: [] };
+      }
+      return { windowAlive: obs.windowAlive, hasUiaTree: true, elements: obs.elements, values: obs.values };
+    },
+    failFast
+  });
+  return result;
 }
 
 export function performAction(action, params = {}) {
@@ -472,6 +540,10 @@ async function runAction(action, params) {
     }
     if (attempted && !recovered) {
       latestScreenshot = null;
+      // 0.30.0（追加项 4）：paused 只作废截图（状态未知必须重截），**不退 CU 模式**——
+      // 遮罩/迷你窗表示「会话进行中」，用户回「继续」后模型可能先跑 run_command 再回到桌面，
+      // 此时遮罩必须还在。续期标记 pauseHold 让「本回合收尾」也不退，下一回合收尾再退。
+      pauseHold = true;
       return {
         ok: false, paused: true, deniedBy: 'user-active',
         error: `前台被「${foregroundNow?.process ?? '其它应用'}」持续占用（两次拉回「${shot.foreground.process}」都没成功），已暂停让位。请完成你的操作后回复「继续」，我会接着做。`,
@@ -510,19 +582,79 @@ async function runAction(action, params) {
   const invalidArguments = validateActionArguments(action, params);
   if (invalidArguments) return { ok: false, error: invalidArguments };
 
+  // 0.30.0（特性 2）：post-message 后台键盘。只有显式 delivery:'post' 才尝试；默认路径载荷
+  // 与 0.29.10 逐字段相同（params 里没有 delivery 时行为完全不变）。
+  // 白名单外 → 明确 deny('delivery-not-whitelisted')，绝不静默降级、绝不「先 post 失败再 SendInput」。
+  if (params.delivery === 'post') {
+    const chord = action === 'key' ? hasChordModifiers(params.keys ?? params.key) : false;
+    const decision = postDeliveryDecision({
+      processName: foreground.process, action, delivery: params.delivery, hasModifiers: chord
+    });
+    if (!decision.allowed) {
+      return deny('delivery-not-whitelisted',
+        decision.reason === 'chords-not-supported'
+          ? '组合键不能走后台消息投递（WM_KEYDOWN 无法携带修饰键状态，结果不确定）。请用 SendInput（不传 delivery:"post"）。'
+          : decision.reason === 'action-not-supported'
+            ? '后台消息投递只支持 type（输入文字）。其它动作请用 SendInput。'
+            : `应用「${foreground.process}」不在后台消息投递白名单（只对实测验证过的经典 Win32 程序启用，如记事本）。微信/Electron/Chromium 类必须用 SendInput（不传 delivery:"post"）。`,
+        foreground);
+    }
+    const delivered = await dispatchPostType(foreground, params.text);
+    if (!delivered.ok) {
+      // 投递前就失败（窗口关闭/pid 变化/宿主错误）：不静默回退 SendInput——回退会把「后台」变成
+      // 「抢前台」，与用户意图相反。
+      return deny('delivery-failed', `后台消息投递失败：${delivered.error}。可用 SendInput 重试（不传 delivery:"post"）。`, foreground);
+    }
+    setCuMode(true);
+    return {
+      ...actionResult(action, foreground),
+      ...postDeliveryResult({
+        targetHwnd: delivered.targetHwnd, sent: delivered.sent, failed: delivered.failed, processName: foreground.process
+      })
+    };
+  }
+
   // 0.29.7（遮挡校验）：指针动作落点的顶层窗口（WindowFromPoint 的 GA_ROOT）必须属于目标窗口
   // （同 hwnd / 子窗口 / 同进程），否则直接拒绝并点名遮挡窗口——绝不自动最小化遮挡窗。
   // 这不是前台问题，与 0.29.3 前台仲裁（auto-refocus 限频 1.2s）各走各的：遮挡不复用 refocus 路径。
   // 真机实证：绿按钮区域被别的窗口压住时，模型曾自写脚本像素扫描到 pixels=0 才 ABORT；这里让它
   // 一步拿到明确原因。查询失败/结果无效不拦（occludedBy 返回 null），不新增失败模式。
+  //
+  // 0.30.0（特性 1，用户拍板）：被遮挡时 UIA 富应用改用无障碍接口直接操作（不依赖像素可见性）；
+  // 其它应用（无 UIA 树/微信）仍按 0.29.7 拒绝并点名遮挡窗。放行条件是**严格**的：
+  //   ① 本次动作是单击左键（uiaClickEligible；拖拽/滚动/右键/中键/连击一律不走 UIA）
+  //   ② 进程适用性判定为 'uia' 或 'unknown'（skip 直接拒绝，延迟增量 = 0，绝不试探）
+  //   ③ 目标窗口自己的 UIA 子树在该点有可 Invoke 元素且归属断言通过（uiaInvokeAt/hostVerified）
+  // 三者任一不成立 → 回到 0.29.7 的 occluded 拒绝（行为不放松）。
+  const uiaEligible = uiaClickEligible(action)
+    && points.length === 1
+    && input.inputSupported()
+    && uiaApplicability(foreground.process, { cache: uiaVerdicts }) !== 'skip';
+  let uiaAttempted = null;
   for (const point of points) {
     if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) continue;
     let top = null;
     try { top = await input.windowAtPoint(point.x, point.y); } catch { top = null; }
     const blocker = occludedBy(top, foreground);
-    if (blocker) {
-      return deny('occluded', `目标被「${blocker}」遮挡，请移开遮挡窗口或调整布局后重新截图再操作。`, foreground);
+    if (!blocker) continue;
+    if (uiaEligible) {
+      const viaUia = await tryUiaClick(foreground, point);
+      if (viaUia) {
+        uiaAttempted = viaUia;
+        break; // 已用无障碍接口完成，不再走 SendInput（也不存在遮挡拒绝）
+      }
     }
+    return deny('occluded', `目标被「${blocker}」遮挡，请移开遮挡窗口或调整布局后重新截图再操作。` +
+      (uiaEligible
+        ? '（该应用未命中可用的 UIA 控件：' + (uiaAttempted?.error || '无') + '）'
+        : '（该应用不支持无障碍接口穿透：' + (uiaApplicability(foreground.process, { cache: uiaVerdicts }) === 'skip' ? '无 UIA 树' : '该动作不走 UIA') + '）'), foreground, {
+      uia: { applicable: uiaEligible ? 'yes' : 'skip', reason: uiaAttempted?.error ?? null }
+    });
+  }
+  if (uiaAttempted?.ok) {
+    // UIA 已点中：等价于动作成功（不返回给调用方看内部细节，但带 uia 标记便于排查）
+    setCuMode(true);
+    return { ...actionResult(action, foreground), uia: uiaAttempted.summary };
   }
 
   // 0.29.7（A3 反过度思考）：指针动作成功后不再强制作废截图——同一窗口内连续点击/输入可复用当前
@@ -540,6 +672,57 @@ async function runAction(action, params) {
   return actionResult(action, foreground);
 }
 
+// 0.30.0（特性 1）：UIA 优先点击。用无障碍接口在目标窗口自己的 UIA 子树里命中并 Invoke，
+// 不依赖像素可见性（FromPoint 在被遮挡时返回的是遮挡窗元素——真机实测，见 uia-adapter 头注释）。
+// 归属/授权：runAction 上游已完成 tier 检查 + checkActionAllowed + ledger.isGranted（UIA 不绕过任何一层），
+// 这里再自行复刻 hwnd+pid 归属断言（C# 侧 GetWindowThreadProcessId + GA_ROOT，不依赖 AssertPoint）。
+// 失败分类严守 R3：只有「动作肯定没发生」的错误才回退 SendInput（no-pattern/element-not-found/
+// stale-element/ownership-mismatch）；invoke 发出后的超时/RPC 错误绝不回退（会双击，微信重复发送）。
+async function tryUiaClick(foreground, point) {
+  const started = Date.now();
+  try {
+    const r = await uiaInvokeAt({ hwnd: foreground.hwnd, pid: foreground.pid, x: point.x, y: point.y });
+    if (r.ok) {
+      rememberUiaVerdict(uiaVerdicts, foreground.process, 'uia');
+      return {
+        ok: true,
+        summary: {
+          hit: r.element.name || r.element.controlType || '(unnamed)',
+          controlType: r.element.controlType,
+          pattern: r.element.pattern,
+          verified: r.element.hostVerified,
+          elapsedMs: Date.now() - started
+        }
+      };
+    }
+    const classified = classifyUiaError(r.code);
+    // 探测结论学习：no-uia-root / pid-changed 说明这个应用没有可用树 → 记住 skip，后续动作零延迟。
+    if (r.code === 'element-not-found' && /no-uia-root|window-closed/i.test(String(r.message ?? ''))) {
+      rememberUiaVerdict(uiaVerdicts, foreground.process, 'skip');
+    }
+    return { ok: false, code: r.code, error: r.message, fallbackAllowed: classified.fallbackAllowed };
+  } catch (error) {
+    return { ok: false, code: 'host-error', error: String(error?.message || error), fallbackAllowed: false };
+  }
+}
+
+// 0.30.0（特性 2）：post 投递执行——不做 SetForegroundWindow/AssertForeground（R6-c），
+// 投递前复检目标窗口存活 + pid 匹配（R6-d），投递后再复检一次（窗口可能在投递途中关闭）。
+async function dispatchPostType(foreground, text) {
+  let alive = null;
+  try { alive = await input.windowInfo(foreground.hwnd); } catch { alive = null; }
+  if (!alive?.hwnd || Number(alive.pid) !== Number(foreground.pid)) {
+    return { ok: false, error: '目标窗口已关闭或进程已变化' };
+  }
+  try {
+    const r = await input.postTypeText(foreground.hwnd, text, { pid: foreground.pid });
+    if (!r.ok) return { ok: false, error: `${r.code}${r.detail ? `（${r.detail}）` : ''}` };
+    return { ok: true, targetHwnd: r.targetHwnd, sent: r.sent, failed: r.failed };
+  } catch (error) {
+    return { ok: false, error: String(error?.message || error) };
+  }
+}
+
 function validateActionArguments(action, params) {
   if (action === 'scroll') {
     const direction = params.direction ?? 'down';
@@ -555,6 +738,10 @@ function validateActionArguments(action, params) {
     }
   } else if (action === 'type' && (typeof params.text !== 'string' || params.text.length === 0 || params.text.length > 4096)) {
     return '单次输入需要指定文字，最多 4096 个 UTF-16 代码单元。';
+  }
+  // 0.30.0（特性 2）：delivery 只接受 'post' 或不传（不传 = 默认 SendInput 路径，载荷与 0.29.10 一致）
+  if (params.delivery != null && params.delivery !== 'post') {
+    return 'delivery 只支持 "post"（后台消息投递）；不传即走默认键盘注入。';
   }
   return null;
 }
@@ -582,6 +769,7 @@ async function dispatchAction(action, params, [first, second], guard) {
 export function shutdown() {
   latestScreenshot = null;
   setCuMode(false);
+  try { shutdownUia(); } catch { /* UIA 宿主可能未启动 */ }
   input.shutdownInput();
 }
 

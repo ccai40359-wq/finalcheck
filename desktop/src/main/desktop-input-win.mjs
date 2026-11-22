@@ -77,6 +77,12 @@ public class FcCu {
   [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT p);
   [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr h, uint flags);
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+  [DllImport("user32.dll", SetLastError=true)] public static extern bool PostMessage(IntPtr h, uint msg, IntPtr wParam, IntPtr lParam);
+  [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr h, uint cmd);
+  [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool IsWindowEnabled(IntPtr h);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr h, StringBuilder s, int n);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
   [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr h);
   [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
@@ -108,6 +114,11 @@ public class FcCu {
   const uint EXTENDEDKEY = 0x0001, KEYUP = 0x0002, UNICODE = 0x0004, GA_ROOT = 2;
 
   static bool physicalCoordinates;
+  const uint WM_CHAR = 0x0102;
+  const uint WM_KEYDOWN = 0x0100;
+  const uint WM_KEYUP = 0x0101;
+  const uint WM_SETFOCUS = 0x0007;
+  const uint GW_CHILD = 5, GW_HWNDNEXT = 2, GW_OWNER = 4;
 
   public static void ConfigureDpi() {
     try { physicalCoordinates = SetThreadDpiAwarenessContext(new IntPtr(-4)) != IntPtr.Zero; }
@@ -439,6 +450,74 @@ public class FcCu {
     return GetForegroundWindow() == target;
   }
 
+  // ---- 0.30.0（特性 2）：PostMessage 后台键盘 ----
+  // R5：PostMessage 的返回值只表示「消息放进队列」，**不是**投递成功（目标可以丢弃/不处理）；
+  // 调用方必须把结果标成 confidence=unverified，不许当成功。
+  // R6-a：WM_CHAR 必须发到**有消息循环的子控件**（顶层窗口通常忽略）；没有子控件时才发顶层。
+  // 用 GetWindow(GW_CHILD) + 兄弟链找第一个「可见、同一进程」的子窗口（经典 Win32 编辑区就是这个）。
+  static bool FindMessageTarget(IntPtr top, out IntPtr target) {
+    target = IntPtr.Zero;
+    // 顶层窗口自身就是编辑控件（某些对话框）→ 直接用
+    var topCls = new StringBuilder(128);
+    GetClassName(top, topCls, topCls.Capacity);
+    if (topCls.ToString().IndexOf("EDIT", StringComparison.OrdinalIgnoreCase) >= 0) { target = top; return true; }
+    IntPtr child = GetWindow(top, GW_CHILD);
+    int guard = 0;
+    while (child != IntPtr.Zero && guard++ < 128) {
+      var text = new StringBuilder(128);
+      GetClassName(child, text, text.Capacity);
+      string cls = text.ToString();
+      // 优先编辑/输入类控件（EDIT/RICHEDIT/TextEdit）；跳过框架控件（不处理 WM_CHAR）
+      if ((cls.IndexOf("EDIT", StringComparison.OrdinalIgnoreCase) >= 0 ||
+           cls.IndexOf("RICHEDIT", StringComparison.OrdinalIgnoreCase) >= 0) &&
+          IsWindowVisible(child) && IsWindowEnabled(child)) {
+        target = child;
+        return true;
+      }
+      child = GetWindow(child, GW_HWNDNEXT);
+    }
+    // 第二圈：非框架类的可见子窗口（有些自绘控件类名随机，但仍是消息循环宿主）
+    child = GetWindow(top, GW_CHILD);
+    guard = 0;
+    while (child != IntPtr.Zero && guard++ < 128) {
+      var text = new StringBuilder(128);
+      GetClassName(child, text, text.Capacity);
+      string cls = text.ToString();
+      if (cls != "ScrollBar" && cls != "msctls_statusbar32" && cls != "ToolbarWindow32" &&
+          cls != "ReBarWindow32" && cls != "SysHeader32" && cls != "msctls_progress32" &&
+          IsWindowVisible(child) && IsWindowEnabled(child)) {
+        target = child;
+        return true;
+      }
+      child = GetWindow(child, GW_HWNDNEXT);
+    }
+    return false;
+  }
+
+  // 逐 UTF-16 code unit 发 WM_CHAR（R6-b）：代理对（emoji 等）按高位/低位分别发，与 SendInput
+  // 的 UNICODE 注入语义一致。返回 (sent, failed) 绝不是「成功」——见 R5。
+  public static string PostText(long hwnd, string text, uint expectedPid) {
+    IntPtr w = new IntPtr(hwnd);
+    if (!IsWindow(w)) return "ERR|window-closed";
+    uint pid;
+    if (GetWindowThreadProcessId(w, out pid) == 0 || (expectedPid != 0 && pid != expectedPid)) {
+      return "ERR|ownership-mismatch";
+    }
+    IntPtr target;
+    // R6-a：找不到「有消息循环的编辑类子控件」就明确失败——绝不把 WM_CHAR 投给顶层窗口假装做了
+    // （真机实测：WinUI 记事本的顶层窗口收下消息但内容不进框，等于静默失败）。
+    if (!FindMessageTarget(w, out target)) return "ERR|no-message-target";
+    // 让编辑控件拿到键盘焦点，否则很多 Win32 控件会丢弃没有焦点的 WM_CHAR
+    PostMessage(target, WM_SETFOCUS, IntPtr.Zero, IntPtr.Zero);
+    int sent = 0, failed = 0;
+    foreach (char c in text) {
+      if (!IsWindow(target)) return "ERR|window-closed";
+      bool ok = PostMessage(target, WM_CHAR, new IntPtr((int)c), IntPtr.Zero);
+      if (ok) sent++; else failed++;
+    }
+    return "OK|" + target.ToInt64() + "|" + sent + "|" + failed;
+  }
+
   public static string CursorPos() {
     POINT p = ReadCursor();
     return p.X + "|" + p.Y;
@@ -506,6 +585,7 @@ while ($true) {
       "scroll" { [FcCu]::Scroll($cmd.x, $cmd.y, [string]$cmd.dir, [int]$cmd.amount, $guard); Write-Output "OK|" }
       "key" { [FcCu]::Key([string]$cmd.keys, [int]$cmd.repeat, $guard); Write-Output "OK|" }
       "type" { [FcCu]::TypeText([string]$cmd.text, $guard); Write-Output "OK|" }
+      "post-type" { Write-Output ("OK|" + [FcCu]::PostText([long]$cmd.hwnd, [string]$cmd.text, [uint32]$cmd.pid)) }
       "focus" {
         $h = [IntPtr][long]$cmd.hwnd
         if ($null -ne $guard) {
@@ -678,6 +758,21 @@ export async function scroll(x, y, { dir = 'down', amount = 3, guard } = {}) {
   await send({ op: 'scroll', x: hasPoint ? Math.round(x) : null, y: hasPoint ? Math.round(y) : null, dir, amount, guard });
 }
 export async function pressKey(keys, { repeat = 1, guard } = {}) { await send({ op: 'key', keys, repeat, guard }); }
+/** 0.30.0（特性 2）：后台消息投递（PostMessage + WM_CHAR）。**不走 guard**——post 路径
+ *  不得调 SetForegroundWindow/AssertForeground（那正是要避免的抢前台）。
+ *  R6-d：调用方（computer-use）负责投递前后的 hwnd 存活 + pid 匹配复检。
+ *  返回值只代表「消息进了队列」，不代表投递成功（R5）。 */
+export async function postTypeText(hwnd, text, { pid = 0 } = {}) {
+  const r = await send({ op: 'post-type', hwnd: Number(hwnd), pid: Number(pid) || 0, text: String(text) });
+  const parts = String(r ?? '').split('|');
+  if (parts[0] !== 'OK') return { ok: false, code: parts[0] || 'host-error', detail: parts[1] || '' };
+  return {
+    ok: true,
+    targetHwnd: Number(parts[1]) || Number(hwnd),
+    sent: Number(parts[2]) || 0,
+    failed: Number(parts[3]) || 0
+  };
+}
 export async function typeText(text, { guard } = {}) { await send({ op: 'type', text: String(text), guard }); }
 
 export async function focusWindow(hwnd, { target, guard } = {}) {
