@@ -6,6 +6,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.29.9] - 2026-11-22
+
+### Fixed
+
+- The top-right mini chat window now actually shrinks: the main window had a 980px minimum width, so resizing to 360px was silently refused (the window stayed 980 wide and only moved) — that's why the mini layout never took effect and part of the WeChat input box was covered. Entering control mode now lifts the width floor and restores it on exit; the window sits below the top banner with a 12px right margin.
+- Mini-mode conversation is fully readable: session header hidden, paddings compacted, long URLs and sentences force-wrapped — no truncation or horizontal clipping at 360px.
+
 ## [0.29.8] - 2026-11-22
 
 ### Added

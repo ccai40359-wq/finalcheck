@@ -206,6 +206,7 @@ function installExternalLinkGuards() {
 // 停止入口在右上角迷你窗的红色横幅（finalcheck.cuStop → ipc-agent 撤授权 + 中止回合）。
 let cuOverlay = null;
 let cuSavedBounds = null;
+let cuSavedMinSize = null; // 进 CU 模式前的窗口尺寸下限（minWidth=980 必须先放宽才能缩到 360）
 let cuWasMaximized = false;
 let cuModeOn = false; // 遮罩/横幅重注入的开关（渲染层 reload 后 did-finish-load 会重注入，审查 P1-2）
 const CU_OVERLAY_HTML = `<!doctype html><html><head><meta charset="utf-8"><style>
@@ -263,10 +264,21 @@ function enterCuMode() {
       cuWasMaximized = win.isMaximized();
       if (cuWasMaximized) win.unmaximize();
       cuSavedBounds = win.getBounds();
+      cuSavedMinSize = win.getMinimumSize();
     }
     const wa = screen.getPrimaryDisplay().workArea;
     win.setAlwaysOnTop(true, 'screen-saver');
-    win.setBounds({ x: wa.x + wa.width - 372, y: wa.y + 8, width: 360, height: Math.min(520, wa.height - 16) });
+    // 关键：主窗创建时 minWidth=980，不先放宽尺寸下限，下面的 360px setBounds 会被
+    // Windows 直接拒绝（窗口停在 980 宽、只挪了位置）——0.29.7/0.29.8 的迷你样式因此全白做。
+    try { win.setMinimumSize(300, 200); } catch { /* 旧窗口/平台不支持则跳过 */ }
+    const miniW = 360;
+    // 位置：右上角、距右边缘留 12px；但避开任务栏与屏幕顶部的操控横幅（banner 高约 60px）
+    win.setBounds({
+      x: Math.max(wa.x, wa.x + wa.width - miniW - 12),
+      y: wa.y + 64,
+      width: miniW,
+      height: Math.min(560, wa.height - 80)
+    });
     injectCuBanner();
     // 用户拍板：ESC = 全局退出操控（等同点「停止」）。仅在 CU 模式期间注册，退出即注销。
     // 代价：CU 期间你在任何应用里按 ESC 都会停止操控——这是明确的取舍。
@@ -287,10 +299,13 @@ function exitCuMode() {
     if (win && !win.isDestroyed()) {
       win.setAlwaysOnTop(false);
       win.webContents.executeJavaScript(`(function(){const b=document.getElementById('fc-cu-stop');if(b)b.remove();document.body.classList.remove('fc-cu-mini');})()`).catch(() => {});
+      // 顺序：先放宽尺寸下限（进 CU 时被降过）→ 再还原 bounds → 最后按需最大化
+      if (cuSavedMinSize) { try { win.setMinimumSize(cuSavedMinSize[0], cuSavedMinSize[1]); } catch { /* ignore */ } }
       if (cuSavedBounds) win.setBounds(cuSavedBounds);
       if (cuWasMaximized) win.maximize();
     }
     cuSavedBounds = null;
+    cuSavedMinSize = null;
     cuWasMaximized = false;
   } catch { /* ignore */ }
 }

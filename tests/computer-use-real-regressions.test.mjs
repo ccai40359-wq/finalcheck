@@ -161,4 +161,9 @@ test('打包钉：CU 遮罩金色化+横幅屏幕顶部居中+提示 ESC；ESC �
   assert.ok(header.includes('fc-chat-header'), 'ChatHeader 必须带 fc-chat-header 类钩子');
   assert.ok(src.includes("classList.add('fc-cu-mini')") && src.includes("classList.remove('fc-cu-mini')"),
     '主进程负责挂/摘 fc-cu-mini（注入/恢复两个方向都要有）');
+  // 0.29.9 根因钉：主窗 minWidth=980 时不先放宽下限，360px setBounds 会被 Windows 拒绝，
+  // 迷你样式全白做（0.29.7/0.29.8 就是这么失效的）。
+  assert.ok(src.includes('win.setMinimumSize(300, 200)'), '进 CU 模式必须先放宽尺寸下限（否则 360px 缩不下去）');
+  assert.ok(src.includes('cuSavedMinSize'), '退出时必须有恢复下限的状态变量');
+  assert.ok(!src.includes('wa.width - 372'), '旧的 372 偏移写法应已被替换');
 });
