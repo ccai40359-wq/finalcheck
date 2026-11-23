@@ -317,8 +317,7 @@ test('contract: 不传 hwnd 的 window 调用转发形状不变；screen 调用�
 });
 
 // 0.29.10：winapp ②级参数真值回归（0.29.8 写成 --hwnd/--out，v0.8.0 不认→②级必失败）
-test('winapp CLI 参数钉：screenshot 必须用 -w/--window 与 -o/--output（不得回到 --hwnd/--out）', async () => {
-  const { winappScreenshotCommand, parseWinappScreenshotJson } = await import('../desktop/src/main/winapp-cli.mjs');
+test('winapp CLI 参数钉：screenshot 必须用 -w/--window 与 -o/--output（不得回到 --hwnd/--out）', () => {
   const cmd = winappScreenshotCommand('C:/fake/winapp.exe', 2230588, 'C:/tmp/out.png');
   assert.equal(cmd.file, 'C:/fake/winapp.exe');
   assert.deepEqual(cmd.args, ['ui', 'screenshot', '-w', '2230588', '-o', 'C:/tmp/out.png', '--json']);

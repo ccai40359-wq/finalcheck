@@ -14,6 +14,7 @@
 // 页面语义（快照/ref/点击/等待）在这里完全不变，只是换了个「画在哪儿」的宿主。
 // 没有 viewHost（测试台 / 纯 Node / 主窗口不可用）→ 保持原来的隐藏窗口行为，一行不变。
 import { BrowserWindow } from 'electron';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomBytes } from 'node:crypto';
 import { setImmediate, setTimeout } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
@@ -24,11 +25,28 @@ const WORLD_ID = 1742;
 const CONSOLE_LEVELS = ['verbose', 'info', 'warning', 'error'];
 const NO_BROWSER = '浏览器还没打开，先调用 browser_navigate';
 const NAVIGATING = '页面正在导航，完成后请调用 browser_snapshot 获取当前页面';
-const webRequestSessions = new WeakMap(); // session -> { pending: Set<requestId> }（fc-browser-use partition 专属）
+const webRequestSessions = new WeakMap();
 
-let active = null;
-// 当前策略（由 ensureWindow 按配置解析后写入）：只影响 ensureWindow 是否要重建窗口。
-let activePolicy = { mode: 'oneshot', chosen: false, persistent: false, partition: PARTITION_ONESHOT };
+const scopeContext = new AsyncLocalStorage();
+const scopes = new Map();
+const initialPolicy = { mode: 'oneshot', chosen: false, persistent: false, partition: PARTITION_ONESHOT };
+
+function currentScope() {
+  const sessionId = scopeContext.getStore() ?? null;
+  if (!scopes.has(sessionId)) scopes.set(sessionId, { sessionId, active: null, activePolicy: initialPolicy });
+  return scopes.get(sessionId);
+}
+
+export function forSession(sessionId) {
+  const methods = {
+    isOpen, navigate, snapshot, click, typeInto, evaluate, consoleMessages, screenshot, close, sessionInfo,
+    activeTabId, listTabs, openTab, switchTabTo, viewTab, tabFocusInfo, closeTab, gotoTab, reloadTab, closePanel
+  };
+  return Object.fromEntries(Object.entries(methods).map(([key, method]) => [
+    key, (...args) => scopeContext.run(sessionId ?? null, () => method(...args))
+  ]));
+}
+
 // 0.32.0：右栏内嵌宿主的提供者（由主进程注入；没注入就是旧的隐藏窗口路径）
 let viewHostProvider = null;
 /**
@@ -43,14 +61,14 @@ export function setViewHostProvider(fn) {
 // 所有页面操作（截图/快照/执行 JS/加载）都走这里，两种宿主因此共用同一套语义。
 function contentsOf(state) {
   if (!state) return null;
-  if (state.contents) return state.contents;
+  if (state.contents) return state.contents.isDestroyed?.() ? null : state.contents;
   return state.window && !state.window.isDestroyed?.() ? state.window.webContents : null;
 }
 
 function ensureViewHost() {
   if (!viewHostProvider) return null;
   try {
-    const h = viewHostProvider();
+    const h = viewHostProvider(currentScope().sessionId);
     // 宿主对象本身由 browser-view-host.mjs 管理单例；这里只要它「可用」
     return h && typeof h.newTab === 'function' ? h : null;
   } catch { return null; }
@@ -76,8 +94,10 @@ function assertNavigableUrl(raw) {
 //   - 窗口存在但 partition 不一致 → 先 destroy 再建（BrowserWindow 的 partition 创建后不能改；
 //     不重建就会留下两套 cookie，用户看到「登录态时有时无」）
 function ensureWindow({ width, height }, policy = null) {
+  const scope = currentScope();
+  const { active, activePolicy } = scope;
   const want = policy && typeof policy === 'object' ? policy : activePolicy;
-  if (isOpen()) {
+  if (isOpen() || active?.opening) {
     // 策略没变就复用现有窗口（含用户显式切换后再调 navigate 的情形）
     if (want.partition === activePolicy.partition) return active;
     close(); // 策略变了：先关掉旧窗口（renderer 进程连同它的 cookie 一起回收），下面按新策略重建
@@ -88,7 +108,7 @@ function ensureWindow({ width, height }, policy = null) {
   const host = ensureViewHost();
   if (host) {
     const state = createState({ window: null, contents: null, host, partition, messages: [], request: 0, generation: 0, action: 0, navigating: false, policy: { ...want, partition } });
-    activePolicy = { ...want, partition };
+    scope.activePolicy = { ...want, partition };
     return state;
   }
   const window = new BrowserWindow({
@@ -104,8 +124,8 @@ function ensureWindow({ width, height }, policy = null) {
       partition
     }
   });
-  activePolicy = { ...want, partition };
-  const state = createState({ window, contents: window.webContents, host: null, partition, messages: [], request: 0, generation: 0, action: 0, navigating: false, policy: { ...activePolicy } });
+  scope.activePolicy = { ...want, partition };
+  const state = createState({ window, contents: window.webContents, host: null, partition, messages: [], request: 0, generation: 0, action: 0, navigating: false, policy: { ...scope.activePolicy } });
   return state;
 }
 
@@ -114,54 +134,81 @@ function ensureWindow({ width, height }, policy = null) {
  * 区别只在 contents 从哪来（窗口 → window.webContents；内嵌 → WebContentsView 的 wc）。
  */
 function createState(state) {
-  const contents = state.contents;
-  if (!contents) {
-    // 内嵌宿主的 wc 要等标签真正建出来才有；此时 state 先挂在 active 上，
-    // 后续 navigate 会调 ensureTab 拿到 wc 再回填（见 ensureContentsWithTab）。
-    active = state;
-    return state;
-  }
-  bindPageEvents(state, contents);
-  active = state;
+  const scope = currentScope();
+  scope.active = state;
+  state.boundContents = new WeakSet();
+  if (state.contents) bindPageEvents(state, state.contents);
   return state;
+}
+
+/**
+ * Electron 每个 partition 只保留一个 webRequest 监听器。按 WebContents 分配计数，
+ * 用请求 ID 释放条目，即使完成或出错的事件已拿不到发起方。
+ */
+function pendingRequestsOf(contents) {
+  const { session, id: contentsId } = contents;
+  if (!session || contentsId == null) return null;
+
+  let tracker = webRequestSessions.get(session);
+  if (!tracker) {
+    const byContents = new Map();
+    const byRequest = new Map();
+    const filter = { urls: ['*://*/*'] };
+    const finish = ({ id }) => {
+      byRequest.get(id)?.delete(id);
+      byRequest.delete(id);
+    };
+    session.webRequest.onBeforeRequest(filter, (details, callback) => {
+      const pending = byContents.get(details.webContentsId ?? details.webContents?.id)?.requests;
+      if (pending) {
+        pending.add(details.id);
+        byRequest.set(details.id, pending);
+      }
+      callback({});
+    });
+    session.webRequest.onCompleted(filter, finish);
+    session.webRequest.onErrorOccurred(filter, finish);
+    tracker = { byContents, byRequest };
+    webRequestSessions.set(session, tracker);
+  }
+
+  let tab = tracker.byContents.get(contentsId);
+  if (!tab) {
+    const requests = new Set();
+    const clear = () => {
+      for (const id of requests) tracker.byRequest.delete(id);
+      requests.clear();
+    };
+    tab = { requests, clear };
+    tracker.byContents.set(contentsId, tab);
+    contents.once('destroyed', () => {
+      clear();
+      tracker.byContents.delete(contentsId);
+    });
+  }
+  return tab;
 }
 
 /** 把导航/控制台事件绑到具体 contents 上（幂等：同一个 wc 只绑一次）。 */
 function bindPageEvents(state, contents) {
-  if (!contents || state.__bound) return;
-  state.__bound = true;
-  // 0.29.2：在飞请求计数（session.webRequest，按请求 id 精确增减）——waitSettled 用它判断
-  // 「页面自己发起的请求是否都回来了」。fetch/XHR 在飞时 DOM 一片平静，只有这个信号能看到它。
-  // 会话级只挂一次（partition 专属、无其它使用方）；主帧导航开始时清空在飞计数（重定向链残留自愈）。
-  {
-    const ses = contents.session;
-    if (ses) {
-      if (!webRequestSessions.has(ses)) {
-        const pending = new Set();
-        const wr = ses.webRequest;
-        const filter = { urls: ['*://*/*'] };
-        wr.onBeforeRequest(filter, (d, cb) => { pending.add(String(d.id)); cb({}); });
-        // onCompleted/onErrorOccurred 的监听器没有 callback 形参——多调一次会让请求管线卡死
-        wr.onCompleted(filter, (d) => pending.delete(String(d.id)));
-        wr.onErrorOccurred(filter, (d) => pending.delete(String(d.id)));
-        webRequestSessions.set(ses, { pending });
-      }
-      state.netPending = () => webRequestSessions.get(ses).pending.size;
-    }
-  }
+  const pending = pendingRequestsOf(contents);
+  state.netPending = pending ? () => pending.requests.size : null;
+  if (state.boundContents.has(contents)) return;
+  state.boundContents.add(contents);
   contents.on('did-start-navigation', (details, _url, _samePage, mainFrame) => {
-    if (details.isMainFrame ?? mainFrame) {
+    if (contents === state.contents && (details.isMainFrame ?? mainFrame)) {
       state.generation++;
       // 0.29.2：换页即作废旧文档的 ref 缓存——重绑定只允许在同一个文档内发生，
       // 杜绝「另一个页面上恰好同签名的控件」被误绑（审查 P0-1 的跨页变体）。
       contents.executeJavaScriptInIsolatedWorld(WORLD_ID, [{ code: 'delete globalThis[Symbol.for("finalcheck.browser-use")]' }], false).catch(() => { /* 旧 world 尚不存在 */ });
-      if (active === state) { try { webRequestSessions.get(contents.session)?.pending.clear(); } catch { /* ignore */ } }
+      pending?.clear();
     }
   });
   contents.on('did-frame-navigate', (_event, _url, _code, _status, mainFrame) => {
-    if (mainFrame) state.messages.length = 0;
+    if (contents === state.contents && mainFrame) state.messages.length = 0;
   });
   contents.on('console-message', (details, level, message) => {
+    if (contents !== state.contents) return;
     state.messages.push({
       level: CONSOLE_LEVELS[level] ?? details.level ?? 'info',
       text: String(message ?? details.message ?? '').slice(0, 300)
@@ -516,7 +563,7 @@ function createPageState(salt) {
 const pageStateSource = createPageState.toString();
 
 function runInPage(state, method, ...args) {
-  if (active !== state || !isOpen()) return Promise.resolve({ ok: false, error: NO_BROWSER });
+  if (currentScope().active !== state || !isOpen()) return Promise.resolve({ ok: false, error: NO_BROWSER });
   const content = contentsOf(state);
   if (!content) return Promise.resolve({ ok: false, error: NO_BROWSER });
   const cacheKey = "Symbol.for('finalcheck.browser-use')";
@@ -525,22 +572,24 @@ function runInPage(state, method, ...args) {
     .catch((error) => ({ ok: false, error: String(error?.message || error) }));
 }
 
-export function isOpen() { return Boolean(active && (active.host ? true : !active.window?.isDestroyed?.())); }
+export function isOpen() { return Boolean(contentsOf(currentScope().active)); }
 
 // 当前窗口的策略（无痕 / 持久）。没窗口时返回最近一次解析出的策略，
 // 供 UI 在「接下来会用什么模式」这种场景显示标识。
 export function sessionInfo() {
+  const { active, activePolicy } = currentScope();
   if (isOpen() && active.policy) return { ...active.policy };
   return { ...activePolicy };
 }
 
 export function close() {
-  const state = active;
-  active = null;
+  const scope = currentScope();
+  const state = scope.active;
+  scope.active = null;
   if (!state) return;
   if (state.host) {
     // 内嵌宿主：标签由宿主自己管（UI 还会继续用），这里只解除本模块对它的占用
-    try { state.host.setVisible?.(false); } catch { /* ignore */ }
+    state.host.suspend?.();
     return;
   }
   if (state.window && !state.window.isDestroyed()) state.window.destroy();
@@ -556,7 +605,7 @@ async function waitSettled(state, maxMs = 2000) {
   let last = null;
   while (Date.now() - start < maxMs) {
     await setTimeout(120);
-    if (!active || active !== state) return;
+    if (currentScope().active !== state) return;
     const contents = contentsOf(state);
     if (!contents) return;
     if (state.window?.isDestroyed?.()) return;
@@ -575,20 +624,26 @@ async function waitSettled(state, maxMs = 2000) {
  * 内嵌宿主的第一跳：state 还没有 contents，要在宿主里开一个标签才能拿到 wc。
  * 只在 ensureWindow 走了宿主分支、且当前 state 尚未绑定时发生一次。
  */
-async function ensureEmbeddedContents(state, url) {
+async function ensureEmbeddedContents(state) {
   const host = state.host;
   if (!host || state.contents) return state.contents;
-  const r = await host.newTab({ url: '', partition: state.policy?.partition });
-  if (!r.ok) throw new Error(r.error || '无法在右栏打开标签');
-  // 宿主建完标签后把 wc 借出来（页面语义全在本模块，宿主只管画）
-  const wc = host.contentsOf?.(r.id) || null;
-  if (!wc) throw new Error('内嵌标签没有可用的 webContents');
-  state.contents = wc;
-  state.tabId = r.id;
-  bindPageEvents(state, wc);
-  // AI 一动手就把画面摆出来（这正是用户"啥都看不到"要解决的问题）
-  try { host.revealTab?.(r.id); } catch { /* 布局还没报上来时允许稍后再显示 */ }
-  return wc;
+  const opening = state.opening ??= (async () => {
+    const r = await host.newTab({ url: '', partition: state.policy?.partition });
+    if (!r.ok) throw new Error(r.error || '无法在右栏打开标签');
+    if (state !== currentScope().active) {
+      host.closeTabById(r.id);
+      throw new Error(NAVIGATING);
+    }
+    const wc = host.contentsOf(r.id);
+    if (!wc) throw new Error('内嵌标签没有可用的 webContents');
+    state.contents = wc;
+    state.tabId = r.id;
+    bindPageEvents(state, wc);
+    host.revealTab(r.id);
+    return wc;
+  })();
+  try { return await opening; }
+  finally { if (state.opening === opening) state.opening = null; }
 }
 
 export async function navigate(url, { show = false, width = 1280, height = 900, waitMs = 0, observe = false, policy = null } = {}) {
@@ -598,21 +653,22 @@ export async function navigate(url, { show = false, width = 1280, height = 900, 
   state.navigating = true;
   try {
     // 0.32.0：内嵌宿主第一跳要先建标签拿到 wc
-    if (state.host && !state.contents) await ensureEmbeddedContents(state, target);
+    if (state.host && !state.contents) await ensureEmbeddedContents(state);
+    if (state !== currentScope().active || state.request !== request) return { ok: false, error: NAVIGATING };
     const contents = contentsOf(state);
     if (!contents) return { ok: false, error: NO_BROWSER };
     // 旧路径的 show 语义保持不变（隐藏窗口才有 show 可谈）；内嵌路径由 revealTab 负责可见性
     if (show && state.window && !state.window.isDestroyed()) state.window.show();
     if (state.host && state.tabId) {
       // 复用同一个标签导航（不每跳都开新标签——那会让右栏堆满）
-      const nav = await state.host.navigateTab(state.tabId, target, { activate: true });
+      const nav = await state.host.navigateTab(state.tabId, target, { activate: false });
       if (!nav.ok) return { ok: false, error: nav.error || '导航失败' };
     } else {
       await contents.loadURL(target);
     }
     if (waitMs > 0) await setTimeout(waitMs);
     await waitSettled(state);
-    if (state !== active || state.request !== request) return { ok: false, error: NAVIGATING };
+    if (state !== currentScope().active || state.request !== request) return { ok: false, error: NAVIGATING };
     const generation = state.generation;
     const result = { ok: true, url: contents.getURL(), title: contents.getTitle() };
     if (state.host) {
@@ -621,12 +677,12 @@ export async function navigate(url, { show = false, width = 1280, height = 900, 
       result.shownInRail = true; // 右栏已把画面摆出来了（用户能看见）
     }
     if (observe) result.snapshot = await readSnapshot(state);
-    if (state !== active || state.request !== request || state.generation !== generation) {
+    if (state !== currentScope().active || state.request !== request || state.generation !== generation) {
       return { ok: false, error: NAVIGATING };
     }
     return result;
   } catch (error) {
-    if (state !== active || state.request !== request) return { ok: false, error: NAVIGATING };
+    if (state !== currentScope().active || state.request !== request) return { ok: false, error: NAVIGATING };
     throw error;
   } finally {
     if (state.request === request) state.navigating = false;
@@ -639,7 +695,7 @@ async function readSnapshot(state, { maxNodes = 220, includeText = true, query =
   const result = await runInPage(state, 'snapshot', {
     maxNodes: limit, includeText: includeText !== false, query: String(query ?? '').trim()
   });
-  if (state !== active || state.request !== request || state.generation !== generation) {
+  if (state !== currentScope().active || state.request !== request || state.generation !== generation) {
     return { ok: false, error: NAVIGATING };
   }
   if (result?.ok === false) return result;
@@ -652,7 +708,7 @@ async function readSnapshot(state, { maxNodes = 220, includeText = true, query =
 
 export async function snapshot(options) {
   if (!isOpen()) return { ok: false, error: NO_BROWSER };
-  return readSnapshot(active, options);
+  return readSnapshot(currentScope().active, options);
 }
 
 function canAct(state) {
@@ -663,7 +719,7 @@ function canAct(state) {
 
 export async function click(ref, { observe = false } = {}) {
   if (!isOpen()) return { ok: false, error: NO_BROWSER };
-  const state = active;
+  const state = currentScope().active;
   if (!canAct(state)) return { ok: false, error: NAVIGATING };
   const request = state.request;
   const action = ++state.action;
@@ -682,7 +738,7 @@ export async function click(ref, { observe = false } = {}) {
 
 export async function typeInto(ref, text) {
   if (!isOpen()) return { ok: false, error: NO_BROWSER };
-  const state = active;
+  const state = currentScope().active;
   if (!canAct(state)) return { ok: false, error: NAVIGATING };
   state.action++;
   return await runInPage(state, 'typeInto', String(ref || ''), String(text)) ||
@@ -691,7 +747,7 @@ export async function typeInto(ref, text) {
 
 export async function evaluate(expression) {
   if (!isOpen()) return { ok: false, error: NO_BROWSER };
-  const contents = contentsOf(active);
+  const contents = contentsOf(currentScope().active);
   if (!contents) return { ok: false, error: NO_BROWSER };
   const result = await contents.executeJavaScript(`(async () => { return (${String(expression)}); })()`)
     .catch((error) => ({ __error: String(error?.message || error) }));
@@ -703,12 +759,12 @@ export async function evaluate(expression) {
 
 export async function consoleMessages() {
   if (!isOpen()) return { ok: false, error: NO_BROWSER };
-  return { ok: true, messages: active.messages.slice() };
+  return { ok: true, messages: currentScope().active.messages.slice() };
 }
 
 export async function screenshot() {
   if (!isOpen()) return { ok: false, error: NO_BROWSER };
-  const contents = contentsOf(active);
+  const contents = contentsOf(currentScope().active);
   if (!contents) return { ok: false, error: NO_BROWSER };
   // PoC 实测：WebContentsView 的 wc 照样能 capturePage（内嵌宿主下 AI 截图不受影响）
   const img = await contents.capturePage();
@@ -718,114 +774,115 @@ export async function screenshot() {
 
 /* ---------------- 0.32.0：右栏多标签（内嵌宿主专属） ---------------- */
 
-/** 当前活动标签 id（没走内嵌宿主时返回 null）。 */
+/** AI 工作标签和用户查看的标签分别保留。 */
 export function activeTabId() {
-  return active && active.host ? (active.tabId || null) : null;
+  return currentScope().active?.tabId || null;
 }
 
-/** 宿主的标签清单（给 UI 与工具层读）。 */
 export function listTabs() {
-  if (!active?.host) return { ok: true, embedded: false, tabs: [], activeId: null };
-  const info = active.host.hostInfo?.() || {};
-  return { ok: true, embedded: true, tabs: info.tabs || [], activeId: info.activeId || null, visible: info.visible === true };
+  const host = ensureViewHost();
+  if (!host) return { ok: true, embedded: false, tabs: [], activeId: null };
+  const info = host.hostInfo();
+  return { ok: true, embedded: true, tabs: info.tabs, activeId: info.activeId, visible: info.visible };
 }
 
-/**
- * 用户/AI 新开一个网页标签。partition 沿用当前策略（无痕/持久语义不变）。
- * url 可以是空串 → 开一个空白标签页（用户点「＋」就是这样，随后在地址栏输网址）。
- * @param {string} url
- */
-export async function openTab(url) {
-  if (!active?.host) return { ok: false, error: '当前不在右栏浏览器模式（先 browser_navigate 打开网页）' };
+/** 用户打开标签只改变用户正在看的页面。空地址创建空白页。 */
+export async function openTab(url, policy = null) {
+  const host = ensureViewHost();
+  if (!host) return { ok: false, error: '当前不在右栏浏览器模式' };
   const raw = String(url ?? '').trim();
   let target = '';
   if (raw) {
     try { target = assertNavigableUrl(raw); }
     catch (e) { return { ok: false, error: String(e?.message || e) }; }
   }
-  const r = await active.host.newTab({ url: target, partition: active.policy?.partition });
-  if (!r.ok) return { ok: false, error: r.error };
-  try { active.host.revealTab?.(r.id); } catch { /* 布局未就绪 */ }
-  // 空白标签也要成为本模块的活动页面（随后在它上面导航）
-  if (!target) {
-    const wc = active.host.contentsOf?.(r.id) || null;
-    if (wc) {
-      active.contents = wc;
-      active.tabId = String(r.id);
-      active.__bound = false;
-      bindPageEvents(active, wc);
-    }
-  }
+  const { active, activePolicy } = currentScope();
+  const partition = policy?.partition || active?.policy?.partition || activePolicy.partition;
+  const r = await host.newTab({ url: target, partition });
+  if (!r.ok) return r;
   return { ok: true, id: r.id, tab: r.tab, blank: !target };
 }
 
-/**
- * 切到某个标签：把本模块的"活动页面"换成它（后续 snapshot/click 都作用在它上面）。
- *
- * ⚠️ 0.32.4 P0：这个入口**只给 AI 用**（工具层/AI 自己要换操作目标时）。
- * **用户在界面上点标签不能走这里**——否则用户一看别的网页，AI 下一步的 snapshot/click
- * 就跟着跑到用户切过去的那页上（用户实测："我动他的浏览器，他的操作就会刷新在我的页面"）。
- * 用户切标签走 `viewTab(id)`：只改"看哪页"，不动 AI 的工作目标。
- */
+function setWorkingTab(state, id, wc) {
+  state.request++;
+  state.generation++;
+  state.navigating = false;
+  state.messages.length = 0;
+  state.contents = wc;
+  state.tabId = id;
+  if (wc) bindPageEvents(state, wc);
+}
+
+/** AI 主动选工作目标。 */
 export function switchTabTo(id) {
+  const active = currentScope().active;
   if (!active?.host) return { ok: false, error: '当前不在右栏浏览器模式' };
-  const r = active.host.activateTab(id);
-  if (!r.ok) return { ok: false, error: r.error };
-  const wc = active.host.contentsOf?.(id) || null;
+  const wc = active.host.contentsOf(id);
   if (!wc) return { ok: false, error: '标签没有可用的 webContents' };
-  active.contents = wc;
-  active.tabId = String(id);
-  active.__bound = false; // 允许重新绑定事件（新 wc）
-  bindPageEvents(active, wc);
-  return { ok: true, activeId: r.activeId };
-}
-
-/**
- * 0.32.4：**用户**在界面上切换正在看的网页——只改可见性，**不改 AI 的工作目标**。
- *
- * 为什么必须分开（用户实机反馈）：以前的 UI 切标签直接调 switchTabTo，
- * 于是"用户看一眼别的页面"就把 AI 的操作目标也搬走了——AI 后续的 snapshot/click
- * 落在用户切过去的那页上，看起来像"AI 跟着我跑"。
- * 现在的语义：
- *   · 用户切标签 → 画面切过去（他能看、能自己点）
- *   · AI 的工作目标（active.contents / active.tabId）保持不变
- *   · AI 自己需要换目标时才调 switchTabTo
- */
-export function viewTab(id) {
-  if (!active?.host) return { ok: false, error: '当前不在右栏浏览器模式' };
   const r = active.host.activateTab(id);
-  if (!r.ok) return { ok: false, error: r.error };
-  return { ok: true, activeId: r.activeId, viewing: String(id), aiTab: active.tabId || null };
+  if (!r.ok) return r;
+  if (active.tabId !== String(id)) setWorkingTab(active, String(id), wc);
+  return r;
 }
 
-/** 当前 AI 的工作标签 / 用户正在看的标签（诊断与 UI 提示用）。 */
+/** 用户选择当前可见标签，保留 AI 工作目标。 */
+export function viewTab(id) {
+  const host = ensureViewHost();
+  if (!host) return { ok: false, error: '当前不在右栏浏览器模式' };
+  const r = host.activateTab(id);
+  if (!r.ok) return r;
+  return { ok: true, activeId: r.activeId, viewing: String(id), aiTab: activeTabId() };
+}
+
+/** 地址栏始终按点击时选中的标签路由。 */
+export async function gotoTab(id, url) {
+  const host = ensureViewHost();
+  if (!host || !id) return { ok: false, error: '没有可用标签' };
+  const r = await host.navigateTab(id, assertNavigableUrl(url), { activate: false });
+  return r.ok ? { ...r, tabId: r.id, embedded: true } : r;
+}
+
+export function reloadTab(id) {
+  const host = ensureViewHost();
+  return host?.reloadTab(id) || { ok: false, error: '没有可用标签' };
+}
+
 export function tabFocusInfo() {
-  if (!active?.host) return { ok: true, embedded: false, aiTab: null, viewing: null };
-  const info = active.host.hostInfo?.() || {};
-  return { ok: true, embedded: true, aiTab: active.tabId || null, viewing: info.activeId || null };
+  const host = ensureViewHost();
+  return { ok: true, embedded: Boolean(host), aiTab: activeTabId(), viewing: host?.hostInfo().activeId || null };
 }
 
-/**
- * 关掉一个标签。
- * 0.32.4：分两种情况（以前一律 switchTabTo，会把 AI 的目标搬走）：
- *   · 关掉的是**用户正在看的**但**不是 AI 工作标签** → 只切可见性，AI 目标不变
- *   · 关掉的是 **AI 的工作标签** → AI 目标必须跟着挪到邻居（否则下一次 snapshot 指向已销毁的 wc）
- */
 export function closeTab(id) {
-  if (!active?.host) return { ok: false, error: '当前不在右栏浏览器模式' };
+  const host = ensureViewHost();
+  if (!host) return { ok: false, error: '当前不在右栏浏览器模式' };
+  const active = currentScope().active;
   const closing = String(id);
-  const isAiTab = active.tabId === closing;
-  const r = active.host.closeTabById(closing);
-  if (!r.ok) return { ok: false, error: r.error };
+  const r = host.closeTabById(closing);
+  if (!r.ok) return r;
   const nextId = r.state?.activeId || null;
-  if (isAiTab) {
-    if (nextId) return switchTabTo(nextId); // AI 目标换了，必须换 wc
-    active.contents = null;
-    active.tabId = null;
-    return { ok: true, activeId: null };
+  if (active?.tabId === closing) {
+    setWorkingTab(active, nextId, nextId ? host.contentsOf(nextId) : null);
   }
-  // 关的不是 AI 的标签：AI 目标保持不变，只确认宿主把它从可见里摘掉
-  return { ok: true, activeId: nextId, aiTab: active.tabId || null };
+  return { ok: true, activeId: nextId, aiTab: activeTabId() };
+}
+
+/** 明确关闭浏览器面板，销毁该面板的全部页面。 */
+export function closePanel() {
+  const host = ensureViewHost();
+  if (!host) return { ok: false, error: '当前不在右栏浏览器模式' };
+  const scope = currentScope();
+  if (scope.active?.host) scope.active = null;
+  return host.clearTabs();
+}
+
+export function releaseSession(sessionId) {
+  scopeContext.run(sessionId ?? null, close);
+  scopes.delete(sessionId ?? null);
+}
+
+export function closeAll() {
+  for (const sessionId of scopes.keys()) scopeContext.run(sessionId, close);
+  scopes.clear();
 }
 
 // Kept callable for older consumers. The listener is attached before navigation.

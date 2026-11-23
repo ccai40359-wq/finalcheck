@@ -3,9 +3,11 @@
 // 用假的 electron 模块注入（node:module register）——和 tests/computer-use-action-entry.test.mjs
 // 同一套手法：真跑宿主代码，但 WebContentsView 换成可观测的替身。
 // 钉住的东西：只有活动标签可见、rect 必须落在窗口内容区、看不见时一律隐藏、
-// window.open 被拒并转交给上层、关闭标签后不留可见的孤儿 view。
+// window.open 由内嵌宿主接管，关闭标签后不留可见的孤儿 view。
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
+import { setTimeout } from 'node:timers/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { register } from 'node:module';
@@ -15,26 +17,51 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 // —— 假 electron：只实现宿主用到的那几样 ——
 const created = [];
 let evtHandlers = new Map();
-class FakeWebContents {
+let rejectedUrl = null;
+let openOutside = null;
+let importCount = 0;
+let nextContentsId = 0;
+let sessionFixture = null;
+let duringLoad = null;
+const deferredLoads = new Map();
+class FakeWebContents extends EventEmitter {
   constructor(opts) {
+    super();
+    this.id = ++nextContentsId;
+    this.session = sessionFixture;
     this.opts = opts;
     this.url = '';
     this.title = '';
     this.destroyed = false;
-    this.handlers = new Map();
     this.windowOpenHandler = null;
-    this.visibleRects = [];
+    this.loads = [];
+    this.reloads = 0;
+    this.__fcNavGuard = (_e, url) => openOutside?.(url);
+    this.on('will-navigate', this.__fcNavGuard);
+    this.setWindowOpenHandler(({ url }) => { openOutside?.(url); return { action: 'deny' }; });
   }
-  loadURL(u) { this.url = u; this.emit('did-navigate', null, u); return Promise.resolve(); }
+  loadURL(url) {
+    this.loads.push(url);
+    this.emit('did-start-navigation', { isMainFrame: true });
+    duringLoad?.(this, url);
+    if (deferredLoads.has(url)) return deferredLoads.get(url).promise;
+    if (rejectedUrl === url) return Promise.reject(new Error('failed load'));
+    this.url = url;
+    this.title = new URL(url).hostname;
+    this.emit('did-navigate', null, url);
+    this.emit('page-title-updated', null, this.title);
+    return Promise.resolve();
+  }
+  reload() { this.reloads++; }
+  isLoading() { return false; }
+  isWaitingForResponse() { return false; }
   getURL() { return this.url; }
   getTitle() { return this.title; }
   setWindowOpenHandler(fn) { this.windowOpenHandler = fn; }
-  on(name, fn) { const list = this.handlers.get(name) || []; list.push(fn); this.handlers.set(name, list); }
-  emit(name, ...args) { for (const fn of (this.handlers.get(name) || [])) fn(...args); }
-  close() { this.destroyed = true; }
+  close() { this.destroyed = true; this.emit('destroyed'); }
   isDestroyed() { return this.destroyed; }
   capturePage() { return Promise.resolve({ toPNG: () => Buffer.from('x'), getSize: () => ({ width: 10, height: 10 }) }); }
-  executeJavaScriptInIsolatedWorld() { return Promise.resolve({ ok: true }); }
+  executeJavaScriptInIsolatedWorld() { return Promise.resolve({ ok: true, ready: 'complete' }); }
 }
 class FakeView {
   constructor(opts) {
@@ -78,7 +105,7 @@ globalThis.__FC_FAKE__ = fakeElectron;
 const dataUrl = 'data:text/javascript,' + encodeURIComponent(registerData);
 register(dataUrl);
 
-const load = async () => import(pathToFileURL(path.join(repoRoot, 'desktop/src/main/browser-view-host.mjs')).href + `?t=${Date.now()}`);
+const load = async () => import(pathToFileURL(path.join(repoRoot, 'desktop/src/main/browser-view-host.mjs')).href + `?t=${++importCount}`);
 
 test('宿主: 只有活动标签可见，其余一律隐藏', async () => {
   created.length = 0;
@@ -103,7 +130,7 @@ test('宿主: 切标签只改可见性，不销毁任何页面（切回来页面
   const host = await load();
   host.ensureHost(fakeWindow);
   const t1 = await host.newTab({ url: 'https://a.test/' });
-  const t2 = await host.newTab({ url: 'https://b.test/' });
+  await host.newTab({ url: 'https://b.test/' });
   host.setRect({ x: 700, y: 50, width: 500, height: 700 });
   host.setVisible(true);
 
@@ -148,18 +175,239 @@ test('宿主: rect 会被窗口内容区裁住（不能画到窗口外）', asyn
   assert.equal(b.width, 80, '被裁到窗口右边缘（1280 - 1200）');
 });
 
-test('宿主: window.open 一律 deny，http(s) 才转交上层开新标签', async () => {
+test('宿主: 新窗口请求在同一 partition 内创建一个嵌入标签，拒绝外部 scheme', async () => {
   created.length = 0;
   CHILD_VIEWS.clear();
   const host = await load();
-  host.ensureHost(fakeWindow);
-  const opened = [];
-  host.ensureHost(fakeWindow).onWindowOpen = (u, fromId) => opened.push([u, fromId]);
-  const t = await host.newTab({ url: 'https://a.test/' });
-  const v = created.find((x) => x.webContents.getURL() === 'https://a.test/');
-  const decision = v.webContents.windowOpenHandler({ url: 'https://b.test/new' });
-  assert.equal(decision.action, 'deny', '浏览器默认行为必须拒绝（否则会开原生新窗口）');
-  assert.deepEqual(opened, [['https://b.test/new', t.id]], 'http(s) 要转交给上层当新标签开');
+  const changed = [];
+  const outside = [];
+  openOutside = (url) => outside.push(url);
+  host.ensureHost(fakeWindow, (sessionId) => changed.push(sessionId));
+  const browser = host.hostForSession('owner');
+  const source = await browser.newTab({ url: 'https://a.test/', partition: 'persist:fixture' });
+  browser.setRect({ x: 700, y: 50, width: 500, height: 700 });
+  browser.setVisible(true);
+  const opener = browser.contentsOf(source.id);
+
+  assert.deepEqual(opener.windowOpenHandler({ url: 'mailto:example@test.invalid' }), { action: 'deny' });
+  assert.equal(browser.getState().tabs.length, 1);
+  assert.deepEqual(opener.windowOpenHandler({ url: 'https://b.test/new' }), { action: 'deny' });
+  const { tabs, activeId } = browser.getState();
+  assert.equal(tabs.length, 2);
+  assert.deepEqual(tabs[1], { id: activeId, openerId: source.id, title: 'b.test', url: 'https://b.test/new' });
+  assert.equal(browser.contentsOf(activeId).opts.webPreferences.partition, 'persist:fixture');
+  assert.deepEqual(browser.hostInfo().showing, [activeId]);
+
+  let prevented = false;
+  opener.emit('will-navigate', { preventDefault() { prevented = true; } }, 'https://c.test/login');
+  assert.equal(prevented, false);
+  opener.emit('will-navigate', { preventDefault() { prevented = true; } }, 'mailto:example@test.invalid');
+  assert.equal(prevented, true);
+  assert.deepEqual(outside, []);
+  assert.ok(changed.length > 0);
+  assert.ok(changed.every((owner) => owner === 'owner'));
+  openOutside = null;
+});
+
+test('宿主: 弹窗加载失败会销毁视图，达到标签上限时不会创建视图', async () => {
+  created.length = 0;
+  CHILD_VIEWS.clear();
+  const host = await load();
+  const browser = host.ensureHost(fakeWindow);
+  const opener = await browser.newTab({ url: 'https://a.test/' });
+  const url = rejectedUrl = 'https://failure.test/';
+  try {
+    browser.contentsOf(opener.id).windowOpenHandler({ url });
+    await Promise.resolve();
+    assert.equal(browser.getState().tabs.length, 1);
+    assert.equal(browser.hostInfo().activeId, opener.id);
+    assert.equal(created.at(-1).webContents.isDestroyed(), true);
+    assert.equal(CHILD_VIEWS.size, 1);
+  } finally { rejectedUrl = null; }
+
+  for (let i = 1; i < host.MAX_TABS; i++) await browser.newTab();
+  const count = created.length;
+  browser.contentsOf(opener.id).windowOpenHandler({ url: 'https://b.test/' });
+  assert.equal(created.length, count);
+  assert.equal(browser.getState().tabs.length, host.MAX_TABS);
+  assert.equal(CHILD_VIEWS.size, host.MAX_TABS);
+});
+
+test('宿主: 首次加载被用户导航或刷新取代后保留标签，已关闭标签不复活', async () => {
+  created.length = 0;
+  CHILD_VIEWS.clear();
+  const host = await load();
+  const browser = host.ensureHost(fakeWindow);
+  try {
+    const byNavigation = Promise.withResolvers();
+    deferredLoads.set('https://initial.test/', byNavigation);
+    const opening = browser.newTab({ url: 'https://initial.test/' });
+    const id = browser.getState().activeId;
+    const wc = browser.contentsOf(id);
+    assert.equal((await browser.navigateTab(id, 'https://newer.test/')).ok, true);
+    byNavigation.reject(new Error('ERR_ABORTED'));
+    const result = await opening;
+    assert.equal(result.ok, true);
+    assert.equal(result.tab.url, 'https://newer.test/');
+    assert.equal(browser.getState().activeId, id);
+    assert.equal(browser.contentsOf(id), wc);
+    assert.equal(wc.isDestroyed(), false);
+
+    const byReload = Promise.withResolvers();
+    deferredLoads.set('https://reload.test/', byReload);
+    const openingReload = browser.newTab({ url: 'https://reload.test/' });
+    const reloadId = browser.getState().activeId;
+    const reloading = browser.contentsOf(reloadId);
+    assert.equal(browser.reloadTab(reloadId).ok, true);
+    byReload.reject(new Error('ERR_ABORTED'));
+    assert.equal((await openingReload).ok, true);
+    assert.equal(reloading.reloads, 1);
+    assert.equal(reloading.isDestroyed(), false);
+
+    const byClose = Promise.withResolvers();
+    deferredLoads.set('https://close.test/', byClose);
+    const openingClosed = browser.newTab({ url: 'https://close.test/' });
+    const closedId = browser.getState().activeId;
+    const closed = browser.contentsOf(closedId);
+    browser.closeTabById(closedId);
+    byClose.reject(new Error('ERR_ABORTED'));
+    assert.equal((await openingClosed).ok, false);
+    assert.equal(closed.isDestroyed(), true);
+    assert.deepEqual(browser.getState().tabs.map((tab) => tab.id), [id, reloadId]);
+  } finally {
+    deferredLoads.clear();
+    host.disposeHost();
+  }
+});
+
+test('浏览器: 用户打开、切换、导航、刷新或弹窗都保留独立的 AI 目标和会话', async () => {
+  created.length = 0;
+  CHILD_VIEWS.clear();
+  const host = await load();
+  host.ensureHost(fakeWindow, () => {});
+  const use = await import('../desktop/src/main/browser-use.mjs');
+  use.setViewHostProvider(host.hostForSession);
+  const a = use.forSession('a');
+  const b = use.forSession('b');
+  const [superseded, initial, other] = await Promise.all([
+    a.navigate('https://superseded.test/'),
+    a.navigate('https://ai.test/'),
+    b.navigate('https://other.test/')
+  ]);
+  assert.equal(superseded.ok, false);
+  assert.equal(initial.ok, true);
+  assert.equal(other.ok, true);
+  assert.deepEqual(a.listTabs().tabs.map((tab) => tab.url), ['https://ai.test/']);
+  assert.deepEqual(b.listTabs().tabs.map((tab) => tab.url), ['https://other.test/']);
+
+  const userTab = await a.openTab('', { partition: 'persist:fixture' });
+  const aHost = host.hostForSession('a');
+  const bHost = host.hostForSession('b');
+  assert.equal(a.tabFocusInfo().aiTab, initial.tabId);
+  assert.equal(a.tabFocusInfo().viewing, userTab.id);
+  assert.equal(aHost.contentsOf(initial.tabId).opts.webPreferences.partition, 'fc-browser-use');
+  assert.equal(aHost.contentsOf(userTab.id).opts.webPreferences.partition, 'persist:fixture');
+  assert.equal(a.listTabs().tabs.at(-1).url, '');
+  a.viewTab(initial.tabId);
+  a.viewTab(userTab.id);
+  assert.equal(a.listTabs().tabs.at(-1).url, '');
+  assert.equal((await a.gotoTab(userTab.id, 'https://user.test/')).ok, true);
+  assert.equal(a.reloadTab(userTab.id).ok, true);
+  assert.equal(aHost.contentsOf(userTab.id).reloads, 1);
+  assert.equal(aHost.contentsOf(initial.tabId).reloads, 0);
+  assert.deepEqual(aHost.contentsOf(initial.tabId).loads, ['https://ai.test/']);
+  assert.deepEqual(aHost.contentsOf(userTab.id).loads, ['https://user.test/']);
+  assert.equal((await a.navigate('https://ai.test/next')).ok, true);
+  assert.equal(a.tabFocusInfo().viewing, userTab.id);
+  assert.equal(a.tabFocusInfo().aiTab, initial.tabId);
+
+  aHost.contentsOf(userTab.id).windowOpenHandler({ url: 'https://popup.test/' });
+  assert.equal(a.listTabs().tabs.length, 3);
+  const popup = a.listTabs().tabs.at(-1);
+  assert.equal(popup.url, 'https://popup.test/');
+  assert.equal(aHost.contentsOf(popup.id).opts.webPreferences.partition, 'persist:fixture');
+  assert.equal(a.tabFocusInfo().aiTab, initial.tabId);
+  assert.equal(a.closeTab(userTab.id).aiTab, initial.tabId);
+  assert.equal((await b.gotoTab(initial.tabId, 'https://wrong-owner.test/')).ok, false);
+  assert.deepEqual(aHost.hostInfo().showing, [], 'background agent cannot show a native view');
+  aHost.setRect({ x: 700, y: 50, width: 500, height: 700 });
+  aHost.setVisible(true);
+  assert.equal(aHost.hostInfo().showing.length, 1);
+  aHost.setVisible(false);
+  assert.equal(a.listTabs().tabs.length, 2);
+  const remaining = a.listTabs().tabs.map((tab) => aHost.contentsOf(tab.id));
+  const bContents = bHost.contentsOf(other.tabId);
+  a.closePanel();
+  assert.deepEqual(a.listTabs().tabs, []);
+  assert.ok(remaining.every((wc) => wc.isDestroyed()));
+  assert.equal(bContents.isDestroyed(), false);
+  assert.equal(b.tabFocusInfo().aiTab, other.tabId);
+
+  use.releaseSession('b');
+  host.disposeSession('b');
+  assert.equal(bContents.isDestroyed(), true);
+  assert.deepEqual(b.listTabs().tabs, []);
+  assert.equal(b.tabFocusInfo().aiTab, null);
+  use.closeAll();
+  host.disposeHost();
+});
+
+test('浏览器: 共享 partition 按 WebContents 等待请求，完成和出错均释放计数', async () => {
+  const host = await load();
+  host.ensureHost(fakeWindow, () => {});
+  const use = await import('../desktop/src/main/browser-use.mjs');
+  use.setViewHostProvider(host.hostForSession);
+  const a = use.forSession('net-a');
+  const b = use.forSession('net-b');
+  const beforeRequest = [];
+  const completed = [];
+  const errors = [];
+  sessionFixture = {
+    webRequest: {
+      onBeforeRequest(_filter, callback) { beforeRequest.push(callback); },
+      onCompleted(_filter, callback) { completed.push(callback); },
+      onErrorOccurred(_filter, callback) { errors.push(callback); }
+    }
+  };
+  const requestsStarted = Promise.withResolvers();
+  duringLoad = (contents, url) => {
+    if (url !== 'https://wait.test/') return;
+    beforeRequest[0]({ id: 71, webContentsId: contents.id }, (reply) => assert.deepEqual(reply, {}));
+    beforeRequest[0]({ id: 72, webContentsId: contents.id }, (reply) => assert.deepEqual(reply, {}));
+    requestsStarted.resolve(contents);
+  };
+  const pendingB = b.navigate('https://wait.test/');
+  try {
+    const waiting = await Promise.race([requestsStarted.promise, setTimeout(700, null, { ref: false })]);
+    assert.ok(waiting, 'fixture did not start requests');
+    const first = await Promise.race([
+      pendingB.then(() => 'b'),
+      a.navigate('https://quick.test/').then((result) => result.ok ? 'a' : 'failed')
+    ]);
+    assert.equal(first, 'a', 'A 的新页面可以完成，B 的两个请求仍未完成');
+    assert.equal(beforeRequest.length, 1, '共享 partition 只挂一个监听器');
+
+    // Electron 可以在发起 WebContents 已不便访问时只给出请求 ID。
+    completed[0]({ id: 71 });
+    errors[0]({ id: 72 });
+    const finished = await Promise.race([pendingB, setTimeout(700, null, { ref: false })]);
+    assert.equal(finished?.ok, true);
+  } finally {
+    duringLoad = null;
+    sessionFixture = null;
+    use.closeAll();
+    host.disposeHost();
+    await pendingB.catch(() => {});
+  }
+});
+
+test('宿主: 缩放按设计宽度等比计算并限定在可读范围', async () => {
+  const { zoomForWidth, MIN_READABLE_ZOOM } = await load();
+  assert.equal(zoomForWidth(1280), 1);
+  assert.equal(zoomForWidth(1600), 1);
+  assert.equal(zoomForWidth(620), 0.525);
+  assert.equal(zoomForWidth(200), MIN_READABLE_ZOOM);
+  assert.equal(zoomForWidth(0), 1);
 });
 
 test('宿主: 关掉活动标签后落到邻居，且不留下可见的孤儿 view', async () => {

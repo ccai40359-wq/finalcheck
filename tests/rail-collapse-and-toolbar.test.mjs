@@ -26,7 +26,9 @@ test('加号: 点了要真的开一个新标签（不是只清地址栏）', () 
   assert.match(body, /await y\?\.browserTabOpen\?\.\(/, '必须真的调开标签的 IPC');
   assert.ok(!/^[\s\S]*?setAddr\(''\);[\s\S]*?setNote\(''\);[\s\S]*?};\s*/m.test(body.replace(/browserTabOpen[\s\S]*/, '')),
     '不能只是清空地址栏就结束');
-  assert.match(body, /addrRef\.current\?\.focus\(\)/, '开完空白页要把焦点给地址栏（否则用户还得自己点）');
+  assert.match(body, /setFocusId\(r\.id\)/, '空白页创建后记录待聚焦标签');
+  assert.match(paneSrc, /if \(visible && focusId && focusId === activeId\)/, '空白页可见时才聚焦');
+  assert.match(paneSrc, /addrRef\.current\?\.focus\(\)/);
 });
 
 test('加号: 主进程允许空 URL 开空白标签（以前 assertNavigableUrl 会直接抛）', () => {
@@ -45,8 +47,8 @@ test('加号: 主进程允许空 URL 开空白标签（以前 assertNavigableUrl
 
 test('刷新圈: 改成真正的「重新加载当前网页」（以前只刷新标签列表，用户零感知）', () => {
   const body = paneSrc.slice(paneSrc.indexOf('const reloadPage'), paneSrc.indexOf('if (!visible) return null'));
-  assert.match(body, /const cur = tabs\.find\(\(x\) => x\.id === activeId\);/, '要针对当前活动网页');
-  assert.match(body, /await y\?\.browserGoto\?\.\(cur\.url\)/, '真正的重新加载 = 再导航一次同一个 URL');
+  assert.match(body, /await y\?\.browserTabReload\?\.\(current\.id, sessionId\)/, '按当前查看的标签请求原生刷新');
+  assert.doesNotMatch(body, /browserGoto/, '刷新入口不重复发起导航');
   // 按钮必须接到 reloadPage，且有独立标记便于自检
   assert.match(paneSrc, /onClick=\{\(\) => \{ void reloadPage\(\); \}\} title=\{t\('重新加载当前网页'\)\}/);
   assert.match(paneSrc, /data-browser-reload/, '自检要能定位到这个按钮');
@@ -55,6 +57,8 @@ test('刷新圈: 改成真正的「重新加载当前网页」（以前只刷新
 test('地址栏: 去掉 Open 按钮（回车即打开，按钮与其重复且挤占宽度）', () => {
   assert.ok(!/\) : t\('打开'\)\}/.test(paneSrc), '不应再有"打开"按钮的文案分支');
   assert.ok(!/onClick=\{\(\) => void goto\(\)\}/.test(paneSrc), '不应再有独立的打开按钮');
+  assert.match(paneSrc, /browserGoto\?\.\(url, activeId, sessionId\)/, '地址栏回车按当前查看的标签导航');
+  assert.match(paneSrc, /if \(e\.key === 'Escape'\) \{ e\.preventDefault\(\); setDraft\(null\); \}/);
   // 回车仍然要能打开
   assert.match(paneSrc, /if \(e\.key === 'Enter'\) \{ e\.preventDefault\(\); void goto\(\); \}/);
 });

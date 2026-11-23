@@ -12,7 +12,6 @@ import { createAgentTools } from '../desktop/src/main/agent-tools.mjs';
 const repoRoot = path.resolve(import.meta.dirname, '..');
 const cuSrc = readFileSync(path.join(repoRoot, 'desktop/src/main/computer-use.mjs'), 'utf8');
 const serviceSrc = readFileSync(path.join(repoRoot, 'desktop/src/main/agent-service.mjs'), 'utf8');
-const toolsSrc = readFileSync(path.join(repoRoot, 'desktop/src/main/agent-tools.mjs'), 'utf8');
 
 // ---- 追加项 4：paused 保留遮罩 ----
 

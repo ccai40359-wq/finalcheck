@@ -385,7 +385,6 @@ test('0.30.3 B：观测带节点数，visited<=1 的树不可信（防 element-g
 });
 
 test('0.30.3 C：拿不到进程名 = unknown（不是 skip，不能直接快速失败）', async () => {
-  const { uiaApplicability } = await import('../desktop/src/main/uia-adapter.mjs');
   const { makeFailFast } = await import('../desktop/src/main/wait-for.mjs');
   assert.equal(uiaApplicability(''), 'unknown');
   // 空进程名时不能返回「一次就返回」的 failFast（那会误报 no-uia-tree）

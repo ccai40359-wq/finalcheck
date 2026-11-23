@@ -9,60 +9,96 @@
 //   安装器解压/覆盖失败 → 弹「FinalCheck 无法关闭，请手动关闭后重试」，且点重试永远过不去。
 //
 // 用法：node scripts/check-package-hygiene.mjs <win-unpacked 目录>
-// 退出码：0 通过；1 有违规（同时打印违规清单）
-import { readdir, stat } from 'node:fs/promises';
+// 退出码：0 通过；1 有违规；2 参数错误或目录无法检查。
+import { lstat, readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 
-const MAX_PATH_BUDGET = 200; // 安装目录本身约 50 字符，留出余量；超过 200 就认为会踩 260 上限
+// 模拟 Windows 按用户安装到默认目录，示例用户名占 11 个字符。
+// MAX_PATH 的 260 个字符包含结尾的 NUL，路径最多使用 259 个字符。
+const INSTALL_ROOT = 'C:\\Users\\ExampleUser\\AppData\\Local\\Programs\\FinalCheck';
+const MAX_INSTALL_PATH = 259;
+const MAX_RELATIVE_PATH = MAX_INSTALL_PATH - INSTALL_ROOT.length - 1;
+// desktop/package.json 配置 productName=FinalCheck、asar=false，打包时会带上应用清单。
+const EXECUTABLE_PATH = 'FinalCheck.exe';
+const MANIFEST_PATH = 'resources/app/package.json';
+const PACKAGE_VERSION = /^\d+\.\d+\.\d+(?:-[\da-z-]+(?:\.[\da-z-]+)*)?(?:\+[\da-z-]+(?:\.[\da-z-]+)*)?$/i;
 const FORBIDDEN = [
-  { re: /(^|\/)\.mimosa(\/|$)/, why: '编辑器/插件状态目录不该进安装包' },
-  { re: /(^|\/)desktop\/config\.json$/, why: '本机配置（含 API Key）绝不能被装进包' },
-  { re: /(^|\/)\.git(\/|$)/, why: '版本库元数据不该进安装包' },
+  { re: /(^|\/)\.mimosa$/i, why: '编辑器/插件状态目录不该进安装包' },
+  { re: /(^|\/)desktop\/config\.json$/i, why: '本机配置（含 API Key）绝不能被装进包' },
+  { re: /(^|\/)\.git$/i, why: '版本库元数据不该进安装包' },
 ];
 
-const root = path.resolve(process.argv[2] || '');
-if (!root) {
+const args = process.argv.slice(2);
+if (args.length !== 1 || !args[0].trim()) {
   console.error('用法：node scripts/check-package-hygiene.mjs <win-unpacked 目录>');
   process.exit(2);
 }
 
-const files = [];
-async function walk(dir) {
-  const entries = await readdir(dir, { withFileTypes: true });
-  for (const e of entries) {
-    const full = path.join(dir, e.name);
-    if (e.isDirectory()) await walk(full);
-    else files.push(full);
-  }
-}
-await walk(root);
+const root = path.resolve(args[0]);
+const entries = new Map();
+let fileCount = 0;
 
-const problems = [];
-for (const abs of files) {
-  const rel = path.relative(root, abs).replace(/\\/g, '/');
-  if (abs.length > MAX_PATH_BUDGET) problems.push({ kind: 'path', rel, len: abs.length });
-  for (const f of FORBIDDEN) {
-    if (f.re.test(rel)) problems.push({ kind: 'forbidden', rel, why: f.why });
+async function walk(dir, parent = '') {
+  const children = await readdir(dir, { withFileTypes: true });
+  for (const entry of children) {
+    const rel = parent ? `${parent}/${entry.name}` : entry.name;
+    entries.set(rel, entry);
+    if (entry.isDirectory()) await walk(path.join(dir, entry.name), rel);
+    else fileCount++;
   }
 }
 
-const top = files
-  .map((abs) => ({ abs, len: abs.length }))
-  .sort((a, b) => b.len - a.len)
-  .slice(0, 3);
+try {
+  await walk(root);
+} catch (error) {
+  console.error(`无法检查打包目录：${root}\n${error.message}`);
+  process.exit(2);
+}
+
+const packageShape = [];
+const executable = entries.get(EXECUTABLE_PATH)?.isFile()
+  ? await lstat(path.join(root, EXECUTABLE_PATH)).catch(() => null)
+  : null;
+if (!executable?.isFile() || executable.size === 0) {
+  packageShape.push(`[打包结构] ${EXECUTABLE_PATH} —— 缺少非空的应用程序文件`);
+}
+
+let manifest;
+if (entries.get(MANIFEST_PATH)?.isFile()) {
+  try {
+    manifest = JSON.parse(await readFile(path.join(root, MANIFEST_PATH), 'utf8'));
+  } catch {
+    // 统一报告不可读及无效的清单，避免把清单内容混进终端输出。
+  }
+}
+if (manifest?.name !== 'finalcheck-desktop'
+  || typeof manifest.version !== 'string'
+  || !PACKAGE_VERSION.test(manifest.version)) {
+  packageShape.push(`[打包结构] ${MANIFEST_PATH} —— 需要可读取的 finalcheck-desktop 清单和有效的版本号`);
+}
+
+const forbidden = [];
+const longPaths = [];
+for (const rel of entries.keys()) {
+  if (rel.length > MAX_RELATIVE_PATH) longPaths.push(`[路径过长 ${rel.length}] ${rel}`);
+  for (const { re, why } of FORBIDDEN) {
+    if (re.test(rel)) forbidden.push(`[禁用] ${rel} —— ${why}`);
+  }
+}
+const problems = [...packageShape, ...forbidden, ...longPaths];
 
 console.log(`检查目录：${root}`);
-console.log(`文件总数：${files.length}`);
-console.log('最长的三条路径：');
-for (const t of top) console.log(`  ${t.len}  ${t.abs.slice(-90)}`);
+console.log(`模拟安装目录：${INSTALL_ROOT}（相对路径上限：${MAX_RELATIVE_PATH} 字符）`);
+console.log(`文件总数：${fileCount}`);
+console.log('最长的三条打包相对路径：');
+const top = [...entries.keys()].sort((a, b) => b.length - a.length).slice(0, 3);
+for (const rel of top) console.log(`  ${rel.length}  ${rel}`);
 
 if (!problems.length) {
-  console.log(`OK：没有超过 ${MAX_PATH_BUDGET} 字符的路径，也没有禁用目录`);
+  console.log('OK：打包结构及路径符合要求，未发现禁用条目');
   process.exit(0);
 }
+
 console.error(`\n发现 ${problems.length} 条违规：`);
-for (const p of problems.slice(0, 30)) {
-  if (p.kind === 'path') console.error(`  [路径过长 ${p.len}] ${p.rel}`);
-  else console.error(`  [禁用] ${p.rel} —— ${p.why}`);
-}
+for (const problem of problems.slice(0, 30)) console.error(`  ${problem}`);
 process.exit(1);

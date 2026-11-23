@@ -21,24 +21,15 @@ const railSrc = readFileSync(path.join(repoRoot, 'desktop/src/renderer/chat/Righ
 const appSrc = readFileSync(path.join(repoRoot, 'desktop/src/renderer/App.jsx'), 'utf8');
 const hostSrc = readFileSync(path.join(repoRoot, 'desktop/src/main/browser-view-host.mjs'), 'utf8');
 
-test('隐藏约束: BrowserPane 卸载时必须通知主进程隐藏（"锁住"与"盖住设置页"的根因）', () => {
-  // 必须存在一个「只跑清理」的 effect（依赖数组为空 / 返回 cleanup 函数）
-  assert.match(paneSrc, /useEffect\(\(\) => \(\) => \{ void yRef\.current\?\.railVisible\?\.\(false\); \}, \[\]\);/,
-    '卸载清理必须调 railVisible(false)，且用 ref 避免依赖变化提前触发');
-  assert.match(paneSrc, /const yRef = useRef\(y\);/,
-    '用 ref 存 y：否则 y 变化会提前清理一次，卸载时才真清理');
+test('隐藏约束: BrowserPane 的不可见和卸载都按会话通知宿主，并取消排队的尺寸更新', () => {
+  assert.match(paneSrc, /if \(!visible \|\| !box \|\| !y\?\.railRect\) \{\s*void y\?\.railVisible\?\.\(false, sessionId\)/);
+  assert.match(paneSrc, /return \(\) => \{\s*if \(frame\) cancelAnimationFrame\(frame\);[\s\S]*?void y\.railVisible\?\.\(false, sessionId\)/);
 });
 
-test('隐藏约束: 面板不可见时（切到别的 tab）立刻隐藏', () => {
-  assert.match(paneSrc, /if \(!visible\) void y\?\.railVisible\?\.\(false\);|if \(!visible\) \{ void y\?\.railVisible\?\.\(false\); \}/,
-    'visible=false 时必须调隐藏');
-});
-
-test('隐藏约束: App 层兜底 —— 任何「右栏不该显示浏览器」的状态都强制隐藏', () => {
-  assert.match(appSrc, /const railBrowserShowing = Boolean\(activeRailTab\(rail\) && activeRailTab\(rail\)\.kind === 'browser'\)\s*\n\s*&& page === 'chat' && !railCollapsed;/,
-    '判据必须同时覆盖：活动 tab 是浏览器 + 在聊天视图 + 未折叠');
-  assert.match(appSrc, /if \(railBrowserShowing\) return;\s*\n\s*void y\?\.railVisible\?\.\(false\);/,
-    '不满足就隐藏——切设置页/折叠/切 tab 全走这一道');
+test('隐藏约束: App 层兜底覆盖切会话、切视图和折叠', () => {
+  assert.match(appSrc, /const currentRailTab = railBelongsToSession \? activeRailTab\(rail\) : null;/);
+  assert.match(appSrc, /const railBrowserShowing = currentRailTab\?\.kind === 'browser'\s*&& page === 'chat' && !railCollapsed;/);
+  assert.match(appSrc, /if \(railBrowserShowing\) return;\s*void y\?\.railVisible\?\.\(false, activeId\)/);
 });
 
 test('隐藏约束: 折叠态与动画期间画面都必须隐藏（不能留着网页盖住对话区）', () => {

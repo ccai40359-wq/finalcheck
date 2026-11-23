@@ -20,146 +20,151 @@ function normalizeUrl(input) {
   return raw;
 }
 
-export function BrowserPane({ y, visible, onTabsChange }) {
+export function BrowserPane({ y, sessionId, visible, onPageTitle }) {
   const boxRef = useRef(null);
   const addrRef = useRef(null);
-  const [tabs, setTabs] = useState([]);
-  const [activeId, setActiveId] = useState(null);
-  const [addr, setAddr] = useState('');
+  const refreshSequence = useRef(0);
+  const [view, setView] = useState({ tabs: [], activeId: null });
+  const [draft, setDraft] = useState(null);
+  const [focusId, setFocusId] = useState(null);
   const [addrBusy, setAddrBusy] = useState(false);
   const [note, setNote] = useState('');
+  const { tabs, activeId } = view;
+  const current = tabs.find((tab) => tab.id === activeId);
+  const addr = draft?.tabId === activeId ? draft.text : current?.url || '';
 
-  // 上报内容区 rect：浏览器画面就画在这块 div 的位置上。
-  // 0.32.4「丝滑」：ResizeObserver 在拖动右栏时**每帧都触发**，每次都走一次 IPC 往返，
-  // 而 WebContentsView 是原生层（不在渲染管线里），跟着这种高频往返会抖。
-  // 做法：rAF 合并（一帧最多一次）+ 只在 rect 真变了才发（相同 rect 直接跳过）。
-  const rectRaf = useRef(0);
-  const lastRect = useRef('');
-  const reportRect = useCallback(() => {
-    const el = boxRef.current;
-    if (!el || !y?.railRect) return;
-    if (!visible) { void y.railVisible?.(false); return; }
-    if (rectRaf.current) return; // 本帧已经排好了
-    rectRaf.current = requestAnimationFrame(() => {
-      rectRaf.current = 0;
-      const node = boxRef.current;
-      if (!node) return;
-      const r = node.getBoundingClientRect();
-      // 宽高为 0（面板被折叠/还没布局）时按「不可见」处理，避免主进程按 0 尺寸画
-      if (r.width < 8 || r.height < 8) { void y?.railVisible?.(false); return; }
-      const payload = { x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) };
-      const key = `${payload.x},${payload.y},${payload.width},${payload.height}`;
-      if (key === lastRect.current) return; // 没变就不发（拖到边界/抖动时省掉大量往返）
-      lastRect.current = key;
-      void y?.railRect(payload);
-      void y?.railVisible?.(true);
-    });
-  }, [y, visible]);
-  // 组件卸载时取消排队中的帧
-  useEffect(() => () => { if (rectRaf.current) cancelAnimationFrame(rectRaf.current); }, []);
+  // WebContentsView 不会随 DOM 布局变化。用一帧中的最后一个尺寸更新原生视图。
+  useEffect(() => {
+    const box = boxRef.current;
+    if (!visible || !box || !y?.railRect) {
+      void y?.railVisible?.(false, sessionId);
+      return undefined;
+    }
+    let frame = 0;
+    let previous = '';
+    const reportRect = () => {
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        const r = box.getBoundingClientRect();
+        if (r.width < 8 || r.height < 8) {
+          previous = '';
+          void y.railVisible?.(false, sessionId);
+          return;
+        }
+        const rect = { x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) };
+        const key = `${rect.x},${rect.y},${rect.width},${rect.height}`;
+        if (key === previous) return;
+        previous = key;
+        void y.railRect(rect, sessionId);
+        void y.railVisible?.(true, sessionId);
+      });
+    };
+    const observer = new ResizeObserver(reportRect);
+    observer.observe(box);
+    window.addEventListener('resize', reportRect);
+    reportRect();
+    return () => {
+      if (frame) cancelAnimationFrame(frame);
+      observer.disconnect();
+      window.removeEventListener('resize', reportRect);
+      void y.railVisible?.(false, sessionId);
+    };
+  }, [visible, y, sessionId]);
 
   const refreshTabs = useCallback(async () => {
     if (!y?.browserTabs) return;
+    const sequence = ++refreshSequence.current;
     try {
-      const r = await y.browserTabs();
-      if (!r || r.ok === false) return;
+      const r = await y.browserTabs(sessionId);
+      if (sequence !== refreshSequence.current || !r || r.ok === false) return;
       const list = Array.isArray(r.tabs) ? r.tabs : [];
-      setTabs(list);
-      setActiveId(r.activeId || null);
-      const act = list.find((x) => x.id === r.activeId);
-      if (act?.url) setAddr((prev) => (prev && addrBusy ? prev : act.url));
-      try { onTabsChange?.(list, r.activeId); } catch { /* UI 回调故障不影响浏览器 */ }
-    } catch { /* 无宿主时静默（右栏可能只是还没打开网页） */ }
-  }, [y, onTabsChange, addrBusy]);
+      const viewed = list.find((tab) => tab.id === r.activeId);
+      setView({ tabs: list, activeId: viewed?.id || null });
+      onPageTitle?.(viewed?.title || viewed?.url || '', sessionId);
+    } catch { /* 无宿主时允许稍后重试 */ }
+  }, [y, sessionId, onPageTitle]);
 
-  // 布局变化就重报 rect（ResizeObserver 覆盖右栏拖宽、侧栏塌陷、tab 切换）
   useEffect(() => {
-    const el = boxRef.current;
-    if (!el) return undefined;
-    const ro = new ResizeObserver(() => reportRect());
-    ro.observe(el);
-    const onWinResize = () => reportRect();
-    window.addEventListener('resize', onWinResize);
-    reportRect();
+    const stop = y?.onBrowserTabsChanged?.((owner) => {
+      if (owner === sessionId) void refreshTabs();
+    });
+    void refreshTabs();
+    const timer = visible ? setInterval(refreshTabs, 3000) : null;
     return () => {
-      ro.disconnect();
-      window.removeEventListener('resize', onWinResize);
+      stop?.();
+      if (timer) clearInterval(timer);
+      refreshSequence.current++;
     };
-  }, [reportRect]);
+  }, [visible, refreshTabs, y, sessionId]);
 
-  // 面板显隐切换：立刻告知主进程（藏的时候不能再报 rect，否则画面会一直挂着）
   useEffect(() => {
-    reportRect();
-    if (!visible) void y?.railVisible?.(false);
-  }, [visible, reportRect, y]);
-
-  // ⚠️ 卸载时必须把画面藏起来（这是 0.32.1 修的两个真 bug 的同一个根因）：
-  //   ① 切到产物/子代理 tab 后，网页那张 WebContentsView 仍盖在原位 → 下面的标签点不动（"被锁住"）
-  //   ② 切到设置页时整个右栏卸载了，画面却还留在屏幕上（用户实测：设置页右边压着小红书）
-  // 卸载后没有任何组件再持有它，所以只有这里能通知主进程。
-  // 用 ref 存 y：这样 effect 只在真正卸载时清一次，不会因为 y 变化而提前触发。
-  const yRef = useRef(y);
-  yRef.current = y;
-  useEffect(() => () => { void yRef.current?.railVisible?.(false); }, []);
-
-  // 标签状态：打开页面后由工具层推送，这里也做一次兜底轮询（3s，仅本面板可见时）
-  useEffect(() => {
-    refreshTabs();
-    if (!visible) return undefined;
-    const id = setInterval(() => { void refreshTabs(); }, 3000);
-    return () => clearInterval(id);
-  }, [visible, refreshTabs]);
+    if (visible && focusId && focusId === activeId) {
+      addrRef.current?.focus();
+      setFocusId(null);
+    }
+  }, [activeId, focusId, visible]);
 
   const goto = async () => {
     const url = normalizeUrl(addr);
     if (!url) return setNote(t('请输入网址'));
+    const submitted = draft;
     setAddrBusy(true);
     setNote('');
     try {
-      const r = await y?.browserGoto?.(url);
+      const r = await y?.browserGoto?.(url, activeId, sessionId);
       if (!r || r.ok === false) setNote(String(r?.error || t('打开失败')));
-      await refreshTabs();
-    } finally { setAddrBusy(false); }
+      else {
+        await refreshTabs();
+        setDraft((value) => (value === submitted ? null : value));
+      }
+    } catch (e) {
+      setNote(String(e?.message || e));
+    } finally {
+      setAddrBusy(false);
+    }
   };
 
   const switchTo = async (id) => {
-    try { await y?.browserTabSwitch?.(id); } finally { await refreshTabs(); }
+    if (id !== activeId) setDraft(null);
+    setFocusId(null);
+    setNote('');
+    await y?.browserTabSwitch?.(id, sessionId);
+    await refreshTabs();
   };
   const closeTab = async (e, id) => {
     e.stopPropagation();
-    try { await y?.browserTabClose?.(id); } finally { await refreshTabs(); }
+    setDraft((value) => (value?.tabId === id ? null : value));
+    setFocusId((value) => (value === id ? null : value));
+    await y?.browserTabClose?.(id, sessionId);
+    await refreshTabs();
   };
-  // 0.32.1 修复：加号以前只清空地址栏（什么都没发生，用户实测"点了没效果"）。
-  // 现在真的开一个新标签——空白页，然后把焦点给地址栏。
+
   const openBlank = async () => {
     setNote('');
-    setAddr('');
     try {
-      const r = await y?.browserTabOpen?.('');
-      if (!r || r.ok === false) setNote(String(r?.error || t('新标签打开失败')));
-      await refreshTabs();
-      addrRef.current?.focus();
-    } catch (e) { setNote(String(e?.message || e)); }
-  };
-  // 0.32.1 修复：这个圈以前只"刷新标签列表"（对用户没有任何可感知效果），
-  // 现在改成真正的**重新加载当前网页**（浏览器的刷新语义）。
-  const reloadPage = async () => {
-    const cur = tabs.find((x) => x.id === activeId);
-    if (!cur?.url) return;
-    setNote('');
-    try {
-      const r = await y?.browserGoto?.(cur.url);
-      if (!r || r.ok === false) setNote(String(r?.error || t('重新加载失败')));
+      const r = await y?.browserTabOpen?.('', sessionId);
+      if (!r || r.ok === false) {
+        setNote(String(r?.error || t('新标签打开失败')));
+        return;
+      }
+      setDraft(null);
+      setFocusId(r.id);
       await refreshTabs();
     } catch (e) { setNote(String(e?.message || e)); }
   };
 
-  // 0.32.4：用户主动「在默认浏览器打开」当前网页。
-  // 这是把内嵌页面送到系统浏览器的唯一正当入口——页面自己不会跑出去
-  // （index.mjs 的全局守卫 + browser-view-host 的夺回逻辑保证页面内导航都留在内嵌浏览器里）。
+  const reloadPage = async () => {
+    if (!current?.url) return;
+    setNote('');
+    try {
+      const r = await y?.browserTabReload?.(current.id, sessionId);
+      if (!r || r.ok === false) setNote(String(r?.error || t('重新加载失败')));
+    } catch (e) { setNote(String(e?.message || e)); }
+  };
+
   const openExternal = async () => {
-    const cur = tabs.find((x) => x.id === activeId);
-    const url = cur?.url || normalizeUrl(addr);
+    const url = current?.url || normalizeUrl(addr);
     if (!url) return setNote(t('没有可打开的网址'));
     setNote('');
     try {
@@ -203,8 +208,12 @@ export function BrowserPane({ y, visible, onTabsChange }) {
         <input
           ref={addrRef}
           value={addr}
-          onChange={(e) => setAddr(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); void goto(); } }}
+          onChange={(e) => setDraft({ tabId: activeId, text: e.target.value })}
+          onKeyDown={(e) => {
+            if (e.nativeEvent.isComposing) return;
+            if (e.key === 'Escape') { e.preventDefault(); setDraft(null); }
+            if (e.key === 'Enter') { e.preventDefault(); void goto(); }
+          }}
           placeholder={t('输入网址后回车（例如 xiaohongshu.com）')}
           spellCheck={false}
           className="flex-1 min-w-0 rounded bg-lift/[0.06] px-2 py-1 text-[12px] text-ink/90 outline-none focus:ring-1 focus:ring-gold/40" />

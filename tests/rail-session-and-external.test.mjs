@@ -16,11 +16,11 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { railForSession, snapshotRail, emptyRail, openRailTab } from '../desktop/src/renderer/lib/rail-tabs.mjs';
+import { railForSession, snapshotRail, emptyRail } from '../desktop/src/renderer/lib/rail-tabs.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const appSrc = readFileSync(path.join(repoRoot, 'desktop/src/renderer/App.jsx'), 'utf8');
-const useSrc = readFileSync(path.join(repoRoot, 'desktop/src/main/browser-use.mjs'), 'utf8');
+const railSrc = readFileSync(path.join(repoRoot, 'desktop/src/renderer/chat/RightRail.jsx'), 'utf8');
 const hostSrc = readFileSync(path.join(repoRoot, 'desktop/src/main/browser-view-host.mjs'), 'utf8');
 const indexSrc = readFileSync(path.join(repoRoot, 'desktop/src/main/index.mjs'), 'utf8');
 const ipcSrc = readFileSync(path.join(repoRoot, 'desktop/src/main/ipc/ipc-agent.mjs'), 'utf8');
@@ -62,7 +62,7 @@ test('② 内嵌浏览器必须在创建后夺回 window.open / will-navigate �
   assert.match(hostSrc, /wc\.__fcEmbeddedBrowser = true;/, '要打内嵌标记');
   assert.match(hostSrc, /wc\.removeListener\('will-navigate', guard\)/, '要摘掉全局守卫注册的 will-navigate');
   // http(s)/file 必须放行留在内嵌浏览器里（否则扫码后到不了成功页）
-  assert.match(hostSrc, /if \(u\.protocol === 'http:' \|\| u\.protocol === 'https:' \|\| u\.protocol === 'file:'\) return; \/\/ 留在内嵌浏览器/);
+  assert.match(hostSrc, /if \(u\.protocol === 'http:' \|\| u\.protocol === 'https:' \|\| u\.protocol === 'file:'\) \{\s*entry\.navigation\+\+;\s*return;/);
 });
 
 test('② 全局守卫要把 will-navigate 监听器记下来（内嵌浏览器才能精确摘除）', () => {
@@ -72,40 +72,25 @@ test('② 全局守卫要把 will-navigate 监听器记下来（内嵌浏览器�
 
 /* ---------------- ③ 点 PNG 标签要有反应 ---------------- */
 
-test('③ 切到产物 tab 时必须按该 tab 的路径重新读', () => {
-  assert.match(appSrc, /if \(key\.startsWith\('artifact:'\)\) \{/, '要识别产物 tab');
-  assert.match(appSrc, /const p = key\.slice\('artifact:'\.length\);/, '从 key 取出路径');
-  assert.match(appSrc, /if \(p && \(!artifact \|\| artifact\.path !== p\)\) void openArtifact\(p\);/, '路径不同就重读');
+test('③ 产物预览由会话和活动 tab 决定，组件切走会取消读结果', () => {
+  assert.match(railSrc, /<RailArtifactPreview key=\{JSON\.stringify\(\[sessionId, active\.key\]\)\}/);
+  assert.match(railSrc, /y=\{y\} path=\{active\.payload\.path\}/);
+  assert.match(railSrc, /const artifact = await y\.artifactRead\(path\);\s*if \(cancelled\) return;/);
+  assert.match(railSrc, /return \(\) => \{ cancelled = true; \};/);
 });
 
-/* ---------------- ④ AI 目标 vs 用户查看 ---------------- */
-
-test('④ UI 切标签走 viewTab（只改"看哪页"），不动 AI 的工作目标', () => {
-  assert.match(useSrc, /export function viewTab\(id\) {/, '要有独立的 viewTab');
-  assert.match(useSrc, /· 用户切标签 → 画面切过去（他能看、能自己点）/, '要写明语义');
-  assert.match(useSrc, /· AI 的工作目标（active\.contents \/ active\.tabId）保持不变/, '要写明 AI 目标不受影响');
-  // viewTab 不能改 active.contents / active.tabId
-  const body = useSrc.slice(useSrc.indexOf('export function viewTab'), useSrc.indexOf('export function tabFocusInfo'));
-  assert.ok(!/active\.contents =/.test(body), 'viewTab 绝不能改 AI 的页面');
-  assert.ok(!/active\.tabId =/.test(body), 'viewTab 绝不能改 AI 的标签');
-  // IPC 的 UI 切换必须走 viewTab，不是 switchTabTo
+test('④ 当前会话传给宿主，UI 切标签使用 viewTab', () => {
+  assert.match(ipcSrc, /setViewHostProvider\?\.\(viewHostProvider\)/);
+  assert.match(ipcSrc, /viewHostProvider = \(sessionId\) => viewHostModule\?\.hostForSession\(sessionId\)/);
   const ipcBody = ipcSrc.slice(ipcSrc.indexOf("'finalcheck:browser-tab-switch'"), ipcSrc.indexOf("'finalcheck:browser-tab-focus'"));
-  assert.match(ipcBody, /browserUse\?\.viewTab/, '界面切换必须走 viewTab');
-  assert.ok(!/browserUse\?\.switchTabTo/.test(ipcBody), '界面切换不能再走 switchTabTo（那会夺走 AI 目标）');
-});
-
-test('④ 关标签也分情况：关 AI 的标签才换目标，关别人的不动', () => {
-  const body = useSrc.slice(useSrc.indexOf('export function closeTab'), useSrc.indexOf('export function installConsoleHook'));
-  assert.match(body, /const isAiTab = active\.tabId === closing;/, '要先判是不是 AI 的标签');
-  assert.match(body, /if \(isAiTab\) \{\s*\n\s*if \(nextId\) return switchTabTo\(nextId\);/s, '是 AI 的才换 wc');
-  assert.match(body, /return \{ ok: true, activeId: nextId, aiTab: active\.tabId \|\| null \};/, '不是 AI 的：目标不动');
+  assert.match(ipcBody, /scopedBrowser\(owner\)\)\?\.viewTab\(String\(id\)\)/);
+  assert.doesNotMatch(ipcBody, /switchTabTo/);
 });
 
 /* ---------------- 在默认浏览器打开（唯一正当出口） ---------------- */
 
 test('在默认浏览器打开：主进程只放行 http(s)，且只由用户主动触发', () => {
   assert.match(ipcSrc, /'finalcheck:browser-open-external'/, '要有这个通道');
-  const body = ipcSrc.slice(ipcSrc.indexOf("'finalcheck:browser-open-external'"), ipcSrc.indexOf("'finalcheck:browser-tab-focus'") > 0 ? undefined : undefined);
   assert.match(ipcSrc, /if \(u\.protocol !== 'http:' && u\.protocol !== 'https:'\) return \{ ok: false, error: '只能打开 http\/https 网址' \};/, '只放行 http(s)');
   assert.match(ipcSrc, /shell\.openExternal\(u\.href\)/, '走系统浏览器');
   // UI 有对应按钮
@@ -125,33 +110,4 @@ test('宽度：右栏既有下限也有绝对上限，且会报告是否被截�
 test('宽度：缩放会在每次布局变化时重算（拖动/窗口缩放都跟上）', () => {
   assert.match(hostSrc, /if \(host\.rect\?\.width\) applyZoom\(entry, host\.rect\.width\);/, 'applyAllBounds 里要重算缩放');
   assert.match(hostSrc, /views\.push\(\{ id, bounds: b, showing: Boolean\(entry\.showing\), zoom: entry\.zoom \?\? 1, url: entry\.url \|\| '' \}\);/, 'hostInfo 要暴露 zoom 供自检');
-});
-
-test('宽度：zoomForWidth 的实际取值（620 宽 → 约 0.53；1280 → 1）', () => {
-  // 不能直接 import browser-view-host.mjs（它 import electron，纯 Node 环境没有）。
-  // 改成从源码里抽出这个纯函数求值——它本来就是"无依赖纯函数"，这么做是安全的。
-  const consts = { MIN_READABLE_ZOOM: 0.5, DESIGN_WIDTH: 1180 };
-  for (const line of hostSrc.split('\n')) {
-    const m = line.match(/export const (MIN_READABLE_ZOOM|DESIGN_WIDTH) = (\d+(?:\.\d+)?);/);
-    if (m) consts[m[1]] = Number(m[2]);
-  }
-  const fnBody = hostSrc.slice(
-    hostSrc.indexOf('export function zoomForWidth'),
-    hostSrc.indexOf('/** 把缩放应用到某个 view')
-  ).replace('export function', 'function');
-  // 常量要一起注入：函数签名里的默认参数 `designWidth = DESIGN_WIDTH` 需要它在作用域内
-  // eslint-disable-next-line no-new-func
-  const zoomForWidth = new Function(
-    `const MIN_READABLE_ZOOM = ${consts.MIN_READABLE_ZOOM}; const DESIGN_WIDTH = ${consts.DESIGN_WIDTH};`
-    + `${fnBody}; return zoomForWidth;`
-  )();
-
-  assert.equal(zoomForWidth(1280), 1, '够宽不缩');
-  assert.equal(zoomForWidth(1600), 1, '更宽也不放大（1 是上限）');
-  const z620 = zoomForWidth(620);
-  assert.ok(z620 > consts.MIN_READABLE_ZOOM && z620 < 1, `620 宽应有可读缩放，实际 ${z620}`);
-  assert.ok(Math.abs(z620 - 620 / consts.DESIGN_WIDTH) < 0.002, '按设计宽度等比缩放');
-  // 极窄时钳在下限（宁可让用户拖宽，也不能把字缩到看不清）
-  assert.equal(zoomForWidth(200), consts.MIN_READABLE_ZOOM);
-  assert.equal(zoomForWidth(0), 1, '没有宽度信息时不缩');
 });

@@ -54,7 +54,7 @@ export function openRailTab(rail, tab) {
   if (!key) return { ok: false, error: 'tab 缺少 key', rail: cur };
   const existing = railTabByKey(cur, key);
   if (existing) {
-    return { ok: true, rail: { ...cur, activeKey: key }, tab: existing, existed: true };
+    return { ok: true, rail: cur.activeKey === key ? cur : { ...cur, activeKey: key }, tab: existing, existed: true };
   }
   const entry = {
     key,
@@ -71,7 +71,7 @@ export function activateRailTab(rail, key) {
   const cur = rail || emptyRail();
   const found = railTabByKey(cur, key);
   if (!found) return { ok: false, error: `tab 不存在：${key}`, rail: cur };
-  return { ok: true, rail: { ...cur, activeKey: found.key }, tab: found };
+  return { ok: true, rail: cur.activeKey === found.key ? cur : { ...cur, activeKey: found.key }, tab: found };
 }
 
 /**
@@ -96,10 +96,13 @@ export function closeRailTab(rail, key) {
 export function patchRailTab(rail, key, patch = {}) {
   const cur = rail || emptyRail();
   const want = String(key ?? '');
-  if (!railTabByKey(cur, want)) return { ok: false, error: `tab 不存在：${want}`, rail: cur };
-  const tabs = cur.tabs.map((t) => (t.key === want
-    ? { ...t, ...(typeof patch.title === 'string' && patch.title ? { title: patch.title } : {}) }
-    : t));
+  const found = railTabByKey(cur, want);
+  if (!found) return { ok: false, error: `tab 不存在：${want}`, rail: cur };
+  const title = typeof patch.title === 'string' && patch.title ? patch.title : found.title;
+  const changedPayload = Object.entries(patch.payload || {}).filter(([key, value]) => !Object.is(found.payload?.[key], value));
+  if (title === found.title && changedPayload.length === 0) return { ok: true, rail: cur };
+  const payload = changedPayload.length ? { ...found.payload, ...Object.fromEntries(changedPayload) } : found.payload;
+  const tabs = cur.tabs.map((tab) => (tab === found ? { ...tab, title, payload } : tab));
   return { ok: true, rail: { ...cur, tabs } };
 }
 
