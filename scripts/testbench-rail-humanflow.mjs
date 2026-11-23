@@ -357,6 +357,9 @@ try {
     unfold?.visible === true && covered(s7) && s7.webTabs === s6.webTabs,
     JSON.stringify({ unfold, webTabs: s7.webTabs }));
   await shot('s7-unfolded.png');
+  // 0.32.5：内嵌浏览器是主窗口上的原生层，CDP 的窗口截图拍不到它（已记录的限制）。
+  // 唯一能证明「人眼真的看得见」的是桌面全屏截图——这张就是正面证据（展开后网页必须在屏上）。
+  await desktopShot('s7-unfolded-desktop.png');
 
   /* S8 切到"图片" tab → 画面必须让开（这就是"被锁住"那个 bug）
      真实链路：先往会话里灌一条带 present_artifact trace 的 assistant 消息（等同 AI 产出了一个图片），
