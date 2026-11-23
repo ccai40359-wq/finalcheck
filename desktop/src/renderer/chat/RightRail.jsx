@@ -37,7 +37,7 @@ function IconRailToggle({ collapsed }) {
 export function RightRail({
   rail, onActivate, onCloseTab, onClose, collapsed = false, onToggleCollapsed, sidebarWidth = 212,
   y, artifact, artifactLoading, artifactError, artifactHandlers,
-  subagentTarget
+  subagentTarget, onPatchBrowserTitle
 }) {
   const [width, setWidth] = useState(() => {
     const v = Number(localStorage.getItem('fc.railWidth'));
@@ -200,11 +200,14 @@ export function RightRail({
       <div className="flex-1 min-h-0 flex flex-col" data-rail-body data-rail-active-kind={active?.kind || ''}>
         {active?.kind === 'browser' && (
           <BrowserPane y={y} visible={browserVisible}
-            onTabsChange={(list, activeId) => {
-              // 浏览器里的当前网页标题回填到右栏 tab 上（用户一眼看出是哪一页）
-              const page = list.find((x) => x.id === activeId);
-              if (page) onActivate?.(rail.activeKey, { pageTitle: page.title || page.url || '' });
-            }} />
+            // 0.32.5 P0：这里**只能**回填标题，绝不能调 onActivate。
+            // 以前是 `onActivate?.(rail.activeKey, {pageTitle})`——两个致命后果：
+            //   ① 闭包捕获的 rail.activeKey 是当次渲染的旧值（'browser'），你点 PNG tab 后
+            //      它异步回来把你切回浏览器 tab → 用户看到的是"点图片没反应/被锁住"
+            //   ② 它让 App setRail → 整棵树重渲染 → 本组件的新内联回调 → 轮询 effect 重跑
+            //      → IPC → setRail…… 正反馈，把主进程打满 → 用户看到"巨卡"
+            // 现在走 setBrowserTabTitle：标题没变就返回同一引用（零重渲染），且永不改 activeKey。
+            onPageTitle={(title) => onPatchBrowserTitle?.(title)} />
         )}
         {active?.kind === 'artifact' && (
           <ArtifactPanel

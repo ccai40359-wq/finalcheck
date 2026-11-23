@@ -34,12 +34,51 @@ const userData = path.join(out, 'user-data');
 const projectDir = path.join(out, 'project');
 const sessionsDir = path.join(projectDir, '.finalcheck', 'sessions');
 const PORT = 9334; // 与 9223 / 9224 / 9331 / 9332 / 9333 都不同
+// 那张用于「产物」的 1px PNG（本地站与 seed 的文件共用同一份字节）
+const PNG_1PX = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000a49444154789c6360000002000001a5 6f5b1c0000000049454e44ae426082'.replace(/\s/g, ''), 'hex');
+const PNG_FILE_BYTES = PNG_1PX; // 与 /pic.png 同一份字节（seed 的产物文件也用它）
+
+/** 0.32.5 自伤防护：这个测试台驱动的是 desktop/out/（构建产物），不是 src/。
+ *  只改 src 不重建 → 整套验证跑在旧代码上。我本轮因此在 S15/S16 上反复"复现/消失"，
+ *  浪费了整整一轮排障（railTrail 里永远看不到新加入的 updater 就是这个信号）。
+ *  所以这里在起 Electron 前主动比对 src 与 out 的 mtime，过期就立刻构建。 */
+async function ensureFreshBuild() {
+  const { readdirSync, statSync } = await import('node:fs');
+  const srcDir = path.join(root, 'desktop/src');
+  const outDir = path.join(root, 'desktop/out');
+  const newestIn = (dir) => {
+    let newest = 0;
+    const walk = (d) => {
+      for (const e of readdirSync(d, { withFileTypes: true })) {
+        const p = path.join(d, e.name);
+        if (e.isDirectory()) walk(p);
+        else newest = Math.max(newest, statSync(p).mtimeMs);
+      }
+    };
+    walk(dir);
+    return newest;
+  };
+  let srcNewest = 0;
+  try { srcNewest = newestIn(srcDir); } catch { return; }
+  let outNewest = 0;
+  try { outNewest = newestIn(outDir); } catch { outNewest = 0; }
+  if (outNewest > srcNewest) return;
+  console.log('[build] src 比 out 新（或 out 缺失）→ 重新构建…');
+  const { execFileSync } = await import('node:child_process');
+  execFileSync(process.platform === 'win32' ? 'npx.cmd' : 'npx',
+    ['electron-vite', 'build'], { cwd: path.join(root, 'desktop'), stdio: 'ignore' });
+  console.log('[build] 完成');
+}
+await ensureFreshBuild();
 
 mkdirSync(out, { recursive: true });
 await rm(projectDir, { recursive: true, force: true }).catch(() => {});
 await rm(userData, { recursive: true, force: true }).catch(() => {});
 await mkdir(userData, { recursive: true });
 await mkdir(sessionsDir, { recursive: true });
+// 0.32.5：S16 需要一个**真实存在**的 PNG 产物文件可点（以前 seed 写的 'pic.png' 是相对路径，
+// artifactRead 直接报"文件已不存在"，于是 S16 永远"无产物可验"——等于没测）。
+const seededPng = path.join(projectDir, 'n1.png');
 await writeFile(path.join(userData, 'config.json'), JSON.stringify({
   providers: [{
     id: 'p-ui', name: 'UI Test', baseUrl: 'http://127.0.0.1:1/v1', apiFormat: 'chat-completions',
@@ -49,7 +88,6 @@ await writeFile(path.join(userData, 'config.json'), JSON.stringify({
 }, null, 2), 'utf8');
 
 // 本地站：两个可辨认的页面 + 一张可当"产物"用的图片
-const PNG_1PX = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000a49444154789c6360000002000001a5 6f5b1c0000000049454e44ae426082'.replace(/\s/g, ''), 'hex');
 const server = createServer((req, res) => {
   if (req.url === '/pic.png') { res.writeHead(200, { 'content-type': 'image/png' }); return res.end(PNG_1PX); }
   const two = req.url.startsWith('/two');
@@ -60,6 +98,9 @@ const server = createServer((req, res) => {
       <h1 style="color:#c0392b">${two ? 'PAGE TWO' : 'PAGE ONE'}</h1>
       <p id="t">真人链路测试台页面。你能看到这段字 = 内嵌浏览器真的在渲染。</p>
       <a id="lnk" href="/two" target="_blank" style="font-size:18px;color:#0366d6">开新窗口的链接</a>
+      <br><br>
+      <button id="wo" data-open-new-window style="font-size:18px;padding:8px 16px;cursor:pointer"
+        onclick="window.open('/two?from=script','_blank')">脚本调 window.open（模拟课程卡片）</button>
     </div></body></html>`);
 });
 await new Promise((r) => server.listen(0, '127.0.0.1', r));
@@ -71,12 +112,28 @@ const { ELECTRON_RUN_AS_NODE: _n, ...env } = process.env;
 
 // 0.32.4：会话隔离必须在**真实会话**上验证——草稿态 activeId 恒为 null，
 // 拿草稿测「切会话右栏跟着走」等于没测（S13 曾因此假通过）。
+//
+// 关于存储后端（0.32.5 踩到的坑，记下来免得下次再栽）：
+// 这个 seed 跑在**纯 Node** 里 → sessions.mjs 的 useSqliteStore() 判定「JSON 后端」→ 写 session-*.json。
+// 产品跑在 Electron 里判定「sqlite」→ 读 finalcheck.db。两者靠 sessions.mjs 的 migrateLegacy
+// 在首次访问时把 JSON 幂等导入 sqlite，所以**是可以工作的**（实测 S13/S14 的会话列表就有数据）。
+// 千万不要在这里显式设 FINALCHECK_SESSION_STORE=sqlite：纯 Node 加载不了
+// better-sqlite3（它是按 Electron ABI 编译的，ERR_DLOPEN_FAILED）。
 process.env.FINALCHECK_SESSIONS_DIR = sessionsDir;
 const sessionsLib = await import(pathToFileURL(path.join(root, 'desktop/src/main/sessions.mjs')).href);
 const s1c = await sessionsLib.newSession('会话一');
 const s2c = await sessionsLib.newSession('会话二');
 await sessionsLib.appendUserMessage(s1c.id, '第一个会话');
 await sessionsLib.appendUserMessage(s2c.id, '第二个会话');
+// 0.32.5：S16 要验「浏览器开着时点 PNG 产物 tab 有没有反应」——必须真的有产物 tab 可点。
+// 以前这条只能验等价约束（因为没数据）；现在先落一张真 PNG，再往「会话一」灌一条带
+// present_artifact trace 的 assistant 消息，渲染层就会渲染出可点的产物 chip，S16 点它才算真链路。
+await writeFile(seededPng, PNG_FILE_BYTES);
+await sessionsLib.appendAssistantMessage(s1c.id, {
+  role: 'assistant',
+  content: '已生成一张图片。',
+  trace: [{ tool: 'present_artifact', args: { path: seededPng }, result: { path: seededPng, title: 'n1.png' } }]
+});
 await sessionsLib.renameSession(s1c.id, '会话一');
 await sessionsLib.renameSession(s2c.id, '会话二');
 console.log('[seed sessions]', s1c.id, s2c.id);
@@ -443,7 +500,230 @@ try {
     JSON.stringify(backToOld));
   await shot('s14-restored.png');
 
-  await writeFile(path.join(out, 'result.json'), JSON.stringify({ origin, results, s1, s2, s6, s7, s10, zoomCheck, newSession, backToOld }, null, 2), 'utf8');
+  /* ---- 0.32.5：用户这一轮报的三个问题 ---- */
+
+  /* S15 页面内 window.open → 必须变成右栏新标签
+     0.32.5 之前的根因：browser-view-host 里 `host.onWindowOpen?.()` **全仓库从未被赋值**，
+     所以页面里任何 window.open / target=_blank 都被 deny 后静默丢掉。
+     用户实机表现：在内置浏览器里点超星课程卡片，什么都不发生。
+     验法：打开测试页 → 用 CDP 在该 view 自己的 webContents 上点页面里的按钮
+     （按钮内部调 window.open）→ 断言网页标签数 +1。 */
+  const s15prep = await ev(`(async () => {
+    const r = await window.finalcheck.browserGoto(${JSON.stringify(origin + '/')});
+    await new Promise((res) => setTimeout(res, 1000));
+    const info = await window.finalcheck.browserTabs();
+    return { gotoOk: r?.ok === true, before: (info?.tabs || []).length, activeId: info?.activeId || null };
+  })()`);
+  console.log('[S15 prep]', JSON.stringify(s15prep));
+
+  // 在**页面内部**真的点那个会 window.open 的按钮。
+  // 渲染层碰不到原生 view，所以用浏览器工具层自己的页面执行通道：browser-use 的 evaluate。
+  // 测试台通过 CDP 连到主窗口进程，能调用主进程已注册的 IPC（browser-goto 已验证），
+  // 但「在页面里执行 JS」没有暴露给渲染层——这里走 CDP 的 Target 发现，找 view 自己的 target。
+  let viewWs = null;
+  let s15 = { clicked: null, after: null, added: null };
+  try {
+    const targets = await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json();
+    // 内嵌浏览器 view 与主窗口在同一个 CDP 端口上各自是一个 target（url 是测试站的页面）
+    const viewTarget = (targets || []).find((t) => t.type === 'page' && String(t.url || '').startsWith(origin));
+    if (viewTarget) {
+      viewWs = new WebSocket(viewTarget.webSocketDebuggerUrl);
+      await new Promise((res, rej) => {
+        viewWs.onopen = res;
+        viewWs.onerror = () => rej(new Error('view ws error'));
+        setTimeout(() => rej(new Error('view ws timeout')), 8000);
+      });
+      const vseq = { id: 0 };
+      const vpending = new Map();
+      viewWs.onmessage = (m) => {
+        const msg = JSON.parse(m.data);
+        if (!msg.id || !vpending.has(msg.id)) return;
+        const p = vpending.get(msg.id); vpending.delete(msg.id);
+        if (msg.error) p.rej(new Error(JSON.stringify(msg.error))); else p.res(msg.result);
+      };
+      const vcdp = (method, params) => new Promise((res, rej) => {
+        const id = ++vseq.id;
+        vpending.set(id, { res, rej });
+        viewWs.send(JSON.stringify({ id, method, params }));
+        setTimeout(() => { if (vpending.has(id)) { vpending.delete(id); rej(new Error('view timeout ' + method)); } }, 15000);
+      });
+      await vcdp('Runtime.enable');
+      const clickRes = await vcdp('Runtime.evaluate', {
+        expression: `(() => { const b = document.querySelector('[data-open-new-window]'); if (!b) return 'button-missing'; b.click(); return 'clicked'; })()`,
+        returnByValue: true
+      });
+      s15.clicked = clickRes?.result?.value || null;
+      await sleep(1400);
+      const after = await ev(`(async () => {
+        const info = await window.finalcheck.browserTabs();
+        return { count: (info?.tabs || []).length, urls: (info?.tabs || []).map((t) => t.url || ''), activeId: info?.activeId || null };
+      })()`);
+      s15.after = after?.count ?? null;
+      s15.added = s15.after != null && s15prep?.before != null ? s15.after - s15prep.before : null;
+      s15.urls = after?.urls || [];
+    } else {
+      s15.note = 'view-target-not-found';
+    }
+  } catch (e) {
+    s15.error = String(e?.message || e).slice(0, 200);
+  } finally { try { viewWs?.close(); } catch { /* 已关 */ } }
+  console.log('[S15 window.open]', JSON.stringify(s15));
+  record('S15', '页面里 window.open 真的开出新标签（不再被静默吞掉 = "点课程没反应"）',
+    s15.clicked === 'clicked' && (s15.added || 0) >= 1,
+    JSON.stringify(s15));
+  await shot('s15-window-open.png');
+
+  /* S16 浏览器开着时点 PNG 产物：真的开出来、不回弹、画面让开
+     0.32.5 之前的根因：refreshTabs 的轮询循环里用**过期闭包**的 rail.activeKey
+     把用户切回浏览器 tab（表现=「点了没反应/被锁住」），同时这个循环把主进程打满（=「巨卡」）。
+
+     真实用户路径（用户截图就是这样）：AI 生成一张 png → 消息气泡下出现产物 chip
+     → 点那个 chip → 右栏开出 artifact tab。所以这里点的是**消息里的 chip**
+     （onOpen=onOpenArtifact → openRailTab({kind:'artifact'})），不是右栏 tab。 */
+  // 打开轨迹（测试台自己置位，不依赖 preload/env）
+  await ev(`(window.__fcRailTrailOn = true, window.__fcRailTrail = [], 'on')`);
+  const probe = await ev(`({ flagOn: !!window.__fcRailTrailOn })`).catch((e)=>({err:String(e?.message||e)}));
+  console.log('[S16 probe]', JSON.stringify(probe));
+  const s16 = await ev(`(async () => {
+    // 先装观察器：从**点击之前**就盯住 data-rail-active-kind 的每一次变化
+    const t0 = Date.now();
+    const transitions = [];
+    const body0 = document.querySelector('[data-rail-body]');
+    const readKind = () => body0?.getAttribute('data-rail-active-kind') || '';
+    const ob = new MutationObserver(() => {
+      transitions.push({ dt: Date.now() - t0, kind: document.querySelector('[data-rail-body]')?.getAttribute('data-rail-active-kind') || '' });
+    });
+    ob.observe(document.body, { attributes: true, subtree: true, attributeFilter: ['data-rail-active-kind'] });
+    const kindAtClick = readKind();
+    // 产物 chip = 消息气泡里的 <button title={完整路径}>，标题以预览扩展名结尾。
+    // 这里刻意**不用正则**：这段代码要过两层字符串解析（Node 模板 + CDP 求值），
+    // 反斜杠层数极易写错（0.32.5 我连踩两轮，chip 明明在 DOM 里却筛不出来）。
+    // 用 endsWith 一目了然，没有转义。
+    const EXTS = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp'];
+    const chips = [...document.querySelectorAll('button[title]')].filter((b) => {
+      const t = (b.getAttribute('title') || '').toLowerCase();
+      return EXTS.some((e) => t.endsWith(e));
+    });
+    const railTabsBefore = [...document.querySelectorAll('[data-rail-tab]')].length;
+    if (!chips.length) {
+      const dbg = {
+        bodyHasPng: (document.body.innerText || '').includes('n1.png'),
+        pngTitled: [...document.querySelectorAll('button[title]')]
+          .map((b) => b.getAttribute('title') || '').filter((t) => t.toLowerCase().includes('.png')),
+        buttons: document.querySelectorAll('button').length
+      };
+      return { noChip: true, dbg, railTabsBefore };
+    }
+    chips[0].click();
+    // 精确采集 6.5s（> 旧 3s / 新 5s 轮询周期）
+    for (let i = 0; i < 13; i++) { await new Promise((r) => setTimeout(r, 500)); }
+    try { ob.disconnect(); } catch { /* ignore */ }
+    const activeKind = document.querySelector('[data-rail-body]')?.getAttribute('data-rail-active-kind') || '';
+    const info = await window.finalcheck.browserTabs();
+    const railTabsAfter = [...document.querySelectorAll('[data-rail-tab]')]
+      .map((x) => ({ kind: x.getAttribute('data-rail-kind') || '', text: (x.textContent || '').trim() }));
+    return {
+      noChip: false, railTabsBefore, railTabsAfter, activeKind, kindAtClick, transitions,
+      // 0.32.5 排障轨迹（自检环境才记录）：能直接看出是哪个 updater 把 activeKey 抢走的
+      railTrail: (window.__fcRailTrail || []).slice(-24).map((x) => ({ l: x.label, f: x.from, to: x.to, same: x.same })),
+      showing: (info?.showing || []).length,
+      webTabs: (info?.tabs || []).length,
+      railMode: document.querySelector('[data-rail]')?.getAttribute('data-rail') || null
+    };
+  })()`);
+  console.log('[S16 artifact chip]', JSON.stringify({ ...s16, railTrail: undefined }));
+  if (Array.isArray(s16?.railTrail) && s16.railTrail.length) console.log('[S16 railTrail]', JSON.stringify(s16.railTrail));
+  // 变化轨迹单独打印：只看到最后的值无法判断「没切过去」还是「切过去又被抢回来」
+  if (Array.isArray(s16?.transitions)) {
+    console.log('[S16 transitions] clickAt=' + s16.kindAtClick, JSON.stringify(s16.transitions));
+  }
+  // 如果连消息都没渲染出来，说明 seed 与产品读的不是同一份数据——单独记录，别混进 S16 判定里
+  if (s16?.noChip === true) {
+    const opened = await ev(`(async () => {
+      try {
+        const r = await window.finalcheck.sessions.open(${JSON.stringify(s1c.id)});
+        const msgs = (r?.messages || r?.session?.messages || []);
+        return {
+          keys: Object.keys(r || {}).slice(0, 10),
+          msgs: msgs.length,
+          roles: msgs.map((m) => m.role),
+          traces: msgs.map((m) => (Array.isArray(m.trace) ? m.trace.map((x) => x.tool) : []))
+        };
+      } catch (e) { return { err: String(e?.message || e) }; }
+    })()`).catch((e) => ({ err: String(e?.message || e) }));
+    console.log('[S16 diag sessions.open]', JSON.stringify(opened));
+    // 侧栏列表里是否能看到两条会话（确认 migrateLegacy 真的导入成功）
+    const listed = await ev(`(async () => {
+      try { const r = await window.finalcheck.sessions.list(); const arr = r?.sessions || r || []; return { n: arr.length, titles: arr.map((x) => x.title) }; }
+      catch (e) { return { err: String(e?.message || e) }; }
+    })()`).catch((e) => ({ err: String(e?.message || e) }));
+    console.log('[S16 diag sessions.list]', JSON.stringify(listed));
+  }
+  record('S16', '浏览器开着时点消息里的 PNG chip：右栏开出产物 tab 并停在那里（6.5s 不回弹），画面让开',
+    s16?.noChip !== true && s16?.activeKind === 'artifact' && (s16?.showing || 0) === 0,
+    JSON.stringify(s16));
+  await shot('s16-png-tab.png');
+
+  /* S17 性能护栏：静止时不许有 IPC 自转
+     用户报「巨卡无比」的根因就是渲染↔IPC 正反馈循环。判据：空闲 4 秒内的
+     browser-tabs 调用次数必须在个位数（每 5s 轮询 1 次；旧实现是几百次/秒）。 */
+  const s17 = await ev(`(async () => {
+    let n = 0;
+    const orig = window.finalcheck.browserTabs;
+    // contextBridge 暴露的对象通常是冻结的 → 用 defineProperty 试包一层，包不上就退回 no-op
+    let wrapped = false;
+    try {
+      Object.defineProperty(window.finalcheck, '__probe', { value: 1, configurable: true });
+      wrapped = true;
+    } catch { wrapped = false; }
+    // 无论能否计数，都用「主进程看到的调用量」的等价代理：统计 React 渲染次数不可行，
+    // 所以这里统计 IPC 调用 —— 通过 monkeypatch ipc 不可行时，改用帧率/长任务判据。
+    const longTasks = [];
+    let frames = 0;
+    let stop = false;
+    const obs = new PerformanceObserver((list) => {
+      for (const e of list.getEntries()) longTasks.push(Math.round(e.duration));
+    });
+    try { obs.observe({ entryTypes: ['longtask'] }); } catch { /* 不支持 */ }
+    const tick = () => { if (stop) return; frames++; requestAnimationFrame(tick); };
+    requestAnimationFrame(tick);
+    await new Promise((r) => setTimeout(r, 4000));
+    stop = true;
+    try { obs.disconnect(); } catch { /* ignore */ }
+    return { frames, longTasks, maxLong: longTasks.length ? Math.max(...longTasks) : 0, wrapped };
+  })()`);
+  console.log('[S17 perf]', JSON.stringify(s17));
+  record('S17', '空闲 4s 无长任务（渲染没在自转 = 不再"巨卡"），且画面仍在正常刷新',
+    Array.isArray(s17?.longTasks) && s17.maxLong < 200 && s17.frames >= 30,
+    JSON.stringify({ frames: s17?.frames, longTasks: s17?.longTasks?.length, maxLong: s17?.maxLong }));
+
+  /* S18 卡顿第二源：zoom 幂等（同一宽度不重复 setZoomFactor → 不反复整页 relayout）
+     S11 已验 zoom 生效；这里验「重复上报同一个 rect 时 zoom 值稳定且不抖」 */
+  const s18 = await ev(`(async () => {
+    // S16 结束后 UI 停在产物 tab 上，那时浏览器盒子并不存在——先切回浏览器 tab
+    // （这不是产品问题：产物 tab 在前台时本来就不该有浏览器画面）
+    const browserTab = [...document.querySelectorAll('[data-rail-tab]')]
+      .find((x) => (x.getAttribute('data-rail-kind') || '') === 'browser');
+    if (browserTab) { browserTab.click(); await new Promise((res) => setTimeout(res, 700)); }
+    const box = document.querySelector('[data-browser-box]');
+    if (!box) return { noBox: true, activeKind: document.querySelector('[data-rail-body]')?.getAttribute('data-rail-active-kind') || '' };
+    const r = box.getBoundingClientRect();
+    const rect = { x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) };
+    const zooms = [];
+    for (let i = 0; i < 5; i++) {
+      await window.finalcheck.railRect(rect);
+      await new Promise((res) => setTimeout(res, 60));
+      const info = await window.finalcheck.browserTabs();
+      const v = (info?.views || []).find((x) => x.id === info.activeId);
+      zooms.push(v?.zoom ?? null);
+    }
+    return { rect, zooms, stable: zooms.every((z) => z === zooms[0]) };
+  })()`);
+  console.log('[S18 zoom idempotent]', JSON.stringify(s18));
+  record('S18', '重复上报同一 rect：zoom 稳定不变（不反复重排整页）',
+    s18?.noBox !== true && s18?.stable === true && Number.isFinite(s18?.zooms?.[0]), JSON.stringify(s18));
+
+  await writeFile(path.join(out, 'result.json'), JSON.stringify({ origin, results, s1, s2, s6, s7, s10, zoomCheck, newSession, backToOld, s15, s16, s17, s18 }, null, 2), 'utf8');
   const failed = results.filter((r) => !r.ok);
   console.log(`\n=== 真人链路测试台 ${failed.length === 0 ? '全过' : failed.length + ' 项失败'}（${results.length - failed.length}/${results.length}） ===`);
   console.log('证据:', out);

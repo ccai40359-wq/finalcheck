@@ -30,8 +30,15 @@ test('隐藏约束: BrowserPane 卸载时必须通知主进程隐藏（"锁住"�
 });
 
 test('隐藏约束: 面板不可见时（切到别的 tab）立刻隐藏', () => {
-  assert.match(paneSrc, /if \(!visible\) void y\?\.railVisible\?\.\(false\);|if \(!visible\) \{ void y\?\.railVisible\?\.\(false\); \}/,
-    'visible=false 时必须调隐藏');
+  // 0.32.5：判据从「固定写法」改成「约束本身」——visible 为 false 的分支里必须有隐藏调用。
+  // 之所以要改：0.32.5 把 y 全搬进 ref（断掉渲染↔IPC 死循环），写法变成
+  // `else void yRef.current?.railVisible?.(false)`，但约束一字未变。
+  const hideOnInvisible = /(?:if \(!visible\)|else)\s*(?:\{)?\s*void (?:yRef\.current|y)\?\.railVisible\?\.\(false\)/
+    .test(paneSrc);
+  assert.ok(hideOnInvisible, 'visible=false 时必须调隐藏（无论走 y 还是 yRef）');
+  // 反例：不能只在不渲染时 return null 而不通知主进程（原生视图不会随 React 消失）
+  assert.ok(!/if \(!visible\) return null;[\s\S]{0,200}(?!railVisible)/.test(paneSrc) || /railVisible\?\.\(false\)/.test(paneSrc),
+    'return null 之前必须已经通知过隐藏');
 });
 
 test('隐藏约束: App 层兜底 —— 任何「右栏不该显示浏览器」的状态都强制隐藏', () => {

@@ -37,7 +37,50 @@ let viewHostProvider = null;
  */
 export function setViewHostProvider(fn) {
   viewHostProvider = typeof fn === 'function' ? fn : null;
+  // 0.32.5 P0：为什么这段必须存在（用户实机：「我在内置浏览器页面点这些课程没反应」）——
+  // browser-view-host.mjs 里写的是 `try { host?.onWindowOpen?.(verdict.url, id) } catch {}`，
+  // 但真正的赋值必须走宿主的 setter：
+  //   · ESM 模块命名空间是冻结的，`module.onWindowOpen = fn` 抛 TypeError（被我 try/catch 吞掉）
+  //   · 实际被调用的是宿主内部对象，模块外拿不到
+  // 这是 0.32.5 真人链路测试台 S15 实测抓到的（上一轮我以为修好了，其实接线是空的）。
+  attachWindowOpenHook();
 }
+
+/** 把「页面 window.open → 开新标签」的出口挂到宿主上（幂等，宿主重建后会重挂）。 */
+function attachWindowOpenHook() {
+  try {
+    const h = viewHostProvider ? viewHostProvider() : null;
+    if (!h || typeof h.setWindowOpenSink !== 'function') return; // 旧宿主模块：忽略
+    h.setWindowOpenSink((url, fromId) => onWindowOpenFromPage(url, fromId));
+  } catch { /* 宿主还没就绪：ensureViewHost 下次调用时再挂 */ }
+}
+
+/**
+ * 页面自己发起 window.open（课程卡、搜索结果、登录跳转）。
+ * 规则：开成一个**新标签**（跟真浏览器一致），并且让用户看得见（右栏切到它）。
+ * 不做额外过滤——宿主已用 classifyWindowOpen 挡掉 about:blank/javascript:。
+ */
+function onWindowOpenFromPage(url, fromId) {
+  const target = String(url || '').trim();
+  if (!target) return;
+  const state = active;
+  if (!state?.host) return;
+  // 不 await：window.open 的处理必须同步返回，不能让页面等 IPC
+  void (async () => {
+    try {
+      const r = await state.host.newTab({ url: target, partition: state.policy?.partition, openerId: fromId || null });
+      if (!r?.ok) return;
+      try { state.host.revealTab?.(r.id); } catch { /* 布局未就绪 */ }
+      // 「用户看得见的那一页」切到新标签；AI 的工作目标（state.contents/state.tabId）不动
+      // （0.32.4 定下的分离语义）。并通知 UI 把右栏亮到浏览器 tab 上。
+      try { pageAttention?.({ tabId: r.id, url: target, openedBy: 'page' }); } catch { /* 无 UI 订阅 */ }
+    } catch { /* 弹窗失败不影响原页面 */ }
+  })();
+}
+
+// 页面弹窗要引起用户注意时的出口（主进程注入：推 browser-rail-open 给渲染层）
+let pageAttention = null;
+export function setPageAttentionNotifier(fn) { pageAttention = typeof fn === 'function' ? fn : null; }
 
 // 每个 state 的 webContents：窗口宿主用 window.webContents，内嵌宿主直接用 wc 本身。
 // 所有页面操作（截图/快照/执行 JS/加载）都走这里，两种宿主因此共用同一套语义。
@@ -52,7 +95,10 @@ function ensureViewHost() {
   try {
     const h = viewHostProvider();
     // 宿主对象本身由 browser-view-host.mjs 管理单例；这里只要它「可用」
-    return h && typeof h.newTab === 'function' ? h : null;
+    if (!h || typeof h.newTab !== 'function') return null;
+    // 0.32.5：宿主可能晚于 provider 就绪，所以每次拿到都补挂一次（setter 幂等）
+    try { h.setWindowOpenSink?.((url, fromId) => onWindowOpenFromPage(url, fromId)); } catch { /* 旧模块无此入口 */ }
+    return h;
   } catch { return null; }
 }
 
@@ -745,7 +791,10 @@ export async function openTab(url) {
   }
   const r = await active.host.newTab({ url: target, partition: active.policy?.partition });
   if (!r.ok) return { ok: false, error: r.error };
-  try { active.host.revealTab?.(r.id); } catch { /* 布局未就绪 */ }
+  // 0.32.5：用户**主动**开标签（点＋/地址栏回车）→ 强制可见（这是他的直接意图）。
+  // 页面自己 window.open 与 AI 首跳都不强制：可见性由 UI 是否停在浏览器 tab 决定
+  // （见 browser-view-host.mjs 的 revealTab 注释——两套判据打架会盖住产物 tab）。
+  try { active.host.revealTab?.(r.id, null, { force: true }); } catch { /* 布局未就绪 */ }
   // 空白标签也要成为本模块的活动页面（随后在它上面导航）
   if (!target) {
     const wc = active.host.contentsOf?.(r.id) || null;

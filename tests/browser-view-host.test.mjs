@@ -198,15 +198,36 @@ test('宿主: 没有宿主时所有入口都返回可执行错误（不崩）', 
   }
 });
 
-test('宿主: revealTab 在没有 rect 时也把标签设为可见（AI 操作不能"看不见"）', async () => {
+// 0.32.5 P1（reviewer 指出的新冲突，真人链路 S16 实测复现）：
+// 旧语义是 revealTab 无条件 host.visible = true —— AI 一动手就把原生层拽到最前面。
+// 与「右栏防抢焦点」叠加后会出现 UI 停在产物 tab、原生层却盖在它上面（看起来像"点不了图片"）。
+// 新语义：可见性只由 UI 决定（App 的 railBrowserShowing）；revealTab 默认不动可见性，
+// 需要强制时由调用方显式传 force。
+test('宿主: revealTab 默认不改可见性（可见性只由 UI 决定，避免盖住产物 tab）', async () => {
   created.length = 0;
   CHILD_VIEWS.clear();
   const host = await load();
   host.ensureHost(fakeWindow);
   const t = await host.newTab({ url: 'https://a.test/' });
-  const r = host.revealTab(t.id, { x: 700, y: 50, width: 500, height: 700 });
+  host.setRect({ x: 700, y: 50, width: 500, height: 700 });
+  host.setVisible(false);                 // 模拟「用户正在看产物 tab」
+  host.revealTab(t.id);                   // AI/页面又来通知说有新页面
+  assert.equal(created.filter((v) => v.visible).length, 0,
+    'revealTab 不得凭自己把原生层显示出来（那会盖住用户正在看的产物）');
+  assert.equal(host.hostInfo().visible, false, '宿主可见性必须还是 false');
+});
+
+test('宿主: revealTab(force) 才强制可见（用户主动输网址这类场景）', async () => {
+  created.length = 0;
+  CHILD_VIEWS.clear();
+  const host = await load();
+  host.ensureHost(fakeWindow);
+  const t = await host.newTab({ url: 'https://a.test/' });
+  host.setRect({ x: 700, y: 50, width: 500, height: 700 });
+  host.setVisible(false);
+  const r = host.revealTab(t.id, null, { force: true });
   assert.equal(r.ok, true);
-  assert.equal(created.filter((v) => v.visible).length, 1, 'AI 一动手就必须让画面真的显示出来');
+  assert.equal(created.filter((v) => v.visible).length, 1, 'force 时必须真的显示出来');
 });
 
 // 0.32.3：WebContentsView **没有 getVisible()**（实测返回 undefined），

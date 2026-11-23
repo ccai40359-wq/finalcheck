@@ -6,6 +6,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.32.5] - 2026-11-23
+
+### Fixed
+
+- **With the browser open, the whole app became extremely laggy — switching sessions and typing both stuttered.** The cause was a self-accelerating loop: every time the rail read the page state it notified the UI, and every UI refresh re-triggered the read, round after round, each round costing a cross-process round trip and saturating the main process. Nothing is written now unless the data actually changed, and the poll moved from 3s to 5s. Measured: zero long tasks over 4 idle seconds (previously constant stutter).
+- **With the browser open, clicking the png next to it still did nothing.** This was the other half of the same loop: it kept a stale "which tab you were looking at" value, so right after you clicked an image it switched you back to the browser tab — artifact for 3 ms, then dragged back by 5 ms. Title updates and tab switching are now fully separated: a title update never changes which tab you are viewing, and re-notifying the same tab no longer rebuilds the UI.
+- **Course cards and search results inside the built-in browser did nothing when clicked.** Every "open a new window" button in a page was silently dropped — the blocking code had been in place, but the handler meant to receive it was never wired up. A page's `window.open` now really becomes a new tab in the right rail and brings the rail forward, without replacing the original page.
+- **A related hazard that could let the page cover your image is fixed too.** Previously "AI acts / page pops up" forced the browser view to the front even while you were sitting on an image tab — which looked like the image bug again. Whether the page view is visible is now decided by exactly one criterion: are you currently on the browser tab.
+
+### Improved
+
+- **Dragging the rail width no longer forces the page to re-layout repeatedly.** Every size report used to reset the zoom factor even when the computed ratio was identical, effectively re-laying-out the whole page. The value is now skipped when unchanged: reporting the same width five times leaves the zoom ratio exactly stable.
+- The rail's 5-second status poll now runs only while the panel is visible; not a single call is made while it is hidden.
+
 ## [0.32.4] - 2026-11-23
 
 ### Fixed

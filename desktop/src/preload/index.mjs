@@ -80,6 +80,9 @@ contextBridge.exposeInMainWorld('finalcheck', {
   // AI 或用户打开网页时主进程推一次 → 右栏自动跳到浏览器 tab
   onBrowserRailOpen: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('finalcheck:browser-rail-open', h); return () => ipcRenderer.removeListener('finalcheck:browser-rail-open', h); },
   testProvider: (p) => ipcRenderer.invoke('finalcheck:test-provider', p),
+  // 0.32.5：自检模式标记（主进程在 FINALCHECK_UI_SELFCHECK=1 时注入 __FC_SELFCHECK__）。
+  // 渲染层据此打开「右栏更新轨迹」这类零成本排障（生产环境恒关）。
+  uiSelfcheck: () => { try { return String(process.env.FINALCHECK_UI_SELFCHECK || '') === '1'; } catch { return false; } },
   // 自动更新（仅安装版生效；开发模式主进程返回友好错误）
   getVersion: () => ipcRenderer.invoke('finalcheck:update:version'),
   // 更新详情：读随包 CHANGELOG.md，返回 { version, entries, raw }

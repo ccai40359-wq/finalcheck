@@ -18,6 +18,23 @@ import { emptyState, openTab, switchTab, closeTab, patchTab, activeTab, tabById,
 
 let host = null;
 
+/**
+ * 0.32.5 P0：页面 window.open 的出口**必须由这里设置**。
+ *
+ * 为什么不能像 0.32.4 那样让上层写 `module.onWindowOpen = fn`：
+ *   · ESM 模块命名空间对象是**冻结**的 → 赋值抛 TypeError，被我自己的 try/catch 吞掉，静默无效
+ *   · 真正被 `wc.setWindowOpenHandler` 调用的是**内部 host 对象**的 `onWindowOpen`，
+ *     模块外根本拿不到那个对象
+ * 于是「页面里点课程卡片没任何反应」的完整真相是：调用点早在 0.32.0 就写好了，
+ * 但**两轮都没接上线**（0.32.5 的真人链路测试台 S15 实测才抓到）。
+ * 现在由一个显式 setter 负责，且已建好的宿主立刻生效。
+ */
+let windowOpenSink = null;
+export function setWindowOpenSink(fn) {
+  windowOpenSink = typeof fn === 'function' ? fn : null;
+  if (host) host.onWindowOpen = windowOpenSink;   // 已有宿主立刻生效（窗口重建后 ensureHost 会再挂）
+}
+
 const nowId = () => `bt-${Math.random().toString(36).slice(2, 9)}`;
 
 /**
@@ -35,7 +52,7 @@ export function ensureHost(mainWin) {
     state: emptyState(),
     rect: null,          // 渲染层报上来的内容区（DIP，相对主窗口内容区左上角）
     visible: false,      // 右栏当前是否真的在显示这个浏览器
-    onWindowOpen: null,  // (url) => void：window.open 转新标签的出口
+    onWindowOpen: windowOpenSink,  // (url, fromId) => void：window.open 转新标签的出口（见 setWindowOpenSink）
     seq: 0
   };
   const win = mainWin;
@@ -141,7 +158,7 @@ export async function newTab({ url = '', partition, openerId = null, background 
   const wc = view.webContents;
   // showing：宿主自己记账「这个 view 当前是否真的被设为可见」。
   // WebContentsView 没有 getVisible()，而 bounds 在隐藏后仍然非零，所以只能自己记。
-  const entry = { id, view, wc, url: '', title: '', showing: false };
+  const entry = { id, view, wc, url: '', title: '', showing: false, zoom: null };
   host.views.set(id, entry);
   try { host.win.contentView.addChildView(view); } catch { /* 窗口已关 */ }
   view.setVisible(false); // 先藏，等 rect + 可见性都确定后再显示（避免错位闪现）
@@ -278,6 +295,11 @@ export function zoomForWidth(railWidth, designWidth = DESIGN_WIDTH) {
 /** 把缩放应用到某个 view（不可用时静默跳过，绝不因此中断导航）。 */
 function applyZoom(entry, railWidth) {
   const z = zoomForWidth(railWidth);
+  // 0.32.5 P0（卡顿第二源）：setZoomFactor 会让页面重新排版/重绘，是重活。
+  // 拖动右栏时 rect 每帧都变，以前每次都无条件重设 zoom（即便算出来的值一模一样），
+  // 等于每帧让整个网页 relayout 一次——那正是"一开浏览器就巨卡"的一半原因。
+  // 现在只有值真变了才下发（拖动到同档位时零成本）。
+  if (entry.zoom === z) return z;
   try { entry.wc.setZoomFactor?.(z); } catch { /* 老版本/已销毁 */ }
   entry.zoom = z;
   return z;
@@ -295,8 +317,23 @@ export function contentsOf(id = null) {
 
 export function activeContents() { return contentsOf(null); }
 
-/** AI 要操作时把对应标签摆到可见位置（右栏没展开时也强制可见——否则又是"看不到"）。 */
-export function revealTab(id = null, rect = null) {
+/**
+ * 把一个标签摆到可见位置。
+ *
+ * ⚠️ 0.32.5 P1（reviewer 指出的新冲突，真人链路 S16 实测复现）：
+ * 旧语义是「无条件 host.visible = true」——AI 一动手就把原生层拽到最前面。
+ * 这与 0.32.5 的「右栏防抢焦点」（ensureBrowserRailTab 不抢 activeKey）叠加后，
+ * 会出现**UI 停在产物 tab、原生层却盖在它上面**：用户点了 PNG，画面却是网页，
+ * 表现与"点不了图片"一模一样。
+ *
+ * 现在的语义（谁说话谁负责）：
+ *   · 页面自己弹窗 / AI 开页 → 由调用方通过 pageAttention 让 UI **切到浏览器 tab**，
+ *     或由 UI 显式调 setVisible(true)。revealTab 不再自作主张改可见性。
+ *   · 只有调用方明确要求（force:true，例如用户主动在地址栏输网址）才强制显示。
+ * 这样原生层的可见性始终由「UI 当前是否停在浏览器 tab」这一个判据决定（见 App.jsx
+ * 的 railBrowserShowing 兜底），不会出现两套判据打架。
+ */
+export function revealTab(id = null, rect = null, { force = false } = {}) {
   if (!host) return { ok: false, error: '宿主未就绪' };
   if (rect) {
     const r = normalizeRect(rect);
@@ -305,7 +342,7 @@ export function revealTab(id = null, rect = null) {
   const targetId = id == null ? host.state.activeId : String(id);
   if (!targetId) return { ok: false, error: '没有可用标签' };
   host.state = switchTab(host.state, targetId).state;
-  host.visible = true;
+  if (force) host.visible = true;
   applyAllBounds();
   return { ok: true, activeId: host.state.activeId, rect: host.rect };
 }
@@ -347,6 +384,10 @@ function clampToWindow(rect) {
 function applyEntryBounds(entry) {
   if (!host || !entry || !host.rect || host.win?.isDestroyed?.()) return;
   const r = clampToWindow(host.rect);
+  // 0.32.5：同样的 rect 不重复 setBounds（拖动/轮询会高频调用它，重复设置要付重排代价）
+  const key = `${r.x},${r.y},${r.width},${r.height}`;
+  if (entry.boundsKey === key) return;
+  entry.boundsKey = key;
   try {
     entry.view.setBounds({ x: r.x, y: r.y, width: r.width, height: r.height });
   } catch { /* 已销毁 */ }
@@ -365,10 +406,10 @@ function applyAllBounds() {
       if (shouldShow) {
         applyEntryBounds(entry);
         // 0.32.4：宽度一变就重算缩放，保证网页横向完整显示（不是把它切掉）
+        // 0.32.5：applyZoom 内部已做幂等（值没变不下发）
         if (host.rect?.width) applyZoom(entry, host.rect.width);
-        entry.view.setVisible(true);
-        entry.showing = true;
-      } else {
+        if (!entry.showing) { entry.view.setVisible(true); entry.showing = true; }
+      } else if (entry.showing) {          // 已经藏着就不再重复隐藏（幂等）
         entry.view.setVisible(false);
         entry.showing = false;
       }

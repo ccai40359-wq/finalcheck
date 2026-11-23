@@ -131,6 +131,17 @@ export function registerAgentIpc({
       // 0.32.0：把右栏内嵌宿主的提供者交给 browser-use（`viewHostProvider` 定义在下方，
       // 回调是延迟调用所以能拿到；它返回 null 时 browser-use 走旧隐藏窗口路径）。
       try { bu.setViewHostProvider?.(() => viewHostProvider()); } catch { /* 旧模块没有该入口 */ }
+      // 0.32.5 P0：页面自己 window.open（课程卡/搜索结果/登录跳转）→ 开新标签 + 让右栏亮起来。
+      // 以前这个出口是空的：browser-view-host 里 `host.onWindowOpen?.()` 从未被赋值过，
+      // 所以页面里 window.open 一律静默失败——用户实机「点课程没反应」就是这个。
+      try {
+        bu.setPageAttentionNotifier?.((p) => {
+          try {
+            const w = getWin();
+            if (w && !w.isDestroyed()) w.webContents.send('finalcheck:browser-rail-open', p);
+          } catch { /* 窗口没了不影响浏览 */ }
+        });
+      } catch { /* 旧模块没有该入口 */ }
       return { computerUse: cu, browserUse: bu };
     } catch { return null; }
   })();

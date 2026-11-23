@@ -10,7 +10,7 @@ import { filterAskCardsByTrace, hideAskTracesForCards } from './lib/ask-cards.mj
 import { applyAgentEvent, mergeTraceIntoEvents } from './lib/process-events.mjs';
 import { RightRail } from './chat/RightRail.jsx';
 // 0.32.0 右栏多标签归约（产物 / 内嵌浏览器 / 子代理并存）
-import { emptyRail, openRailTab, activateRailTab, closeRailTab, pruneForSession, shouldShowRail, activeRailTab, railForSession, snapshotRail } from './lib/rail-tabs.mjs';
+import { emptyRail, openRailTab, activateRailTab, closeRailTab, pruneForSession, shouldShowRail, activeRailTab, railForSession, snapshotRail, setBrowserTabTitle, ensureBrowserRailTab } from './lib/rail-tabs.mjs';
 import { shouldShowStepPanel } from './lib/panel-visibility.mjs';
 import { buildSendHistory } from './lib/interrupted-digest.mjs';
 // 双语：t() 在英文模式查词典、中文模式原样返回；useLanguage() 只负责切换语言时触发重渲染
@@ -127,6 +127,10 @@ const unwrapIpc = (r) => {
   return r;
 };
 
+// 0.32.5 排障开关：记录右栏每次更新的前后 activeKey（生产恒关，零开销）。
+// 开关由**测试台自己**在页面脚本里置位（window.__fcRailTrailOn = true）——
+// 不依赖 preload/env：S16 抓的是点击后 3-5ms 的翻转，任何「启动后异步初始化」都来不及。
+
 export default function App() {
   const y = api(); // window.finalcheck（浏览器直开时为空 → 仅壳）
   useLanguage(); // 订阅语言状态：设置页切换语言后整棵界面重渲染（t() 读的是最新语言）
@@ -241,6 +245,25 @@ export default function App() {
   const [stepView, setStepView] = useState(null); // 右侧子代理上下文面板：{sessionId, stepId, name, role}
   // 0.32.0：右栏多标签（产物 / 内嵌浏览器 / 子代理并存）。归约逻辑在 lib/rail-tabs.mjs。
   const [rail, setRail] = useState(() => emptyRail());
+  // 0.32.5 排障：右栏 activeKey 被抢是「3ms 切过去、5ms 被抢回」的毫秒级翻转，
+  // 光看最终态判断不出是谁干的。自检环境记录每次 updater 的前后 activeKey（生产恒空）。
+  const railTrailRef = useRef([]);
+  // 0.32.5：右栏更新的排障包装（仅自检环境记录）。用法：setRailW('label', cur => next)
+  const setRailW = (label, updater) => setRail((cur) => {
+    const next = updater(cur);
+    try {
+      if (window.__fcRailTrailOn) {
+        railTrailRef.current.push({
+          t: Date.now(), label,
+          from: cur?.activeKey || null, to: next?.activeKey || null,
+          same: next === cur, kinds: (next?.tabs || []).map((x) => x.kind)
+        });
+        if (railTrailRef.current.length > 200) railTrailRef.current.shift();
+        window.__fcRailTrail = railTrailRef.current;
+      }
+    } catch { /* 排障失败不能影响右栏 */ }
+    return next;
+  });
   // 0.32.4 P0（用户两次强调「我切了会话右边栏还是保留，以后不要再犯」）：
   // **右栏按会话隔离**。切走时把当前会话的右栏存起来并清空，切回时恢复。
   // 这与 artifactBySessionRef 是同一套思路（那里存的是产物路径）。
@@ -966,7 +989,7 @@ export default function App() {
       // 以前页面画在从不显示的隐藏窗口上，用户只看到白框，还被告知去扫一个看不见的二维码。
       if (ev.kind === 'browser-rail-open') {
         if (!sid || activeIdRef.current !== sid) return; // 后台会话不抢当前右栏
-        setRail((cur) => openRailTab(cur, { kind: 'browser', payload: { tabId: ev.tabId || null, pageTitle: '' } }).rail);
+        setRailW('agent-browser-open', (cur) => ensureBrowserRailTab(cur, { tabId: ev.tabId || null }));
         return;
       }
       // 上下文压缩：只更新「当前会话」的活动行状态，不并进过程时间线（它不是一个工具步骤）
@@ -1101,7 +1124,7 @@ export default function App() {
   useEffect(() => {
     if (!y?.onBrowserRailOpen) return undefined;
     return y.onBrowserRailOpen((p) => {
-      setRail((cur) => openRailTab(cur, { kind: 'browser', payload: { tabId: p?.tabId || null, pageTitle: '' } }).rail);
+      setRailW('ipc-browser-open', (cur) => ensureBrowserRailTab(cur, { tabId: p?.tabId || null }));
     });
   }, [y]);
 
@@ -1204,7 +1227,7 @@ export default function App() {
   const openArtifact = async (p, { forSession } = {}) => {
     if (!y?.artifactRead || !p) return;
     // 0.32.0：产物打开 = 在右栏开一个 tab（同一个文件重复点只切过去，不堆重复 tab）
-    setRail((cur) => openRailTab(cur, { kind: 'artifact', artifactPath: p, title: baseName(p), payload: { path: p } }).rail);
+    setRailW('open-artifact', (cur) => openRailTab(cur, { kind: 'artifact', artifactPath: p, title: baseName(p), payload: { path: p } }).rail);
     const sid = forSession !== undefined ? forSession : activeIdRef.current;
     if (sid) artifactBySessionRef.current.set(sid, p);
     setArtifactLoading(true);
@@ -1231,7 +1254,7 @@ export default function App() {
     if (activeIdRef.current) artifactBySessionRef.current.delete(activeIdRef.current);
     setArtifact(null); setArtifactError(''); setArtifactLoading(false);
     // 关掉右栏里所有产物 tab（浏览器/子代理 tab 不受影响）
-    setRail((cur) => {
+    setRailW('close-artifact', (cur) => {
       let next = cur;
       for (const t of cur.tabs.filter((x) => x.kind === 'artifact')) next = closeRailTab(next, t.key).rail;
       return next;
@@ -1945,15 +1968,14 @@ export default function App() {
           artifactError={artifactError}
           artifactHandlers={{ onReload: openArtifact, onOpen: (p) => y?.artifactOpen?.(p) }}
           subagentTarget={subagentTargetForRail}
-          onActivate={(key, patch) => {
-            setRail((cur) => {
+          onActivate={(key) => {
+            // 0.32.5 P0：这里以前还兼着「回填浏览器页面标题」的职责（第二参数 patch.pageTitle）。
+            // 那是死循环的一半燃料（见 RightRail / BrowserPane 的注释）：它会 setRail → App 全树
+            // 重渲染 → BrowserPane 拿到新内联回调 → 轮询 effect 重跑 → 再 setRail…… 无限自转。
+            // 现在标题回填搬到纯函数 setBrowserTabTitle（没变就返回同一引用、永不改 activeKey）。
+            setRailW('activate-tab', (cur) => {
               const next = activateRailTab(cur, key);
-              if (!next.ok) return cur;
-              // 浏览器 tab 的页面标题回填（让 tab 条显示当前是哪一页）
-              if (patch?.pageTitle) {
-                return { ...next.rail, tabs: next.rail.tabs.map((x) => (x.key === key ? { ...x, payload: { ...x.payload, pageTitle: patch.pageTitle } } : x)) };
-              }
-              return next.rail;
+              return next.ok ? next.rail : cur;
             });
             // 0.32.4 P0（用户实测「浏览器开着的时候，我点旁边的 png 是没反应的」）：
             // 切到产物 tab 时必须**按该 tab 自己的路径重新读**——以前只切了 tab 状态，
@@ -1963,8 +1985,10 @@ export default function App() {
               if (p && (!artifact || artifact.path !== p)) void openArtifact(p);
             }
           }}
+          // 0.32.5：浏览器 tab 显示当前网页标题——纯更新，不改 activeKey，不变时零重渲染
+          onPatchBrowserTitle={(title) => setRailW('patch-title', (cur) => setBrowserTabTitle(cur, title))}
           onCloseTab={(key) => {
-            setRail((cur) => {
+            setRailW('close-tab', (cur) => {
               const r = closeRailTab(cur, key);
               if (!r.ok) return cur;
               // 关掉产物 tab 时同步清掉预览状态（避免切回聊天又弹出来）
