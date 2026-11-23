@@ -6,6 +6,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.32.6] - 2026-11-23
+
+This release merges a second, independently developed optimization line for the same problems. Both branches solved the issues you reported; the merge keeps the best of each.
+
+### Added
+
+- **Every session gets its own browser.** Previously all sessions shared one browser process, so session A's login state and pages leaked into session B. Now each session has its own browser with its own tabs and its own login state — switching to a session shows only that session's pages. Verified: switching away hides the native view immediately and the other session opens its own pages; switching back restores that session's pages and images.
+- **Closing a page tab really destroys it**, not just hides the picture. Previously a closed tab still held memory and background timers; now its page process actually ends (verified: the WebContents is destroyed). Closing the whole rail does the same for that session's browser view, and reopening starts with only new tabs.
+
+### Fixed
+
+- **Dragging the rail width no longer forces the page to re-layout repeatedly.** The last release only covered zoom; this one also covers position and visibility: the same position reported ten times is only applied once, and zoom is untouched unless the width crosses a step.
+- **Opening a new page no longer drags you off an image tab.** Previously the "typed a URL / AI navigated" notification unconditionally switched the rail to the browser tab — so while you were looking at an image you got yanked away, which looked like the image bug again. Now it only switches when the rail has no browser yet; otherwise it updates the title and leaves your selected tab alone. Verified: triggering a URL open while parked on an image causes zero tab switches and the page view also steps aside.
+
+### Improved
+
+- The rail's state sync is now **event-driven**: the UI is told only when the browser state actually changed, instead of being polled on a fixed cadence. The browser view also skips pushing when it receives an identical state, so nothing extra happens while idle.
+
 ## [0.32.5] - 2026-11-23
 
 ### Fixed
