@@ -18,8 +18,11 @@ import { fileURLToPath } from 'node:url';
 import {
   DEFAULT_CDP_PORT, connectReal, disconnectReal, closeRealEdgeAndReset, realIsConnected,
   navigateReal, snapshotReal, clickReal, typeIntoReal, evaluateReal, screenshotReal,
-  consoleMessagesReal, isCdpUp, probeLoginState, judgeLoginState
+  consoleMessagesReal, isCdpUp, probeLoginState, judgeLoginState,
+  // 0.31.1：CU 混用闸的依据——浏览器主进程 pid + 纯函数判定
+  browserProcessId, realInfo
 } from '../desktop/src/main/browser-real.mjs';
+import { realEdgeRedirect } from '../desktop/src/main/browser-choice.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const evidence = path.join(root, '.tmp', 'browser-real-acceptance');
@@ -165,6 +168,15 @@ async function main() {
       `tree=${(homeAfter.snapshot?.tree || '').slice(0, 120).replace(/\n/g, ' | ')}`);
     const finalShot = await screenshotReal();
     if (finalShot.ok) await writeFile(path.join(evidence, 'real-edge-reconnected.png'), finalShot.buf);
+
+    // ---- 8b. CU 混用闸（0.31.1）：必须认得出「这套隔离 Edge 的 pid」 -■---
+    // 这是混用闸的唯一依据：拿到 pid 才能判断「前台是不是我们自己启动的 Edge」。
+    const edgePid = await browserProcessId();
+    record('8b 能查到隔离 Edge 的浏览器主进程 pid（混用闸的依据）', Number(edgePid) > 0, `pid=${edgePid} info=${JSON.stringify(realInfo())}`);
+    const gate = realEdgeRedirect({ foreground: { process: 'msedge', pid: edgePid }, realPid: edgePid, realConnected: true });
+    record('8c 前台是这套 Edge 时 CU 被改路（computer_* 一律拒绝）', gate?.deniedBy === 'real-edge-redirect', gate?.error?.slice(0, 100) || '未拦截');
+    record('8d 别的 pid 不被误拦（用户日常 Edge 不受影响）',
+      realEdgeRedirect({ foreground: { process: 'msedge', pid: Number(edgePid) + 1 }, realPid: edgePid, realConnected: true }) === null, 'ok');
 
     // --close-edge 才真关浏览器
     if (process.argv.includes('--close-edge')) {

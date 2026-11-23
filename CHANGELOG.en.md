@@ -6,6 +6,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.31.1] - 2026-11-23
+
+### Improved
+
+- **You** choose the browser mode now, not the AI: for any task that opens a web page, the AI first asks you to pick one of **one-shot (private) / long-term / use my own Edge**, and each option states plainly whether it writes to disk and whether it touches your real account. Once you answer, the rest of that session follows it without re-asking; if you already said which mode you want in the conversation, or Settings already has a choice, it will not ask at all. Measured before this change: you only said "open the browser, I want to sign in to my Xiaohongshu", and the AI picked the real Edge on its own, then stole the foreground to bring that window forward — five wasted steps.
+- Connecting the real Edge now needs your go-ahead: if the AI wants to use your real signed-in session on its own initiative, it asks "connect your own Edge now?" first. If you decline it falls back to the offscreen browser and says plainly that sign-in-only content will not be visible — no silent switch to another route, no repeated nagging.
+- Once the real Edge is connected, the AI can only view and click through the browser itself (never stealing your foreground) and **can no longer call desktop automation to screenshot or move that Edge window**. Previously it requested desktop permission, took screenshots and switched the foreground just to focus that window — a detour that really did drive your mouse and keyboard. This block only covers the Edge that FinalCheck started; your everyday browser and other apps are unaffected.
+
 ## [0.31.0] - 2026-11-23
 
 ### Added

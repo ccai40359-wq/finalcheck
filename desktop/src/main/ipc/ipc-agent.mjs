@@ -982,6 +982,11 @@ export function registerAgentIpc({
         // 0.31.0 模式③：真 Edge（CDP 9224）。懒加载；不可用时工具返回明确错误
         getBrowserRealAsync: () => loadBrowserReal(),
         browserUserDataDir,
+        // 0.31.1：本会话已选过的浏览器模式（三选一卡片答过一次就记住，不再每轮弹）
+        browserChoice: {
+          get: () => state.browserChoices.get(String(sessionId ?? '')) || '',
+          set: (mode) => { state.browserChoices.set(String(sessionId ?? ''), String(mode || '')); }
+        },
         runWorkflow: async (args) => {
           const { runWorkflow } = await import(engineUrl('desktop/src/main/workflow.mjs'));
           // 运行中的工作流控制台：暂停/继续/停止、最大并发、子代理模型（UI 可改）

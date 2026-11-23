@@ -195,5 +195,7 @@ test('源码钉: browser_navigate 把策略透传给引擎（测试台缺省仍�
   assert.match(toolsSrc, /browserSessionPolicy = null/, 'createAgentTools 必须接受策略提供器');
   assert.match(toolsSrc, /onBrowserFirstUse = null/);
   assert.match(toolsSrc, /sessPolicy = await browserSessionPolicy\(\)/);
-  assert.match(toolsSrc, /\.\.\.\(sessPolicy \? \{ policy: sessPolicy \} : \{\}\)/, '策略按存在与否透传，缺省不改变旧调用形状');
+  // 0.31.1：用户选过的模式优先于设置页策略（wantPolicy 覆盖），两者都按存在与否透传
+  assert.match(toolsSrc, /\.\.\.\(wantPolicy \? \{ policy: wantPolicy \} : \{\}\)/, '策略按存在与否透传，缺省不改变旧调用形状');
+  assert.match(toolsSrc, /const wantPolicy = chosenMode/, '用户选的模式必须覆盖设置页默认');
 });

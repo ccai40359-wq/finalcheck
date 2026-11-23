@@ -45,6 +45,9 @@ export function createBackend({ ipcMain, getWin, getDataRoot, engineUrl, repoRoo
     workflowTranscripts: new Map(), // sessionId → { stepId: { name, role, ms, toolCount, messages } }（右侧子代理面板）
     sessionUsage: new Map(),      // sessionId → 最后一次请求的真实 usage（服务端口径，含工具输出）
     steerBuffers: new Map(),      // sessionId → 待注入当前回合的 Steer 文本（FIFO，每次模型请求前 drain）
+    // 0.31.1：sessionId → 用户在本会话里选过的浏览器模式（oneshot/persistent/real）。
+    // 存在每个会话里而不是一次回合里：同一任务里连续导航不该反复弹三选一卡片。
+    browserChoices: new Map(),
     hookSessionContext
   };
 

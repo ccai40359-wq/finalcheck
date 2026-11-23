@@ -21,6 +21,15 @@ import { createSandboxedRun, sandboxAvailability, sandboxCompatible } from './sa
 // 工作流兜底提示走双语词典（zh 原样返回，en 查表）
 import { t } from '../renderer/i18n/core.mjs';
 import { checkProbeBudget, checkScreenshotBudget, isProbeCommand, workflowBudgetFromEnv, WORKFLOW_BUDGET_INITIAL } from './cu-workflow-budget.mjs';
+// 0.31.1：浏览器三模式「先问用户」的纯逻辑（选项文案 / 回答解析 / 决策 / CU 重定向）
+import { decideBrowserChoice, buildChoicePrompt, parseBrowserChoice, parseRealConsent, buildRealConsentPrompt, choiceNote, realEdgeRedirect, NO_CHANNEL_REAL_DENY } from './browser-choice.mjs';
+// 用户选了模式后要按它重建窗口，所以这里也要用到 partition 纯函数（该模块不 import electron）
+import { resolvePartition } from './browser-session.mjs';
+
+/** 提问卡里给用户看的主机名（非法 URL 就退回截断原文，绝不把整条 URL 塞进问题里） */
+function safeHost(url) {
+  try { return new URL(String(url)).host || String(url).slice(0, 60); } catch { return String(url || '').slice(0, 60); }
+}
 
 const PREVIEW_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp', '.html', '.htm', '.pdf', '.mp4', '.m4v', '.webm', '.mov', '.ogv', '.pptx', '.ppt', '.pps', '.ppsx', '.odp', '.key', '.docx', '.doc', '.odt', '.rtf', '.txt', '.md', '.json', '.js', '.mjs', '.css', '.csv', '.log', '.xml', '.yml', '.yaml']);
 
@@ -530,8 +539,13 @@ export function collectInjectedScriptBodies(cmd, cwd = null) {
   return { files, bodies };
 }
 
-export function createAgentTools({ repoRoot, permissions, recordAudit = async () => {}, playbookRoot, runWorkflow = null, projectPath = null, policy = null, hooksConfig = null, hooksRunner = null, sessionId = null, cwd = null, signal = null, commandIdleMs = DEFAULT_COMMAND_IDLE_MS, askUser = null, todoWrite = null, spawnAgent = null, onActivity = null, requireAuditIntent = null, shellAppRoot = null, aclSandbox = undefined, userStatedTier = null, getDesktopToolsAsync = null, browserSessionPolicy = null, onBrowserFirstUse = null, getBrowserRealAsync = null, browserUserDataDir = null } = {}) {
+export function createAgentTools({ repoRoot, permissions, recordAudit = async () => {}, playbookRoot, runWorkflow = null, projectPath = null, policy = null, hooksConfig = null, hooksRunner = null, sessionId = null, cwd = null, signal = null, commandIdleMs = DEFAULT_COMMAND_IDLE_MS, askUser = null, todoWrite = null, spawnAgent = null, onActivity = null, requireAuditIntent = null, shellAppRoot = null, aclSandbox = undefined, userStatedTier = null, getDesktopToolsAsync = null, browserSessionPolicy = null, onBrowserFirstUse = null, getBrowserRealAsync = null, browserUserDataDir = null, browserChoice = null } = {}) {
   let askedThisTurn = false; // 本回合已经通过 ask_user 问过用户（验收前置闸据此放行）
+  // 0.31.1：本会话内用户已经选过的浏览器模式（主进程按 sessionId 存，跨回合有效）。
+  // createAgentTools 每个回合重建一次——把记忆放在这里会让「同一任务里连续导航」每轮都弹卡。
+  const choiceStore = browserChoice && typeof browserChoice === 'object'
+    ? browserChoice
+    : { get: () => '', set: () => {} };
   // 0.30.4 CU 工作流配额（引擎侧硬约束）：按一次 createAgentTools 实例（≈一个回合）计数。
   // 每秒 2 次全屏 / 2 次 region / 1 次窗口探测，超出直接拒绝并给替代动作——真机实证
   // 换模型后（flash 类）对长上下文里的软提示不敏感，一次任务曾拍 33 张图、21 次 run_command 查窗口。
@@ -1271,7 +1285,40 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
       return handler(engine, args, ctx);
     };
 
+    // 0.31.1 混用闸：真 Edge（CDP）已连上时，禁止再用 computer_* 去动那个浏览器窗口。
+    // 真机实测（2026-11-23）：模型为了给隔离 Edge 聚焦，调了 computer_request_access +
+    // computer_screenshot + CU focus，绕 5 步还把窗口抢到前台。CDP 本身能截图能点击且不抢前台。
+    // 判据＝前台窗口 pid 与 CDP 里的浏览器进程 id 一致（只拦我们自己那套隔离 Edge，不误伤别的应用）。
+    const blockedByRealEdge = async (label) => {
+      const real = await (async () => {
+        if (typeof getBrowserRealAsync !== 'function') return null;
+        try { return await getBrowserRealAsync(); } catch { return null; }
+      })();
+      if (!real?.realIsConnected?.()) return null;
+      let pid = 0;
+      try { pid = Number(real.realInfo?.()?.pid) || 0; } catch { pid = 0; }
+      let fg = null;
+      try { fg = await engineForegroundPid(); } catch { fg = null; }
+      if (!fg) return null;
+      const verdict = realEdgeRedirect({ foreground: fg, realPid: pid, realConnected: true });
+      if (!verdict) return null;
+      return { ...verdict, error: verdict.error.replace('{label}', String(label || '')) };
+    };
+    const engineForegroundPid = async () => {
+      let dt;
+      try { dt = await getDesktopToolsAsync(); } catch { return null; }
+      const cu = dt?.computerUse;
+      if (!cu?.foregroundContext) return null;
+      try {
+        const fg = await cu.foregroundContext();
+        return fg?.ok ? { pid: fg.pid, process: fg.process, hwnd: fg.hwnd, title: fg.title } : null;
+      } catch { return null; }
+    };
+
     const captureComputerScreenshot = async (computerUse, args) => {
+      // 0.31.1：真 Edge 已连接 → 不许用 CU 截图，redirect 到 browser_screenshot
+      const redirect = await blockedByRealEdge('computer_screenshot');
+      if (redirect) return redirect;
       // 0.30.4 工作流硬配额（引擎侧，不靠提示词）：真机实证改提示词后模型仍会先拍全屏、
       // 反复 region 逐字验尸。按「效率优先」原则在工具层拒绝浪费型用法，并给出替代动作。
       const kind = args?.region != null ? 'region' : (args?.target === 'window' ? 'window' : 'screen');
@@ -1324,6 +1371,10 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
     tools.computer_request_access = withDesktopTool('computerUse', async (computerUse, args, ctx) => {
       const apps = Array.isArray(args?.apps) ? args.apps.map((x) => String(x ?? '').trim()).filter(Boolean) : [];
       if (!apps.length) return { error: '缺少 apps：写下你要操作的应用名（进程名或窗口标题片段）' };
+      // 0.31.1：真 Edge（CDP）已连接时不走 CU 这条路——CDP 不需要前台授权，
+      // 拿 CU 去「授权浏览器」纯属绕路（真机实测模型就这么绕了 3 步）。
+      const redirect = await blockedByRealEdge('computer_request_access');
+      if (redirect) return redirect;
       const reason = String(args?.reason || '').trim();
       // 用已有的 ask_user 通道向用户确认（有 human-in-the-loop 就不另造一套 UI）
       if (typeof askUser === 'function') {
@@ -1345,6 +1396,9 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
     });
 
     tools.computer_action = withDesktopTool('computerUse', async (computerUse, args) => {
+      // 0.31.1：真 Edge 已连接 → 不许用 CU 点/输入那个浏览器（会抢前台、动用户键鼠）
+      const redirect = await blockedByRealEdge('computer_action');
+      if (redirect) return redirect;
       const { action: rawAction, screenshot_id: screenshotId, scale: _scale, observe, wait_for: waitFor, ...params } = args || {};
       const action = String(rawAction || '').trim();
       if (!action) return { error: '缺少 action' };
@@ -1396,6 +1450,9 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
       const { validateSequence, planSequence, summarizeSequenceResult } = await import('./cu-sequence.mjs');
       const bad = validateSequence(rawSteps);
       if (bad) return { error: bad, deniedBy: 'invalid-argument' };
+      // 0.31.1：真 Edge 已连接 → 序列同样不给走 CU（整段都在动那个浏览器窗口）
+      const redirect = await blockedByRealEdge('computer_sequence');
+      if (redirect) return redirect;
       const steps = rawSteps || [];
       const plan = planSequence(steps, { observeAfterEach: observeEach === true });
 
@@ -1470,40 +1527,113 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
     tools.browser_navigate = withDesktopTool('browserUse', async (browserUse, args) => {
       const url = String(args?.url || '').trim();
       if (!url) return { error: '缺少 url' };
-      // mode:'real' → 真 Edge（真 UA / 真登录态）；默认 local 走 FC 自己的离屏 Chromium。
-      if (String(args?.mode || '').toLowerCase() === 'real') {
-        const got = await realOrError();
-        if (got.error) return { error: got.error };
-        try {
-          if (!got.real.realIsConnected?.()) {
-            return { ok: false, error: '真 Edge 未连接，先调用 browser_connect_real' };
+      // 0.31.1：模式由**用户**选，不让模型自己拍板。用户真机实测：只说「打开浏览器，我要登录我的小红书」，
+      // 模型自己挑了真 Edge，还拿 computer_* 去聚焦/截图那个窗口，绕了 5 步。
+      // 现在第一次涉及浏览器时先 ask_user 三选一（一次性无痕 / 长期保留 / 接我自己的 Edge），
+      // 会话内答过一次就不再问；设置页选过（chosen=true）也直接按设置跑。
+      const explicit = String(args?.mode || '').toLowerCase();
+      const realMod = await loadBrowserReal();
+      const realAvailable = Boolean(realMod);
+      let sessionMode = '';
+      try { sessionMode = choiceStore.get?.() || ''; } catch { /* 记忆读失败按未选择 */ }
+      let sessPolicy = null;
+      if (typeof browserSessionPolicy === 'function') {
+        try { sessPolicy = await browserSessionPolicy(); } catch { sessPolicy = null; }
+      }
+      // 0.31.0 的「首次使用提示条」只在**不需要提问**的时候推：0.31.1 起首次使用已经用
+      // ask_user 三选一卡把「一次性/长期保留」问清楚了，再推一条提示条就是同一件事问两遍
+      // （用户会以为流程坏了）。没有提问通道（子代理/测试台）时仍保留提示条，那条 UI 提示是唯一出口。
+      const willAsk = typeof askUser === 'function' && !!sessPolicy && sessPolicy.chosen === false
+        && String(choiceStore.get?.() || '') === '';
+      if (!willAsk && sessPolicy && sessPolicy.chosen === false && typeof onBrowserFirstUse === 'function') {
+        try { onBrowserFirstUse(sessPolicy); } catch { /* 提示失败不影响导航 */ }
+      }
+      const decision = decideBrowserChoice({
+        explicitMode: explicit,
+        sessionMode,
+        configChosen: Boolean(sessPolicy?.chosen),
+        hasAskChannel: typeof askUser === 'function',
+        realAvailable
+      });
+      let chosenMode = decision.mode;
+      let askedNow = false;
+      if (decision.ask && typeof askUser === 'function') {
+        const card = buildChoicePrompt({ url, realAvailable });
+        const r = await askUser(card, {});
+        if (r?.error) return { ...r, note: '浏览器模式没问成（用户未回答或界面不可用）。没有擅自接真 Edge；本次按最保守的离屏无痕继续。' };
+        const parsed = parseBrowserChoice(r?.answer);
+        askedNow = true;
+        if (!parsed) {
+          return {
+            ok: false, deniedBy: 'browser-mode-unclear',
+            error: t('用户的回答没能识别成三种模式之一（原文：{answer}）。不要猜：再问一次，或按用户话里最明确的一个选项执行。', { answer: String(r?.answer || '').slice(0, 200) })
+          };
+        }
+        chosenMode = parsed;
+        try { choiceStore.set?.(parsed); } catch { /* 记忆写失败不影响本次导航 */ }
+      }
+
+      // 「接真 Edge」这一步额外要用户同意：连真 Edge 会用他的真实登录态，不是能默认开的东西。
+      // 但如果用户刚刚在**三选一卡片里亲手选了**「接我自己的 Edge」，那就是同意——别再弹第二张卡
+      // （真机教训：两张卡连着弹，用户会以为流程出问题）。
+      if (chosenMode === 'real') {
+        if (!realAvailable) return { error: '真 Edge 通道在当前环境不可用（需要 FinalCheck 桌面端）' };
+        if (!realMod.realIsConnected?.()) {
+          const got = await realOrError();
+          if (got.error) return { error: got.error };
+          const consentGiven = askedNow === true; // 三选一里选了 real
+          if (!consentGiven) {
+            if (typeof askUser !== 'function') {
+              // 没有提问通道（子代理/测试台）：不能默认碰用户的真实账号。
+              // 旧调用形状里的「先 browser_connect_real」提示保留，同时说明还有一道授权闸。
+              return { ok: false, deniedBy: 'real-edge-needs-consent', error: `真 Edge 未连接，先调用 browser_connect_real（该工具会先问用户是否同意接真 Edge）。${NO_CHANNEL_REAL_DENY}` };
+            }
+            const consent = await askUser(buildRealConsentPrompt({ purpose: safeHost(url) }), {});
+            if (consent?.error) return { ...consent, note: '没拿到用户对「接真 Edge」的答复，不擅自连接。' };
+            const agreed = parseRealConsent(consent?.answer);
+            if (agreed !== true) {
+              // 用户不愿接真 Edge：退回离屏（无痕/持久按设置），并把原因说清楚
+              const fallback = await runLocalNavigate();
+              return { ...fallback, note: `用户不同意接真 Edge（回答：${String(consent?.answer || '').slice(0, 120)}），已退回离屏浏览器。需要登录才有的内容可能看不到。` };
+            }
           }
-          return await got.real.navigateReal(url, {
-            waitMs: Number(args?.wait_ms) || 0,
-            observe: args?.observe !== false
-          });
+          try {
+            const userDataDir = typeof browserUserDataDir === 'function' ? await browserUserDataDir() : '';
+            const conn = await realMod.connectReal({ userDataDir, start: true });
+            const nav = await realMod.navigateReal(url, { waitMs: Number(args?.wait_ms) || 0, observe: args?.observe !== false });
+            return { ...nav, connect: conn, note: choiceNote('real', { asked: true, realStarted: conn?.started === true }) };
+          } catch (e) {
+            return { ok: false, error: String((e && e.message) || e) };
+          }
+        }
+        try {
+          const nav = await realMod.navigateReal(url, { waitMs: Number(args?.wait_ms) || 0, observe: args?.observe !== false });
+          return { ...nav, note: choiceNote('real', { asked: askedNow }) };
         } catch (e) {
           return { ok: false, error: String((e && e.message) || e) };
         }
       }
-      // 0.31.0：会话策略（无痕 / 持久）由主进程按配置解析后注入；缺省（测试台）就是无痕。
-      // 首次使用时（chosen=false）先让 UI 弹一次选择，但不阻塞本次导航——默认永远是无痕。
-      // 变量名避开 createAgentTools 的参数 policy（那是项目策略，不是浏览器会话策略）
-      let sessPolicy = null;
-      if (typeof browserSessionPolicy === 'function') {
-        try { sessPolicy = await browserSessionPolicy(); } catch { sessPolicy = null; }
-        if (sessPolicy && sessPolicy.chosen === false && typeof onBrowserFirstUse === 'function') {
-          try { onBrowserFirstUse(sessPolicy); } catch { /* 提示失败不影响导航 */ }
-        }
+
+      async function runLocalNavigate() {
+        // 用户选了模式就按它跑（覆盖设置页的默认）；没选过就用主进程解析出的设置策略。
+        const wantPolicy = chosenMode
+          ? { mode: chosenMode, chosen: true, persistent: chosenMode === 'persistent', partition: resolvePartition(chosenMode === 'persistent') }
+          : sessPolicy;
+        const r = await browserUse.navigate(url, {
+          show: args?.show === true,
+          width: args?.width,
+          height: args?.height,
+          waitMs: Number(args?.wait_ms) || 0,
+          observe: args?.observe !== false,
+          ...(wantPolicy ? { policy: wantPolicy } : {})
+        });
+        const mode = wantPolicy?.mode || 'oneshot';
+        // 只有「用户刚刚答过卡」才加附注：设置页决定/测试台缺省这些情况返回值形状保持不变，
+        // 免得每多一个字段就把下游的 deepEqual 契约测试全打红（0.31.1 实测踩过）。
+        return { ...r, ...(r?.ok && askedNow ? { note: choiceNote(mode, { asked: true }) } : {}) };
       }
-      return browserUse.navigate(url, {
-        show: args?.show === true,
-        width: args?.width,
-        height: args?.height,
-        waitMs: Number(args?.wait_ms) || 0,
-        observe: args?.observe !== false,
-        ...(sessPolicy ? { policy: sessPolicy } : {})
-      });
+
+      return runLocalNavigate();
     });
 
     // 「ref 来自哪个模式」这件事不靠模型自觉：真 Edge 连接过就优先走真 Edge（ref 前缀 r），
@@ -1623,6 +1753,25 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
     tools.browser_connect_real = async (args) => {
       const real = await loadBrowserReal();
       if (!real) return { error: '真 Edge 通道在当前环境不可用（需要 FinalCheck 桌面端）' };
+      // 0.31.1：接真 Edge 会用到用户的真实登录态，必须先问一次（本会话同意过就不再问）。
+      // 没有提问通道（子代理/测试台）→ 明确拒绝，绝不因为「问不了」就默认连上。
+      const realAlready = Boolean(real.realIsConnected?.());
+      if (!realAlready) {
+        let sessionMode = '';
+        try { sessionMode = choiceStore.get?.() || ''; } catch { /* 按未选择 */ }
+        if (String(sessionMode).toLowerCase() !== 'real') {
+          if (typeof askUser !== 'function') {
+            return { ok: false, deniedBy: 'real-edge-needs-consent', error: NO_CHANNEL_REAL_DENY };
+          }
+          const purpose = Array.isArray(args?.platforms) ? args.platforms.map(String).filter(Boolean).slice(0, 3).join('、') : '';
+          const consent = await askUser(buildRealConsentPrompt({ purpose }), {});
+          if (consent?.error) return { ...consent, note: '没拿到用户对「接真 Edge」的答复，不擅自连接。' };
+          if (parseRealConsent(consent?.answer) !== true) {
+            return { ok: false, deniedBy: 'user-declined', note: `用户不同意接真 Edge（回答：${String(consent?.answer || '').slice(0, 120)}）。不要重试；改用离屏 browser_navigate，并如实说明登录态内容看不到。` };
+          }
+          try { choiceStore.set?.('real'); } catch { /* 记忆写失败不影响连接 */ }
+        }
+      }
       try {
         // PLATFORM_PLAYBOOKS 是「平台键 → 判据表」的对象，不是数组：
         // 过滤要按 hasOwnProperty 判，别用 includes（那是数组方法，永远 false，会把所有平台悄悄丢掉）

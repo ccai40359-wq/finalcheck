@@ -270,5 +270,27 @@ export const EN_CHAT = {
   // 浏览器首次使用提示条（App.jsx，0.31.0）
   '网页操作默认按「一次性（无痕）」运行（不写磁盘）。需要长期保留登录（重启 FC 后仍有效）可去设置切换。': 'Web automation runs one-shot (private) by default and never writes to disk. Switch in Settings if you want sign-in to survive a FinalCheck restart.',
   '去设置': 'Open settings',
-  '关闭提示': 'Dismiss'
+  '关闭提示': 'Dismiss',
+
+  // 浏览器三模式提问卡 + 工具附注（browser-choice.mjs，0.31.1）
+  // 模式必须由用户选：不许模型自己拍板（真机实测模型自己挑了真 Edge 并拿 CU 去聚焦它）
+  '接我自己的 Edge（真实登录态）': 'Use my own Edge (real sign-in)',
+  '不写磁盘，关掉浏览器就清空登录态；共享电脑、临时抓取用这一项': 'Never written to disk; sign-in is cleared when the browser closes. Use this on a shared computer or for one-off scraping.',
+  '登录态写进本机磁盘，重启 FinalCheck 后仍在；只在自己的电脑上用': 'Sign-in is written to this computer and survives a FinalCheck restart. Only use this on your own computer.',
+  '用你已登录的真实 Edge，能直接看到要登录才有的内容；会打开一个隔离的 Edge 窗口，不碰你日常浏览器': 'Use your real, already signed-in Edge so sign-in-only content is visible. It opens an isolated Edge window and leaves your everyday browser untouched.',
+  'AI 要打开网页 {host}，用哪种浏览器？': 'AI is about to open {host}. Which browser should it use?',
+  '（未提供网址）': '(no URL given)',
+  '要操作 {purpose} 需要真实登录态。现在接你自己的 Edge（隔离窗口，不碰你日常浏览器）吗？': 'Working with {purpose} needs a real signed-in session. Connect your own Edge now (isolated window, your everyday browser is untouched)?',
+  '这一步需要真实登录态。现在接你自己的 Edge（隔离窗口，不碰你日常浏览器）吗？': 'This step needs a real signed-in session. Connect your own Edge now (isolated window, your everyday browser is untouched)?',
+  '接我自己的 Edge': 'Use my own Edge',
+  '打开隔离 Edge 窗口，你在里面登录一次，之后我能读到登录后的内容': 'Opens an isolated Edge window; sign in there once and I can read the signed-in content afterwards',
+  '不用，走离屏浏览器': 'No, use the offscreen browser',
+  '用 FC 自己的浏览器，不碰你的账号；需要登录的内容会看不到': 'Use FinalCheck\'s own browser and leave your account alone; sign-in-only content will not be visible',
+  '本次在真 Edge（CDP）里操作：看页面用 browser_screenshot，点击/输入用 browser_click / browser_type，全程不需要抢前台。': 'This run operates in the real Edge (CDP): use browser_screenshot to view the page and browser_click / browser_type to click and type. Nothing here needs to steal the foreground.',
+  '已在隔离 Edge 里打开目标页，用户需要先在这个窗口里登录；登录完成后用 browser_login_state 复核。': 'The target page is open in the isolated Edge. The user needs to sign in inside that window first; afterwards use browser_login_state to confirm.',
+  '（模式由用户在提问卡里选择）': '(mode chosen by the user in the prompt card)',
+  '本次用离屏持久模式：Cookie 写入本机磁盘，重启 FinalCheck 后登录态仍在。清空入口在 设置 → 浏览器会话。': 'This run uses offscreen persistent mode: cookies are written to this computer, so sign-in survives a FinalCheck restart. Clear it from Settings → Browser session.',
+  '本次用离屏无痕模式：不写磁盘，关掉浏览器登录态即清空。': 'This run uses offscreen one-shot (private) mode: nothing is written to disk and sign-in is cleared when the browser closes.',
+  '当前前台窗口是 FinalCheck 自己启动的隔离 Edge——它已经通过 CDP 接上了，**不要用 computer_* 操作它**（会抢前台、动用户的键鼠）。看页面用 browser_screenshot，点击/输入用 browser_click / browser_type，找元素用 browser_snapshot；这些都不抢前台，也不需要 computer_request_access。需要登录时请用户在那个 Edge 窗口里扫码，不要代劳。': 'The foreground window is the isolated Edge that FinalCheck started, and it is already connected over CDP — do not use computer_* on it (that steals the foreground and drives the user\'s mouse and keyboard). Use browser_screenshot to view, browser_click / browser_type to click and type, and browser_snapshot to find elements; none of these take the foreground, and none need computer_request_access. When sign-in is needed, ask the user to scan in that Edge window — do not do it for them.',
+  '需要真实登录态时必须由用户选择「接我自己的 Edge」；当前会话没有提问通道，不能擅自连接真 Edge。改用离屏浏览器（mode 默认）完成能做的部分，或让用户在主会话里确认。': 'A real signed-in session requires the user to pick "Use my own Edge"; this session has no prompt channel, so the real Edge must not be connected unilaterally. Use the offscreen browser (default mode) for whatever can be done, or have the user confirm in the main session.'
 };

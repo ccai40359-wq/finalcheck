@@ -235,7 +235,9 @@ test('schema: 三个真 Edge 工具在 AGENT_TOOLS_SCHEMA 里，描述含关键�
     assert.ok(names.includes(n), `${n} 必须注册进 schema`);
   }
   const nav = AGENT_TOOLS_SCHEMA.find((t) => t.function.name === 'browser_navigate').function;
-  assert.deepEqual(nav.parameters.properties.mode.enum, ['local', 'real'], 'browser_navigate 增加 mode 枚举');
+  // 0.31.1：用户可以先在提问卡里选模式，模型也能在用户明说时直接传对应的 mode
+  assert.deepEqual(nav.parameters.properties.mode.enum, ['local', 'persistent', 'oneshot', 'real'], 'browser_navigate 的 mode 覆盖三模式');
+  assert.match(nav.description, /ask_user/, '描述里必须要求先问用户三选一，不许模型自己拍板');
   const connect = AGENT_TOOLS_SCHEMA.find((t) => t.function.name === 'browser_connect_real').function;
   assert.match(connect.description, /9224/, '必须写明端口');
   assert.match(connect.description, /不抢前台/, '必须写明不抢前台');

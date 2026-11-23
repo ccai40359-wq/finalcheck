@@ -296,8 +296,33 @@ export function realIsConnected() {
 }
 
 export function realInfo() {
-  if (!real) return { connected: false, port: DEFAULT_CDP_PORT, profile: '' };
-  return { connected: realIsConnected(), port: real.port, profile: real.profile, pages: real.ctx ? real.ctx.pages().length : 0 };
+  if (!real) return { connected: false, port: DEFAULT_CDP_PORT, profile: '', pid: 0 };
+  return {
+    connected: realIsConnected(), port: real.port, profile: real.profile,
+    pages: real.ctx ? real.ctx.pages().length : 0,
+    // 0.31.1：浏览器主进程 id。工具层用它判断「前台窗口是不是我们自己启动的隔离 Edge」——
+    // 是的话禁止用 computer_* 去操作它（CDP 不需要前台，用 CU 只会抢用户的键鼠）。
+    pid: Number(real.pid) || 0
+  };
+}
+
+/**
+ * 查 CDP 里的浏览器进程 id（用于 CU 混用闸）。失败返回 0（拦不住也不能误伤）。
+ * SystemInfo.getProcessInfo 的 processId 就是浏览器主进程 pid；某些版本只返回 browserProcessId，
+ * 两处都认，取不到就 0。
+ */
+export async function browserProcessId() {
+  if (!realIsConnected()) return 0;
+  try {
+    const session = await real.browser.newBrowserCDPSession();
+    const info = await session.send('SystemInfo.getProcessInfo');
+    await session.detach().catch(() => {});
+    const list = Array.isArray(info?.processInfo) ? info.processInfo : [];
+    const browserEntry = list.find((x) => x && (x.type === 'browser' || x.type === 'Browser'));
+    const pid = Number(browserEntry?.id ?? browserEntry?.processId ?? info?.browserProcessId) || 0;
+    if (pid) real.pid = pid;
+    return pid;
+  } catch { return Number(real.pid) || 0; }
 }
 
 /**
@@ -330,6 +355,9 @@ export async function connectReal({ port = DEFAULT_CDP_PORT, userDataDir = '', p
   };
   for (const page of conn.ctx.pages()) bind(page);
   conn.ctx.on('page', bind);
+  // 0.31.1：先把浏览器主进程 pid 查出来（CU 混用闸要用它判断前台窗口是不是这套隔离 Edge）。
+  // 查不到就给 0——拦不住也好过误判成「用户日常浏览器」而放开 CU 去操作。
+  await browserProcessId().catch(() => 0);
   return { ok: true, started, ...realInfo() };
 }
 
