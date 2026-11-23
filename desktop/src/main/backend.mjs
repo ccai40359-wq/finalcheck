@@ -110,7 +110,7 @@ export function createBackend({ ipcMain, getWin, getDataRoot, engineUrl, repoRoo
   async function registerCoreIpc() {
     registerSystemIpc({ ipcMain, getWin, engineUrl, store, getHooksConfig: () => hooksConfig, sessionProjectPathOf, sessionUsage: state.sessionUsage });
     registerSessionIpc({ ipcMain, state, sessionProjectPathOf, runSessionStart });
-    registerCompactIpc({ ipcMain, getWin, store, sessionProjectPathOf });
+    registerCompactIpc({ ipcMain, getWin, store, sessionProjectPathOf, sessionUsage: state.sessionUsage });
     await registerAgentIpc({
       ipcMain,
       getWin,

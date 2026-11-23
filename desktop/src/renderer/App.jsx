@@ -933,6 +933,16 @@ export default function App() {
         const next = reduceCompaction(compactionRef.current, ev);
         compactionRef.current = next;
         setCompaction(next);
+        // 0.31.2 P0：压缩改变了「下一轮真正要发的内容」，面板必须立刻重算。
+        // 此前只等 500ms 的消息防抖 / 5 分钟轮询，压缩完数字一动不动——
+        // 用户实测：压缩提示写 908451→16411，面板还停在旧值，看起来像压缩没生效。
+        if (ev.kind === 'compact-end' && !ev.cancelled && !ev.error) {
+          const msgs = messagesRef.current;
+          window.setTimeout(() => {
+            y?.contextStats?.({ messages: Array.isArray(msgs) ? msgs.filter((m) => !m.steer) : [], sessionId: sid })
+              .then(setCtxStats).catch(() => {});
+          }, 0);
+        }
         return;
       }
       // 主进程 notice（进程级异常兜底，sessionId 可能为 null）与回合 warning：

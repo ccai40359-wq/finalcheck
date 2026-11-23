@@ -6,6 +6,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.31.2] - 2026-11-23
+
+### Fixed
+
+- The context usage indicator above the input box now drops immediately after a compaction. Previously the compaction notice said "about 908451 tokens → 16411 tokens" while the panel did not move at all, looking like the compaction never took effect. Two causes: (1) the panel counted the **entire pre-compaction history**, whereas what actually gets sent after compaction is the handoff summary plus messages added afterwards; (2) the panel prefers the "measured usage of the last request", which compaction turns into stale history without invalidating it. Now a successful compaction invalidates the stale measurement, recomputes with the same compaction basis, and refreshes the panel at once (it used to wait for a refresh timer of up to 5 minutes).
+
 ## [0.31.1] - 2026-11-23
 
 ### Improved

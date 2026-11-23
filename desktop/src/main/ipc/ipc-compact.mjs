@@ -39,8 +39,19 @@ export function zoneFromSession(s) {
   return { zone, included, prevCut, lastAt };
 }
 
-export function registerCompactIpc({ ipcMain, getWin, store, sessionProjectPathOf = () => '' }) {
+export function registerCompactIpc({ ipcMain, getWin, store, sessionProjectPathOf = () => '', sessionUsage = null }) {
   const compactAborts = new Map(); // sessionId → AbortController（正在跑的手动压缩，供「停止」中断）
+  // 0.31.2 P0：压缩后必须作废「上一次请求的实测用量」。
+  // 实测（prompt_tokens）是压缩**之前**那一次请求的真实值，压缩把历史换成了摘要之后它已经毫无意义；
+  // 而 UI 面板优先显示实测值（`measured.prompt`），所以压缩完面板会一直停在旧的大数字上——
+  // 用户看到「压缩提示写 908451 → 16411，面板却纹丝不动」就是这么来的。
+  // 清掉之后面板回落到按估算算出的真实口径，下一次请求再补上新的实测值。
+  const invalidateMeasured = async (sessionId) => {
+    const key = String(sessionId ?? '');
+    if (!key) return;
+    try { sessionUsage?.delete?.(key); } catch { /* 内存表不可用 */ }
+    try { await sessions.setSessionUsage(key, null); } catch { /* 落盘失败不影响压缩结果 */ }
+  };
   const emitCompact = (sessionId, ev) => {
     try { getWin()?.webContents.send('finalcheck:agent-event', { sessionId, ev }); } catch { /* 窗口已关也继续压缩 */ }
   };
@@ -84,8 +95,10 @@ export function registerCompactIpc({ ipcMain, getWin, store, sessionProjectPathO
       if (r.via === 'local') throw new Error(r.error || t('模型没有返回摘要'));
       await sessions.saveSummary(sessionId, r.content, { cutAt });
       const after = estimateMessagesTokens([{ role: 'user', content: r.content }]);
+      // 压缩成功 → 旧实测值作废（否则面板一直显示压缩前的 prompt_tokens）
+      await invalidateMeasured(sessionId);
       await sessions.appendNotice(sessionId, t('上下文已压缩：约 {before} token → {after} token（交接摘要 + 用户原话 + 重新读取的文件）；后续请求带它 + 压缩之后新增的全部消息。', { before, after }), 'compact');
-      emitCompact(sessionId, { kind: 'compact-end', scope: 'manual', before, after });
+      emitCompact(sessionId, { kind: 'compact-end', scope: 'manual', before, after, invalidateMeasured: true });
       return { ok: true, summary: r.summary, before, after, transcriptFile: r.transcriptFile };
     } catch (e) {
       if (ctl.signal.aborted) {

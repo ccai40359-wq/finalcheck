@@ -3,6 +3,7 @@ import { recordProbe, recordStress } from '../dynamic-evidence.mjs';
 import * as sessions from '../sessions.mjs';
 import { runHookEvent } from '../hooks.mjs';
 import { resolveModel, effectiveWindow } from '../model-config.mjs';
+import { keepAfterCompactCut } from '../compact-cut.mjs';
 import { t } from '../../renderer/i18n/core.mjs';
 
 // 粗略 token 估算：CJK 1 字≈1 token，其他 4 字符≈1 token；图片按 1200 token/张
@@ -36,11 +37,24 @@ export function registerSystemIpc({ ipcMain, getWin, engineUrl, store, getHooksC
     const parts = await getSystemPromptParts();
     let messagesTokens = 0;
     let metaTokens = 0;
-    for (const m of payload.messages || []) {
+    // 0.31.2 P0：压缩之后面板必须跟着压缩口径走。此前这里直接累加前端传来的**全量**历史，
+    // 而 /compact 之后真正发给模型的是「摘要 + 边界之后的消息」——于是面板一直显示压缩前的巨大值
+    // （用户实测：压缩提示写着 908451→16411，面板却不动）。修法：用同一个 keepAfterCompactCut
+    // 裁到「实际会发出去的那部分」，摘要按注入后的文本计入。
+    const rawMessages = payload.messages || [];
+    let counted = rawMessages;
+    if (sess?.summary) {
+      const cutAt = Number(sess.summaryAt) || 0;
+      const { kept } = keepAfterCompactCut(rawMessages, sess.messages || [], cutAt);
+      counted = Array.isArray(kept) ? kept : rawMessages;
+      // 摘要本身也要算（0.27 起摘要是一条完整的 user 边界消息）
+      const summaryText = String(sess.summary);
+      metaTokens += estTokens(summaryText);
+    }
+    for (const m of counted) {
       if (m?.role === 'system') metaTokens += contentTokens(m);
       else messagesTokens += contentTokens(m);
     }
-    if (sess?.summary) metaTokens += estTokens('[此前对话摘要]\n' + sess.summary);
     const breakdown = {
       messages: messagesTokens,
       systemTools: estTokens(JSON.stringify(TOOLS_SCHEMA)),
@@ -53,7 +67,15 @@ export function registerSystemIpc({ ipcMain, getWin, engineUrl, store, getHooksC
     // 实测/缓存命中只认这个会话自己的记录；内存没有就回退到会话 JSON 持久化的 usage
     const isUsageRec = (u) => !!u && typeof u === 'object' && typeof u.prompt === 'number' && Number.isFinite(u.prompt);
     const memUsage = payload.sessionId ? sessionUsage.get(payload.sessionId) : null;
-    const measured = isUsageRec(memUsage) ? memUsage : (isUsageRec(sess?.usage) ? sess.usage : null);
+    let measured = isUsageRec(memUsage) ? memUsage : (isUsageRec(sess?.usage) ? sess.usage : null);
+    // 0.31.2 第三道防线：实测记录带 at（那是它被记下的时刻）。如果它在摘要之前，说明它是
+    // 压缩前的请求量——压缩之后这个数字已经没有意义，绝不能拿来显示（否则面板又变回旧大数）。
+    // 主进程那边压缩成功时会主动清掉（ipc-compact 的 invalidateMeasured），这里是不依赖那条路径的兜底。
+    if (measured && sess?.summary) {
+      const cutAt = Number(sess.summaryAt) || 0;
+      const at = Number(measured.at) || 0;
+      if (cutAt > 0 && at > 0 && at < cutAt) measured = null;
+    }
     return {
       window: windowTokens,
       used,
