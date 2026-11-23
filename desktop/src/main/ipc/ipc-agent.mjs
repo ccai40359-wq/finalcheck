@@ -134,6 +134,58 @@ export function registerAgentIpc({
   // 后台预热一次（不阻塞注册；失败也只是没有这两个工具）
   void loadDesktopTools();
 
+  // 真 Edge 通道（0.31.0）：browser-real.mjs 依赖 playwright-core（不是 Electron API），
+  // 所以纯 Node 测试台也能加载；没有 Electron 时工具层仍会因为没有 userData 目录而拒绝启动 Edge。
+  let browserRealPromise;
+  const loadBrowserReal = () => browserRealPromise ??= (async () => {
+    try {
+      return await import(engineUrl('desktop/src/main/browser-real.mjs'));
+    } catch { return null; }
+  })();
+  // 退出时断开 CDP（**不杀 Edge**）：人工启动的浏览器要留给用户下次用
+  process.once('exit', () => {
+    void loadBrowserReal().then((m) => { try { m?.disconnectReal?.(); } catch { /* 已退出 */ } }).catch(() => {});
+  });
+
+  // 0.31.0 浏览器会话策略：每次 browser_navigate 按当前配置解析（用户改完设置后下一次导航即生效）。
+  // 解析失败（配置读不到）→ 回落无痕：默认永远是「不写盘」的这一侧，不能因为一次读失败就把 cookie 落到磁盘。
+  const browserSessionPolicy = async () => {
+    const { sessionPolicyOf } = await import(engineUrl('desktop/src/main/browser-session.mjs'));
+    let cfg = null;
+    try { cfg = await store.loadConfig(); } catch { /* 配置读失败按未选择处理 */ }
+    return sessionPolicyOf(cfg);
+  };
+  // 真 Edge 的隔离 profile 放在 userData 下（app.getPath('userData') 就是 DATA_ROOT）
+  const browserUserDataDir = () => getDataRoot();
+  // 首次使用提示：只在「还没选过」时推一次给 UI（进程内只推一次；选过之后 chosen=true 自然不再触发）
+  let firstUseNotified = false;
+  const onBrowserFirstUse = async (policy) => {
+    if (firstUseNotified) return;
+    firstUseNotified = true;
+    try {
+      const w = getWin();
+      if (w && !w.isDestroyed()) w.webContents.send('finalcheck:browser-first-use', { policy });
+    } catch { /* 窗口不可用：不阻塞导航 */ }
+  };
+  // 设置页「清空浏览器数据」：只在真 Electron 下可用。
+  // 顺序是「关窗 → session.clearStorageData() → 尽力删目录」：Chromium 不退进程时目录会 EBUSY，
+  // 而真正让登录态消失的是 clearStorageData（实测重启后 cookie 0 条）。
+  ipcMain.handle('finalcheck:browser-clear-data', async () => {
+    const { clearBrowserData } = await import(engineUrl('desktop/src/main/browser-session.mjs'));
+    const { PARTITION_PERSISTENT } = await import(engineUrl('desktop/src/main/browser-session.mjs'));
+    const { rm } = await import('node:fs/promises');
+    const ses = (await import('electron')).session.fromPartition(PARTITION_PERSISTENT);
+    const dt = await loadDesktopTools().catch(() => null);
+    return clearBrowserData({ userDataDir: getDataRoot(), browserUse: dt?.browserUse || null, rm, session: ses });
+  });
+  // UI 当前策略（持久模式下界面上要有可见标识，让用户随时知道正在记住登录）
+  ipcMain.handle('finalcheck:browser-session-info', async () => {
+    const policy = await browserSessionPolicy();
+    let open = false;
+    try { open = (await loadDesktopTools())?.browserUse?.isOpen?.() === true; } catch { /* 无 Electron */ }
+    return { ...policy, open };
+  });
+
   ipcMain.handle('finalcheck:agent-steer', (_e, sessionId = null, text = '') => {
     const steerText = String(text ?? '').trim();
     if (!steerText) return { error: t('Steer 内容为空') };
@@ -924,6 +976,12 @@ export function registerAgentIpc({
         // 桌面操作 + 浏览器操作（2026-11-21）：只给主 agent。懒加载，未就绪时返回 null，
         // 工具表里就不出现这两个工具（纯 Node / 测试台里本来也用不了）。
         getDesktopToolsAsync: () => loadDesktopTools(),
+        // 0.31.0：浏览器会话策略（无痕/持久）与首次使用提示，按当前配置每次导航解析
+        browserSessionPolicy,
+        onBrowserFirstUse,
+        // 0.31.0 模式③：真 Edge（CDP 9224）。懒加载；不可用时工具返回明确错误
+        getBrowserRealAsync: () => loadBrowserReal(),
+        browserUserDataDir,
         runWorkflow: async (args) => {
           const { runWorkflow } = await import(engineUrl('desktop/src/main/workflow.mjs'));
           // 运行中的工作流控制台：暂停/继续/停止、最大并发、子代理模型（UI 可改）

@@ -530,7 +530,7 @@ export function collectInjectedScriptBodies(cmd, cwd = null) {
   return { files, bodies };
 }
 
-export function createAgentTools({ repoRoot, permissions, recordAudit = async () => {}, playbookRoot, runWorkflow = null, projectPath = null, policy = null, hooksConfig = null, hooksRunner = null, sessionId = null, cwd = null, signal = null, commandIdleMs = DEFAULT_COMMAND_IDLE_MS, askUser = null, todoWrite = null, spawnAgent = null, onActivity = null, requireAuditIntent = null, shellAppRoot = null, aclSandbox = undefined, userStatedTier = null, getDesktopToolsAsync = null } = {}) {
+export function createAgentTools({ repoRoot, permissions, recordAudit = async () => {}, playbookRoot, runWorkflow = null, projectPath = null, policy = null, hooksConfig = null, hooksRunner = null, sessionId = null, cwd = null, signal = null, commandIdleMs = DEFAULT_COMMAND_IDLE_MS, askUser = null, todoWrite = null, spawnAgent = null, onActivity = null, requireAuditIntent = null, shellAppRoot = null, aclSandbox = undefined, userStatedTier = null, getDesktopToolsAsync = null, browserSessionPolicy = null, onBrowserFirstUse = null, getBrowserRealAsync = null, browserUserDataDir = null } = {}) {
   let askedThisTurn = false; // 本回合已经通过 ask_user 问过用户（验收前置闸据此放行）
   // 0.30.4 CU 工作流配额（引擎侧硬约束）：按一次 createAgentTools 实例（≈一个回合）计数。
   // 每秒 2 次全屏 / 2 次 region / 1 次窗口探测，超出直接拒绝并给替代动作——真机实证
@@ -1453,60 +1453,222 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
       }
     });
 
+    // 真 Edge 引擎（0.31.0）：与离屏引擎同一套接口形状，按 mode 派发。
+    // 用独立的 loader：browser-real.mjs 依赖 playwright-core，纯 Node 测试台里也能加载，
+    // 但没有 Electron 时（sim 环境）仍然只返回 null，工具表照旧不出现。
+    let browserRealPromise;
+    const loadBrowserReal = () => browserRealPromise ??= (async () => {
+      if (typeof getBrowserRealAsync !== 'function') return null;
+      try { return await getBrowserRealAsync(); } catch { return null; }
+    })();
+    const realOrError = async () => {
+      const real = await loadBrowserReal();
+      if (!real) return { error: '真 Edge 通道在当前环境不可用（需要 FinalCheck 桌面端）' };
+      return { real };
+    };
+
     tools.browser_navigate = withDesktopTool('browserUse', async (browserUse, args) => {
       const url = String(args?.url || '').trim();
       if (!url) return { error: '缺少 url' };
+      // mode:'real' → 真 Edge（真 UA / 真登录态）；默认 local 走 FC 自己的离屏 Chromium。
+      if (String(args?.mode || '').toLowerCase() === 'real') {
+        const got = await realOrError();
+        if (got.error) return { error: got.error };
+        try {
+          if (!got.real.realIsConnected?.()) {
+            return { ok: false, error: '真 Edge 未连接，先调用 browser_connect_real' };
+          }
+          return await got.real.navigateReal(url, {
+            waitMs: Number(args?.wait_ms) || 0,
+            observe: args?.observe !== false
+          });
+        } catch (e) {
+          return { ok: false, error: String((e && e.message) || e) };
+        }
+      }
+      // 0.31.0：会话策略（无痕 / 持久）由主进程按配置解析后注入；缺省（测试台）就是无痕。
+      // 首次使用时（chosen=false）先让 UI 弹一次选择，但不阻塞本次导航——默认永远是无痕。
+      // 变量名避开 createAgentTools 的参数 policy（那是项目策略，不是浏览器会话策略）
+      let sessPolicy = null;
+      if (typeof browserSessionPolicy === 'function') {
+        try { sessPolicy = await browserSessionPolicy(); } catch { sessPolicy = null; }
+        if (sessPolicy && sessPolicy.chosen === false && typeof onBrowserFirstUse === 'function') {
+          try { onBrowserFirstUse(sessPolicy); } catch { /* 提示失败不影响导航 */ }
+        }
+      }
       return browserUse.navigate(url, {
         show: args?.show === true,
         width: args?.width,
         height: args?.height,
         waitMs: Number(args?.wait_ms) || 0,
-        observe: args?.observe !== false
+        observe: args?.observe !== false,
+        ...(sessPolicy ? { policy: sessPolicy } : {})
       });
     });
 
-    tools.browser_snapshot = withDesktopTool('browserUse', (browserUse, args) => browserUse.snapshot({
-      maxNodes: Number(args?.max_nodes) || 220,
-      includeText: args?.include_text !== false,
-      query: typeof args?.query === 'string' ? args.query : undefined
-    }));
+    // 「ref 来自哪个模式」这件事不靠模型自觉：真 Edge 连接过就优先走真 Edge（ref 前缀 r），
+    // 否则走离屏（ref 前缀 e）。两侧 ref 前缀不同，误用会被引擎明确拒绝，不会被静默当成本地 ref。
+    const realConnected = async () => {
+      const real = await loadBrowserReal();
+      try { return real?.realIsConnected?.() === true ? real : null; } catch { return null; }
+    };
+    const isRealRef = (ref) => /^r\d+$/.test(String(ref || ''));
 
-    tools.browser_click = withDesktopTool('browserUse', (browserUse, args) => {
+    tools.browser_snapshot = async (args) => {
+      // 真 Edge 已连接时，snapshot 观测的就是它（与上一次 navigate/click 的宿主一致）
+      const real = await realConnected();
+      if (real) {
+        try {
+          return await real.snapshotReal({
+            maxNodes: Number(args?.max_nodes) || 220,
+            includeText: args?.include_text !== false,
+            query: typeof args?.query === 'string' ? args.query : undefined
+          });
+        } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+      }
+      const local = withDesktopTool('browserUse', (browserUse, a) => browserUse.snapshot({
+        maxNodes: Number(a?.max_nodes) || 220,
+        includeText: a?.include_text !== false,
+        query: typeof a?.query === 'string' ? a.query : undefined
+      }));
+      return local(args, {});
+    };
+
+    tools.browser_click = async (args) => {
       const ref = String(args?.ref || '').trim();
       if (!ref) return { error: '缺少 ref（用最近一次页面结构中的引用）' };
-      return browserUse.click(ref, { observe: args?.observe === true });
-    });
+      if (isRealRef(ref)) {
+        const real = await realConnected();
+        if (!real) return { ok: false, error: '这个 ref 来自真 Edge，但连接已断开；重连后重新 browser_snapshot', };
+        try { return await real.clickReal(ref, { observe: args?.observe === true }); }
+        catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+      }
+      const local = withDesktopTool('browserUse', (browserUse, a) => browserUse.click(String(a?.ref || '').trim(), { observe: a?.observe === true }));
+      return local(args, {});
+    };
 
-    tools.browser_type = withDesktopTool('browserUse', async (browserUse, args) => {
+    tools.browser_type = async (args) => {
       const ref = String(args?.ref || '').trim();
       if (!ref) return { error: '缺少 ref' };
       if (typeof args?.text !== 'string') return { error: 'text 必须是字符串。若要清空字段，请明确传入空字符串。' };
-      const r = await browserUse.typeInto(ref, args.text);
-      return r.ok ? { ok: true, note: '已输入。提交表单前建议 browser_snapshot 确认填对了' } : r;
-    });
+      if (isRealRef(ref)) {
+        const real = await realConnected();
+        if (!real) return { ok: false, error: '这个 ref 来自真 Edge，但连接已断开；重连后重新 browser_snapshot' };
+        try { return await real.typeIntoReal(ref, args.text); }
+        catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+      }
+      const local = withDesktopTool('browserUse', async (browserUse, a) => {
+        const r = await browserUse.typeInto(String(a?.ref || '').trim(), a.text);
+        return r.ok ? { ok: true, note: '已输入。提交表单前建议 browser_snapshot 确认填对了' } : r;
+      });
+      return local(args, {});
+    };
 
-    tools.browser_evaluate = withDesktopTool('browserUse', (browserUse, args) => {
+    tools.browser_evaluate = async (args) => {
       const expr = String(args?.expression || '').trim();
       if (!expr) return { error: '缺少 expression' };
-      return browserUse.evaluate(expr);
-    });
+      const real = await realConnected();
+      if (real) {
+        try { return await real.evaluateReal(expr); }
+        catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+      }
+      const local = withDesktopTool('browserUse', (browserUse, a) => browserUse.evaluate(String(a?.expression || '').trim()));
+      return local(args, {});
+    };
 
-    tools.browser_console = withDesktopTool('browserUse', (browserUse) => browserUse.consoleMessages());
+    tools.browser_console = async () => {
+      const real = await realConnected();
+      if (real) {
+        try { return real.consoleMessagesReal(); }
+        catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+      }
+      const local = withDesktopTool('browserUse', (browserUse) => browserUse.consoleMessages());
+      return local({}, {});
+    };
 
-    tools.browser_screenshot = withDesktopTool('browserUse', async (browserUse) => {
-      const r = await browserUse.screenshot();
-      if (!r.ok) return r;
-      return {
-        ok: true, width: r.width, height: r.height,
-        note: '这是浏览器页面截图。判断结构对不对优先用 browser_snapshot。',
-        __images: [{ mime: r.mime, base64: r.buf.toString('base64'), label: '浏览器截图' }]
-      };
-    });
+    tools.browser_screenshot = async () => {
+      const real = await realConnected();
+      if (real) {
+        try {
+          const r = await real.screenshotReal();
+          if (!r.ok) return r;
+          return {
+            ok: true, width: r.width, height: r.height,
+            note: '这是真 Edge 的页面截图。（不抢前台；不影响用户窗口）',
+            __images: [{ mime: r.mime, base64: r.buf.toString('base64'), label: '真 Edge 截图' }]
+          };
+        } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+      }
+      const local = withDesktopTool('browserUse', async (browserUse) => {
+        const r = await browserUse.screenshot();
+        if (!r.ok) return r;
+        return {
+          ok: true, width: r.width, height: r.height,
+          note: '这是浏览器页面截图。判断结构对不对优先用 browser_snapshot。',
+          __images: [{ mime: r.mime, base64: r.buf.toString('base64'), label: '浏览器截图' }]
+        };
+      });
+      const r = await local({}, {});
+      // 离屏引擎不可用（纯 Node / 测试台）：如实报错，不要静默返回 undefined
+      return r || { error: '浏览器截图需要 FinalCheck 桌面端（当前环境没有离屏浏览器）' };
+    };
 
     tools.browser_close = withDesktopTool('browserUse', (browserUse) => {
       browserUse.close();
       return { ok: true, note: '浏览器已关闭' };
     });
+
+    // ---- 真 Edge（CDP 9224）：连接 / 登录态 / 断开 ----
+    // 红线：断开不杀 Edge（人工启动、用户登录过的浏览器要继续活着）。
+    tools.browser_connect_real = async (args) => {
+      const real = await loadBrowserReal();
+      if (!real) return { error: '真 Edge 通道在当前环境不可用（需要 FinalCheck 桌面端）' };
+      try {
+        // PLATFORM_PLAYBOOKS 是「平台键 → 判据表」的对象，不是数组：
+        // 过滤要按 hasOwnProperty 判，别用 includes（那是数组方法，永远 false，会把所有平台悄悄丢掉）
+        const books = real.PLATFORM_PLAYBOOKS || {};
+        const platforms = Array.isArray(args?.platforms)
+          ? args.platforms.map((p) => String(p).trim()).filter((p) => Object.prototype.hasOwnProperty.call(books, p)).slice(0, 6)
+          : [];
+        const urls = platforms.map((p) => books[p].home);
+        // profile 位置：主进程注入的 userData 目录（绝不碰用户日常 Edge / datacrawler 的 profile）
+        const userDataDir = typeof browserUserDataDir === 'function' ? await browserUserDataDir() : '';
+        const r = await real.connectReal({
+          userDataDir,
+          urls,
+          start: args?.start !== false
+        });
+        return {
+          ok: true, ...r,
+          note: r.started
+            ? '已启动隔离 Edge 并在前台打开（首次请在其中人工登录）；后续 CDP 操作不抢前台。'
+            : '已连接正在运行的隔离 Edge（未新开窗口）。'
+        };
+      } catch (e) {
+        return { ok: false, error: String((e && e.message) || e) };
+      }
+    };
+
+    tools.browser_login_state = async (args) => {
+      const real = await loadBrowserReal();
+      if (!real) return { error: '真 Edge 通道在当前环境不可用（需要 FinalCheck 桌面端）' };
+      const platform = String(args?.platform || '').trim();
+      if (!platform) return { error: '缺少 platform' };
+      try { return await real.probeLoginState({ platform }); }
+      catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+    };
+
+    tools.browser_disconnect_real = async (args) => {
+      const real = await loadBrowserReal();
+      if (!real) return { error: '真 Edge 通道在当前环境不可用（需要 FinalCheck 桌面端）' };
+      try {
+        return args?.close_browser === true
+          ? await real.closeRealEdgeAndReset()
+          : await real.disconnectReal();
+      } catch (e) {
+        return { ok: false, error: String((e && e.message) || e) };
+      }
+    };
   }
   // 回合中途提问：只有主 agent 的 createAgentTools 会传 askUser（子代理/工作流 gate 不传），
   // 工具表与 schema 两层都不给子代理，避免并行子代理同时弹多张卡。

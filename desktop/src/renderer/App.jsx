@@ -204,6 +204,8 @@ export default function App() {
   const [askCards, setAskCards] = useState([]); // 回合中途提问卡（实时）：[{callId,sessionId,question,options,multiSelect,status,...}]
   const askCardsRef = useRef([]); // 与 askCards 同步：回合收尾/停止回调里读最新值
   const [confirmBox, setConfirmBox] = useState(null); // 自定义确认框：{text, resolve}
+  const [browserFirstUseNote, setBrowserFirstUseNote] = useState(false); // 浏览器首次使用提示条（一次性）
+  const browserFirstUseShownRef = useRef(false);
   const [rowMenu, setRowMenu] = useState(null); // 会话右键菜单：{x,y,session,project}
   const [renameBox, setRenameBox] = useState(null); // {session,value}
   const [moveOpen, setMoveOpen] = useState(false);
@@ -1041,6 +1043,17 @@ export default function App() {
     });
   }, [y]);
 
+  // 浏览器首次使用（0.31.0）：模型第一次要打开网页时，主进程推一次「一次性 / 长期保留」的选择。
+  // 设计为轻量提示条（不是 modal、不打断回合）：那次导航已按无痕跑完，只是让用户知道还有持久选项。
+  useEffect(() => {
+    if (!y?.onBrowserFirstUse) return undefined;
+    return y.onBrowserFirstUse((p) => {
+      if (!p || browserFirstUseShownRef.current) return;
+      browserFirstUseShownRef.current = true;
+      setBrowserFirstUseNote(true);
+    });
+  }, [y]);
+
   // 回合中途提问：主进程推一张卡（不是 modal），本回合暂停等回答；卡状态按 callId 存。
   useEffect(() => {
     if (!y?.onAskUser) return undefined;
@@ -1752,6 +1765,15 @@ export default function App() {
             />
 
             {/* 草稿页运行横幅：New Session 只是清屏开草稿，后台回合没停、记录没丢——一键跳回 */}
+            {browserFirstUseNote && (
+              <div className="mx-4 mt-2 rounded-lg bg-sky-500/[0.08] border border-sky-500/30 px-3.5 py-2 flex items-start gap-2 text-[12px] shrink-0">
+                <span className="min-w-0 flex-1 text-ink/75 leading-relaxed">
+                  {t('网页操作默认按「一次性（无痕）」运行（不写磁盘）。需要长期保留登录（重启 FC 后仍有效）可去设置切换。')}
+                </span>
+                <button onClick={() => setPage('settings')} className="shrink-0 text-sky-300 hover:text-sky-200 underline">{t('去设置')}</button>
+                <button onClick={() => setBrowserFirstUseNote(false)} className="shrink-0 text-mute/60 hover:text-ink" aria-label={t('关闭提示')}>×</button>
+              </div>
+            )}
             {!activeId && draftRunners.length > 0 && (
               <div className="mx-4 mt-2 rounded-lg bg-goldSoft/[0.07] border border-goldSoft/25 px-3.5 py-2.5 flex items-center gap-2 text-[12px] shrink-0">
                 <span className="w-1.5 h-1.5 shrink-0 rounded-full bg-goldSoft animate-pulse" />

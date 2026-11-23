@@ -62,6 +62,10 @@ contextBridge.exposeInMainWorld('finalcheck', {
   confirmDir: (dir) => ipcRenderer.invoke('finalcheck:confirm-dir', dir),
   getConfig: () => ipcRenderer.invoke('finalcheck:get-config'),
   setConfig: (cfg) => ipcRenderer.invoke('finalcheck:set-config', cfg),
+  // 0.31.0 浏览器会话（无痕 / 持久）：清空持久数据 + 读当前策略 + 首次使用提示事件
+  browserClearData: () => ipcRenderer.invoke('finalcheck:browser-clear-data'),
+  browserSessionInfo: () => ipcRenderer.invoke('finalcheck:browser-session-info'),
+  onBrowserFirstUse: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('finalcheck:browser-first-use', h); return () => ipcRenderer.removeListener('finalcheck:browser-first-use', h); },
   testProvider: (p) => ipcRenderer.invoke('finalcheck:test-provider', p),
   // 自动更新（仅安装版生效；开发模式主进程返回友好错误）
   getVersion: () => ipcRenderer.invoke('finalcheck:update:version'),

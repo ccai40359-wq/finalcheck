@@ -6,6 +6,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.31.0] - 2026-11-23
+
+### Added
+
+- Three browser modes: (1) **offscreen incognito** (default, forgotten on close), (2) **offscreen persistent** (remembers logins, cookies on disk, red-bordered indicator plus one-click clear in Settings), and (3) **drive your real Edge** (real UA, real login state — for pages that need a signed-in session: scan the QR code once, then operate in the background without ever stealing your foreground). Settings gains a "Browser session" section; first use asks once whether to keep the session.
+- Real-Edge mode uses its own profile and port (never touching your daily Edge or the crawler tool's port); disconnecting **never closes the browser** — the window you signed into stays open.
+
+### Improved
+
+- Clearing browser data actually removes the login state: close the window, clear session data, then best-effort delete the directory (on Windows a still-busy file is reported honestly as "data cleared but directory remains" instead of pretending).
+
 ## [0.30.4] - 2026-11-22
 
 ### Improved

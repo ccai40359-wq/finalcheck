@@ -1,9 +1,17 @@
 // Browser automation uses FinalCheck's Chromium with an isolated browsing session.
+//
+// 0.31.0 三模式（2 个宿主 + 2 种存储策略，选择逻辑见 ./browser-session.mjs）：
+//   ① 离屏无痕（默认）：partition 'fc-browser-use'，session 在内存，关窗即丢
+//   ② 离屏持久：partition 'persist:fc-browser-use'，cookie 写进 userData/Partitions/，重开 FC 仍在
+//   ③ CDP 接真 Edge：browser-real.mjs（端口 9224），本模块不参与
+// partition 创建后不能改：resolvePartition 的结果与当前窗口不一致时必须先关窗再重建，
+// 否则同一进程里会同时存在两套 cookie（登录态看起来「一会儿有一会儿没有」）。
 import { BrowserWindow } from 'electron';
 import { randomBytes } from 'node:crypto';
 import { setImmediate, setTimeout } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 import path from 'node:path';
+import { resolvePartition, PARTITION_ONESHOT } from './browser-session.mjs';
 
 const WORLD_ID = 1742;
 const CONSOLE_LEVELS = ['verbose', 'info', 'warning', 'error'];
@@ -12,6 +20,8 @@ const NAVIGATING = '页面正在导航，完成后请调用 browser_snapshot 获
 const webRequestSessions = new WeakMap(); // session -> { pending: Set<requestId> }（fc-browser-use partition 专属）
 
 let active = null;
+// 当前策略（由 ensureWindow 按配置解析后写入）：只影响 ensureWindow 是否要重建窗口。
+let activePolicy = { mode: 'oneshot', chosen: false, persistent: false, partition: PARTITION_ONESHOT };
 
 function assertNavigableUrl(raw) {
   const url = String(raw || '').trim();
@@ -24,8 +34,22 @@ function assertNavigableUrl(raw) {
 // 0.29.2：settle 判定改用隔离世界里的 MutationObserver 计数 + resource 条目——
 // fetch/XHR 完成后的 DOM 更新必然使 mutations 增长，比 debugger 注入计数器可靠（实测 debugger
 // 在离屏 sandbox 窗口上 attach/sendCommand 超时）。详见 waitSettled。
-function ensureWindow({ width, height }) {
-  if (isOpen()) return active;
+//
+// 0.31.0：policy 由调用方按配置解析后传入（见 browser-session.mjs 的 sessionPolicyOf）。
+//
+// 窗口生命周期与 policy 的关系（关键）：
+//   - 窗口不存在 → 按 policy 建
+//   - 窗口存在且 partition 一致 → 复用（无痕/持久各自保持自己的 cookie）
+//   - 窗口存在但 partition 不一致 → 先 destroy 再建（BrowserWindow 的 partition 创建后不能改；
+//     不重建就会留下两套 cookie，用户看到「登录态时有时无」）
+function ensureWindow({ width, height }, policy = null) {
+  const want = policy && typeof policy === 'object' ? policy : activePolicy;
+  if (isOpen()) {
+    // 策略没变就复用现有窗口（含用户显式切换后再调 navigate 的情形）
+    if (want.partition === activePolicy.partition) return active;
+    close(); // 策略变了：先关掉旧窗口（renderer 进程连同它的 cookie 一起回收），下面按新策略重建
+  }
+  const partition = want.partition || resolvePartition(want.persistent === true);
   const window = new BrowserWindow({
     show: false,
     width,
@@ -36,10 +60,11 @@ function ensureWindow({ width, height }) {
       contextIsolation: true,
       nodeIntegration: false,
       backgroundThrottling: false,
-      partition: 'fc-browser-use'
+      partition
     }
   });
-  const state = { window, messages: [], request: 0, generation: 0, action: 0, navigating: false };
+  activePolicy = { ...want, partition };
+  const state = { window, messages: [], request: 0, generation: 0, action: 0, navigating: false, policy: { ...activePolicy } };
   const contents = window.webContents;
   // 0.29.2：在飞请求计数（session.webRequest，按请求 id 精确增减）——waitSettled 用它判断
   // 「页面自己发起的请求是否都回来了」。fetch/XHR 在飞时 DOM 一片平静，只有这个信号能看到它。
@@ -436,6 +461,13 @@ function runInPage(state, method, ...args) {
 
 export function isOpen() { return Boolean(active && !active.window.isDestroyed()); }
 
+// 当前窗口的策略（无痕 / 持久）。没窗口时返回最近一次解析出的策略，
+// 供 UI 在「接下来会用什么模式」这种场景显示标识。
+export function sessionInfo() {
+  if (isOpen() && active.policy) return { ...active.policy };
+  return { ...activePolicy };
+}
+
 export function close() {
   const state = active;
   active = null;
@@ -465,9 +497,9 @@ async function waitSettled(state, maxMs = 2000) {
   }
 }
 
-export async function navigate(url, { show = false, width = 1280, height = 900, waitMs = 0, observe = false } = {}) {
+export async function navigate(url, { show = false, width = 1280, height = 900, waitMs = 0, observe = false, policy = null } = {}) {
   const target = assertNavigableUrl(url);
-  const state = ensureWindow({ width, height });
+  const state = ensureWindow({ width, height }, policy);
   const { window } = state;
   const request = ++state.request;
   state.navigating = true;

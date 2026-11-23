@@ -220,5 +220,27 @@ export const EN_SETTINGS = {
   '已取消': 'Canceled',
   '已导出：{path}': 'Exported to {path}',
   '导出失败': 'Export failed',
-  '导出失败：{msg}': 'Export failed: {msg}'
+  '导出失败：{msg}': 'Export failed: {msg}',
+
+  // 浏览器会话（0.31.0）：无痕 / 持久 + 清空数据
+  '浏览器会话': 'Browser session',
+  'AI 操作网页时用哪种会话：一次性（无痕）不写盘；长期保留会记住登录。': 'Which session AI web automation uses: one-shot (private) is never written to disk; long-term keeps you signed in.',
+  'AI 操作网页时的会话模式：默认一次性（无痕），可切换为长期保留登录。': 'Session mode for AI web automation: one-shot (private) by default, switchable to long-term sign-in.',
+  '会话模式': 'Session mode',
+  '默认一次性（无痕）；切换后下一次导航生效': 'One-shot (private) by default; switching applies to the next navigation',
+  '一次性（无痕）': 'One-shot (private)',
+  '长期保留': 'Long-term',
+  '每次关闭浏览器就清空登录态与 Cookie，不写磁盘。共享电脑请选这一项。': 'Sign-in and cookies are cleared every time the browser closes and never written to disk. Choose this on a shared computer.',
+  '登录态与 Cookie 写进本机磁盘，重启 FinalCheck 后仍保留。只在自己的电脑上使用。': 'Sign-in and cookies are written to this computer, so they survive a FinalCheck restart. Only use this on your own computer.',
+  '尚未选择': 'not chosen yet',
+  '记住登录': 'Remembers sign-in',
+  '当前正在记住登录：Cookie 与会话写在本机磁盘（userData/Partitions/persist:fc-browser-use）。共享电脑请改回一次性并点「清空浏览器数据」。': 'Currently remembering sign-in: cookies and session are written to this computer (userData/Partitions/persist:fc-browser-use). On a shared computer, switch back to one-shot and press "Clear browser data".',
+  '当前为一次性（无痕）：会话保存在内存，关闭浏览器即清空，不写磁盘。': 'Currently one-shot (private): the session lives in memory, is cleared when the browser closes, and is never written to disk.',
+  '清空浏览器数据': 'Clear browser data',
+  '删除持久会话的 Cookie / 登录态': 'Delete cookies and sign-in of the persistent session',
+  '清空中…': 'Clearing…',
+  '已清空登录态并删除目录': 'Sign-in cleared and the directory removed',
+  '已清空登录态（浏览器进程仍占着目录，缓存文件稍后由系统清理）': 'Sign-in cleared (the browser process still holds the directory; leftover cache files are cleaned up by the system later)',
+  '清空失败': 'Clearing failed',
+  '只清 FinalCheck 自己的浏览器数据，不碰你日常用的 Edge 或其它程序。清空前会先关闭浏览器窗口，避免文件被占用删不干净。': 'Only FinalCheck\'s own browser data is removed; your everyday Edge and other programs are untouched. The browser window is closed first so files are not left behind by file locks.'
 };

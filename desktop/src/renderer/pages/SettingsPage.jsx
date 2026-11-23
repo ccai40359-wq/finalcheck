@@ -32,7 +32,13 @@ export const LANGUAGE_MODES = [
   { value: 'zh', label: '中文', desc: '界面文案用中文；AI 回复与报告跟随你的提问语言。' },
   { value: 'en', label: 'English', desc: '界面文案用英文；AI 回复与报告跟随你的提问语言。' }
 ];
-const SECTIONS = ['models', 'appearance', 'language', 'runtime', 'usage', 'about'];
+const SECTIONS = ['models', 'appearance', 'language', 'runtime', 'browser', 'usage', 'about'];
+// 浏览器会话模式（0.31.0）：默认（''）＝还没选过，按无痕运行；选过之后按值运行。
+// value 与配置字段同名（browserSessionMode），便于直接写回。
+export const BROWSER_SESSION_MODES = [
+  { value: 'oneshot', label: '一次性（无痕）', desc: '每次关闭浏览器就清空登录态与 Cookie，不写磁盘。共享电脑请选这一项。' },
+  { value: 'persistent', label: '长期保留', desc: '登录态与 Cookie 写进本机磁盘，重启 FinalCheck 后仍保留。只在自己的电脑上使用。' }
+];
 // 外观：主题只有两套（深色是 0.23.0 之前的唯一皮肤，保持默认）
 export const THEME_MODES = [
   { value: 'dark', label: '深色', desc: '墨黑鎏金：暗底金字，长时间看不刺眼。' },
@@ -192,6 +198,11 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
   const [testRes, setTestRes] = useState(null);     // { ok, reason, hint, count, models }
   const [baseCfg, setBaseCfg] = useState({});       // 保留 permissionMode / activeModel / thinkingEffort 等字段
   const [sandboxMode, setSandboxMode] = useState('workspace');
+  // 浏览器会话模式：'oneshot' / 'persistent' / ''（还没选过 → 无痕运行）
+  const [browserMode, setBrowserMode] = useState('');
+  const [browserClear, setBrowserClear] = useState(null); // 清空结果：{ ok, removed, failed } | { error }
+  const [browserClearing, setBrowserClearing] = useState(false);
+  const [browserPolicy, setBrowserPolicy] = useState(null); // 主进程解析出的「当前生效」策略（含 partition / open）
   const [toolConc, setToolConc] = useState(DEFAULT_TOOL_CONCURRENCY);
   const [language, setLanguageChoice] = useState(() => resolveLanguage(undefined, navigator.language)); // 界面语言：zh / en（旧配置 auto 读取时落成实际值）
   const [theme, setThemeChoice] = useState(() => readCachedTheme(typeof localStorage !== 'undefined' ? localStorage : null)); // 界面主题：dark / light
@@ -221,6 +232,8 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
         setProviders(list.map((p) => ({ ...p, models: [...(p.models || [])] })));
         setActiveId(c?.activeProviderId ?? null);
         setSandboxMode(SANDBOX_MODES.some((m) => m.value === c?.sandboxMode) ? c.sandboxMode : 'workspace');
+        // 浏览器会话模式：只认 oneshot / persistent；缺省或脏值 → ''（还没选过，按无痕）
+        setBrowserMode(c?.browserSessionMode === 'persistent' ? 'persistent' : c?.browserSessionMode === 'oneshot' ? 'oneshot' : '');
         const conc = Number(c?.toolConcurrency);
         setToolConc(Number.isFinite(conc) && conc > 0 ? Math.min(16, Math.max(1, Math.trunc(conc))) : DEFAULT_TOOL_CONCURRENCY);
         // 兼容旧配置：language 缺失或为 'auto' 时按系统语言落成实际值，UI 上选中对应项
@@ -231,6 +244,13 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
       })
       .catch((e) => { setErr({ key: '读取配置失败：{msg}', msg: e.message }); setLoaded(true); });
   }, [y]);
+
+  // 浏览器会话：进设置页时读一次主进程实际解析出的策略（保存/清空后重读，界面标识与实际一致）
+  const refreshBrowserPolicy = () => {
+    if (!y?.browserSessionInfo) return;
+    y.browserSessionInfo().then((p) => setBrowserPolicy(p || null)).catch(() => setBrowserPolicy(null));
+  };
+  useEffect(() => { refreshBrowserPolicy(); }, [y]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---- 关于 / 更新：当前版本 + 订阅主进程更新事件（卸载时取消订阅） ----
   useEffect(() => {
@@ -409,6 +429,8 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
         ...baseCfg,
         sandboxMode: mode,
         toolConcurrency: conc,
+        // 浏览器会话模式：只写 oneshot / persistent；'' 保留为「还没选过」（首次使用还会再问一次）
+        browserSessionMode: browserMode === 'persistent' ? 'persistent' : browserMode === 'oneshot' ? 'oneshot' : '',
         language: language === 'en' ? 'en' : 'zh',
         theme: normalizeTheme(themeValue),
         providers: clean,
@@ -419,6 +441,8 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
       setProviders(clean);
       setSandboxMode(mode);
       setToolConc(conc);
+      // 保存后重读主进程策略：改模式会关掉旧窗口（partition 改不了），界面标识要跟着变
+      refreshBrowserPolicy();
       // 语言立即生效：只切界面文案；agent / 报告不再跟随界面语言（AI 按用户提问语言输出）
       applyLanguage(nextCfg.language);
       // 主题同样立即生效并写本地缓存（设置页内选完就已经落 DOM 了，这里再对齐一次）
@@ -522,6 +546,93 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
       <div className="text-xs text-mute leading-relaxed rounded-lg bg-well border border-edge px-3.5 py-2.5">
         {t('这里只影响按钮、菜单、表单与提示等界面文案；AI 回复和报告使用你提问时的语言，不随这里切换。')}
       </div>
+
+      <div className="flex items-center gap-3 pt-2 border-t border-edge/60">
+        <button className="btn-primary min-w-[92px]" onClick={save} disabled={!y || !loaded}>{t('保存')}</button>
+        {saved && !dirty && (
+          <span className="text-sm text-jade flex items-center gap-1.5 transition-all duration-200">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="20 6 9 17 4 12" /></svg>
+            {t('已保存')}
+          </span>
+        )}
+        {dirty && <span className="text-xs text-mute">{t('有未保存的修改')}</span>}
+      </div>
+      <ErrorNote>{!y ? t('请在 Electron 中运行后修改设置。') : errText}</ErrorNote>
+    </Card>
+  );
+
+  // 浏览器会话（0.31.0）：无痕 / 持久 + 清空持久数据。
+  // 与 runtimeCard 同款「选项卡片 + 保存」结构；模式立即写回配置（下一次 browser_navigate 生效）。
+  const clearBrowserData = async () => {
+    if (!y?.browserClearData || browserClearing) return;
+    setBrowserClearing(true);
+    setBrowserClear(null);
+    try {
+      const r = await y.browserClearData();
+      setBrowserClear(r || { ok: true, removed: [], failed: [] });
+      refreshBrowserPolicy();
+    } catch (e) {
+      setBrowserClear({ ok: false, error: e?.message || String(e) });
+    } finally { setBrowserClearing(false); }
+  };
+  const browserCard = (
+    <Card className="p-5 space-y-4">
+      <div>
+        <div className="text-sm text-ink font-medium">{t('浏览器会话')}</div>
+        <div className="text-xs text-mute mt-0.5">{t('AI 操作网页时用哪种会话：一次性（无痕）不写盘；长期保留会记住登录。')}</div>
+      </div>
+
+      <Field label={t('会话模式')} hint={t('默认一次性（无痕）；切换后下一次导航生效')}>
+        <div className="flex flex-col gap-2">
+          {/* 还没选过（''）在界面上按「一次性」显示，但会标注「尚未选择」，避免用户以为自己已经选过 */}
+          {BROWSER_SESSION_MODES.map((m) => {
+            const effective = browserMode === m.value || (browserMode === '' && m.value === 'oneshot');
+            return (
+              <button key={m.value} type="button" onClick={() => { setBrowserMode(m.value); touch(); }} disabled={!y}
+                className={`rounded-lg border px-3 py-2.5 text-left transition-colors disabled:opacity-50 ${effective ? 'border-gold/45 bg-gold/10' : 'border-edge bg-well hover:bg-cardHover'}`}>
+                <div className={`text-xs font-mono ${effective ? 'text-goldSoft' : 'text-ink/85'}`}>
+                  {t(m.label)}{browserMode === '' && m.value === 'oneshot' ? ` · ${t('尚未选择')}` : ''}
+                </div>
+                <div className="text-[11px] text-mute/80 mt-1 leading-relaxed">{t(m.desc)}</div>
+              </button>
+            );
+          })}
+        </div>
+
+        {/* 持久模式的可见标识：让用户随时知道「现在正在记住登录」（红框提示，不靠记忆） */}
+        {browserPolicy?.persistent === true && (
+          <div className="mt-2.5 rounded-lg border border-red-500/35 bg-red-500/[0.07] px-3 py-2 text-[10px] leading-relaxed text-red-200/90">
+            {t('当前正在记住登录：Cookie 与会话写在本机磁盘（userData/Partitions/persist:fc-browser-use）。共享电脑请改回一次性并点「清空浏览器数据」。')}
+          </div>
+        )}
+        {browserPolicy && browserPolicy.persistent !== true && (
+          <div className="mt-2.5 rounded-lg border border-jade/25 bg-jade/[0.05] px-3 py-2 text-[10px] leading-relaxed text-jade/85">
+            {t('当前为一次性（无痕）：会话保存在内存，关闭浏览器即清空，不写磁盘。')}
+          </div>
+        )}
+      </Field>
+
+      <Field label={t('清空浏览器数据')} hint={t('删除持久会话的 Cookie / 登录态')}>
+        <div className="flex items-center gap-2">
+          <button type="button" onClick={clearBrowserData} disabled={!y?.browserClearData || browserClearing}
+            className="rounded-lg border border-red-500/35 bg-red-500/[0.08] px-3 py-1.5 text-xs text-red-300 hover:bg-red-500/[0.14] disabled:opacity-40">
+            {browserClearing ? t('清空中…') : t('清空浏览器数据')}
+          </button>
+          {browserClear && browserClear.ok === true && (
+            <span className="text-[11px] text-jade">
+              {browserClear.removed && browserClear.removed.length > 0
+                ? t('已清空登录态并删除目录')
+                : t('已清空登录态（浏览器进程仍占着目录，缓存文件稍后由系统清理）')}
+            </span>
+          )}
+          {browserClear && browserClear.ok !== true && (
+            <span className="text-[11px] text-red-400">{browserClear.error || t('清空失败')}</span>
+          )}
+        </div>
+        <div className="mt-1.5 text-[10px] text-mute/70 leading-relaxed">
+          {t('只清 FinalCheck 自己的浏览器数据，不碰你日常用的 Edge 或其它程序。清空前会先关闭浏览器窗口，避免文件被占用删不干净。')}
+        </div>
+      </Field>
 
       <div className="flex items-center gap-3 pt-2 border-t border-edge/60">
         <button className="btn-primary min-w-[92px]" onClick={save} disabled={!y || !loaded}>{t('保存')}</button>
@@ -758,6 +869,8 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
           <NavGroup label="Agent">
             <NavRow label={t('语言')} active={section === 'language'} onClick={() => setSection('language')} icon={<IconGlobe />} />
             <NavRow label={t('运行时')} active={section === 'runtime'} onClick={() => setSection('runtime')} icon={<IconSliders />} />
+            <NavRow label={t('浏览器会话')} active={section === 'browser'} onClick={() => { setSection('browser'); refreshBrowserPolicy(); }} icon={<IconGlobe />}
+              trailing={browserPolicy?.persistent === true ? <span className="text-red-400">{t('记住登录')}</span> : ''} />
           </NavGroup>
           <NavGroup label={t('数据与统计')}>
             <NavRow label={t('用量统计')} active={section === 'usage'} onClick={() => setSection('usage')} icon={<IconChart />} trailing="Tokens" />
@@ -779,7 +892,7 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
         <div className="shrink-0 px-8 pt-6 pb-5 flex items-start justify-between gap-4">
           <div className="min-w-0">
             <h1 className="font-kai text-[22px] leading-tight text-goldSoft">
-              {section === 'models' ? t('模型设置') : section === 'appearance' ? t('外观') : section === 'language' ? t('语言') : section === 'runtime' ? t('运行时') : t('关于')}
+              {section === 'models' ? t('模型设置') : section === 'appearance' ? t('外观') : section === 'language' ? t('语言') : section === 'runtime' ? t('运行时') : section === 'browser' ? t('浏览器会话') : t('关于')}
             </h1>
             <p className="text-[12px] text-mute mt-1.5 leading-relaxed">
               {section === 'models'
@@ -790,7 +903,9 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
                   ? t('只切换界面文案（按钮、菜单、表单、提示）；立即生效。AI 回复与报告跟随你的提问语言。')
                   : section === 'runtime'
                     ? t('沙箱与工具并发：对所有供应商生效，与权限模式（Full access）独立。')
-                    : t('版本信息与更新：检查 GitHub Release，下载后重启安装。')}
+                    : section === 'browser'
+                      ? t('AI 操作网页时的会话模式：默认一次性（无痕），可切换为长期保留登录。')
+                      : t('版本信息与更新：检查 GitHub Release，下载后重启安装。')}
             </p>
           </div>
           {section === 'models' && (
@@ -1034,6 +1149,10 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
           ) : section === 'language' ? (
             <div className="flex-1 min-w-0 overflow-y-auto">
               <div className="max-w-2xl px-6 py-6">{languageCard}</div>
+            </div>
+          ) : section === 'browser' ? (
+            <div className="flex-1 min-w-0 overflow-y-auto">
+              <div className="max-w-2xl px-6 py-6">{browserCard}</div>
             </div>
           ) : (
             <div className="flex-1 min-w-0 overflow-y-auto">

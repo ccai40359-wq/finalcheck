@@ -265,5 +265,10 @@ export const EN_CHAT = {
   // AI 自查截图分组（默认收起的计数条）
   '检查截图 ×{n}': 'Check screenshots ×{n}',
   '收起检查截图': 'Collapse check screenshots',
-  '展开检查截图（AI 自查证据，点击单张可在右侧打开）': 'Expand check screenshots (AI self-check evidence; click one to open it on the right)'
+  '展开检查截图（AI 自查证据，点击单张可在右侧打开）': 'Expand check screenshots (AI self-check evidence; click one to open it on the right)',
+
+  // 浏览器首次使用提示条（App.jsx，0.31.0）
+  '网页操作默认按「一次性（无痕）」运行（不写磁盘）。需要长期保留登录（重启 FC 后仍有效）可去设置切换。': 'Web automation runs one-shot (private) by default and never writes to disk. Switch in Settings if you want sign-in to survive a FinalCheck restart.',
+  '去设置': 'Open settings',
+  '关闭提示': 'Dismiss'
 };
