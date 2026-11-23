@@ -54,8 +54,9 @@ test('App：折叠状态持久化到 localStorage，侧栏常驻但宽度收到 
 
 test('App：右栏宽度计算跟随侧栏真实像素（过渡期间也不跳）', () => {
   assert.match(app, /sidebarWidth=\{sidebarPx\}/, '应传实时像素宽度，而不是折叠布尔值');
+  // 0.32.0：右栏统一成 RightRail（原先是 ArtifactPanel + SubagentPanel 两处传参）
   const n = (app.match(/sidebarWidth=\{sidebarPx\}/g) || []).length;
-  assert.equal(n, 2, 'ArtifactPanel 与 SubagentPanel 都要传');
+  assert.equal(n, 1, '右栏只有一个容器（RightRail），它收真实像素宽度');
   assert.match(app, /ResizeObserver/, '靠 ResizeObserver 跟随过渡中的实际宽度');
 });
 

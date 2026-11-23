@@ -64,9 +64,10 @@ test('侧栏始终挂载（折叠不卸载：卸载会丢滚动位置与展开�
 test('右栏宽度跟随侧栏真实像素（ResizeObserver），不是折叠布尔值', () => {
   assert.match(app, /ResizeObserver/, '缺少尺寸观察');
   assert.match(app, /querySelector\('.fc-sidebar'\)/, '应按类名取侧栏根节点');
-  assert.match(app, /sidebarWidth=\{sidebarPx\}/, '两个面板都要收真实宽度');
+  assert.match(app, /sidebarWidth=\{sidebarPx\}/, '右栏要收真实宽度');
+  // 0.32.0：右栏统一成 RightRail 多标签容器（原先是 ArtifactPanel + SubagentPanel 两处）
   const n = (app.match(/sidebarWidth=\{sidebarPx\}/g) || []).length;
-  assert.equal(n, 2, 'ArtifactPanel 与 SubagentPanel');
+  assert.equal(n, 1, '右栏只有一个容器（RightRail），它收真实像素宽度');
 });
 
 test('折叠时可被辅助技术忽略（aria-hidden + inert）', () => {

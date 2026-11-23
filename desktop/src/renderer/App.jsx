@@ -8,9 +8,10 @@ import { mergeRunningRun, shouldReloadSessionFromDisk } from './lib/session-rest
 import { acceptRunPacket, reattachedRun } from './lib/agent-resume.mjs';
 import { filterAskCardsByTrace, hideAskTracesForCards } from './lib/ask-cards.mjs';
 import { applyAgentEvent, mergeTraceIntoEvents } from './lib/process-events.mjs';
-import { ArtifactPanel } from './chat/ArtifactPanel.jsx';
-import { SubagentPanel } from './chat/SubagentPanel.jsx';
-import { shouldShowArtifactPanel, shouldShowStepPanel } from './lib/panel-visibility.mjs';
+import { RightRail } from './chat/RightRail.jsx';
+// 0.32.0 右栏多标签归约（产物 / 内嵌浏览器 / 子代理并存）
+import { emptyRail, openRailTab, activateRailTab, closeRailTab, pruneForSession, shouldShowRail, activeRailTab } from './lib/rail-tabs.mjs';
+import { shouldShowStepPanel } from './lib/panel-visibility.mjs';
 import { buildSendHistory } from './lib/interrupted-digest.mjs';
 // 双语：t() 在英文模式查词典、中文模式原样返回；useLanguage() 只负责切换语言时触发重渲染
 import { t, setLanguage, resolveLanguage } from './i18n/core.mjs';
@@ -238,10 +239,16 @@ export default function App() {
   const [showJump, setShowJump] = useState(false); // 聊天区不在底部时显示「回到底部」按钮
   const [artifact, setArtifact] = useState(null);
   const [stepView, setStepView] = useState(null); // 右侧子代理上下文面板：{sessionId, stepId, name, role}
+  // 0.32.0：右栏多标签（产物 / 内嵌浏览器 / 子代理并存）。归约逻辑在 lib/rail-tabs.mjs。
+  const [rail, setRail] = useState(() => emptyRail());
+  const railRef = useRef(rail);
+  railRef.current = rail;
   // 子代理面板只属于它绑定的那次对话：进设置/用量或切工作区（换会话）就置空，
   // 返回聊天时不会又自动弹回来（渲染侧另有 shouldShowStepPanel 兜底）。
   useEffect(() => {
     setStepView((cur) => (cur && !shouldShowStepPanel({ view: page, stepView: cur, activeSessionId: activeId }) ? null : cur));
+    // 0.32.0：切会话时子代理 tab 属于旧会话，必须从右栏清掉（产物与浏览器 tab 留着）
+    setRail((cur) => pruneForSession(cur, activeId).rail);
   }, [page, activeId]);
   const [artifactLoading, setArtifactLoading] = useState(false);
   const artifactBySessionRef = useRef(new Map()); // sessionId → 该会话右侧打开着的产物路径
@@ -927,6 +934,13 @@ export default function App() {
         return;
       }
       if (sid && p.runId && !acceptRunPacket(runsRef.current.get(sid), p)) return;
+      // 0.32.0：AI 打开了网页 → 右栏自动跳出并切到浏览器 tab（用户明确要求"自动跳到右栏"）。
+      // 以前页面画在从不显示的隐藏窗口上，用户只看到白框，还被告知去扫一个看不见的二维码。
+      if (ev.kind === 'browser-rail-open') {
+        if (!sid || activeIdRef.current !== sid) return; // 后台会话不抢当前右栏
+        setRail((cur) => openRailTab(cur, { kind: 'browser', payload: { tabId: ev.tabId || null, pageTitle: '' } }).rail);
+        return;
+      }
       // 上下文压缩：只更新「当前会话」的活动行状态，不并进过程时间线（它不是一个工具步骤）
       if (ev.kind === 'compact-start' || ev.kind === 'compact-end') {
         if (!sid || activeIdRef.current !== sid) return; // 后台会话的压缩不打扰当前对话
@@ -1053,6 +1067,16 @@ export default function App() {
     });
   }, [y]);
 
+  // 0.32.0：AI 或用户打开网页时，右栏自动跳到浏览器 tab。
+  // 主进程在 navigate 成功后推这个事件（agent 回合内的走 agent-event 里的 browser-rail-open；
+  // 用户自己输网址的走这条独立通道——它不属于任何回合）。
+  useEffect(() => {
+    if (!y?.onBrowserRailOpen) return undefined;
+    return y.onBrowserRailOpen((p) => {
+      setRail((cur) => openRailTab(cur, { kind: 'browser', payload: { tabId: p?.tabId || null, pageTitle: '' } }).rail);
+    });
+  }, [y]);
+
   // 浏览器首次使用（0.31.0）：模型第一次要打开网页时，主进程推一次「一次性 / 长期保留」的选择。
   // 设计为轻量提示条（不是 modal、不打断回合）：那次导航已按无痕跑完，只是让用户知道还有持久选项。
   useEffect(() => {
@@ -1141,6 +1165,8 @@ export default function App() {
   // 预览按会话记：A 会话打开的产物，切到 B 不能还挂在右边（用户实测串会话）；切回 A 再恢复
   const openArtifact = async (p, { forSession } = {}) => {
     if (!y?.artifactRead || !p) return;
+    // 0.32.0：产物打开 = 在右栏开一个 tab（同一个文件重复点只切过去，不堆重复 tab）
+    setRail((cur) => openRailTab(cur, { kind: 'artifact', artifactPath: p, title: baseName(p), payload: { path: p } }).rail);
     const sid = forSession !== undefined ? forSession : activeIdRef.current;
     if (sid) artifactBySessionRef.current.set(sid, p);
     setArtifactLoading(true);
@@ -1166,6 +1192,12 @@ export default function App() {
   const closeArtifact = () => {
     if (activeIdRef.current) artifactBySessionRef.current.delete(activeIdRef.current);
     setArtifact(null); setArtifactError(''); setArtifactLoading(false);
+    // 关掉右栏里所有产物 tab（浏览器/子代理 tab 不受影响）
+    setRail((cur) => {
+      let next = cur;
+      for (const t of cur.tabs.filter((x) => x.kind === 'artifact')) next = closeRailTab(next, t.key).rail;
+      return next;
+    });
   };
 
   // ---- / 技能（dsh 式：文字后面空格 + / 就能唤起，命令/技能可嵌在正文里） ----
@@ -1689,7 +1721,14 @@ export default function App() {
       startEdit(index, text, keepTurns, files);
     }
   };
-  const openStep = (s) => setStepView({ sessionId: activeId, stepId: s.id, name: s.name, role: s.role, kind: s.kind || null, opType: s.opType || s.op || null, key: Date.now() });
+  const openStep = (s) => {
+    setStepView({ sessionId: activeId, stepId: s.id, name: s.name, role: s.role, kind: s.kind || null, opType: s.opType || s.op || null, key: Date.now() });
+    // 0.32.0：子代理也作为一个右栏 tab（同一个步骤重复点只切过去）
+    setRail((cur) => openRailTab(cur, {
+      kind: 'subagent', stepId: s.id, title: s.role || s.name || '',
+      payload: { sessionId: activeId, stepId: s.id, name: s.name, role: s.role, kind: s.kind || null }
+    }).rail);
+  };
   // 轻量子代理（spawn_agent）的「打开子代理过程」：时间线里用窗口事件请求打开右侧面板
   const openStepRef = useRef(openStep);
   openStepRef.current = openStep;
@@ -1720,10 +1759,13 @@ export default function App() {
   const activeAskCards = activeId ? askCards.filter((c) => c.sessionId == null || c.sessionId === activeId) : [];
   const visibleAskCards = filterAskCardsByTrace(activeAskCards, messages);
   const chatMessages = hideAskTracesForCards(messages, visibleAskCards);
-  // 面板可见性：设置页/切换会话时不渲染（返回聊天也不会自动弹回来，因为状态已被上面的 effect 清空）
-  const showStepPanel = shouldShowStepPanel({ view: page, stepView, activeSessionId: activeId });
-  // 产物面板只属于聊天视图；状态不清空，返回聊天后继续显示之前打开的产物
-  const showArtifactPanel = shouldShowArtifactPanel({ view: page, artifact, artifactLoading, artifactError });
+  // 0.32.0：右栏里显示的那个子代理 tab 用哪份 target。
+  // 优先用当前 active 的子代理 tab 自己的 payload（用户可能在多个子代理 tab 间切换）；
+  // 拿不到再退回 stepView（保持与旧行为一致）。
+  const activeRail = activeRailTab(rail);
+  const subagentTargetForRail = (activeRail && activeRail.kind === 'subagent')
+    ? { ...(activeRail.payload || {}), key: stepView?.key }
+    : stepView;
   // 用量页自动刷新开关：任一会话正在跑（含后台/工作流）就 5 秒轮询，全部停下即停
   const anyRunning = Object.values(runningIds).some(Boolean);
   const providers = (cfg?.providers || []).filter((p) => p.enabled !== false);
@@ -1850,18 +1892,47 @@ export default function App() {
           />
         )}
       </main>
-      {showStepPanel ? (
-        <SubagentPanel target={stepView} onClose={() => setStepView(null)} sidebarWidth={sidebarPx} />
-      ) : showArtifactPanel && (
-        <ArtifactPanel
+      {/* 0.32.0：右栏多标签（产物 / 内嵌浏览器 / 子代理并存）。
+          以前这里是互斥的两个面板，浏览器压根不在右栏里——那正是"啥都看不到"的根源。
+          左栏宽度未知（sidebarPx=0）或不在聊天视图时不显示。 */}
+      {shouldShowRail(rail) && page === 'chat' && (
+        <RightRail
+          rail={rail}
+          sidebarWidth={sidebarPx}
           y={y}
           artifact={artifact}
-          loading={artifactLoading}
-          error={artifactError}
-          onClose={closeArtifact}
-          onReload={openArtifact}
-          onOpen={(p) => y?.artifactOpen?.(p)}
-          sidebarWidth={sidebarPx}
+          artifactLoading={artifactLoading}
+          artifactError={artifactError}
+          artifactHandlers={{ onReload: openArtifact, onOpen: (p) => y?.artifactOpen?.(p) }}
+          subagentTarget={subagentTargetForRail}
+          onActivate={(key, patch) => {
+            setRail((cur) => {
+              const next = activateRailTab(cur, key);
+              if (!next.ok) return cur;
+              // 浏览器 tab 的页面标题回填（让 tab 条显示当前是哪一页）
+              if (patch?.pageTitle) {
+                return { ...next.rail, tabs: next.rail.tabs.map((x) => (x.key === key ? { ...x, payload: { ...x.payload, pageTitle: patch.pageTitle } } : x)) };
+              }
+              return next.rail;
+            });
+          }}
+          onCloseTab={(key) => {
+            setRail((cur) => {
+              const r = closeRailTab(cur, key);
+              if (!r.ok) return cur;
+              // 关掉产物 tab 时同步清掉预览状态（避免切回聊天又弹出来）
+              if (key.startsWith('artifact:')) closeArtifact();
+              // 关掉子代理 tab 时同步清掉 stepView
+              if (key.startsWith('subagent:')) setStepView(null);
+              return r.rail;
+            });
+          }}
+          onClose={() => {
+            // 收起右栏 = 关掉全部 tab（子代理/产物状态一并清）
+            setRail(emptyRail());
+            setStepView(null);
+            closeArtifact();
+          }}
         />
       )}
       </div>

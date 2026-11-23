@@ -103,7 +103,7 @@ function SystemPrompt({ text }) {
   );
 }
 
-export function SubagentPanel({ target, onClose, sidebarWidth = 212 }) {
+export function SubagentPanel({ target, onClose, sidebarWidth = 212, embedded = false }) {
   const y = api();
   const [data, setData] = useState(null);
   const [err, setErr] = useState('');
@@ -204,16 +204,24 @@ export function SubagentPanel({ target, onClose, sidebarWidth = 212 }) {
     workedMs: running ? null : (data?.ms || 0)
   };
 
+  // 0.32.0：embedded=true 时只渲染内容体（外壳与宽度由 RightRail 的 tab 提供），
+  // 与旧的独立面板共用同一份渲染逻辑。
+  const outerTag = embedded ? 'div' : 'aside';
+  const outerProps = embedded
+    ? { className: 'flex flex-col min-h-0 h-full w-full' }
+    : {
+      style: { width: panelW },
+      'data-panel-mode': 'rail',
+      className: 'shrink-0 border-l border-lift/[0.07] bg-panel flex flex-col min-h-0 relative'
+    };
   return (
-      <aside
-        style={{ width: panelW }}
-        data-panel-mode="rail"
-        className="shrink-0 border-l border-lift/[0.07] bg-panel flex flex-col min-h-0 relative"
-      >
-      <div onMouseDown={startDrag} onDoubleClick={() => setWidth(620)} title={t('拖动调整宽度（拖到头关闭，双击复位）')}
-        className="group absolute left-0 top-0 h-full w-2 -ml-1 cursor-col-resize z-10">
-        <div className="w-px h-full mx-auto bg-lift/[0.08] group-hover:bg-gold/60 transition-colors" />
-      </div>
+    <outerTag {...outerProps}>
+      {!embedded && (
+        <div onMouseDown={startDrag} onDoubleClick={() => setWidth(620)} title={t('拖动调整宽度（拖到头关闭，双击复位）')}
+          className="group absolute left-0 top-0 h-full w-2 -ml-1 cursor-col-resize z-10">
+          <div className="w-px h-full mx-auto bg-lift/[0.08] group-hover:bg-gold/60 transition-colors" />
+        </div>
+      )}
       <div className="shrink-0 h-11 px-3.5 flex items-center gap-2 border-b border-lift/[0.07]">
         <span className="text-goldSoft text-sm">◈</span>
         <div className="min-w-0 flex-1">
@@ -269,6 +277,6 @@ export function SubagentPanel({ target, onClose, sidebarWidth = 212 }) {
           </div>
         ) : null}
       </div>
-    </aside>
+    </outerTag>
   );
 }

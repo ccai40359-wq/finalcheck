@@ -539,7 +539,7 @@ export function collectInjectedScriptBodies(cmd, cwd = null) {
   return { files, bodies };
 }
 
-export function createAgentTools({ repoRoot, permissions, recordAudit = async () => {}, playbookRoot, runWorkflow = null, projectPath = null, policy = null, hooksConfig = null, hooksRunner = null, sessionId = null, cwd = null, signal = null, commandIdleMs = DEFAULT_COMMAND_IDLE_MS, askUser = null, todoWrite = null, spawnAgent = null, onActivity = null, requireAuditIntent = null, shellAppRoot = null, aclSandbox = undefined, userStatedTier = null, getDesktopToolsAsync = null, browserSessionPolicy = null, onBrowserFirstUse = null, getBrowserRealAsync = null, browserUserDataDir = null, browserChoice = null } = {}) {
+export function createAgentTools({ repoRoot, permissions, recordAudit = async () => {}, playbookRoot, runWorkflow = null, projectPath = null, policy = null, hooksConfig = null, hooksRunner = null, sessionId = null, cwd = null, signal = null, commandIdleMs = DEFAULT_COMMAND_IDLE_MS, askUser = null, todoWrite = null, spawnAgent = null, onActivity = null, requireAuditIntent = null, shellAppRoot = null, aclSandbox = undefined, userStatedTier = null, getDesktopToolsAsync = null, browserSessionPolicy = null, onBrowserFirstUse = null, getBrowserRealAsync = null, browserUserDataDir = null, browserChoice = null, ensureViewHostAsync = null } = {}) {
   let askedThisTurn = false; // 本回合已经通过 ask_user 问过用户（验收前置闸据此放行）
   // 0.31.1：本会话内用户已经选过的浏览器模式（主进程按 sessionId 存，跨回合有效）。
   // createAgentTools 每个回合重建一次——把记忆放在这里会让「同一任务里连续导航」每轮都弹卡。
@@ -1534,6 +1534,11 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
       const explicit = String(args?.mode || '').toLowerCase();
       const realMod = await loadBrowserReal();
       const realAvailable = Boolean(realMod);
+      // 0.32.0：先把右栏内嵌宿主预热好（browserUse.ensureWindow 是同步的，只读已加载的宿主）。
+      // 失败/没有主窗口时它返回 null，browserUse 会走旧的隐藏窗口路径（0.31.x 行为）。
+      if (typeof ensureViewHostAsync === 'function') {
+        try { await ensureViewHostAsync(); } catch { /* 宿主不可用不影响导航 */ }
+      }
       let sessionMode = '';
       try { sessionMode = choiceStore.get?.() || ''; } catch { /* 记忆读失败按未选择 */ }
       let sessPolicy = null;
@@ -1628,6 +1633,12 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
           ...(wantPolicy ? { policy: wantPolicy } : {})
         });
         const mode = wantPolicy?.mode || 'oneshot';
+        // 0.32.0：AI 一打开网页就让右栏跳出来（用户明确要求"自动跳到右栏"——
+        // 以前页面画在从不显示的隐藏窗口上，用户只看到白框，还被告知去扫看不见的二维码）。
+        // 只在内嵌宿主真的生效时推（embedded=true），否则不打扰：测试台/后台驱动没有时它不会出现。
+        if (r?.ok && r.embedded) {
+          try { onActivity?.({ kind: 'browser-rail-open', tabId: r.tabId || null, url: r.url || url }); } catch { /* 事件失败不影响导航 */ }
+        }
         // 只有「用户刚刚答过卡」才加附注：设置页决定/测试台缺省这些情况返回值形状保持不变，
         // 免得每多一个字段就把下游的 deepEqual 契约测试全打红（0.31.1 实测踩过）。
         return { ...r, ...(r?.ok && askedNow ? { note: choiceNote(mode, { asked: true }) } : {}) };

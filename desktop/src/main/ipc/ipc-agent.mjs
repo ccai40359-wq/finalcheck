@@ -128,11 +128,36 @@ export function registerAgentIpc({
         import(engineUrl('desktop/src/main/browser-use.mjs'))
       ]);
       process.once('exit', () => { try { cu.shutdown?.(); } catch { /* 已退 */ } });
+      // 0.32.0：把右栏内嵌宿主的提供者交给 browser-use（`viewHostProvider` 定义在下方，
+      // 回调是延迟调用所以能拿到；它返回 null 时 browser-use 走旧隐藏窗口路径）。
+      try { bu.setViewHostProvider?.(() => viewHostProvider()); } catch { /* 旧模块没有该入口 */ }
       return { computerUse: cu, browserUse: bu };
     } catch { return null; }
   })();
   // 后台预热一次（不阻塞注册；失败也只是没有这两个工具）
   void loadDesktopTools();
+
+  // 0.32.0：右栏内嵌浏览器宿主（WebContentsView 池）。懒加载：
+  // 它需要主窗口对象，注册 IPC 时窗口可能还没建好。
+  let viewHostPromise;
+  let viewHostModule = null;
+  const loadViewHost = () => viewHostPromise ??= (async () => {
+    try {
+      const mod = await import(engineUrl('desktop/src/main/browser-view-host.mjs'));
+      const w = getWin();
+      if (!w || w.isDestroyed?.()) return null;
+      mod.ensureHost(w);
+      viewHostModule = mod;
+      return mod;
+    } catch { return null; }
+  })();
+
+  // 把右栏内嵌宿主的提供者交给 browser-use。
+  // ⚠️ 这里是**同步**回调（browserUse.ensureWindow 不是 async），所以只能返回「已经加载好的」模块。
+  // 因此要提前触发一次 loadViewHost：主窗口建好后 loadDesktopTools 的预热会跑，那时宿主也就绪了。
+  // 若此刻还没就绪，回调返回 null → browser-use 走旧的隐藏窗口路径（行为与 0.31.x 一致，不会炸）。
+  const viewHostProvider = () => viewHostModule;
+  void loadViewHost();
 
   // 真 Edge 通道（0.31.0）：browser-real.mjs 依赖 playwright-core（不是 Electron API），
   // 所以纯 Node 测试台也能加载；没有 Electron 时工具层仍会因为没有 userData 目录而拒绝启动 Edge。
@@ -184,6 +209,59 @@ export function registerAgentIpc({
     let open = false;
     try { open = (await loadDesktopTools())?.browserUse?.isOpen?.() === true; } catch { /* 无 Electron */ }
     return { ...policy, open };
+  });
+
+  /* ---- 0.32.0 右栏内嵌浏览器 ---- */
+  // 渲染层把右栏内容区（DIP）报上来：WebContentsView 不会跟随窗口缩放（PoC 实测），
+  // 必须由持有布局的那一侧告诉主进程「画在哪儿」。这是全仓库唯一的 rect 通道。
+  ipcMain.handle('finalcheck:rail-rect', async (_e, rect = null) => {
+    const host = await loadViewHost();
+    if (!host) return { ok: false, error: '宿主未就绪' };
+    return rect ? host.setRect(rect) : host.setVisible(false);
+  });
+  // 右栏浏览器面板的显隐（收起右栏、切到别的 tab 都要藏起来，否则画面会停在错位置）
+  ipcMain.handle('finalcheck:rail-visible', async (_e, visible = false) => {
+    const host = await loadViewHost();
+    if (!host) return { ok: false, error: '宿主未就绪' };
+    return host.setVisible(visible === true);
+  });
+  ipcMain.handle('finalcheck:browser-tabs', async () => {
+    const dt = await loadDesktopTools().catch(() => null);
+    try {
+      const r = dt?.browserUse?.listTabs?.() || { ok: true, embedded: false, tabs: [] };
+      // 诊断字段（自检与排障用：view 的实测 bounds / visible 能直接看出"画了但看不见"）
+      const host = await loadViewHost().catch(() => null);
+      const info = host?.hostInfo?.() || null;
+      return { ...r, ...(info ? { views: info.views, hostRect: info.rect, hostVisible: info.visible, winContent: info.winContent } : {}) };
+    } catch (e) { return { ok: false, error: String(e?.message || e) }; }
+  });
+  ipcMain.handle('finalcheck:browser-tab-open', async (_e, url = '') => {
+    const dt = await loadDesktopTools().catch(() => null);
+    try { return await (dt?.browserUse?.openTab?.(String(url)) || { ok: false, error: '浏览器未就绪' }); } catch (e) { return { ok: false, error: String(e?.message || e) }; }
+  });
+  ipcMain.handle('finalcheck:browser-tab-switch', async (_e, id = '') => {
+    const dt = await loadDesktopTools().catch(() => null);
+    try { return dt?.browserUse?.switchTabTo?.(String(id)) || { ok: false, error: '浏览器未就绪' }; } catch (e) { return { ok: false, error: String(e?.message || e) }; }
+  });
+  ipcMain.handle('finalcheck:browser-tab-close', async (_e, id = '') => {
+    const dt = await loadDesktopTools().catch(() => null);
+    try { return dt?.browserUse?.closeTab?.(String(id)) || { ok: false, error: '浏览器未就绪' }; } catch (e) { return { ok: false, error: String(e?.message || e) }; }
+  });
+  // 用户在右栏里自己输网址（这是"我也可以自己开网页"的落点）
+  ipcMain.handle('finalcheck:browser-goto', async (_e, url = '') => {
+    const dt = await loadDesktopTools().catch(() => null);
+    try {
+      await loadViewHost().catch(() => null);
+      const r = await dt?.browserUse?.navigate?.(String(url), { observe: false });
+      if (r?.ok && r.embedded) {
+        // 用户自己开网页也要让右栏切到浏览器 tab（否则画出来了但 UI 不知道该显示它）
+        try {
+          const w = getWin();
+          if (w && !w.isDestroyed()) w.webContents.send('finalcheck:browser-rail-open', { tabId: r.tabId || null, url: r.url || String(url) });
+        } catch { /* 窗口没了不影响导航 */ }
+      }
+      return r || { ok: false, error: '浏览器未就绪' };
+    } catch (e) { return { ok: false, error: String(e?.message || e) }; }
   });
 
   ipcMain.handle('finalcheck:agent-steer', (_e, sessionId = null, text = '') => {
@@ -982,6 +1060,9 @@ export function registerAgentIpc({
         // 0.31.0 模式③：真 Edge（CDP 9224）。懒加载；不可用时工具返回明确错误
         getBrowserRealAsync: () => loadBrowserReal(),
         browserUserDataDir,
+        // 0.32.0：右栏内嵌宿主预热器。browser_navigate 是 async，可以在动手前 await 一次
+        // （browserUse.ensureWindow 本身是同步的，它只读已加载的 viewHostModule）。
+        ensureViewHostAsync: () => loadViewHost(),
         // 0.31.1：本会话已选过的浏览器模式（三选一卡片答过一次就记住，不再每轮弹）
         browserChoice: {
           get: () => state.browserChoices.get(String(sessionId ?? '')) || '',

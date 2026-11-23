@@ -75,11 +75,23 @@ test('panel: 两个面板都是纯并排（没有浮层、没有遮罩、没有 
   for (const file of ['chat/ArtifactPanel.jsx', 'chat/SubagentPanel.jsx']) {
     const src = readFileSync(path.join(repoRoot, 'desktop/src/renderer', file), 'utf8');
     assert.match(src, /planPanelLayout/, `${file} 没接布局策略`);
-    assert.match(src, /data-panel-mode="rail"/, `${file} 应为并排`);
+    // 0.32.0：这两个组件现在既能当独立面板（<aside data-panel-mode="rail">），
+    // 也能 embedded 进 RightRail 的 tab（那时外壳由右栏提供）。并排纪律仍在：检查它出现在非嵌入分支里。
+    assert.match(src, /'data-panel-mode': 'rail'/, `${file} 应为并排（非嵌入时）`);
     assert.ok(!/data-panel-scrim/.test(src), `${file} 不该再有遮罩（用户否决浮层）`);
     assert.ok(!/absolute right-0 top-2 bottom-2/.test(src), `${file} 不该再有抽屉定位`);
     assert.ok(!/isSheet/.test(src), `${file} 不该再有 isSheet 分支`);
     assert.ok(!/window\.innerWidth \* 0\.72/.test(src), `${file} 还在用旧的 72% 上限`);
     assert.match(src, /shouldClosePanel/, `${file} 拖到头关闭没走统一判定`);
   }
+});
+
+// 0.32.0：右栏变成多标签容器（产物 / 内嵌浏览器 / 子代理并存），它必须守住同一条并排纪律。
+test('panel: 右栏（RightRail）也是纯并排，且沿用统一的宽度策略', () => {
+  const src = readFileSync(path.join(repoRoot, 'desktop/src/renderer/chat/RightRail.jsx'), 'utf8');
+  assert.match(src, /planPanelLayout/, 'RightRail 必须接布局策略（MIN_MAIN_WIDTH=420 不变）');
+  assert.match(src, /data-panel-mode="rail"/, 'RightRail 应为并排');
+  assert.match(src, /shouldClosePanel/, 'RightRail 拖到头关闭要走统一判定');
+  assert.ok(!/data-panel-scrim/.test(src), '右栏也不能有遮罩');
+  assert.ok(!/isSheet/.test(src), '右栏不能有抽屉分支');
 });

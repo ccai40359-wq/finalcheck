@@ -66,6 +66,16 @@ contextBridge.exposeInMainWorld('finalcheck', {
   browserClearData: () => ipcRenderer.invoke('finalcheck:browser-clear-data'),
   browserSessionInfo: () => ipcRenderer.invoke('finalcheck:browser-session-info'),
   onBrowserFirstUse: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('finalcheck:browser-first-use', h); return () => ipcRenderer.removeListener('finalcheck:browser-first-use', h); },
+  // 0.32.0 右栏内嵌浏览器：rect 上报（WebContentsView 不跟随窗口缩放）+ 显隐 + 多标签 + 用户自己输网址
+  railRect: (rect) => ipcRenderer.invoke('finalcheck:rail-rect', rect),
+  railVisible: (visible) => ipcRenderer.invoke('finalcheck:rail-visible', visible === true),
+  browserTabs: () => ipcRenderer.invoke('finalcheck:browser-tabs'),
+  browserTabOpen: (url) => ipcRenderer.invoke('finalcheck:browser-tab-open', url),
+  browserTabSwitch: (id) => ipcRenderer.invoke('finalcheck:browser-tab-switch', id),
+  browserTabClose: (id) => ipcRenderer.invoke('finalcheck:browser-tab-close', id),
+  browserGoto: (url) => ipcRenderer.invoke('finalcheck:browser-goto', url),
+  // AI 或用户打开网页时主进程推一次 → 右栏自动跳到浏览器 tab
+  onBrowserRailOpen: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('finalcheck:browser-rail-open', h); return () => ipcRenderer.removeListener('finalcheck:browser-rail-open', h); },
   testProvider: (p) => ipcRenderer.invoke('finalcheck:test-provider', p),
   // 自动更新（仅安装版生效；开发模式主进程返回友好错误）
   getVersion: () => ipcRenderer.invoke('finalcheck:update:version'),

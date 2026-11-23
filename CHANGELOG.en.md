@@ -6,6 +6,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.32.0] - 2026-11-23
+
+### Added
+
+- **The built-in browser is now embedded in the right rail — you can see it, click it, and type URLs yourself.** Previously, when the AI opened a page, the page was rendered in a hidden window that was never shown; all you saw was a white box reading "No content under offscreen mode", while the AI asked you to scan a QR code that was not visible anywhere. The browser is now a tab in the right rail: the page renders right there, so you can watch the AI work, take over and click buttons yourself, or type a URL in the address bar.
+- **The right rail is now multi-tab**: artifact previews (images / HTML / PDF / slides / Word / video / text), the embedded browser, and sub-agent transcripts can all be open at the same time and switched freely, each with its own tab and close button. Previously it was either the artifact panel or the sub-agent panel, never both.
+- **The built-in browser can open multiple pages**: it used to allow only one page (`window.open` simply failed and the page count stayed at 1). Each page now gets its own tab, links that open a new window become new tabs automatically, up to 12 at once.
+- When the AI opens a page, the right rail opens itself and switches to the browser tab — you no longer have to hunt for what it is doing.
+
+### Fixed
+
+- The browser view now follows window resizing, rail dragging and sidebar collapsing in real time (an embedded view does not track layout by itself, so the UI has to report its position to the main process; that channel now exists).
+- Closing a page tab or collapsing the rail hides the corresponding view immediately — no stale frame flashing in place.
+
 ## [0.31.2] - 2026-11-23
 
 ### Fixed

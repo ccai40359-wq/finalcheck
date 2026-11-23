@@ -292,5 +292,23 @@ export const EN_CHAT = {
   '本次用离屏持久模式：Cookie 写入本机磁盘，重启 FinalCheck 后登录态仍在。清空入口在 设置 → 浏览器会话。': 'This run uses offscreen persistent mode: cookies are written to this computer, so sign-in survives a FinalCheck restart. Clear it from Settings → Browser session.',
   '本次用离屏无痕模式：不写磁盘，关掉浏览器登录态即清空。': 'This run uses offscreen one-shot (private) mode: nothing is written to disk and sign-in is cleared when the browser closes.',
   '当前前台窗口是 FinalCheck 自己启动的隔离 Edge——它已经通过 CDP 接上了，**不要用 computer_* 操作它**（会抢前台、动用户的键鼠）。看页面用 browser_screenshot，点击/输入用 browser_click / browser_type，找元素用 browser_snapshot；这些都不抢前台，也不需要 computer_request_access。需要登录时请用户在那个 Edge 窗口里扫码，不要代劳。': 'The foreground window is the isolated Edge that FinalCheck started, and it is already connected over CDP — do not use computer_* on it (that steals the foreground and drives the user\'s mouse and keyboard). Use browser_screenshot to view, browser_click / browser_type to click and type, and browser_snapshot to find elements; none of these take the foreground, and none need computer_request_access. When sign-in is needed, ask the user to scan in that Edge window — do not do it for them.',
-  '需要真实登录态时必须由用户选择「接我自己的 Edge」；当前会话没有提问通道，不能擅自连接真 Edge。改用离屏浏览器（mode 默认）完成能做的部分，或让用户在主会话里确认。': 'A real signed-in session requires the user to pick "Use my own Edge"; this session has no prompt channel, so the real Edge must not be connected unilaterally. Use the offscreen browser (default mode) for whatever can be done, or have the user confirm in the main session.'
+  '需要真实登录态时必须由用户选择「接我自己的 Edge」；当前会话没有提问通道，不能擅自连接真 Edge。改用离屏浏览器（mode 默认）完成能做的部分，或让用户在主会话里确认。': 'A real signed-in session requires the user to pick "Use my own Edge"; this session has no prompt channel, so the real Edge must not be connected unilaterally. Use the offscreen browser (default mode) for whatever can be done, or have the user confirm in the main session.',
+
+  // 0.32.0 右栏内嵌浏览器（BrowserPane / RightRail）：用户直接看到的按钮与提示
+  '请输入网址': 'Enter a URL',
+  '打开失败': 'Failed to open',
+  '新标签': 'New tab',
+  '关闭这个网页': 'Close this page',
+  '还没有网页': 'No pages open yet',
+  '新标签页（在上面地址栏输入网址）': 'New tab (type a URL in the address bar above)',
+  '刷新标签状态': 'Refresh tab list',
+  '输入网址后回车（例如 xiaohongshu.com）': 'Type a URL and press Enter (e.g. xiaohongshu.com)',
+  '打开中…': 'Opening…',
+  '打开': 'Open',
+  '在上面输入网址，或让 AI 打开一个网页': 'Type a URL above, or let the AI open a page',
+  '关闭这个标签': 'Close this tab',
+  '没有打开的面板': 'Nothing open',
+  '收起右栏': 'Collapse the right rail',
+  '浏览器': 'Browser',
+  '面板': 'Panel'
 };

@@ -32,15 +32,15 @@ test('panel-visibility: 没有 stepView 时永远不显示', () => {
   assert.equal(shouldShowStepPanel(), false);
 });
 
-test('App.jsx: SubagentPanel 渲染被 showStepPanel（聊天视图）条件包住', async () => {
+test('App.jsx: 子代理内容渲染被「聊天视图 + 右栏有 tab」条件包住（0.32.0 多标签右栏）', async () => {
   const src = await readFile(path.join(ROOT, 'desktop/src/renderer/App.jsx'), 'utf8');
-  assert.match(
-    src,
-    /\{showStepPanel \? \(\s*\n\s*<SubagentPanel target=\{stepView\}/,
-    'SubagentPanel 必须由 showStepPanel 控制，不能直接用 stepView 真假渲染'
-  );
+  // 0.32.0：子代理不再是「独立面板 vs 产物面板」的二选一，而是右栏里的一个 tab。
+  // 仍然必须被条件包住——否则进设置页/别的视图时右栏会挂在那儿（旧 bug 的变体）。
+  assert.match(src, /\{shouldShowRail\(rail\) && page === 'chat' && \(/, '右栏必须由「有 tab 且在聊天视图」控制');
+  assert.match(src, /<RightRail\b/, '子代理/产物/浏览器都通过 RightRail 渲染');
   assert.doesNotMatch(src, /\{stepView \? \(\s*\n\s*<SubagentPanel/, '旧的「stepView 有值就渲染」写法会让面板挂在设置页');
-  assert.match(src, /const showStepPanel = shouldShowStepPanel\(\{ view: page, stepView, activeSessionId: activeId \}\);/);
+  // 可见性纯函数仍在用（生成 tab 的输入）
+  assert.match(src, /shouldShowStepPanel\(\{ view: page, stepView: cur, activeSessionId: activeId \}\)/);
 });
 
 test('App.jsx: 离开聊天视图/切会话时把 stepView 置空（返回聊天不自动弹回）', async () => {
@@ -75,22 +75,12 @@ test('artifact-panel: 没有产物且不在加载/报错 → 不显示', () => {
   assert.equal(shouldShowArtifactPanel({ view: 'chat', artifact: null, artifactLoading: false, artifactError: '' }), false);
 });
 
-test('App.jsx: ArtifactPanel 渲染被 showArtifactPanel（聊天视图）条件控制', async () => {
+test('App.jsx: 产物预览也走右栏 tab（且仍受聊天视图约束）', async () => {
   const src = await readFile(path.join(ROOT, 'desktop/src/renderer/App.jsx'), 'utf8');
-  assert.match(
-    src,
-    /const showArtifactPanel = shouldShowArtifactPanel\(\{ view: page, artifact, artifactLoading, artifactError \}\);/,
-    '必须用纯函数按 page/产物状态算出可见性'
-  );
-  assert.match(src, /\) : showArtifactPanel && \(\s*\n\s*<ArtifactPanel/, 'ArtifactPanel 必须由 showArtifactPanel 控制');
-  // 旧的「只要有产物就渲染」写法：设置页也会把产物面板挂出来
-  assert.doesNotMatch(
-    src,
-    /\) : \(artifact \|\| artifactLoading \|\| artifactError\) && \(/,
-    '旧的「产物状态有值就渲染」写法会让面板跟到设置页'
-  );
-  // 防止绕过判定直接渲染：<ArtifactPanel 前必须出现 showArtifactPanel
-  const at = src.indexOf('<ArtifactPanel');
-  assert.ok(at > 0, 'App.jsx 应渲染 ArtifactPanel');
-  assert.match(src.slice(Math.max(0, at - 400), at), /showArtifactPanel/, 'ArtifactPanel 渲染前必须先经过聊天视图判定');
+  // 0.32.0：产物不再是独立面板，而是右栏里的一个 artifact tab：
+  // 打开产物时 openRailTab(kind:'artifact')，右栏整体仍受「聊天视图 + 有 tab」约束。
+  assert.match(src, /openRailTab\(cur, \{ kind: 'artifact'/, '打开产物必须开出 artifact tab');
+  assert.match(src, /\{shouldShowRail\(rail\) && page === 'chat' && \(/, '右栏整体仍必须受聊天视图约束');
+  // 旧的「只要有产物就渲染独立面板」写法会让面板挂在设置页
+  assert.doesNotMatch(src, /\) : showArtifactPanel && \(\s*\n\s*<ArtifactPanel/, '旧的独立产物面板写法必须消失');
 });

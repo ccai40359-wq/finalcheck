@@ -94,7 +94,7 @@ export function ArtifactChips({ artifacts, activePath, onOpen }) {
   );
 }
 
-export function ArtifactPanel({ y, artifact, loading, error, onClose, onReload, onOpen, sidebarWidth = 212 }) {
+export function ArtifactPanel({ y, artifact, loading, error, onClose, onReload, onOpen, sidebarWidth = 212, embedded = false }) {
   const a = artifact;
   // 拖左边缘调宽度；拖到头（<220px）直接关闭。宽度记在本机。
   const [width, setWidth] = useState(() => {
@@ -131,16 +131,24 @@ export function ArtifactPanel({ y, artifact, loading, error, onClose, onReload, 
     window.addEventListener('mousemove', move);
     window.addEventListener('mouseup', up);
   };
+  // 0.32.0：embedded=true 时只渲染内容体（由 RightRail 的 tab 提供外壳与宽度）。
+  // 这样右栏多标签与旧的独立面板共用同一份渲染逻辑，不会分叉成两套。
+  const outerTag = embedded ? 'div' : 'aside';
+  const outerProps = embedded
+    ? { className: 'flex flex-col min-h-0 h-full w-full' }
+    : {
+      style: { width: panelW },
+      'data-panel-mode': 'rail',
+      className: 'shrink-0 border-l border-edge bg-panel flex flex-col min-h-0 relative'
+    };
   return (
-    <aside
-      style={{ width: panelW }}
-      data-panel-mode="rail"
-      className="shrink-0 border-l border-edge bg-panel flex flex-col min-h-0 relative"
-    >
-      <div onMouseDown={startDrag} onDoubleClick={() => setWidth(560)} title={t('拖动调整宽度（拖到头关闭，双击复位）')}
-        className="group absolute left-0 top-0 h-full w-2 -ml-1 cursor-col-resize z-10">
-        <div className="w-px h-full mx-auto bg-edge/70 group-hover:bg-gold/60 transition-colors" />
-      </div>
+    <outerTag {...outerProps}>
+      {!embedded && (
+        <div onMouseDown={startDrag} onDoubleClick={() => setWidth(560)} title={t('拖动调整宽度（拖到头关闭，双击复位）')}
+          className="group absolute left-0 top-0 h-full w-2 -ml-1 cursor-col-resize z-10">
+          <div className="w-px h-full mx-auto bg-edge/70 group-hover:bg-gold/60 transition-colors" />
+        </div>
+      )}
       <div className="shrink-0 h-11 px-3.5 flex items-center gap-2">
         <span className="text-goldDeep text-sm">▤</span>
         <div className="min-w-0 flex-1">
@@ -155,8 +163,10 @@ export function ArtifactPanel({ y, artifact, loading, error, onClose, onReload, 
               className="rounded-md px-2 py-1 text-[11px] text-mute hover:bg-lift/[0.04] hover:text-goldSoft transition-colors">{t('外部打开')}</button>
           </>
         ) : null}
-        <button onClick={onClose} title={t('关闭预览')}
-          className="h-7 w-7 rounded-md text-mute hover:text-ink hover:bg-lift/5 transition-colors">✕</button>
+        {!embedded && (
+          <button onClick={onClose} title={t('关闭预览')}
+            className="h-7 w-7 rounded-md text-mute hover:text-ink hover:bg-lift/5 transition-colors">✕</button>
+        )}
       </div>
       <div aria-hidden className="h-px shrink-0 bg-edge/70" />
       <div className="flex-1 min-h-0 overflow-hidden bg-base">
@@ -186,6 +196,6 @@ export function ArtifactPanel({ y, artifact, loading, error, onClose, onReload, 
                 <pre className="w-full h-full overflow-auto p-4 text-[11px] leading-relaxed font-mono text-ink/80 whitespace-pre-wrap break-words">{a.content}</pre>
               )}
       </div>
-    </aside>
+    </outerTag>
   );
 }
