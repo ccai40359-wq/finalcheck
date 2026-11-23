@@ -732,15 +732,31 @@ export function listTabs() {
 
 /**
  * 用户/AI 新开一个网页标签。partition 沿用当前策略（无痕/持久语义不变）。
+ * url 可以是空串 → 开一个空白标签页（用户点「＋」就是这样，随后在地址栏输网址）。
  * @param {string} url
  */
 export async function openTab(url) {
-  const target = assertNavigableUrl(url);
   if (!active?.host) return { ok: false, error: '当前不在右栏浏览器模式（先 browser_navigate 打开网页）' };
+  const raw = String(url ?? '').trim();
+  let target = '';
+  if (raw) {
+    try { target = assertNavigableUrl(raw); }
+    catch (e) { return { ok: false, error: String(e?.message || e) }; }
+  }
   const r = await active.host.newTab({ url: target, partition: active.policy?.partition });
   if (!r.ok) return { ok: false, error: r.error };
   try { active.host.revealTab?.(r.id); } catch { /* 布局未就绪 */ }
-  return { ok: true, id: r.id, tab: r.tab };
+  // 空白标签也要成为本模块的活动页面（随后在它上面导航）
+  if (!target) {
+    const wc = active.host.contentsOf?.(r.id) || null;
+    if (wc) {
+      active.contents = wc;
+      active.tabId = String(r.id);
+      active.__bound = false;
+      bindPageEvents(active, wc);
+    }
+  }
+  return { ok: true, id: r.id, tab: r.tab, blank: !target };
 }
 
 /**

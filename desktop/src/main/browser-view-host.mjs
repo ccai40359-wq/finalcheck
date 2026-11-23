@@ -58,15 +58,18 @@ export function disposeHost() {
 }
 
 export function hostInfo() {
-  if (!host) return { attached: false, tabs: [], activeId: null, rect: null, visible: false };
-  // 每个 view 的实测状态（诊断"画了但看不见"用：bounds 是不是 0、visible 是不是真 true）
+  if (!host) return { attached: false, tabs: [], activeId: null, rect: null, visible: false, showing: [] };
+  // 每个 view 的实测状态（诊断"画了但看不见"用）。
+  // ⚠️ WebContentsView 没有 getVisible()（实测返回 undefined），所以「当前是否真的显示在我方」
+  // 只能靠宿主自己记账（entry.showing），不能靠 bounds 推断——bounds 是"上次设过的位置"，
+  // 折叠/切走后它仍然非零，用它判断会得出"还在显示"的错误结论。
   const views = [];
+  const showing = [];
   for (const [id, entry] of host.views) {
     let b = null;
-    let v = null;
     try { b = entry.view.getBounds?.() || null; } catch { b = null; }
-    try { v = entry.view.getVisible?.() ?? null; } catch { v = null; }
-    views.push({ id, bounds: b, visible: v, url: entry.url || '' });
+    if (entry.showing) showing.push(id);
+    views.push({ id, bounds: b, showing: Boolean(entry.showing), url: entry.url || '' });
   }
   return {
     attached: true,
@@ -74,6 +77,7 @@ export function hostInfo() {
     activeId: host.state.activeId,
     rect: host.rect,
     visible: host.visible,
+    showing,                                  // 真正处于"已显示"状态的标签 id（0 个或 1 个）
     winContent: (() => { try { return host.win.getContentBounds(); } catch { return null; } })(),
     views
   };
@@ -135,7 +139,9 @@ export async function newTab({ url = '', partition, openerId = null, background 
   }
 
   const wc = view.webContents;
-  const entry = { id, view, wc, url: '', title: '' };
+  // showing：宿主自己记账「这个 view 当前是否真的被设为可见」。
+  // WebContentsView 没有 getVisible()，而 bounds 在隐藏后仍然非零，所以只能自己记。
+  const entry = { id, view, wc, url: '', title: '', showing: false };
   host.views.set(id, entry);
   try { host.win.contentView.addChildView(view); } catch { /* 窗口已关 */ }
   view.setVisible(false); // 先藏，等 rect + 可见性都确定后再显示（避免错位闪现）
@@ -267,6 +273,7 @@ function hideAll() {
   if (!host) return;
   for (const entry of host.views.values()) {
     try { entry.view.setVisible(false); } catch { /* 已销毁 */ }
+    entry.showing = false;
   }
 }
 
@@ -302,8 +309,10 @@ function applyAllBounds() {
       if (shouldShow) {
         applyEntryBounds(entry);
         entry.view.setVisible(true);
+        entry.showing = true;
       } else {
         entry.view.setVisible(false);
+        entry.showing = false;
       }
     } catch { /* 已销毁 */ }
   }

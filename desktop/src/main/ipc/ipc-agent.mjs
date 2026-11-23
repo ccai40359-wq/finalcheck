@@ -232,7 +232,7 @@ export function registerAgentIpc({
       // 诊断字段（自检与排障用：view 的实测 bounds / visible 能直接看出"画了但看不见"）
       const host = await loadViewHost().catch(() => null);
       const info = host?.hostInfo?.() || null;
-      return { ...r, ...(info ? { views: info.views, hostRect: info.rect, hostVisible: info.visible, winContent: info.winContent } : {}) };
+      return { ...r, ...(info ? { views: info.views, showing: info.showing || [], hostRect: info.rect, hostVisible: info.visible, winContent: info.winContent } : {}) };
     } catch (e) { return { ok: false, error: String(e?.message || e) }; }
   });
   ipcMain.handle('finalcheck:browser-tab-open', async (_e, url = '') => {

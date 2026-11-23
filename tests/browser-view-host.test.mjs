@@ -191,7 +191,7 @@ test('宿主: 没有宿主时所有入口都返回可执行错误（不崩）', 
   const host = await load();
   host.disposeHost();
   assert.equal(host.contentsOf(), null);
-  assert.deepEqual(host.hostInfo(), { attached: false, tabs: [], activeId: null, rect: null, visible: false });
+  assert.deepEqual(host.hostInfo(), { attached: false, tabs: [], activeId: null, rect: null, visible: false, showing: [] });
   for (const fn of ['setRect', 'setVisible', 'activateTab', 'closeTabById', 'revealTab']) {
     const r = host[fn]({ x: 1, y: 1, width: 10, height: 10 });
     assert.equal(r.ok, false, `${fn} 在没有宿主时必须报失败`);
@@ -207,4 +207,34 @@ test('宿主: revealTab 在没有 rect 时也把标签设为可见（AI 操作�
   const r = host.revealTab(t.id, { x: 700, y: 50, width: 500, height: 700 });
   assert.equal(r.ok, true);
   assert.equal(created.filter((v) => v.visible).length, 1, 'AI 一动手就必须让画面真的显示出来');
+});
+
+// 0.32.3：WebContentsView **没有 getVisible()**（实测返回 undefined），
+// 而 bounds 在隐藏之后仍然非零。所以「当前到底显示没显示」只能由宿主自己记账。
+// 这条不成立的话，自检就会把「折叠后仍算显示」判成通过（我踩过一次）。
+test('宿主: showing 记账与实际 setVisible 严格一致（bounds 不能用来推断可见性）', async () => {
+  created.length = 0;
+  CHILD_VIEWS.clear();
+  const host = await load();
+  host.disposeHost();
+  host.ensureHost(fakeWindow);
+  await host.newTab({ url: 'https://a.test/' });
+  host.setRect({ x: 700, y: 50, width: 500, height: 700 });
+  host.setVisible(true);
+
+  const on = host.hostInfo();
+  assert.deepEqual(on.showing, [on.activeId], '可见时 showing 恰好是活动标签');
+  assert.equal(on.views.find((v) => v.id === on.activeId).showing, true);
+
+  host.setVisible(false);
+  const off = host.hostInfo();
+  assert.deepEqual(off.showing, [], '隐藏后 showing 必须清空');
+  // 关键反例：bounds 仍然非零（这就是不能用它判断可见性的原因）
+  const v = off.views[0];
+  assert.ok(v.bounds && v.bounds.width > 0, 'bounds 在隐藏后仍然保留——所以它不是可见性信号');
+  assert.equal(v.showing, false, 'showing 才是可见性信号');
+
+  // 折叠等价：再显示、再隐藏，showing 每次都跟着走
+  host.setVisible(true);
+  assert.equal(host.hostInfo().showing.length, 1);
 });

@@ -6,6 +6,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.32.3] - 2026-11-23
+
+### Added
+
+- **The right rail can now be collapsed**: click the "panel + arrow" icon at its top right and the rail shrinks to a narrow strip with your pages, images and sub-agent transcripts still loaded; click again to expand. Previously the only control was ✕, which wiped every tab — inconvenient. The two buttons are now separate with a divider between them so they are hard to hit by accident.
+- The collapsed strip still lists each tab as an icon; clicking one expands the rail and jumps to that tab.
+
+### Fixed
+
+- **Switching to an image/sub-agent tab felt "locked"** — the browser view did not move aside, so it kept covering everything and you could not click the tabs underneath. It now gets out of the way.
+- **The page stayed on screen after switching to Settings** — the "Xiaohongshu sitting on top of Settings" in your screenshot. That view is drawn on the window itself and does not disappear when the UI changes; now leaving the chat view, collapsing, or switching tabs all push it aside.
+- The **＋ (plus)** on the page tab strip did nothing before (it only cleared the address bar without opening a tab). It now opens a real blank page and puts the cursor in the address bar.
+- The **circle** left of the address bar used to "refresh the tab list", which you could not observe at all. It is now a genuine **reload of the current page**.
+- Removed the **Open** button on the right of the address bar: Enter already opens the page, and the extra button was both redundant and stealing address-bar width.
+
+### Test bench (new acceptance tool)
+
+- Added an automated **human-flow** acceptance run: open a page → open a second tab → click plus → type a URL → click reload → collapse → expand → switch to Settings → back to chat — all 12 steps pass. It is not a set of point assertions; it follows the real order of operations and checks both "what should happen happened" and "what should not happen did not happen", because every bug reported this round was a flow bug (state got tangled after a sequence of actions) that point tests miss.
+
 ## [0.32.0] - 2026-11-23
 
 ### Added

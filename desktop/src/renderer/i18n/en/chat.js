@@ -310,5 +310,15 @@ export const EN_CHAT = {
   '没有打开的面板': 'Nothing open',
   '收起右栏': 'Collapse the right rail',
   '浏览器': 'Browser',
-  '面板': 'Panel'
+  '面板': 'Panel',
+  // 0.32.1 右栏折叠 + 浏览器工具条修正
+  '展开右栏': 'Expand the right rail',
+  '折叠右栏': 'Collapse the right rail',
+  '折叠右栏（内容保留，随时展开）': 'Collapse the right rail (content is kept, expand any time)',
+  '关闭右栏（清空所有标签）': 'Close the right rail (clears all tabs)',
+  '关闭右栏': 'Close the right rail',
+  '重新加载当前网页': 'Reload this page',
+  '重新加载失败': 'Reload failed',
+  '新标签页（开一个空白页，在上面地址栏输入网址）': 'New tab (opens a blank page; type a URL in the address bar above)',
+  '新标签打开失败': 'Failed to open a new tab'
 };

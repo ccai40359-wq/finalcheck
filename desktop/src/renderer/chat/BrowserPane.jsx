@@ -22,6 +22,7 @@ function normalizeUrl(input) {
 
 export function BrowserPane({ y, visible, onTabsChange }) {
   const boxRef = useRef(null);
+  const addrRef = useRef(null);
   const [tabs, setTabs] = useState([]);
   const [activeId, setActiveId] = useState(null);
   const [addr, setAddr] = useState('');
@@ -75,6 +76,15 @@ export function BrowserPane({ y, visible, onTabsChange }) {
     if (!visible) void y?.railVisible?.(false);
   }, [visible, reportRect, y]);
 
+  // ⚠️ 卸载时必须把画面藏起来（这是 0.32.1 修的两个真 bug 的同一个根因）：
+  //   ① 切到产物/子代理 tab 后，网页那张 WebContentsView 仍盖在原位 → 下面的标签点不动（"被锁住"）
+  //   ② 切到设置页时整个右栏卸载了，画面却还留在屏幕上（用户实测：设置页右边压着小红书）
+  // 卸载后没有任何组件再持有它，所以只有这里能通知主进程。
+  // 用 ref 存 y：这样 effect 只在真正卸载时清一次，不会因为 y 变化而提前触发。
+  const yRef = useRef(y);
+  yRef.current = y;
+  useEffect(() => () => { void yRef.current?.railVisible?.(false); }, []);
+
   // 标签状态：打开页面后由工具层推送，这里也做一次兜底轮询（3s，仅本面板可见时）
   useEffect(() => {
     refreshTabs();
@@ -102,9 +112,29 @@ export function BrowserPane({ y, visible, onTabsChange }) {
     e.stopPropagation();
     try { await y?.browserTabClose?.(id); } finally { await refreshTabs(); }
   };
+  // 0.32.1 修复：加号以前只清空地址栏（什么都没发生，用户实测"点了没效果"）。
+  // 现在真的开一个新标签——空白页，然后把焦点给地址栏。
   const openBlank = async () => {
-    setAddr('');
     setNote('');
+    setAddr('');
+    try {
+      const r = await y?.browserTabOpen?.('');
+      if (!r || r.ok === false) setNote(String(r?.error || t('新标签打开失败')));
+      await refreshTabs();
+      addrRef.current?.focus();
+    } catch (e) { setNote(String(e?.message || e)); }
+  };
+  // 0.32.1 修复：这个圈以前只"刷新标签列表"（对用户没有任何可感知效果），
+  // 现在改成真正的**重新加载当前网页**（浏览器的刷新语义）。
+  const reloadPage = async () => {
+    const cur = tabs.find((x) => x.id === activeId);
+    if (!cur?.url) return;
+    setNote('');
+    try {
+      const r = await y?.browserGoto?.(cur.url);
+      if (!r || r.ok === false) setNote(String(r?.error || t('重新加载失败')));
+      await refreshTabs();
+    } catch (e) { setNote(String(e?.message || e)); }
   };
 
   if (!visible) return null;
@@ -125,25 +155,28 @@ export function BrowserPane({ y, visible, onTabsChange }) {
           </span>
         ))}
         {tabs.length === 0 && <span className="text-[11px] text-mute/40">{t('还没有网页')}</span>}
-        <button onClick={openBlank} title={t('新标签页（在上面地址栏输入网址）')}
-          className="shrink-0 ml-1 rounded px-1.5 text-[12px] text-mute/60 hover:text-goldSoft">+</button>
+        <button onClick={openBlank} title={t('新标签页（开一个空白页，在上面地址栏输入网址）')}
+          data-browser-new-tab
+          className="shrink-0 ml-1 rounded px-1.5 py-0.5 text-[13px] leading-none text-mute/70 hover:bg-lift/[0.06] hover:text-goldSoft">＋</button>
       </div>
 
-      {/* 地址栏：用户自己输网址的地方 */}
+      {/* 地址栏：用户自己输网址的地方。
+          0.32.1：去掉了右边的 "Open" 按钮——回车就是打开，按钮和回车重复，
+          而且它挤占了地址栏宽度（用户反馈"这个 Open 是啥意思"）。 */}
       <div className="shrink-0 flex items-center gap-1.5 px-2 h-9 border-b border-edge/60">
-        <button onClick={() => { void refreshTabs(); }} title={t('刷新标签状态')}
-          className="shrink-0 rounded px-1.5 py-0.5 text-[12px] text-mute/60 hover:text-goldSoft">↻</button>
+        <button onClick={() => { void reloadPage(); }} title={t('重新加载当前网页')}
+          data-browser-reload
+          className="shrink-0 rounded px-1.5 py-0.5 text-[13px] leading-none text-mute/60 hover:bg-lift/[0.06] hover:text-goldSoft">↻</button>
         <input
+          ref={addrRef}
           value={addr}
           onChange={(e) => setAddr(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); void goto(); } }}
           placeholder={t('输入网址后回车（例如 xiaohongshu.com）')}
           spellCheck={false}
           className="flex-1 min-w-0 rounded bg-lift/[0.06] px-2 py-1 text-[12px] text-ink/90 outline-none focus:ring-1 focus:ring-gold/40" />
-        <button onClick={() => void goto()} disabled={addrBusy}
-          className="shrink-0 rounded px-2 py-1 text-[11px] text-goldSoft hover:bg-gold/10 disabled:opacity-50">
-          {addrBusy ? t('打开中…') : t('打开')}
-        </button>
+        {/* 只在输入了东西时给一个极简的"去"提示（回车即可，不需要按钮） */}
+        {addrBusy && <span className="shrink-0 text-[11px] text-mute/60">{t('打开中…')}</span>}
       </div>
 
       {/* 这一块是浏览器画面的位置：主进程按它的 rect 画 WebContentsView。

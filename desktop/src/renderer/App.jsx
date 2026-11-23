@@ -241,6 +241,14 @@ export default function App() {
   const [stepView, setStepView] = useState(null); // 右侧子代理上下文面板：{sessionId, stepId, name, role}
   // 0.32.0：右栏多标签（产物 / 内嵌浏览器 / 子代理并存）。归约逻辑在 lib/rail-tabs.mjs。
   const [rail, setRail] = useState(() => emptyRail());
+  // 0.32.1：右栏折叠（用户："可以折叠，如果只有一个 × 那不方便"）。
+  // 折叠 = 收成窄条、内容全保留；与 ✕（清空标签）是两个不同操作。状态记在本机。
+  const [railCollapsed, setRailCollapsed] = useState(() => {
+    try { return localStorage.getItem('fc.railCollapsed') === '1'; } catch { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('fc.railCollapsed', railCollapsed ? '1' : '0'); } catch { /* 隐私模式 */ }
+  }, [railCollapsed]);
   const railRef = useRef(rail);
   railRef.current = rail;
   // 子代理面板只属于它绑定的那次对话：进设置/用量或切工作区（换会话）就置空，
@@ -1077,6 +1085,16 @@ export default function App() {
     });
   }, [y]);
 
+  // 0.32.1：右栏整体卸载时（切到设置页/用量页、右栏被收起/折叠）必须有兜底——
+  // 内嵌浏览器的 WebContentsView 画在主窗口上，**不会随 React 卸载自动消失**。
+  // BrowserPane 卸载时自己会藏一次，这里再补一道：任何"右栏不该显示"的状态都强制隐藏。
+  const railBrowserShowing = Boolean(activeRailTab(rail) && activeRailTab(rail).kind === 'browser')
+    && page === 'chat' && !railCollapsed;
+  useEffect(() => {
+    if (railBrowserShowing) return;
+    void y?.railVisible?.(false);
+  }, [railBrowserShowing, y]);
+
   // 浏览器首次使用（0.31.0）：模型第一次要打开网页时，主进程推一次「一次性 / 长期保留」的选择。
   // 设计为轻量提示条（不是 modal、不打断回合）：那次导航已按无痕跑完，只是让用户知道还有持久选项。
   useEffect(() => {
@@ -1898,6 +1916,8 @@ export default function App() {
       {shouldShowRail(rail) && page === 'chat' && (
         <RightRail
           rail={rail}
+          collapsed={railCollapsed}
+          onToggleCollapsed={setRailCollapsed}
           sidebarWidth={sidebarPx}
           y={y}
           artifact={artifact}
