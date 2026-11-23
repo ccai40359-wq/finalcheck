@@ -130,18 +130,7 @@ export function registerAgentIpc({
       process.once('exit', () => { try { cu.shutdown?.(); } catch { /* 已退 */ } });
       // 0.32.0：把右栏内嵌宿主的提供者交给 browser-use（`viewHostProvider` 定义在下方，
       // 回调是延迟调用所以能拿到；它返回 null 时 browser-use 走旧隐藏窗口路径）。
-      try { bu.setViewHostProvider?.(() => viewHostProvider()); } catch { /* 旧模块没有该入口 */ }
-      // 0.32.5 P0：页面自己 window.open（课程卡/搜索结果/登录跳转）→ 开新标签 + 让右栏亮起来。
-      // 以前这个出口是空的：browser-view-host 里 `host.onWindowOpen?.()` 从未被赋值过，
-      // 所以页面里 window.open 一律静默失败——用户实机「点课程没反应」就是这个。
-      try {
-        bu.setPageAttentionNotifier?.((p) => {
-          try {
-            const w = getWin();
-            if (w && !w.isDestroyed()) w.webContents.send('finalcheck:browser-rail-open', p);
-          } catch { /* 窗口没了不影响浏览 */ }
-        });
-      } catch { /* 旧模块没有该入口 */ }
+      try { bu.setViewHostProvider?.(viewHostProvider); } catch { /* 旧模块没有该入口 */ }
       return { computerUse: cu, browserUse: bu };
     } catch { return null; }
   })();
@@ -150,24 +139,26 @@ export function registerAgentIpc({
 
   // 0.32.0：右栏内嵌浏览器宿主（WebContentsView 池）。懒加载：
   // 它需要主窗口对象，注册 IPC 时窗口可能还没建好。
-  let viewHostPromise;
+  let viewHostImport;
   let viewHostModule = null;
-  const loadViewHost = () => viewHostPromise ??= (async () => {
+  let panelSession = null;
+  const sendBrowserTabsChanged = (sessionId) => {
+    const win = getWin();
+    if (!win?.isDestroyed?.() && win?.webContents && sessionId === panelSession) {
+      win.webContents.send('finalcheck:browser-tabs-changed', sessionId);
+    }
+  };
+  const loadViewHost = async () => {
     try {
-      const mod = await import(engineUrl('desktop/src/main/browser-view-host.mjs'));
-      const w = getWin();
-      if (!w || w.isDestroyed?.()) return null;
-      mod.ensureHost(w);
+      const mod = await (viewHostImport ??= import(engineUrl('desktop/src/main/browser-view-host.mjs')));
+      const win = getWin();
+      if (!win || win.isDestroyed?.()) return null;
+      mod.ensureHost(win, sendBrowserTabsChanged);
       viewHostModule = mod;
       return mod;
     } catch { return null; }
-  })();
-
-  // 把右栏内嵌宿主的提供者交给 browser-use。
-  // ⚠️ 这里是**同步**回调（browserUse.ensureWindow 不是 async），所以只能返回「已经加载好的」模块。
-  // 因此要提前触发一次 loadViewHost：主窗口建好后 loadDesktopTools 的预热会跑，那时宿主也就绪了。
-  // 若此刻还没就绪，回调返回 null → browser-use 走旧的隐藏窗口路径（行为与 0.31.x 一致，不会炸）。
-  const viewHostProvider = () => viewHostModule;
+  };
+  const viewHostProvider = (sessionId) => viewHostModule?.hostForSession(sessionId);
   void loadViewHost();
 
   // 真 Edge 通道（0.31.0）：browser-real.mjs 依赖 playwright-core（不是 Electron API），
@@ -212,53 +203,85 @@ export function registerAgentIpc({
     const { rm } = await import('node:fs/promises');
     const ses = (await import('electron')).session.fromPartition(PARTITION_PERSISTENT);
     const dt = await loadDesktopTools().catch(() => null);
-    return clearBrowserData({ userDataDir: getDataRoot(), browserUse: dt?.browserUse || null, rm, session: ses });
+    const host = await loadViewHost();
+    return clearBrowserData({
+      userDataDir: getDataRoot(), rm, session: ses,
+      browserUse: {
+        close() {
+          dt?.browserUse?.closeAll?.();
+          host?.clearAllTabs();
+        }
+      }
+    });
   });
   // UI 当前策略（持久模式下界面上要有可见标识，让用户随时知道正在记住登录）
   ipcMain.handle('finalcheck:browser-session-info', async () => {
     const policy = await browserSessionPolicy();
     let open = false;
-    try { open = (await loadDesktopTools())?.browserUse?.isOpen?.() === true; } catch { /* 无 Electron */ }
+    try {
+      const browserUse = (await loadDesktopTools())?.browserUse?.forSession(panelSession);
+      open = Boolean(browserUse?.isOpen() || browserUse?.listTabs().tabs.length);
+    } catch { /* 无 Electron */ }
     return { ...policy, open };
   });
 
-  /* ---- 0.32.0 右栏内嵌浏览器 ---- */
-  // 渲染层把右栏内容区（DIP）报上来：WebContentsView 不会跟随窗口缩放（PoC 实测），
-  // 必须由持有布局的那一侧告诉主进程「画在哪儿」。这是全仓库唯一的 rect 通道。
-  ipcMain.handle('finalcheck:rail-rect', async (_e, rect = null) => {
-    const host = await loadViewHost();
-    if (!host) return { ok: false, error: '宿主未就绪' };
+  /* ---- 右栏内嵌浏览器 ---- */
+  const resolvePanelSession = (sessionId) => (sessionId === undefined ? panelSession : sessionId ?? null);
+  const scopedBrowser = async (sessionId) => {
+    await loadViewHost();
+    return (await loadDesktopTools().catch(() => null))?.browserUse?.forSession(sessionId);
+  };
+  const browserUnavailable = { ok: false, error: '浏览器未就绪' };
+
+  ipcMain.handle('finalcheck:browser-panel-session', (_e, sessionId = null) => {
+    if (panelSession !== sessionId) {
+      viewHostProvider(panelSession)?.setVisible(false);
+      panelSession = sessionId;
+    }
+    return { ok: true };
+  });
+
+  ipcMain.handle('finalcheck:rail-rect', async (_e, rect = null, sessionId) => {
+    const owner = resolvePanelSession(sessionId);
+    const host = (await loadViewHost())?.hostForSession(owner);
+    if (!host) return browserUnavailable;
     return rect ? host.setRect(rect) : host.setVisible(false);
   });
-  // 右栏浏览器面板的显隐（收起右栏、切到别的 tab 都要藏起来，否则画面会停在错位置）
-  ipcMain.handle('finalcheck:rail-visible', async (_e, visible = false) => {
-    const host = await loadViewHost();
-    if (!host) return { ok: false, error: '宿主未就绪' };
-    return host.setVisible(visible === true);
+
+  ipcMain.handle('finalcheck:rail-visible', async (_e, visible = false, sessionId) => {
+    const owner = resolvePanelSession(sessionId);
+    const host = (await loadViewHost())?.hostForSession(owner);
+    if (!host) return browserUnavailable;
+    return host.setVisible(visible === true && owner === panelSession);
   });
-  ipcMain.handle('finalcheck:browser-tabs', async () => {
-    const dt = await loadDesktopTools().catch(() => null);
+
+  ipcMain.handle('finalcheck:browser-tabs', async (_e, sessionId) => {
+    const owner = resolvePanelSession(sessionId);
     try {
-      const r = dt?.browserUse?.listTabs?.() || { ok: true, embedded: false, tabs: [] };
-      // 诊断字段（自检与排障用：view 的实测 bounds / visible 能直接看出"画了但看不见"）
-      const host = await loadViewHost().catch(() => null);
-      const info = host?.hostInfo?.() || null;
-      return { ...r, ...(info ? { views: info.views, showing: info.showing || [], hostRect: info.rect, hostVisible: info.visible, winContent: info.winContent } : {}) };
+      const browserUse = await scopedBrowser(owner);
+      const r = browserUse?.listTabs() || { ok: true, embedded: false, tabs: [] };
+      const info = viewHostProvider(owner)?.hostInfo();
+      return { ...r, ...(info ? { views: info.views, showing: info.showing, hostRect: info.rect, hostVisible: info.visible, winContent: info.winContent } : {}) };
     } catch (e) { return { ok: false, error: String(e?.message || e) }; }
   });
-  ipcMain.handle('finalcheck:browser-tab-open', async (_e, url = '') => {
-    const dt = await loadDesktopTools().catch(() => null);
-    try { return await (dt?.browserUse?.openTab?.(String(url)) || { ok: false, error: '浏览器未就绪' }); } catch (e) { return { ok: false, error: String(e?.message || e) }; }
+
+  ipcMain.handle('finalcheck:browser-tab-open', async (_e, url = '', sessionId) => {
+    const owner = resolvePanelSession(sessionId);
+    try {
+      return await (await scopedBrowser(owner))?.openTab(String(url), await browserSessionPolicy()) || browserUnavailable;
+    } catch (e) { return { ok: false, error: String(e?.message || e) }; }
   });
-  // 用户在界面点网页标签：**只改他看哪一页**，不动 AI 的工作目标（0.32.4 P0 见 browser-use.viewTab）
-  ipcMain.handle('finalcheck:browser-tab-switch', async (_e, id = '') => {
-    const dt = await loadDesktopTools().catch(() => null);
-    try { return dt?.browserUse?.viewTab?.(String(id)) || { ok: false, error: '浏览器未就绪' }; } catch (e) { return { ok: false, error: String(e?.message || e) }; }
+
+  ipcMain.handle('finalcheck:browser-tab-switch', async (_e, id = '', sessionId) => {
+    const owner = resolvePanelSession(sessionId);
+    try { return (await scopedBrowser(owner))?.viewTab(String(id)) || browserUnavailable; }
+    catch (e) { return { ok: false, error: String(e?.message || e) }; }
   });
-  // AI 工作标签 vs 用户正在看的标签（UI 在两者不一致时要提示，避免用户误以为 AI 跑偏）
-  ipcMain.handle('finalcheck:browser-tab-focus', async () => {
-    const dt = await loadDesktopTools().catch(() => null);
-    try { return dt?.browserUse?.tabFocusInfo?.() || { ok: false, error: '浏览器未就绪' }; } catch (e) { return { ok: false, error: String(e?.message || e) }; }
+
+  ipcMain.handle('finalcheck:browser-tab-focus', async (_e, sessionId) => {
+    const owner = resolvePanelSession(sessionId);
+    try { return (await scopedBrowser(owner))?.tabFocusInfo() || browserUnavailable; }
+    catch (e) { return { ok: false, error: String(e?.message || e) }; }
   });
   // 用户主动要求「在默认浏览器打开当前网页」（右栏右上角按钮）。
   // 这是**唯一**允许把内嵌浏览器的页面送到系统浏览器的方式——页面自己不会跑出去（见 index.mjs 的守卫）。
@@ -273,24 +296,48 @@ export function registerAgentIpc({
       return { ok: true, url: u.href };
     } catch (e) { return { ok: false, error: String(e?.message || e) }; }
   });
-  ipcMain.handle('finalcheck:browser-tab-close', async (_e, id = '') => {
-    const dt = await loadDesktopTools().catch(() => null);
-    try { return dt?.browserUse?.closeTab?.(String(id)) || { ok: false, error: '浏览器未就绪' }; } catch (e) { return { ok: false, error: String(e?.message || e) }; }
+  ipcMain.handle('finalcheck:browser-tab-close', async (_e, id = '', sessionId) => {
+    const owner = resolvePanelSession(sessionId);
+    try { return (await scopedBrowser(owner))?.closeTab(String(id)) || browserUnavailable; }
+    catch (e) { return { ok: false, error: String(e?.message || e) }; }
   });
-  // 用户在右栏里自己输网址（这是"我也可以自己开网页"的落点）
-  ipcMain.handle('finalcheck:browser-goto', async (_e, url = '') => {
-    const dt = await loadDesktopTools().catch(() => null);
+
+  ipcMain.handle('finalcheck:browser-panel-close', async (_e, sessionId, release = false) => {
+    const owner = resolvePanelSession(sessionId);
     try {
-      await loadViewHost().catch(() => null);
-      const r = await dt?.browserUse?.navigate?.(String(url), { observe: false });
-      if (r?.ok && r.embedded) {
-        // 用户自己开网页也要让右栏切到浏览器 tab（否则画出来了但 UI 不知道该显示它）
-        try {
-          const w = getWin();
-          if (w && !w.isDestroyed()) w.webContents.send('finalcheck:browser-rail-open', { tabId: r.tabId || null, url: r.url || String(url) });
-        } catch { /* 窗口没了不影响导航 */ }
+      if (release) {
+        (await loadDesktopTools())?.browserUse?.releaseSession(owner);
+        viewHostModule?.disposeSession(owner);
+        return { ok: true };
       }
-      return r || { ok: false, error: '浏览器未就绪' };
+      return (await scopedBrowser(owner))?.closePanel() || browserUnavailable;
+    } catch (e) { return { ok: false, error: String(e?.message || e) }; }
+  });
+
+  ipcMain.handle('finalcheck:browser-tab-reload', async (_e, id = '', sessionId) => {
+    const owner = resolvePanelSession(sessionId);
+    try { return (await scopedBrowser(owner))?.reloadTab(String(id)) || browserUnavailable; }
+    catch (e) { return { ok: false, error: String(e?.message || e) }; }
+  });
+
+  ipcMain.handle('finalcheck:browser-goto', async (_e, url = '', tabId, sessionId) => {
+    const owner = resolvePanelSession(sessionId);
+    try {
+      const browserUse = await scopedBrowser(owner);
+      if (!browserUse) return browserUnavailable;
+      if (tabId) return await browserUse.gotoTab(String(tabId), String(url));
+      if (tabId === null) return await browserUse.openTab(String(url), await browserSessionPolicy());
+
+      // 兼容独立打开浏览器的调用。地址栏导航无需重新激活外层右栏。
+      const r = await browserUse.navigate(String(url), { observe: false });
+      if (r?.ok && r.embedded && owner === panelSession) {
+        browserUse.viewTab(r.tabId);
+        const win = getWin();
+        if (win && !win.isDestroyed()) {
+          win.webContents.send('finalcheck:browser-rail-open', { sessionId: owner, tabId: r.tabId, url: r.url });
+        }
+      }
+      return r;
     } catch (e) { return { ok: false, error: String(e?.message || e) }; }
   });
 
@@ -1083,7 +1130,10 @@ export function registerAgentIpc({
         spawnAgent,
         // 桌面操作 + 浏览器操作（2026-11-21）：只给主 agent。懒加载，未就绪时返回 null，
         // 工具表里就不出现这两个工具（纯 Node / 测试台里本来也用不了）。
-        getDesktopToolsAsync: () => loadDesktopTools(),
+        getDesktopToolsAsync: async () => {
+          const dt = await loadDesktopTools();
+          return dt ? { ...dt, browserUse: dt.browserUse?.forSession(sessionId) } : dt;
+        },
         // 0.31.0：浏览器会话策略（无痕/持久）与首次使用提示，按当前配置每次导航解析
         browserSessionPolicy,
         onBrowserFirstUse,

@@ -1,20 +1,19 @@
-// 0.32.5 P0 回归：用户这一轮报的三个问题，根因两条。
+// 0.32.6 P0 回归：用户报的三个问题 + 合并时补回的两项。
 //
-// ① 「还是一样 开了浏览器情况下我点不了图片」
-// ② 「现在不知道为什么 巨卡无比，我切换会话，打字，巨卡」
-//    → 同一个**渲染↔IPC 正反馈死循环**：
-//      BrowserPane.refreshTabs 依赖 onTabsChange（父组件内联箭头，每次渲染换引用）
-//      → effect 重跑 → 调 IPC → setTabs(新数组) + 父组件 setRail(新对象)
-//      → App 全树重渲染 → 回调再换引用 → ……
-//      循环里的闭包捕获的是旧 rail.activeKey（'browser'），所以用户点 PNG tab 之后
-//      又被切回浏览器 tab（表现=「点不了图片」）；同时每轮一次 IPC 往返把主进程打满（=「巨卡」）。
+// 用户报的现象（2026-11-23）：
+//   ① 「开了浏览器情况下我点不了图片」
+//   ② 「巨卡无比，我切换会话，打字，巨卡」
+//   ③ 「我在内置浏览器页面点这些课程没反应」
 //
-// ③ 「我在内置浏览器页面点这些课程 没反应」
-//    → browser-view-host.mjs 里 `host.onWindowOpen?.(...)` 的出口**全仓库从未赋值**，
-//      window.open / target=_blank 一律被 deny 后静默丢掉。
+// 0.32.5（我）与 0.32.6（合并 Codex）分别用不同路径都解决了这三条：
+//   · 我：断掉渲染↔IPC 死循环（回调走 ref + 结构比较）+ 给 window.open 真接线
+//   · Codex：事件驱动推送（updateState 引用相等守卫）+ 宿主内部直接 newTab + 按会话隔离宿主
+// 合并后真实的实现是「Codex 架构 + 我补的两项」，所以这个文件钉的是**合并后的约束**，
+// 不是任何一侧的历史写法。
 //
-// 这个文件把三条都钉住，且断言「约束」而不是「某个字面写法」（0.32.4 的教训：
-// 钉死写法会在下一次重构时变成假失败，而真约束其实还成立）。
+// 合并时补回的项（Codex 侧缺）：
+//   A. ensureBrowserRailTab —— 已有浏览器 tab 时，后续通知不得抢走用户正在看的产物/图片
+//   B. 宿主幂等（zoom/bounds/visible）—— 拖右栏不反复整页重排（见 browser-view-host.test.mjs）
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -22,7 +21,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
-  emptyRail, openRailTab, activateRailTab, setBrowserTabTitle, ensureBrowserRailTab
+  emptyRail, openRailTab, activateRailTab, patchRailTab, ensureBrowserRailTab
 } from '../desktop/src/renderer/lib/rail-tabs.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -33,124 +32,40 @@ const hostSrc = readFileSync(path.join(repoRoot, 'desktop/src/main/browser-view-
 const useSrc = readFileSync(path.join(repoRoot, 'desktop/src/main/browser-use.mjs'), 'utf8');
 const ipcSrc = readFileSync(path.join(repoRoot, 'desktop/src/main/ipc/ipc-agent.mjs'), 'utf8');
 
-/* ---------------- ① 死循环：纯函数层（可执行断言，不是源码文本） ---------------- */
+/* ---------------- A. 防抢焦点（合并时补回） ---------------- */
 
-test('① setBrowserTabTitle：标题没变时返回同一引用（React 直接 bail out，循环无燃料）', () => {
-  const rail = openRailTab(emptyRail(), { kind: 'browser' }).rail;
-  const first = setBrowserTabTitle(rail, '小红书');
-  assert.equal(first.tabs[0].payload.pageTitle, '小红书');
-  // 同一个标题再来一次 → 必须是同一个对象（否则每次轮询都会触发一次 App 重渲染）
-  const again = setBrowserTabTitle(first, '小红书');
-  assert.equal(again, first, '标题没变必须返回同一个对象引用');
-  // 前后空白差异也不算变化（网页常带尾随空格）
-  const padded = setBrowserTabTitle(first, '  小红书  ');
-  assert.equal(padded, first, '去空白后相同 = 不算变化');
-});
-
-test('① setBrowserTabTitle：只改标题，绝不改 activeKey（这是"点图片被切回浏览器"的根因）', () => {
-  let rail = openRailTab(emptyRail(), { kind: 'artifact', artifactPath: 'D:/x/n1.png', title: 'n1.png' }).rail;
-  rail = openRailTab(rail, { kind: 'browser' }).rail;
-  // 用户切到图片 tab
-  rail = activateRailTab(rail, 'artifact:D:/x/n1.png').rail;
-  assert.equal(rail.activeKey, 'artifact:D:/x/n1.png');
-  // 这时浏览器那边报告了网页标题（异步回来）
-  const after = setBrowserTabTitle(rail, '哈尔滨理工大学(学生)');
-  assert.equal(after.activeKey, 'artifact:D:/x/n1.png',
-    '回填网页标题绝不能把用户的 tab 切走（旧写法用过期闭包的 activeKey 切回 browser）');
-  assert.equal(after.tabs.find((t) => t.kind === 'browser').payload.pageTitle, '哈尔滨理工大学(学生)');
-});
-
-test('① setBrowserTabTitle：没有浏览器 tab / 空标题时安全（不造新对象）', () => {
-  const onlyArtifact = openRailTab(emptyRail(), { kind: 'artifact', artifactPath: 'a.html', title: 'a.html' }).rail;
-  assert.equal(setBrowserTabTitle(onlyArtifact, 'x'), onlyArtifact, '没有浏览器 tab 不该改状态');
-  const rail = openRailTab(emptyRail(), { kind: 'browser' }).rail;
-  assert.equal(setBrowserTabTitle(rail, ''), rail, '空标题不该写入');
-  // 空状态安全：不抛错，且返回的是空右栏（每次是新对象，不比引用）
-  const fromNull = setBrowserTabTitle(null, 'x');
-  assert.deepEqual(fromNull, emptyRail(), '空状态返回空右栏且不抛错');
-  assert.deepEqual(setBrowserTabTitle(undefined, 'x'), emptyRail());
-});
-
-/* ---------------- ① 死循环：源码约束（回调不得进依赖数组） ---------------- */
-
-test('① BrowserPane：refreshTabs/reportRect 的依赖数组不能含父组件回调与 y', () => {
-  // 取每个 useCallback 的结尾依赖数组：从声明起，到第一个 `}, [...]);`
-  for (const name of ['refreshTabs', 'reportRect']) {
-    const start = paneSrc.indexOf(`const ${name} = useCallback(`);
-    assert.ok(start > 0, `${name} 必须用 useCallback 定义`);
-    const tail = paneSrc.slice(start);
-    const m = tail.match(/^[\s\S]*?\n  \}, \[([^\]]*)\]\);/);
-    assert.ok(m, `${name} 必须有依赖数组（形如 "}, [...]);"）`);
-    assert.equal(m[1].trim(), '', `${name} 的依赖数组必须为空（所有输入走 ref），实际是 [${m[1]}]`);
-  }
-  // 反例：y / visible / onTabsChange / onPageTitle / addrBusy 不得出现在依赖位置
-  assert.equal(/\[y, onTabsChange\]/.test(paneSrc), false, '父组件回调不得进依赖数组');
-  assert.equal(/\}, \[addrBusy\]\);/.test(paneSrc), false, 'addrBusy 不得进 refreshTabs 依赖');
-});
-
-test('① BrowserPane：标签/活动/标题都做「变了才 set」的结构比较', () => {
-  assert.match(paneSrc, /const tabsKeyRef = useRef\(''\);/, '要有标签结构签名');
-  assert.match(paneSrc, /if \(sig !== tabsKeyRef\.current\)/, '内容没变就不换数组引用');
-  assert.match(paneSrc, /if \(nextActive !== lastActiveRef\.current\)/, '活动标签没变就不 setActiveId');
-  assert.match(paneSrc, /if \(pageTitle && pageTitle !== lastTitleRef\.current\)/, '标题没变就不上抛父组件');
-  assert.match(paneSrc, /setInterval\(\(\) => \{ void refreshTabs\(\); \}, 5000\);/, '轮询周期放宽到 5s');
-});
-
-test('① RightRail：浏览器 tab 只回填标题，不得调 onActivate（那是循环的一半燃料）', () => {
-  // 先剥掉注释再判定——注释里写着「绝不调 onActivate」不能算违规
-  const stripComments = (src) => src
-    .replace(/\/\*[\s\S]*?\*\//g, '')      // 块注释
-    .replace(/^[ \t]*\/\/[^\n]*/gm, '');   // 行注释
-  const browserBlock = railSrc.match(/active\?\.kind === 'browser'[\s\S]*?<BrowserPane[\s\S]*?\/>/);
-  assert.ok(browserBlock, '要能找到浏览器 tab 的渲染块');
-  assert.ok(!/onActivate/.test(stripComments(browserBlock[0])),
-    '浏览器 tab 渲染块里不得出现 onActivate（注释提到不算）');
-  assert.match(browserBlock[0], /onPageTitle=/, '必须用只回填标题的 onPageTitle');
-  assert.match(railSrc, /onPatchBrowserTitle/, 'RightRail 要接收标题回填入口');
-});
-
-test('① App：标题回填走纯函数 setBrowserTabTitle（不经过 activateRailTab）', () => {
-  // 允许经过排障包装 setRailW —— 钉的是「最终落到 setBrowserTabTitle」这条语义，不是某个字面写法
-  assert.ok(/onPatchBrowserTitle=\{\(title\) => (?:setRailW|setRail)\([\s\S]{0,80}setBrowserTabTitle\(cur, title\)/.test(appSrc),
-    '标题回填必须走 setBrowserTabTitle（纯更新）');
-  // onActivate 不再接第二个参数 patch（旧语义已删除）
-  assert.ok(!/onActivate=\{\(key, patch\) =>/.test(appSrc), 'onActivate 不应再有 patch 参数');
-  assert.ok(!/patch\?\.pageTitle/.test(appSrc), '旧的 pageTitle 分支必须消失');
-});
-
-
-test('① ensureBrowserRailTab：重复通知不抢用户正在看的 tab（这是点图片被切回浏览器的另一半根因）', () => {
-  // 真实链路：点 chip 后 artifact tab 确实开出来了，但 6.5s 内 activeKind 变回 browser（S16 实测）。
-  // 原因是三条通道（AI navigate / 用户输网址 / 页面 window.open）都会调 openRailTab(browser)，
+test('A1 ensureBrowserRailTab：重复通知不抢用户正在看的 tab（"点不了图片"的根因之一）', () => {
+  // 真实链路（S16 实测）：点 chip 后产物 tab 确实开出来了，但 6.5s 内 activeKind 变回 browser。
+  // 原因是多条通道（AI navigate / 用户输网址）都调 openRailTab(browser)，
   // 而它无条件把 activeKey 设成 'browser'。
   let rail = emptyRail();
   // 第一次：右栏还没有浏览器 tab → 必须开出来并切过去（用户要看见 AI 在干什么）
   rail = ensureBrowserRailTab(rail, { tabId: 'bt-1' });
-  assert.equal(rail.activeKey, 'browser');
+  assert.equal(rail.activeKey, 'browser', '首次必须切到浏览器（否则用户看不到 AI 在操作什么）');
   assert.equal(rail.tabs.length, 1);
   // 用户点了 PNG chip
   rail = openRailTab(rail, { kind: 'artifact', artifactPath: 'D:/x/n1.png', title: 'n1.png' }).rail;
   rail = activateRailTab(rail, 'artifact:D:/x/n1.png').rail;
   assert.equal(rail.activeKey, 'artifact:D:/x/n1.png');
-  // 这时又来一条浏览器通知（用户输网址 / AI 换页 / 页面 window.open）
+  // 这时又来一条浏览器通知（用户输网址 / AI 换页）
   const after = ensureBrowserRailTab(rail, { tabId: 'bt-2' });
-  assert.equal(after.activeKey, 'artifact:D:/x/n1.png', '已有浏览器 tab时，后续通知绝不能抢焦点');
+  assert.equal(after.activeKey, 'artifact:D:/x/n1.png', '已有浏览器 tab 时，后续通知绝不能抢焦点');
   assert.equal(after.tabs.find((t) => t.kind === 'browser').payload.tabId, 'bt-2', '载荷仍要更新');
 });
 
-test('① ensureBrowserRailTab：空载荷不覆盖已有标题，且无变化时返回同一引用', () => {
+test('A2 ensureBrowserRailTab：空载荷不覆盖已有标题，无变化时返回同一引用', () => {
   let rail = ensureBrowserRailTab(emptyRail(), { tabId: 'bt-1' });
-  rail = setBrowserTabTitle(rail, '哈尔滨理工大学(学生)');
-  // 主进程推的空 pageTitle 不能把标题清空
+  // 标题由 patchRailTab 写（合并后的真实路径）
+  rail = patchRailTab(rail, 'browser', { payload: { pageTitle: '哈尔滨理工大学(学生)' } }).rail;
+  // 主进程推的 pageTitle 常常是空串——不能把标题清空
   const a = ensureBrowserRailTab(rail, { tabId: 'bt-1', pageTitle: '' });
   assert.equal(a, rail, '完全无变化必须返回同一引用（零重渲染）');
   assert.equal(a.tabs[0].payload.pageTitle, '哈尔滨理工大学(学生)', '空值不覆盖已有值');
-  // 重复同一个 tabId 也是无变化
-  assert.equal(ensureBrowserRailTab(a, { tabId: 'bt-1' }), a);
+  assert.equal(ensureBrowserRailTab(a, { tabId: 'bt-1' }), a, '重复同一 tabId 也是无变化');
 });
 
-test('① App：三条 browser-rail-open 通道都走 ensureBrowserRailTab（不是 openRailTab）', () => {
-  // 用 indexOf 计数：正则里 `{` 是量词起始符，写 /openRailTab(cur, { kind/ 直接语法错
+test('A3 App：两条 browser-rail-open 通道都走 ensureBrowserRailTab（不是 openRailTab）', () => {
+  // 用 indexOf 计数：正则里 `{` 是量词起始符，写 /openRailTab(cur, { kind/ 会语法错
   const needle = "openRailTab(cur, { kind: 'browser'";
   let n = 0;
   for (let i = appSrc.indexOf(needle); i >= 0; i = appSrc.indexOf(needle, i + 1)) n++;
@@ -161,51 +76,87 @@ test('① App：三条 browser-rail-open 通道都走 ensureBrowserRailTab（不
   assert.ok(m >= 2, `至少两处（agent-event 通道 + 用户输网址通道）要走 ensure，实际 ${m} 处`);
 });
 
-/* ---------------- ② window.open 被吞：出口必须真的有接线 ---------------- */
+/* ---------------- ① 死循环：三方约束 ---------------- */
 
-test('② 页面 window.open 必须有真实接线（不能靠给 ESM 命名空间赋值）', () => {
-  assert.match(hostSrc, /wc\.setWindowOpenHandler/, 'host 要拦 window.open');
-  assert.match(hostSrc, /host\?\.onWindowOpen\?\.\(verdict\.url, id\)/, 'host 要把 URL 交给上层');
-  // 关键：必须由宿主导出的 setter 来接线。
-  // 0.32.5 的教训（真人链路 S15 实测抓到）：`module.onWindowOpen = fn` 是**无效**的——
-  // ESM 命名空间冻结会抛 TypeError（被 try/catch 吞掉），且被调用的是宿主内部对象。
-  assert.match(hostSrc, /export function setWindowOpenSink\(fn\)/, '宿主要导出真正的 setter');
-  assert.match(hostSrc, /if \(host\) host\.onWindowOpen = windowOpenSink;/, 'setter 要写到内部 host 对象');
-  assert.match(hostSrc, /onWindowOpen: windowOpenSink,/, '宿主重建时要把 sink 带过去（否则重建后弹窗又失效）');
-  // 上层必须真的调用这个 setter
-  assert.match(useSrc, /h\.setWindowOpenSink\(\(url, fromId\) => onWindowOpenFromPage\(url, fromId\)\)/,
-    'browser-use 必须调 setWindowOpenSink（这是唯一有效的接线方式）');
-  assert.match(useSrc, /function onWindowOpenFromPage\(url, fromId\) \{/, '要有具体实现');
-  assert.match(useSrc, /state\.host\.newTab\(\{ url: target/, 'window.open 要变成新标签');
-  // 反例：不许再出现「给模块命名空间/宿主对象直接赋值」这种无效写法
-  assert.equal(/h\.onWindowOpen\s*=/.test(useSrc), false, '不得直接给宿主对象赋值（要走 setter）');
-  // 语义：不能把 AI 的工作目标搬走（0.32.4 定下的分离）
-  assert.equal(/state\.contents = wc;[\s\S]{0,200}onWindowOpenFromPage/.test(useSrc), false,
-    'window.open 不得改 AI 的工作目标');
+test('① 右栏归约函数：activeKey 已是目标时返回同一引用（不造新对象 = 不断供重渲染燃料）', () => {
+  // 这条两侧独立收敛到同一结论（我 0.32.5 / Codex 696bcb0 都有），是死循环的根本护栏
+  let rail = openRailTab(emptyRail(), { kind: 'browser' }).rail;
+  assert.equal(activateRailTab(rail, 'browser').rail, rail, 'activateRailTab 同值必须返回同一引用');
+  assert.equal(openRailTab(rail, { kind: 'browser' }).rail, rail, 'openRailTab 重复同键必须返回同一引用');
+  // patchRailTab：值没变也必须返回同一引用
+  rail = patchRailTab(rail, 'browser', { payload: { pageTitle: 'X' } }).rail;
+  assert.equal(patchRailTab(rail, 'browser', { payload: { pageTitle: 'X' } }).rail, rail,
+    'patchRailTab 值没变必须返回同一引用');
 });
 
-test('② window.open 的新标签要能让右栏亮起来（否则用户看不见弹出的页面）', () => {
-  assert.match(useSrc, /try \{ pageAttention\?\.\(\{ tabId: r\.id, url: target, openedBy: 'page' \}\); \}/,
-    '开完新标签要通知 UI');
-  assert.match(useSrc, /export function setPageAttentionNotifier\(fn\)/, '要暴露注入点');
-  assert.match(ipcSrc, /bu\.setPageAttentionNotifier/, '主进程要注入 notifier');
-  assert.match(ipcSrc, /'finalcheck:browser-rail-open', p/, 'notifier 要推既有的右栏打开事件');
+test('① BrowserPane：刷新走事件驱动 + 序号守卫，不靠「父组件回调进依赖数组」', () => {
+  // Codex 的方案：refreshSequence 序号丢弃过期响应；onBrowserTabsChanged 事件驱动
+  assert.match(paneSrc, /refreshSequence/, '要有请求序号守卫（丢弃过期响应）');
+  assert.match(paneSrc, /onBrowserTabsChanged/, '要订阅主进程的变更事件（事件驱动而非纯轮询）');
+  // 反例：不得再出现「每次渲染都换引用的父组件回调」直接驱动刷新
+  assert.equal(/onTabsChange/.test(paneSrc), false, '旧的 onTabsChange 通道必须消失');
 });
 
-/* ---------------- ③ 卡顿第二源：宿主侧幂等 ---------------- */
+test('① 宿主：状态没变就不推变更事件（updateState 引用相等守卫）', () => {
+  assert.match(hostSrc, /function updateState\(state\) \{/, '要有统一的 state 更新入口');
+  assert.match(hostSrc, /if \(state === host\.state\) return;/, '同一个 state 引用不得重复推 onChange');
+});
 
-test('③ 宿主：zoom / bounds / visible 都幂等（不重复下发 = 不重复 relayout）', () => {
-  assert.match(hostSrc, /if \(entry\.zoom === z\) return z;/, 'zoom 没变不得重复 setZoomFactor（那是整页 relayout）');
+/* ---------------- ③ 页面 window.open ---------------- */
+
+test('③ 页面 window.open 必须在宿主内部真的开新标签（"点课程没反应"的根因）', () => {
+  assert.match(hostSrc, /wc\.setWindowOpenHandler/, '要拦 window.open');
+  assert.match(hostSrc, /void newTab\(\{ url: verdict\.url, partition, openerId: id \}\)/,
+    'window.open 必须变成真的新标签（合并后是宿主内部直接开，不经过上层回调）');
+  // 关键：newTab 与 deny 必须**在同一个 handler 里**（只 deny 不处理 = 静默丢掉，
+  // 那正是 0.32.0~0.32.4 两轮「修了但没效果」的原因）。
+  // 取边界用 "setWindowOpenHandler" 到它后面第一个 "return { action: 'deny' };"（不要用 '});'
+  // ——那会在 newTab({...}) 的内层 ) 就截断，把 deny 切在窗口外）
+  const start = hostSrc.indexOf('wc.setWindowOpenHandler');
+  const denyAt = hostSrc.indexOf("return { action: 'deny' };", start);
+  assert.ok(denyAt > start, 'handler 内必须 return deny');
+  const handler = hostSrc.slice(start, denyAt);
+  assert.match(handler, /void newTab\(/, 'handler 内必须开新标签');
+  // 安全：about:blank / javascript: 仍要拒（classifyWindowOpen 的语义不回归）
+  assert.match(hostSrc, /classifyWindowOpen\(target\)/);
+});
+
+test('③ window.open 新标签不得搬走 AI 的工作目标（0.32.4 定下的分离语义）', () => {
+  // 合并后 window.open 走宿主内部 newTab，它只动宿主自己的 views/state，
+  // 不碰 browser-use 里按会话隔离的 scope（active/tabId）。
+  assert.match(useSrc, /scopeContext/, 'browser-use 要按会话隔离作用域');
+  const body = hostSrc.slice(hostSrc.indexOf('setWindowOpenHandler'), hostSrc.indexOf('setWindowOpenHandler') + 400);
+  assert.equal(/active\.contents\s*=/.test(body), false, 'window.open 不得改 browser-use 的 active.contents');
+});
+
+/* ---------------- ② 卡顿：宿主幂等（合并时补回） ---------------- */
+
+test('② 宿主：zoom / bounds / visible 都幂等（不重复下发 = 不重复 relayout）', () => {
+  assert.match(hostSrc, /if \(entry\.zoom === z\) return z;/, 'zoom 没变不得重复 setZoomFactor（整页 relayout）');
   assert.match(hostSrc, /if \(entry\.boundsKey === key\) return;/, 'bounds 没变不得重复 setBounds');
   assert.match(hostSrc, /if \(!entry\.showing\) \{ entry\.view\.setVisible\(true\); entry\.showing = true; \}/,
     '已经显示就不再重复 setVisible(true)');
   assert.match(hostSrc, /else if \(entry\.showing\) \{/, '已经隐藏就不再重复 setVisible(false)');
-  // entry 初始 zoom 必须是 null（否则首帧 undefined !== 1 会白设一次）
-  assert.match(hostSrc, /showing: false, zoom: null \}/, 'entry 的 zoom 初值要是 null');
+  assert.match(hostSrc, /showing: false, navigation: 0, zoom: null \}/, 'entry 的 zoom 初值要是 null');
 });
 
-test('③ 宿主：报告状态仍能反映真实 zoom（自检要能读到）', () => {
+test('② 宿主：报告状态仍能反映真实 zoom（自检要能读到）', () => {
   assert.match(hostSrc, /zoom: entry\.zoom \?\? 1/, 'hostInfo 要报告生效的 zoom');
-  // 回归护栏：不得因为幂等把「首次一定生效」也跳掉
   assert.match(hostSrc, /if \(host\.rect\?\.width\) applyZoom\(entry, host\.rect\.width\);/, '宽度变化仍要触发 zoom 计算');
+});
+
+/* ---------------- 合并后的架构事实（防止有人改回单宿主） ---------------- */
+
+test('合并后：浏览器宿主按会话隔离（每会话独立 webContents/cookie）', () => {
+  assert.match(hostSrc, /let hosts = new Map\(\);/ , '要有 hosts 按会话的 Map');
+  assert.match(hostSrc, /export function hostForSession\(sessionId\)/, '要能按会话取宿主');
+  assert.match(useSrc, /scopeContext\.getStore\(\)/, 'browser-use 要按会话取作用域');
+  // 反向：不得退回「一个全局 host 单例」
+  assert.equal(/let host = null;/.test(hostSrc), false, '不得退回单宿主（那会让两个会话共用一套 cookie）');
+});
+
+test('合并后：preload 的浏览器通道带 sessionId（否则会串会话）', () => {
+  assert.match(readFileSync(path.join(repoRoot, 'desktop/src/preload/index.mjs'), 'utf8'),
+    /browserTabs: \(sessionId\)|\/\/ 0\.32\.6/,
+    'preload 的浏览器通道必须能区分会话');
 });

@@ -13,6 +13,7 @@ import { useWindowWidth } from '../lib/use-window-width.mjs';
 import { planPanelLayout, clampPanelWidth, shouldClosePanel } from '../lib/panel-layout.mjs';
 import { railTabLabel } from '../lib/rail-tabs.mjs';
 import { t } from '../i18n/core.mjs';
+import { baseName } from '../lib/app-helpers.mjs';
 import { ArtifactPanel } from './ArtifactPanel.jsx';
 import { SubagentPanel } from './SubagentPanel.jsx';
 import { BrowserPane } from './BrowserPane.jsx';
@@ -34,10 +35,42 @@ function IconRailToggle({ collapsed }) {
   );
 }
 
+function RailArtifactPreview({ y, path, sidebarWidth }) {
+  const [revision, setRevision] = useState(0);
+  const [result, setResult] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function read() {
+      try {
+        const artifact = await y.artifactRead(path);
+        if (cancelled) return;
+        const error = artifact?.kind === 'missing' || !artifact ? artifact?.error || t('文件已不存在') : '';
+        setResult({ revision, artifact: error ? null : artifact, error });
+      } catch (error) {
+        if (!cancelled) setResult({ revision, error: error?.message || t('读取失败') });
+      }
+    }
+    void read();
+    return () => { cancelled = true; };
+  }, [y, path, revision]);
+
+  const current = result?.revision === revision ? result : null;
+  return <ArtifactPanel
+    embedded
+    y={y}
+    artifact={current?.artifact || { path, name: baseName(path) }}
+    loading={!current}
+    error={current?.error}
+    onReload={() => setRevision((value) => value + 1)}
+    onOpen={(file) => y?.artifactOpen?.(file)}
+    sidebarWidth={sidebarWidth}
+  />;
+}
+
 export function RightRail({
   rail, onActivate, onCloseTab, onClose, collapsed = false, onToggleCollapsed, sidebarWidth = 212,
-  y, artifact, artifactLoading, artifactError, artifactHandlers,
-  subagentTarget, onPatchBrowserTitle
+  y, sessionId, onBrowserTitle, subagentTarget
 }) {
   const [width, setWidth] = useState(() => {
     const v = Number(localStorage.getItem('fc.railWidth'));
@@ -73,6 +106,7 @@ export function RightRail({
   };
 
   const active = rail?.tabs?.find((x) => x.key === rail.activeKey) || null;
+  const hasBrowser = rail?.tabs?.some((tab) => tab.kind === 'browser');
 
   // 0.32.4「丝滑」：折叠不再换 DOM 树，改成**同一个 aside 变窄 + 内容淡出**。
   // 以前是 `if (collapsed) return <另一棵/>`——DOM 直接替换，CSS transition 无从谈起，
@@ -198,28 +232,12 @@ export function RightRail({
 
       {/* 内容区 */}
       <div className="flex-1 min-h-0 flex flex-col" data-rail-body data-rail-active-kind={active?.kind || ''}>
-        {active?.kind === 'browser' && (
-          <BrowserPane y={y} visible={browserVisible}
-            // 0.32.5 P0：这里**只能**回填标题，绝不能调 onActivate。
-            // 以前是 `onActivate?.(rail.activeKey, {pageTitle})`——两个致命后果：
-            //   ① 闭包捕获的 rail.activeKey 是当次渲染的旧值（'browser'），你点 PNG tab 后
-            //      它异步回来把你切回浏览器 tab → 用户看到的是"点图片没反应/被锁住"
-            //   ② 它让 App setRail → 整棵树重渲染 → 本组件的新内联回调 → 轮询 effect 重跑
-            //      → IPC → setRail…… 正反馈，把主进程打满 → 用户看到"巨卡"
-            // 现在走 setBrowserTabTitle：标题没变就返回同一引用（零重渲染），且永不改 activeKey。
-            onPageTitle={(title) => onPatchBrowserTitle?.(title)} />
+        {hasBrowser && (
+          <BrowserPane key={sessionId} y={y} sessionId={sessionId} visible={browserVisible} onPageTitle={onBrowserTitle} />
         )}
         {active?.kind === 'artifact' && (
-          <ArtifactPanel
-            embedded
-            y={y}
-            artifact={artifact}
-            loading={artifactLoading}
-            error={artifactError}
-            onClose={() => onCloseTab?.(active.key)}
-            onReload={artifactHandlers?.onReload}
-            onOpen={artifactHandlers?.onOpen}
-            sidebarWidth={sidebarWidth} />
+          <RailArtifactPreview key={JSON.stringify([sessionId, active.key])}
+            y={y} path={active.payload.path} sidebarWidth={sidebarWidth} />
         )}
         {active?.kind === 'subagent' && (
           <SubagentPanel

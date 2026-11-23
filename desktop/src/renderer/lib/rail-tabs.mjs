@@ -54,7 +54,7 @@ export function openRailTab(rail, tab) {
   if (!key) return { ok: false, error: 'tab 缺少 key', rail: cur };
   const existing = railTabByKey(cur, key);
   if (existing) {
-    return { ok: true, rail: { ...cur, activeKey: key }, tab: existing, existed: true };
+    return { ok: true, rail: cur.activeKey === key ? cur : { ...cur, activeKey: key }, tab: existing, existed: true };
   }
   const entry = {
     key,
@@ -66,21 +66,12 @@ export function openRailTab(rail, tab) {
   return { ok: true, rail: { tabs: [...cur.tabs, entry], activeKey: key }, tab: entry, existed: false };
 }
 
-/**
- * 切到某个已有 tab（不存在则保持原状并报错）。
- *
- * ⚠️ 0.32.5 P0（reviewer 指出的「最根本的护栏」）：当 activeKey **已经是**目标时，
- * 必须返回**同一个 rail 引用**。
- * 以前无条件 `{...cur, activeKey}` → 每次都产出新对象 → 即使 activeKey 一个字都没变，
- * 也会让 App 全树重渲染。这条不变量一破，任何「重复通知同一个 tab」的通道
- * （AI navigate / 用户输网址 / 页面 window.open / 点击已选中的 tab）都会变成重渲染燃料。
- */
+/** 切到某个已有 tab（不存在则保持原状并报错）。 */
 export function activateRailTab(rail, key) {
   const cur = rail || emptyRail();
   const found = railTabByKey(cur, key);
   if (!found) return { ok: false, error: `tab 不存在：${key}`, rail: cur };
-  if (cur.activeKey === found.key) return { ok: true, rail: cur, tab: found };  // ← 已经是目标：零变化
-  return { ok: true, rail: { ...cur, activeKey: found.key }, tab: found };
+  return { ok: true, rail: cur.activeKey === found.key ? cur : { ...cur, activeKey: found.key }, tab: found };
 }
 
 /**
@@ -105,10 +96,13 @@ export function closeRailTab(rail, key) {
 export function patchRailTab(rail, key, patch = {}) {
   const cur = rail || emptyRail();
   const want = String(key ?? '');
-  if (!railTabByKey(cur, want)) return { ok: false, error: `tab 不存在：${want}`, rail: cur };
-  const tabs = cur.tabs.map((t) => (t.key === want
-    ? { ...t, ...(typeof patch.title === 'string' && patch.title ? { title: patch.title } : {}) }
-    : t));
+  const found = railTabByKey(cur, want);
+  if (!found) return { ok: false, error: `tab 不存在：${want}`, rail: cur };
+  const title = typeof patch.title === 'string' && patch.title ? patch.title : found.title;
+  const changedPayload = Object.entries(patch.payload || {}).filter(([key, value]) => !Object.is(found.payload?.[key], value));
+  if (title === found.title && changedPayload.length === 0) return { ok: true, rail: cur };
+  const payload = changedPayload.length ? { ...found.payload, ...Object.fromEntries(changedPayload) } : found.payload;
+  const tabs = cur.tabs.map((tab) => (tab === found ? { ...tab, title, payload } : tab));
   return { ok: true, rail: { ...cur, tabs } };
 }
 
@@ -161,49 +155,17 @@ export function pruneForSession(rail, sessionId) {
 }
 
 /**
- * 0.32.5 P0：把「浏览器 tab 显示当前网页标题」做成**纯更新**。
+ * 0.32.6：**确保**右栏里有一个浏览器 tab，但不抢用户正在看的那一页。
  *
- * 为什么必须单独抽出来（这是一个真实的死循环，用户实测"巨卡 + 点图片没反应"）：
- * 旧写法是 BrowserPane 轮询到网页标题 → 父组件 onActivate(rail.activeKey) → setRail(...)
- * → App 全树重渲染 → 传给 BrowserPane 的回调是新函数（内联箭头）→ 轮询 effect 依赖变化
- * → 再轮询 → 再 setRail…… 每轮都是一次 IPC 往返，以几百轮/秒自转。
- * 而那个闭包里捕获的 rail.activeKey 是**旧的**（'browser'），所以用户点 PNG tab 后
- * 循环会把他切回浏览器 tab——表现就是「点图片没反应 / 像被锁住」。
- *
- * 断环的两条硬规则都在这里保证：
- *   ① 标题没变 → **返回同一个对象引用**（React 直接 bail out，不重渲染，循环自然停）
- *   ② 只改 payload.pageTitle，**绝不碰 activeKey**（切 tab 是人的动作，不是刷新的副作用）
- *
- * @param {{tabs:Array, activeKey:string|null}|null} rail
- * @param {string} title 网页当前标题
- */
-export function setBrowserTabTitle(rail, title) {
-  const cur = rail || emptyRail();
-  const next = String(title || '').trim();
-  if (!Array.isArray(cur.tabs) || cur.tabs.length === 0) return cur;
-  const tab = cur.tabs.find((t) => t.kind === 'browser');
-  if (!tab) return cur;
-  const prev = String(tab?.payload?.pageTitle || '').trim();
-  if (prev === next) return cur;                 // ← ① 没变就原样返回（零重渲染）
-  return {
-    ...cur,                                      // ← ② activeKey 原样保留
-    tabs: cur.tabs.map((t) => (t.key === tab.key
-      ? { ...t, payload: { ...(t.payload || {}), pageTitle: next } }
-      : t))
-  };
-}
-
-/**
- * 0.32.5 P0：**确保**右栏里有一个浏览器 tab，但不抢用户正在看的那一页。
- *
- * 为什么要单独一个函数（这是「开了浏览器就点不了图片」的完整根因）：
+ * 为什么要单独一个函数（这是「开了浏览器就点不了图片」的完整根因，0.32.5 实测抓到的）：
  * `openRailTab` 的语义是「打开**或切到**」——它每次都把 activeKey 设成目标 tab。
- * 而浏览器 tab 会从三条通道被**反复**通知「有个页面」：
- *   ① AI 的 browser_navigate ／ 用户输网址（browser-goto 成功后主进程推事件）
- *   ② 页面自己的 window.open（pageAttention）
- *   ③ 工具层的 browser-rail-open（agent-event）
+ * 而浏览器 tab 会从多条通道被**反复**通知「有个页面」：
+ *   ① AI 的 browser_navigate ／ 用户输网址（browser-goto 成功后主进程推 browser-rail-open）
+ *   ② 工具层的 browser-rail-open（agent-event）
  * 只要其中任何一条在用户点了 PNG 之后到达，就会把他从产物 tab 拽回浏览器 tab
- * ——实测：点 chip 后 artifact tab 确实开出来了，但 6.5s 内 activeKind 变回 'browser'。
+ * ——实测：点 chip 后产物 tab 确实开出来了，但 6.5s 内 activeKind 变回 'browser'。
+ * （Codex 侧把 window.open 接到宿主内部就不推 rail-open，因此绕开了其中一条路径，
+ *   但 ① 这条仍然存在，所以合并时把这个函数补回来。）
  *
  * 语义（与用户的预期一致）：
  *   · 右栏还没有浏览器 tab（= AI/用户第一次开网页）→ 开一个并**切过去**（用户要看见）

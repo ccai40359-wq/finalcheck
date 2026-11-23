@@ -146,13 +146,13 @@ function toolsFor(engines) {
 
 test('contract: computer_screenshot 传 region 时转发给 captureScreen，并透传区域元数据', async () => {
   const calls = [];
-  const regionShot = {
+  const capturedRegion = {
     ok: true, width: 400, height: 300, buf: image, mime: 'image/png', foreground,
     screenshotId: 'shot-region', canAct: true, scale: 1,
     region: { x: 100, y: 200, width: 400, height: 300 }
   };
   const tools = toolsFor({ computerUse: {
-    async captureScreen(options) { calls.push(options); return regionShot; }
+    async captureScreen(options) { calls.push(options); return capturedRegion; }
   } });
 
   const r = await tools.computer_screenshot({ region: { x: 100, y: 200, width: 400, height: 300 } });

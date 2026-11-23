@@ -261,7 +261,7 @@ try {
   record('B1 引擎报告有 1 个网页标签且活动', Boolean(host && host.tabs && host.tabs.length === 1 && host.activeId), JSON.stringify({ n: host?.tabs?.length, active: host?.activeId }));
 
   // D. 开第二个标签 → 两个标签、只有活动可见
-  const second = await ev(`window.finalcheck.browserTabOpen(${JSON.stringify(origin + '/two')})`);
+  await ev(`window.finalcheck.browserTabOpen(${JSON.stringify(origin + '/two')})`);
   await sleep(1200);
   const tabs2 = await ev(`window.finalcheck.browserTabs()`);
   console.log('[tabs2]', JSON.stringify(tabs2).slice(0, 250));

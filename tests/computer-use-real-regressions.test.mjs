@@ -4,7 +4,6 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 const repoRoot = path.resolve(import.meta.dirname, '..');
 const inputSrc = readFileSync(path.join(repoRoot, 'desktop/src/main/desktop-input-win.mjs'), 'utf8');
@@ -130,11 +129,8 @@ test('cu-real: native point checks include an existing mouse-capture owner', () 
 // 0.29.6 打包回归钉：index.mjs 对 computer-use 必须用 engineUrl 动态加载，禁止静态 import。
 // 0.29.2-0.29.5 打包版金色遮罩从未显示过——静态 import 的 onComputerUseModeChange 订阅被
 // electron-vite 摇树删除（bundle 里 enterCuMode/CU_OVERLAY_HTML 全消失），dev 模式正常所以只在安装版暴露。
-test('打包钉：index.mjs 的 CU 遮罩订阅必须走 engineUrl 动态加载（静态 import 会被摇树删）', async () => {
-  const { readFileSync } = await import('node:fs');
-  const pathMod = await import('node:path');
-  const repo = pathMod.resolve(pathMod.dirname(fileURLToPath(import.meta.url)), '..');
-  const src = readFileSync(pathMod.join(repo, 'desktop/src/main/index.mjs'), 'utf8');
+test('打包钉：index.mjs 的 CU 遮罩订阅必须走 engineUrl 动态加载（静态 import 会被摇树删）', () => {
+  const src = readFileSync(path.join(repoRoot, 'desktop/src/main/index.mjs'), 'utf8');
   assert.ok(!/import\s*\{[^}]*onComputerUseModeChange[^}]*\}\s*from\s*'\.\/computer-use\.mjs'/.test(src),
     '禁止静态 import computer-use（会被 electron-vite 摇树删）');
   assert.ok(src.includes("await import(engineUrl('desktop/src/main/computer-use.mjs'))"),
@@ -143,25 +139,22 @@ test('打包钉：index.mjs 的 CU 遮罩订阅必须走 engineUrl 动态加载�
 });
 
 // 0.29.7 用户拍板的 UI 三条（金色化/屏幕顶部居中/ESC 全局退出）+ 迷你对话窗
-test('打包钉：CU 遮罩金色化+横幅屏幕顶部居中+提示 ESC；ESC 全局注册在 CU 模式期间', async () => {
-  const { readFileSync } = await import('node:fs');
-  const pathMod = await import('node:path');
-  const repo = pathMod.resolve(pathMod.dirname(fileURLToPath(import.meta.url)), '..');
-  const src = readFileSync(pathMod.join(repo, 'desktop/src/main/index.mjs'), 'utf8');
+test('打包钉：CU 遮罩金色化+横幅屏幕顶部居中+提示 ESC；ESC 全局注册在 CU 模式期间', () => {
+  const src = readFileSync(path.join(repoRoot, 'desktop/src/main/index.mjs'), 'utf8');
   assert.ok(src.includes("background:rgba(214,158,52,.15)"), '全屏蒙层必须是金色淡染（不再是黑）');
   assert.ok(src.includes('left:50%;transform:translateX(-50%)'), '横幅必须屏幕顶部居中');
   assert.ok(src.includes('color:#f2c566'), '横幅/停止条文字必须是金色');
   assert.ok(src.includes('按 ESC 或点右上角小窗'), '提示必须写明 ESC 可中止');
   assert.ok(src.includes("globalShortcut.register('Escape'"), 'CU 模式期间注册全局 ESC');
   assert.ok(src.includes("globalShortcut.unregister('Escape'"), '退出 CU 模式必须注销 ESC');
-  const css = readFileSync(pathMod.join(repo, 'desktop/src/renderer/styles.css'), 'utf8');
+  const css = readFileSync(path.join(repoRoot, 'desktop/src/renderer/styles.css'), 'utf8');
   assert.ok(css.includes('body.fc-cu-mini .fc-sidebar { display: none !important; }'),
     '迷你形态开关=body.fc-cu-mini（CU 生命周期驱动，不用 @media 窗口宽度——composer-narrow 布局纪律）');
   assert.ok(css.includes('body.fc-cu-mini .fc-chat-header { display: none !important; }'),
     '迷你形态隐藏会话标题头（360px 下标题只会截断成噪音）');
   assert.ok(css.includes('body.fc-cu-mini [data-testid="message-scroll"] * { overflow-wrap: anywhere; }'),
     '迷你形态长 token 必须折行——横向零裁剪（用户验收：对话 100% 显示完全）');
-  const header = readFileSync(pathMod.join(repo, 'desktop/src/renderer/components/ChatHeader.jsx'), 'utf8');
+  const header = readFileSync(path.join(repoRoot, 'desktop/src/renderer/components/ChatHeader.jsx'), 'utf8');
   assert.ok(header.includes('fc-chat-header'), 'ChatHeader 必须带 fc-chat-header 类钩子');
   assert.ok(src.includes("classList.add('fc-cu-mini')") && src.includes("classList.remove('fc-cu-mini')"),
     '主进程负责挂/摘 fc-cu-mini（注入/恢复两个方向都要有）');

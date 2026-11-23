@@ -250,7 +250,7 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
     if (!y?.browserSessionInfo) return;
     y.browserSessionInfo().then((p) => setBrowserPolicy(p || null)).catch(() => setBrowserPolicy(null));
   };
-  useEffect(() => { refreshBrowserPolicy(); }, [y]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { refreshBrowserPolicy(); }, [y]);
 
   // ---- 关于 / 更新：当前版本 + 订阅主进程更新事件（卸载时取消订阅） ----
   useEffect(() => {

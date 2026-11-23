@@ -32,14 +32,15 @@ test('panel-visibility: 没有 stepView 时永远不显示', () => {
   assert.equal(shouldShowStepPanel(), false);
 });
 
-test('App.jsx: 子代理内容渲染被「聊天视图 + 右栏有 tab」条件包住（0.32.0 多标签右栏）', async () => {
-  const src = await readFile(path.join(ROOT, 'desktop/src/renderer/App.jsx'), 'utf8');
-  // 0.32.0：子代理不再是「独立面板 vs 产物面板」的二选一，而是右栏里的一个 tab。
-  // 仍然必须被条件包住——否则进设置页/别的视图时右栏会挂在那儿（旧 bug 的变体）。
-  assert.match(src, /\{shouldShowRail\(rail\) && page === 'chat' && \(/, '右栏必须由「有 tab 且在聊天视图」控制');
-  assert.match(src, /<RightRail\b/, '子代理/产物/浏览器都通过 RightRail 渲染');
-  assert.doesNotMatch(src, /\{stepView \? \(\s*\n\s*<SubagentPanel/, '旧的「stepView 有值就渲染」写法会让面板挂在设置页');
-  // 可见性纯函数仍在用（生成 tab 的输入）
+test('App.jsx: 子代理面板只在当前会话的聊天右栏内渲染', async () => {
+  const [src, rail] = await Promise.all([
+    readFile(path.join(ROOT, 'desktop/src/renderer/App.jsx'), 'utf8'),
+    readFile(path.join(ROOT, 'desktop/src/renderer/chat/RightRail.jsx'), 'utf8')
+  ]);
+  assert.match(src, /const railBelongsToSession = railSessionRef\.current === activeId;/);
+  assert.match(src, /\{railBelongsToSession && shouldShowRail\(rail\) && page === 'chat' && \(\s*<RightRail\b/);
+  assert.match(rail, /\{active\?\.kind === 'subagent' && \(\s*<SubagentPanel\b/);
+  assert.doesNotMatch(src, /<SubagentPanel\b/, 'App 不得在右栏条件之外另行渲染子代理面板');
   assert.match(src, /shouldShowStepPanel\(\{ view: page, stepView: cur, activeSessionId: activeId \}\)/);
 });
 
@@ -66,7 +67,7 @@ test('artifact-panel: 设置/用量等非聊天视图 → 不显示（即使产�
 test('artifact-panel: 状态不清空——从设置返回聊天后继续显示同一产物', () => {
   const artifact = { path: 'finalcheck-gh-L2-acceptance.md', name: 'finalcheck-gh-L2-acceptance.md' };
   assert.equal(shouldShowArtifactPanel({ view: 'settings', artifact }), false);
-  // App.jsx 不清理 artifact 状态，回到 chat 时同一份状态仍应可见
+  // 回到同一聊天时，同一份产物状态仍能显示。
   assert.equal(shouldShowArtifactPanel({ view: 'chat', artifact }), true);
 });
 
@@ -75,12 +76,13 @@ test('artifact-panel: 没有产物且不在加载/报错 → 不显示', () => {
   assert.equal(shouldShowArtifactPanel({ view: 'chat', artifact: null, artifactLoading: false, artifactError: '' }), false);
 });
 
-test('App.jsx: 产物预览也走右栏 tab（且仍受聊天视图约束）', async () => {
-  const src = await readFile(path.join(ROOT, 'desktop/src/renderer/App.jsx'), 'utf8');
-  // 0.32.0：产物不再是独立面板，而是右栏里的一个 artifact tab：
-  // 打开产物时 openRailTab(kind:'artifact')，右栏整体仍受「聊天视图 + 有 tab」约束。
-  assert.match(src, /openRailTab\(cur, \{ kind: 'artifact'/, '打开产物必须开出 artifact tab');
-  assert.match(src, /\{shouldShowRail\(rail\) && page === 'chat' && \(/, '右栏整体仍必须受聊天视图约束');
-  // 旧的「只要有产物就渲染独立面板」写法会让面板挂在设置页
-  assert.doesNotMatch(src, /\) : showArtifactPanel && \(\s*\n\s*<ArtifactPanel/, '旧的独立产物面板写法必须消失');
+test('App.jsx: 产物预览只在当前会话的活动产物标签内渲染', async () => {
+  const [src, rail] = await Promise.all([
+    readFile(path.join(ROOT, 'desktop/src/renderer/App.jsx'), 'utf8'),
+    readFile(path.join(ROOT, 'desktop/src/renderer/chat/RightRail.jsx'), 'utf8')
+  ]);
+  assert.match(src, /const openArtifact = \(path\) => \{[\s\S]*?openRailTab\(cur, \{\s*kind: 'artifact', artifactPath: path[^\n]*payload: \{ path \}/);
+  assert.match(src, /\{railBelongsToSession && shouldShowRail\(rail\) && page === 'chat' && \(\s*<RightRail\b/);
+  assert.match(rail, /\{active\?\.kind === 'artifact' && \(\s*<RailArtifactPreview\b[\s\S]*?path=\{active\.payload\.path\}/);
+  assert.doesNotMatch(src, /<ArtifactPanel\b/, 'App 不得在右栏条件之外另行渲染产物面板');
 });

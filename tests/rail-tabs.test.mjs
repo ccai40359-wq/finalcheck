@@ -6,7 +6,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  RAIL_KINDS, railTabKey, emptyRail, openRailTab, activateRailTab, closeRailTab,
+  RAIL_KINDS, emptyRail, openRailTab, activateRailTab, closeRailTab,
   patchRailTab, pruneForSession, shouldShowRail, railTabLabel, railTabByKey, activeRailTab
 } from '../desktop/src/renderer/lib/rail-tabs.mjs';
 
@@ -119,6 +119,18 @@ test('rail-tabs: patchRailTab 更新标题，空标题不覆盖已有标题', ()
   assert.equal(railTabByKey(rail, 'browser').payload.pageTitle, '加载中', '空标题不能把已有标题擦掉');
   const bad = patchRailTab(rail, 'nope', { title: 'x' });
   assert.equal(bad.ok, false);
+});
+
+test('rail-tabs: 浏览器标题重复更新保持同一状态，且不激活浏览器', () => {
+  let rail = openRailTab(emptyRail(), { kind: 'browser', payload: { pageTitle: 'A' } }).rail;
+  rail = openRailTab(rail, { kind: 'artifact', payload: { path: 'preview.png' } }).rail;
+  const updated = patchRailTab(rail, 'browser', { payload: { pageTitle: 'B' } }).rail;
+  assert.equal(updated.activeKey, 'artifact:preview.png');
+  assert.equal(railTabLabel(railTabByKey(updated, 'browser')), 'B');
+  assert.equal(patchRailTab(updated, 'browser', { payload: { pageTitle: 'B' } }).rail, updated);
+  const blank = patchRailTab(updated, 'browser', { payload: { pageTitle: '' } }).rail;
+  assert.equal(railTabLabel(railTabByKey(blank, 'browser')), '浏览器');
+  assert.equal(blank.activeKey, updated.activeKey);
 });
 
 test('rail-tabs: activeRailTab / railTabByKey 对空状态安全', () => {
