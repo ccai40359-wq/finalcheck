@@ -26,6 +26,15 @@ const FORBIDDEN = [
   { re: /(^|\/)\.mimosa$/i, why: '编辑器/插件状态目录不该进安装包' },
   { re: /(^|\/)desktop\/config\.json$/i, why: '本机配置（含 API Key）绝不能被装进包' },
   { re: /(^|\/)\.git$/i, why: '版本库元数据不该进安装包' },
+  // 2026-11-23 用户拍板：测试台**不进 exe**（安装包保持干净）。
+  // 这不是"暂时没打进去"，而是一条要长期守住的约束 —— 所以把它变成自动检查：
+  // scripts/ 有 testbench/probe/e2e/bench 等内部探测脚本，tests/ 有 2000+ 项测试；
+  // 它们都需要仓库结构（electron + node_modules）才能跑，装到用户机器上既跑不起来也污染包。
+  { re: /(^|\/)resources\/scripts(\/|$)/i, why: '开发测试台（testbench/probe/e2e）不该进安装包（用户拍板）' },
+  { re: /(^|\/)resources\/tests(\/|$)/i, why: '单元/集成测试不该进安装包' },
+  { re: /(^|\/)resources\/.*\/scripts\/testbench-/i, why: '测试台脚本不该进安装包' },
+  { re: /(^|\/)resources\/.*\/probe-[a-z-]+\.mjs$/i, why: '探针脚本不该进安装包' },
+  { re: /(^|\/)resources\/.*\/e2e-[a-z-]+\.mjs$/i, why: '端到端验收脚本不该进安装包' },
 ];
 
 const args = process.argv.slice(2);

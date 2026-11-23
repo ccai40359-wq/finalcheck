@@ -131,3 +131,48 @@ test('package hygiene requires an existing directory argument', (t) => {
     assert.match(result.stderr, /无法检查打包目录/);
   }
 });
+
+/* ---------------- 2026-11-23：测试台不进 exe（用户拍板，长期约束） ----------------
+ * 为什么这条要有测试：用户明确选择「测试台不进 exe，保持安装包干净」。
+ * 那是产品决策，不是一时疏忽 —— 所以必须由检查器强制，而不是靠人记得。
+ * 反例价值：一旦有人把 scripts/ 或 tests/ 加进 extraResources，构建能过、
+ * 安装包也能装，只有这条检查会红。 */
+test('package hygiene rejects the dev test bench inside resources/scripts', (t) => {
+  const root = tempRoot(t);
+  writePackageFixture(root);
+  writeFixture(root, 'resources/scripts/testbench-rail-humanflow.mjs');
+  const result = check(root, root);
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /开发测试台（testbench\/probe\/e2e）不该进安装包/, result.stderr);
+});
+
+test('package hygiene rejects unit tests inside resources/tests', (t) => {
+  const root = tempRoot(t);
+  writePackageFixture(root);
+  writeFixture(root, 'resources/tests/browser-view-host.test.mjs');
+  const result = check(root, root);
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /单元\/集成测试不该进安装包/, result.stderr);
+});
+
+test('package hygiene rejects probe and e2e scripts at any depth', (t) => {
+  const root = tempRoot(t);
+  writePackageFixture(root);
+  writeFixture(root, 'resources/desktop/scripts/probe-three-issues.mjs');
+  writeFixture(root, 'resources/app/e2e-ai-browser-turn.mjs');
+  const result = check(root, root);
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /探针脚本不该进安装包/, result.stderr);
+  assert.match(result.stderr, /端到端验收脚本不该进安装包/, result.stderr);
+});
+
+test('package hygiene still accepts a clean package (no test bench shipped)', (t) => {
+  // 反例对照：干净包必须通过 —— 否则上面的规则会把正常构建也判红（"恒失败"的假检查）
+  const root = tempRoot(t);
+  writePackageFixture(root);
+  writeFixture(root, 'resources/desktop/src/main/browser-view-host.mjs');
+  writeFixture(root, 'resources/playbooks/index.json');
+  const result = check(root, root);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /OK：打包结构及路径符合要求/, result.stdout);
+});
