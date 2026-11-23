@@ -10,7 +10,7 @@ import { filterAskCardsByTrace, hideAskTracesForCards } from './lib/ask-cards.mj
 import { applyAgentEvent, mergeTraceIntoEvents } from './lib/process-events.mjs';
 import { RightRail } from './chat/RightRail.jsx';
 // 0.32.0 右栏多标签归约（产物 / 内嵌浏览器 / 子代理并存）
-import { emptyRail, openRailTab, activateRailTab, closeRailTab, pruneForSession, shouldShowRail, activeRailTab } from './lib/rail-tabs.mjs';
+import { emptyRail, openRailTab, activateRailTab, closeRailTab, pruneForSession, shouldShowRail, activeRailTab, railForSession, snapshotRail } from './lib/rail-tabs.mjs';
 import { shouldShowStepPanel } from './lib/panel-visibility.mjs';
 import { buildSendHistory } from './lib/interrupted-digest.mjs';
 // 双语：t() 在英文模式查词典、中文模式原样返回；useLanguage() 只负责切换语言时触发重渲染
@@ -241,8 +241,11 @@ export default function App() {
   const [stepView, setStepView] = useState(null); // 右侧子代理上下文面板：{sessionId, stepId, name, role}
   // 0.32.0：右栏多标签（产物 / 内嵌浏览器 / 子代理并存）。归约逻辑在 lib/rail-tabs.mjs。
   const [rail, setRail] = useState(() => emptyRail());
-  // 0.32.1：右栏折叠（用户："可以折叠，如果只有一个 × 那不方便"）。
-  // 折叠 = 收成窄条、内容全保留；与 ✕（清空标签）是两个不同操作。状态记在本机。
+  // 0.32.4 P0（用户两次强调「我切了会话右边栏还是保留，以后不要再犯」）：
+  // **右栏按会话隔离**。切走时把当前会话的右栏存起来并清空，切回时恢复。
+  // 这与 artifactBySessionRef 是同一套思路（那里存的是产物路径）。
+  const railBySessionRef = useRef(new Map()); // sessionId → 该会话的右栏快照
+  const railSessionRef = useRef(null);        // 当前 rail 属于哪个会话（切走时据此存档）
   const [railCollapsed, setRailCollapsed] = useState(() => {
     try { return localStorage.getItem('fc.railCollapsed') === '1'; } catch { return false; }
   });
@@ -251,12 +254,19 @@ export default function App() {
   }, [railCollapsed]);
   const railRef = useRef(rail);
   railRef.current = rail;
+  // 0.32.4 P0：右栏跟着会话走——切走先存档、再换成目标会话的右栏（没存过就是空）。
+  // 用户两次强调过这条：以前只清子代理 tab，A 会话的网页/图片会留在 B 会话的右栏上。
+  useEffect(() => {
+    const prev = railSessionRef.current;
+    if (prev === (activeId ?? null)) return;   // 同一会话（含首次进入）不动
+    if (prev != null) railBySessionRef.current.set(String(prev), snapshotRail(railRef.current));
+    railSessionRef.current = activeId ?? null;
+    setRail(railForSession(activeId == null ? null : railBySessionRef.current.get(String(activeId))));
+  }, [activeId]);
   // 子代理面板只属于它绑定的那次对话：进设置/用量或切工作区（换会话）就置空，
   // 返回聊天时不会又自动弹回来（渲染侧另有 shouldShowStepPanel 兜底）。
   useEffect(() => {
     setStepView((cur) => (cur && !shouldShowStepPanel({ view: page, stepView: cur, activeSessionId: activeId }) ? null : cur));
-    // 0.32.0：切会话时子代理 tab 属于旧会话，必须从右栏清掉（产物与浏览器 tab 留着）
-    setRail((cur) => pruneForSession(cur, activeId).rail);
   }, [page, activeId]);
   const [artifactLoading, setArtifactLoading] = useState(false);
   const artifactBySessionRef = useRef(new Map()); // sessionId → 该会话右侧打开着的产物路径
@@ -687,6 +697,16 @@ export default function App() {
     setPastedBlocks([]);
     setArtifact(null);
     setStepView(null); // 新建草稿时必须收起子代理面板：否则会把上一条会话的子代理对话留在右边栏
+    // 0.32.4 P0：新草稿也必须清空右栏——旧会话的网页/图片不能留在一个还没有会话的草稿上。
+    //
+    // ⚠️ 顺序很重要（这里踩过一次）：必须**先把当前会话的右栏存档，再清空**。
+    // 如果把存档交给依赖 activeId 的 effect，那么 setRail(emptyRail()) 先执行、
+    // railRef.current 变成空，effect 跑到时存下来的就是空快照——切回原会话恢复不出东西（S14 实测）。
+    if (railSessionRef.current != null) {
+      railBySessionRef.current.set(String(railSessionRef.current), snapshotRail(railRef.current));
+      railSessionRef.current = null;
+    }
+    setRail(emptyRail());
     setSessCfg(cfgDefaults());
     setPage('chat');
     requestAnimationFrame(() => inputRef.current?.focus());
@@ -1935,6 +1955,13 @@ export default function App() {
               }
               return next.rail;
             });
+            // 0.32.4 P0（用户实测「浏览器开着的时候，我点旁边的 png 是没反应的」）：
+            // 切到产物 tab 时必须**按该 tab 自己的路径重新读**——以前只切了 tab 状态，
+            // artifact state 要么还是上一个文件、要么已被关闭清空，面板于是空白无反应。
+            if (key.startsWith('artifact:')) {
+              const p = key.slice('artifact:'.length);
+              if (p && (!artifact || artifact.path !== p)) void openArtifact(p);
+            }
           }}
           onCloseTab={(key) => {
             setRail((cur) => {

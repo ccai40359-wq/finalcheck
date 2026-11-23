@@ -190,14 +190,20 @@ function installExternalLinkGuards() {
     return { action: 'deny' }; // 非 http(s) 一律不开窗
   });
 
-  // ③ 以后新建的任何 webContents（含截图隐藏窗口）同样遵守
+  // ③ 以后新建的任何 webContents（含截图隐藏窗口）同样遵守。
+  // 注：右栏内嵌浏览器（browser-view-host.mjs 的 WebContentsView）会在自己创建后**立刻覆盖**
+  // setWindowOpenHandler 并摘掉这里的 will-navigate 监听——那边才是它的正确行为
+  // （页面内的 window.open 要变成新标签，而不是跳去系统浏览器）。见该文件 createEmbeddedGuard。
   app.on('web-contents-created', (_event, contents) => {
     contents.setWindowOpenHandler(({ url }) => { openOutside(url); return { action: 'deny' }; });
-    contents.on('will-navigate', (event, url) => {
+    const navGuard = (event, url) => {
       if (isAppUrl(url)) return;
       event.preventDefault();
       openOutside(url);
-    });
+    };
+    contents.on('will-navigate', navGuard);
+    // 记下这个监听器，方便内嵌浏览器显式摘除（Electron 没有 removeAllListeners('will-navigate') 的语义保证）
+    try { contents.__fcNavGuard = navGuard; } catch { /* 只读对象：忽略 */ }
   });
 }
 

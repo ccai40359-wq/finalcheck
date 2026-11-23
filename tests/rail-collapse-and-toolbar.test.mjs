@@ -69,13 +69,16 @@ test('折叠: 有独立的折叠按钮（图标，与 TitleBar 侧栏图标同�
 });
 
 test('折叠: 折叠后是窄竖条，且内容（标签）仍在——不是清空', () => {
-  const collapsedBlock = railSrc.slice(railSrc.indexOf('if (collapsed) {'), railSrc.indexOf('return (\n    <aside\n      style={{ width: panelW }}'));
-  assert.match(collapsedBlock, /style=\{\{ width: 38 \}\}/, '折叠态宽度 38（刚够放 32px 图标按钮）');
-  assert.match(collapsedBlock, /justify-start/, '折叠图标必须从顶部开始排（否则看起来被推到下半屏）');
-  assert.match(collapsedBlock, /data-rail="collapsed"/, '折叠态有独立标记');
-  assert.match(collapsedBlock, /rail\?\.tabs \|\| \[\]\),?\)?\.map\(/i, '折叠态仍然列出标签图标（内容保留）');
-  assert.match(collapsedBlock, /onToggleCollapsed\?\.\(false\); onActivate\?\.\(tab\.key\);/,
-    '点折叠态里的标签 = 展开 + 切到它');
+  // 0.32.4：折叠改成"同一棵 DOM 变窄 + 交叉淡入淡出"（不再换 DOM 树，否则宽度过渡不生效）
+  assert.match(railSrc, /const collapsedW = 38;/, '折叠态宽度 38（刚够放 32px 图标按钮）');
+  assert.match(railSrc, /const railWidth = collapsed \? collapsedW : expandedW;/, '宽度按折叠态切换');
+  assert.match(railSrc, /transition: 'width 200ms cubic-bezier\(\.4,0,\.2,1\)'/,
+    '宽度必须走 transition（以前是两棵 DOM 硬切，实测 12 帧采样只有 1 个宽度值）');
+  // 折叠态仍有标签图标（点了先展开再切过去）
+  assert.match(railSrc, /onToggleCollapsed\?\.\(false\); onActivate\?\.\(tab\.key\);/, '折叠态点标签 = 展开 + 切过去');
+  // 折叠态内容不被卸载（只是淡出），这样标签与面板状态都保留
+  assert.match(railSrc, /aria-hidden=\{collapsed\}/, '折叠态用 aria-hidden 而非卸载');
+  assert.match(railSrc, /collapsed \? 'opacity-0 pointer-events-none' : 'opacity-100'/, '展开态内容折叠时淡出+禁交互');
 });
 
 test('折叠: 与 ✕（清空所有标签）是两个分开的操作，且用分隔线隔开（避免误点）', () => {

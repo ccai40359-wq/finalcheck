@@ -320,5 +320,9 @@ export const EN_CHAT = {
   '重新加载当前网页': 'Reload this page',
   '重新加载失败': 'Reload failed',
   '新标签页（开一个空白页，在上面地址栏输入网址）': 'New tab (opens a blank page; type a URL in the address bar above)',
-  '新标签打开失败': 'Failed to open a new tab'
+  '新标签打开失败': 'Failed to open a new tab',
+  // 0.32.4：在默认浏览器打开（ZCode 同款按钮）+ 右栏宽度自适配提示
+  '在默认浏览器打开（当前网页）': 'Open this page in the default browser',
+  '在默认浏览器打开': 'Open in default browser',
+  '没有可打开的网址': 'No URL to open'
 };

@@ -761,7 +761,11 @@ export async function openTab(url) {
 
 /**
  * 切到某个标签：把本模块的"活动页面"换成它（后续 snapshot/click 都作用在它上面）。
- * 这正是多标签能用的关键——不换 wc，AI 就会对着背后那个页面操作。
+ *
+ * ⚠️ 0.32.4 P0：这个入口**只给 AI 用**（工具层/AI 自己要换操作目标时）。
+ * **用户在界面上点标签不能走这里**——否则用户一看别的网页，AI 下一步的 snapshot/click
+ * 就跟着跑到用户切过去的那页上（用户实测："我动他的浏览器，他的操作就会刷新在我的页面"）。
+ * 用户切标签走 `viewTab(id)`：只改"看哪页"，不动 AI 的工作目标。
  */
 export function switchTabTo(id) {
   if (!active?.host) return { ok: false, error: '当前不在右栏浏览器模式' };
@@ -776,17 +780,52 @@ export function switchTabTo(id) {
   return { ok: true, activeId: r.activeId };
 }
 
-/** 关掉一个标签。关掉当前标签时把活动页面切到宿主的邻居标签。 */
+/**
+ * 0.32.4：**用户**在界面上切换正在看的网页——只改可见性，**不改 AI 的工作目标**。
+ *
+ * 为什么必须分开（用户实机反馈）：以前的 UI 切标签直接调 switchTabTo，
+ * 于是"用户看一眼别的页面"就把 AI 的操作目标也搬走了——AI 后续的 snapshot/click
+ * 落在用户切过去的那页上，看起来像"AI 跟着我跑"。
+ * 现在的语义：
+ *   · 用户切标签 → 画面切过去（他能看、能自己点）
+ *   · AI 的工作目标（active.contents / active.tabId）保持不变
+ *   · AI 自己需要换目标时才调 switchTabTo
+ */
+export function viewTab(id) {
+  if (!active?.host) return { ok: false, error: '当前不在右栏浏览器模式' };
+  const r = active.host.activateTab(id);
+  if (!r.ok) return { ok: false, error: r.error };
+  return { ok: true, activeId: r.activeId, viewing: String(id), aiTab: active.tabId || null };
+}
+
+/** 当前 AI 的工作标签 / 用户正在看的标签（诊断与 UI 提示用）。 */
+export function tabFocusInfo() {
+  if (!active?.host) return { ok: true, embedded: false, aiTab: null, viewing: null };
+  const info = active.host.hostInfo?.() || {};
+  return { ok: true, embedded: true, aiTab: active.tabId || null, viewing: info.activeId || null };
+}
+
+/**
+ * 关掉一个标签。
+ * 0.32.4：分两种情况（以前一律 switchTabTo，会把 AI 的目标搬走）：
+ *   · 关掉的是**用户正在看的**但**不是 AI 工作标签** → 只切可见性，AI 目标不变
+ *   · 关掉的是 **AI 的工作标签** → AI 目标必须跟着挪到邻居（否则下一次 snapshot 指向已销毁的 wc）
+ */
 export function closeTab(id) {
   if (!active?.host) return { ok: false, error: '当前不在右栏浏览器模式' };
-  const r = active.host.closeTabById(id);
+  const closing = String(id);
+  const isAiTab = active.tabId === closing;
+  const r = active.host.closeTabById(closing);
   if (!r.ok) return { ok: false, error: r.error };
   const nextId = r.state?.activeId || null;
-  if (nextId) return switchTabTo(nextId);
-  // 全关了：本模块的页面也失效（下次 navigate 会重新建）
-  active.contents = null;
-  active.tabId = null;
-  return { ok: true, activeId: null };
+  if (isAiTab) {
+    if (nextId) return switchTabTo(nextId); // AI 目标换了，必须换 wc
+    active.contents = null;
+    active.tabId = null;
+    return { ok: true, activeId: null };
+  }
+  // 关的不是 AI 的标签：AI 目标保持不变，只确认宿主把它从可见里摘掉
+  return { ok: true, activeId: nextId, aiTab: active.tabId || null };
 }
 
 // Kept callable for older consumers. The listener is attached before navigation.

@@ -6,6 +6,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.32.4] - 2026-11-23
+
+### Fixed
+
+- **Switching to another session still left the previous session's pages and images in the right rail.** You flagged this twice, so it is the headline fix here: the rail now belongs entirely to its session — switching away collapses it (and pushes the browser view out of the way), and switching back restores the pages and images you had open. A brand-new conversation always starts with an empty rail.
+- **After scanning a QR code to sign in, the page jumped to your external browser.** The cause was a global guard on the main window that hands every "open a new window / navigate away" from any page to the system browser — including the embedded browser. The embedded browser now has its own rule: everything inside it stays inside it.
+- **"Open in default browser" is now a button you press yourself.** A "⧉" button sits at the right of the address bar (mirroring ZCode's "Open in default browser"): only when you click it does the current page go out to the system browser. By default everything the AI does stays inside FinalCheck's built-in browser.
+- **Clicking the PNG tab next to an open browser did nothing.** Switching to an image tab only moved the highlight; it never re-read the file. It now loads the image for that tab's own path.
+- **While the AI was driving the browser, touching it made the AI follow you to whichever page you were looking at.** "Which page you are viewing" and "which page the AI is operating on" were the same piece of state. They are now separate: switching tabs only changes what you see, and the AI's working target stays put until the AI itself moves it.
+
+### Improved
+
+- **The rail's width now has both a floor and a ceiling, so pages display fully across.** Previously the widest the rail could get was "window minus sidebar minus body", with no cap when dragging; pages designed for 1280 got their right side cut off at 620 (the Chaoxing personal page in your screenshot). Now the width caps at 1280 while the page is scaled to fit the actual rail width (about 0.55× at 648px), so horizontal content is fully visible instead of clipped.
+- **Collapsing and expanding no longer snap.** It used to swap two different UIs; a 12-frame sample showed a single width value (an instant jump). It is now a 200ms width transition on the same container with cross-faded content; the web view is hidden during the animation (a native layer cannot follow a per-frame animation without shimmering) and reappears at its final position the moment it ends.
+- Dragging the rail no longer fires a cross-process message every frame: updates are coalesced per animation frame and skipped when the position has not changed, so the view follows more steadily.
+
 ## [0.32.3] - 2026-11-23
 
 ### Added

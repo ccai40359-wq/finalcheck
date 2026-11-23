@@ -29,17 +29,34 @@ export function BrowserPane({ y, visible, onTabsChange }) {
   const [addrBusy, setAddrBusy] = useState(false);
   const [note, setNote] = useState('');
 
-  // 上报内容区 rect：浏览器画面就画在这块 div 的位置上
+  // 上报内容区 rect：浏览器画面就画在这块 div 的位置上。
+  // 0.32.4「丝滑」：ResizeObserver 在拖动右栏时**每帧都触发**，每次都走一次 IPC 往返，
+  // 而 WebContentsView 是原生层（不在渲染管线里），跟着这种高频往返会抖。
+  // 做法：rAF 合并（一帧最多一次）+ 只在 rect 真变了才发（相同 rect 直接跳过）。
+  const rectRaf = useRef(0);
+  const lastRect = useRef('');
   const reportRect = useCallback(() => {
     const el = boxRef.current;
     if (!el || !y?.railRect) return;
     if (!visible) { void y.railVisible?.(false); return; }
-    const r = el.getBoundingClientRect();
-    // 宽高为 0（面板被折叠/还没布局）时按「不可见」处理，避免主进程按 0 尺寸画
-    if (r.width < 8 || r.height < 8) { void y.railVisible?.(false); return; }
-    void y.railRect({ x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) });
-    void y.railVisible?.(true);
+    if (rectRaf.current) return; // 本帧已经排好了
+    rectRaf.current = requestAnimationFrame(() => {
+      rectRaf.current = 0;
+      const node = boxRef.current;
+      if (!node) return;
+      const r = node.getBoundingClientRect();
+      // 宽高为 0（面板被折叠/还没布局）时按「不可见」处理，避免主进程按 0 尺寸画
+      if (r.width < 8 || r.height < 8) { void y?.railVisible?.(false); return; }
+      const payload = { x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) };
+      const key = `${payload.x},${payload.y},${payload.width},${payload.height}`;
+      if (key === lastRect.current) return; // 没变就不发（拖到边界/抖动时省掉大量往返）
+      lastRect.current = key;
+      void y?.railRect(payload);
+      void y?.railVisible?.(true);
+    });
   }, [y, visible]);
+  // 组件卸载时取消排队中的帧
+  useEffect(() => () => { if (rectRaf.current) cancelAnimationFrame(rectRaf.current); }, []);
 
   const refreshTabs = useCallback(async () => {
     if (!y?.browserTabs) return;
@@ -137,6 +154,20 @@ export function BrowserPane({ y, visible, onTabsChange }) {
     } catch (e) { setNote(String(e?.message || e)); }
   };
 
+  // 0.32.4：用户主动「在默认浏览器打开」当前网页。
+  // 这是把内嵌页面送到系统浏览器的唯一正当入口——页面自己不会跑出去
+  // （index.mjs 的全局守卫 + browser-view-host 的夺回逻辑保证页面内导航都留在内嵌浏览器里）。
+  const openExternal = async () => {
+    const cur = tabs.find((x) => x.id === activeId);
+    const url = cur?.url || normalizeUrl(addr);
+    if (!url) return setNote(t('没有可打开的网址'));
+    setNote('');
+    try {
+      const r = await y?.browserOpenExternal?.(url);
+      if (!r || r.ok === false) setNote(String(r?.error || t('打开失败')));
+    } catch (e) { setNote(String(e?.message || e)); }
+  };
+
   if (!visible) return null;
 
   return (
@@ -162,7 +193,9 @@ export function BrowserPane({ y, visible, onTabsChange }) {
 
       {/* 地址栏：用户自己输网址的地方。
           0.32.1：去掉了右边的 "Open" 按钮——回车就是打开，按钮和回车重复，
-          而且它挤占了地址栏宽度（用户反馈"这个 Open 是啥意思"）。 */}
+          而且它挤占了地址栏宽度（用户反馈"这个 Open 是啥意思"）。
+          0.32.4：右边换成「在默认浏览器打开」（用户点名的 ZCode 同款）——
+          扫码登录时如果站点非要跳外部浏览器，用户可以主动在这里打开，而不是页面自己跑出去。 */}
       <div className="shrink-0 flex items-center gap-1.5 px-2 h-9 border-b border-edge/60">
         <button onClick={() => { void reloadPage(); }} title={t('重新加载当前网页')}
           data-browser-reload
@@ -177,6 +210,9 @@ export function BrowserPane({ y, visible, onTabsChange }) {
           className="flex-1 min-w-0 rounded bg-lift/[0.06] px-2 py-1 text-[12px] text-ink/90 outline-none focus:ring-1 focus:ring-gold/40" />
         {/* 只在输入了东西时给一个极简的"去"提示（回车即可，不需要按钮） */}
         {addrBusy && <span className="shrink-0 text-[11px] text-mute/60">{t('打开中…')}</span>}
+        <button onClick={() => { void openExternal(); }} title={t('在默认浏览器打开（当前网页）')}
+          data-browser-external
+          className="shrink-0 rounded px-1.5 py-0.5 text-[13px] leading-none text-mute/60 hover:bg-lift/[0.06] hover:text-goldSoft">⧉</button>
       </div>
 
       {/* 这一块是浏览器画面的位置：主进程按它的 rect 画 WebContentsView。

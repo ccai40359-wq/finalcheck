@@ -41,9 +41,13 @@ test('隐藏约束: App 层兜底 —— 任何「右栏不该显示浏览器」
     '不满足就隐藏——切设置页/折叠/切 tab 全走这一道');
 });
 
-test('隐藏约束: 折叠态下画面也必须隐藏（折叠=收成窄条，不能留着网页盖住对话区）', () => {
-  assert.match(railSrc, /const browserVisible = Boolean\(active && active\.kind === 'browser'\) && !collapsed;/,
-    '折叠时 browserVisible 必须为 false');
+test('隐藏约束: 折叠态与动画期间画面都必须隐藏（不能留着网页盖住对话区）', () => {
+  // 0.32.4：折叠改成"同一棵 DOM 变窄 + 过渡"，判据也要覆盖动画窗口——
+  // 原生层跟不上逐帧动画，动画中必须藏起来，否则会看到画面抖动拖影。
+  assert.match(railSrc, /const browserVisible = Boolean\(active && active\.kind === 'browser'\) && !collapsed && !animating;/,
+    '折叠或被折叠/展开动画中，browserVisible 必须为 false');
+  assert.match(railSrc, /const \[animating, setAnimating\] = useState\(false\);/,
+    '必须有动画窗口状态');
 });
 
 test('宿主: rect 无效 / 不可见时宁可不显示（避免画到错位置）', () => {

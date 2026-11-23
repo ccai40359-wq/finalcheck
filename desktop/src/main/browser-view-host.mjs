@@ -69,7 +69,7 @@ export function hostInfo() {
     let b = null;
     try { b = entry.view.getBounds?.() || null; } catch { b = null; }
     if (entry.showing) showing.push(id);
-    views.push({ id, bounds: b, showing: Boolean(entry.showing), url: entry.url || '' });
+    views.push({ id, bounds: b, showing: Boolean(entry.showing), zoom: entry.zoom ?? 1, url: entry.url || '' });
   }
   return {
     attached: true,
@@ -147,6 +147,13 @@ export async function newTab({ url = '', partition, openerId = null, background 
   view.setVisible(false); // 先藏，等 rect + 可见性都确定后再显示（避免错位闪现）
 
   // window.open / target=_blank → 变成新标签（PoC 已验证 handler 能抓到 url）
+  //
+  // ⚠️ 0.32.4 P0（用户实测：「一扫二维码登录，就跳转到我外面的浏览器了」）：
+  // index.mjs 有一个全局 app.on('web-contents-created') 守卫，它把**任何**新 webContents 的
+  // window.open 和 will-navigate 都交给系统浏览器（shell.openExternal）。内嵌浏览器的 view
+  // 也在它管辖范围内，于是扫码后跳登录成功页就被扔到外部浏览器了。
+  // 这里在创建后**立刻夺回控制权**：重设 window.open handler + 摘掉那个 will-navigate 监听。
+  // 内嵌浏览器的语义必须是「一切留在自己里面」；要开外部浏览器只能由用户点右栏的按钮。
   wc.setWindowOpenHandler(({ url: target }) => {
     const verdict = classifyWindowOpen(target);
     if (verdict.open) {
@@ -154,6 +161,22 @@ export async function newTab({ url = '', partition, openerId = null, background 
       try { host?.onWindowOpen?.(verdict.url, id); } catch { /* 上层故障不影响 */ }
     }
     return { action: 'deny' };
+  });
+  try { wc.__fcEmbeddedBrowser = true; } catch { /* 只读对象：忽略 */ }
+  // 摘掉 index.mjs 注册的那个 will-navigate（它会把页面内导航推给系统浏览器）
+  try {
+    const guard = wc.__fcNavGuard;
+    if (typeof guard === 'function') wc.removeListener('will-navigate', guard);
+    wc.__fcNavGuard = null;
+  } catch { /* 拿不到就靠下面的兜底 */ }
+  // 兜底：即便旧的 will-navigate 还在（时序差异），这里也保证页面内主帧导航不被 push 出去。
+  // 只拦「跳到系统浏览器」这一件事；页面自己正常跳转要放行（否则扫码后到不了成功页）。
+  wc.on('will-navigate', (event, targetUrl) => {
+    try {
+      const u = new URL(String(targetUrl || ''));
+      if (u.protocol === 'http:' || u.protocol === 'https:' || u.protocol === 'file:') return; // 留在内嵌浏览器
+    } catch { /* 非法 URL：交给默认处理 */ }
+    event.preventDefault();
   });
 
   // 标题/地址回填（标签条与工具层都要用）
@@ -227,8 +250,41 @@ export async function navigateTab(id, url, { activate = true } = {}) {
 }
 
 /**
- * 拿 webContents 给 browser-use 用：它需要在这个 wc 上跑快照/点击（executeJavaScriptInIsolatedWorld）
- * 与 capturePage。宿主只借出引用，不干涉页面语义。
+ * 0.32.4：让网页**横向完整显示**在给定宽度里。
+ *
+ * 用户实测（截图：i.chaoxing.com 的个人空间在 620px 右栏里右侧被切掉）：
+ * 「这个边框的宽和窄都要限制，一定要把完整页面横向显示出来」。
+ *
+ * 做法不是继续加宽右栏（窗口就那么宽，加到 1280 就没对话区了），而是：
+ *   页面按自己的设计宽度排版（不重排成手机版）→ 再用缩放把它整体压进右栏宽度。
+ * 这就是桌面浏览器「缩小到适合宽度」的同一套语义。
+ *
+ * 为什么这不是 hack：browser_use 的所有交互都走 **DOM 快照 + ref + elementFromPoint**（CSS 像素），
+ * 不依赖屏幕坐标，所以 zoomFactor 不会让点击错位。cu（桌面操作）不碰这个 view。
+ *
+ * @param {number} railWidth 右栏内容区宽度（CSS px）
+ */
+export const MIN_READABLE_ZOOM = 0.5; // 再小就看不清了（用户宁可横向滚动/拖宽右栏）
+export const DESIGN_WIDTH = 1180;    // 常见桌面网页的设计宽度（1280 窗口减去滚动条/边距）
+
+export function zoomForWidth(railWidth, designWidth = DESIGN_WIDTH) {
+  const w = Number(railWidth) || 0;
+  if (w <= 0) return 1;
+  if (w >= designWidth) return 1;                    // 够宽就不缩
+  const z = w / designWidth;
+  return Math.max(MIN_READABLE_ZOOM, Math.min(1, Number(z.toFixed(3))));
+}
+
+/** 把缩放应用到某个 view（不可用时静默跳过，绝不因此中断导航）。 */
+function applyZoom(entry, railWidth) {
+  const z = zoomForWidth(railWidth);
+  try { entry.wc.setZoomFactor?.(z); } catch { /* 老版本/已销毁 */ }
+  entry.zoom = z;
+  return z;
+}
+/**
+ * 拿 webContents 给 browser-use 用：它需要在这个 wc 上跑快照/点击
+ * （executeJavaScriptInIsolatedWorld）与 capturePage。宿主只借出引用，不干涉页面语义。
  */
 export function contentsOf(id = null) {
   if (!host) return null;
@@ -308,6 +364,8 @@ function applyAllBounds() {
     try {
       if (shouldShow) {
         applyEntryBounds(entry);
+        // 0.32.4：宽度一变就重算缩放，保证网页横向完整显示（不是把它切掉）
+        if (host.rect?.width) applyZoom(entry, host.rect.width);
         entry.view.setVisible(true);
         entry.showing = true;
       } else {

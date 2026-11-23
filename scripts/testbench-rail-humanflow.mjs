@@ -68,6 +68,18 @@ console.log('[server]', origin);
 
 const electronExe = (await import(pathToFileURL(path.join(root, 'desktop/node_modules/electron/index.js')).href)).default;
 const { ELECTRON_RUN_AS_NODE: _n, ...env } = process.env;
+
+// 0.32.4：会话隔离必须在**真实会话**上验证——草稿态 activeId 恒为 null，
+// 拿草稿测「切会话右栏跟着走」等于没测（S13 曾因此假通过）。
+process.env.FINALCHECK_SESSIONS_DIR = sessionsDir;
+const sessionsLib = await import(pathToFileURL(path.join(root, 'desktop/src/main/sessions.mjs')).href);
+const s1c = await sessionsLib.newSession('会话一');
+const s2c = await sessionsLib.newSession('会话二');
+await sessionsLib.appendUserMessage(s1c.id, '第一个会话');
+await sessionsLib.appendUserMessage(s2c.id, '第二个会话');
+await sessionsLib.renameSession(s1c.id, '会话一');
+await sessionsLib.renameSession(s2c.id, '会话二');
+console.log('[seed sessions]', s1c.id, s2c.id);
 const child = spawn(electronExe, [
   path.join(root, 'desktop'), `--remote-debugging-port=${PORT}`, `--user-data-dir=${userData}`, '--no-first-run'
 ], {
@@ -170,6 +182,21 @@ try {
   const boot = await snapshot();
   record('S0', '启动后不在首次向导、右栏尚未出现', boot.railMode === null, JSON.stringify({ railMode: boot.railMode }));
 
+  /* S0b 全程在**真实会话**上跑（草稿态 activeId 恒为 null，会话隔离根本测不到） */
+  const enterSession = await ev(`(async () => {
+    const rows = [...document.querySelectorAll('div[title]')].filter((x) => {
+      const tt = x.getAttribute('title') || '';
+      return tt.startsWith('会话一') && x.offsetParent !== null;
+    });
+    if (!rows.length) return { missing: true };
+    rows[0].click();
+    await new Promise((r) => setTimeout(r, 1600));
+    return { rowsSeen: rows.length };
+  })()`);
+  console.log('[S0b enter 会话一]', JSON.stringify(enterSession));
+  record('S0b', '进入真实会话「会话一」（后续链路都跑在真实会话上）',
+    enterSession?.missing !== true, JSON.stringify(enterSession));
+
   /* S1 打开一个网页 */
   const r1 = await ev(`window.finalcheck.browserGoto(${JSON.stringify(origin + '/one')})`);
   await sleep(1200);
@@ -242,10 +269,12 @@ try {
 
   /* S6 折叠 → 画面必须消失 */
   const fold = await ev(`(async () => {
-    const b = document.querySelector('[data-rail-toggle]');
+    const b = document.querySelector('[data-rail-toggle="collapse"]');
     if (!b) return 'toggle-missing';
     b.click();
-    await new Promise((r) => setTimeout(r, 800));
+    // 0.32.4：折叠现在走宽度过渡（200ms），要等动画真的结束再读，
+    // 否则读到的还是展开态（以前是两棵 DOM 硬切，一次读取就对；现在必须等）
+    await new Promise((r) => setTimeout(r, 450));
     const rail = document.querySelector('[data-rail]');
     const info = await window.finalcheck.browserTabs();
     return { mode: rail?.getAttribute('data-rail'), visible: info?.hostVisible, tabs: (info?.tabs || []).length };
@@ -259,7 +288,7 @@ try {
 
   /* S7 展开 → 画面回来、标签还在（内容保留） */
   const unfold = await ev(`(async () => {
-    const b = document.querySelector('[data-rail-toggle]');
+    const b = document.querySelector('[data-rail-toggle="expand"]');
     if (!b) return 'toggle-missing';
     b.click();
     await new Promise((r) => setTimeout(r, 900));
@@ -330,7 +359,91 @@ try {
     Boolean(back?.railMode) && s10.webTabs === s7.webTabs, JSON.stringify({ back, webTabs: s10.webTabs }));
   await shot('s10-back.png');
 
-  await writeFile(path.join(out, 'result.json'), JSON.stringify({ origin, results, s1, s2, s6, s7, s10 }, null, 2), 'utf8');
+  /* ---- 0.32.4 新增场景 ---- */
+
+  /* S11 宽度自适配：右栏拉窄后网页必须缩放（横向完整显示，不是被切掉） */
+  const zoomCheck = await ev(`(async () => {
+    const info = await window.finalcheck.browserTabs();
+    const v = (info?.views || []).find((x) => x.id === info.activeId);
+    const box = document.querySelector('[data-browser-box]');
+    const railW = box ? Math.round(box.getBoundingClientRect().width) : 0;
+    return { zoom: v?.zoom, railWidth: railW, showing: (info?.showing || []).length };
+  })()`);
+  console.log('[S11 zoom]', JSON.stringify(zoomCheck));
+  record('S11', '右栏放不下设计宽度时网页自动缩小（zoom<1，横向能完整显示）',
+    Number.isFinite(zoomCheck?.zoom) && zoomCheck.zoom <= 1
+      && (zoomCheck.railWidth >= 1180 ? zoomCheck.zoom === 1 : zoomCheck.zoom < 1),
+    JSON.stringify(zoomCheck));
+
+  /* S12 在默认浏览器打开：按钮存在，且点它不会改动内嵌浏览器状态 */
+  const extBtn = await ev(`(async () => {
+    const b = document.querySelector('[data-browser-external]');
+    if (!b) return { missing: true };
+    const infoBefore = await window.finalcheck.browserTabs();
+    // 不真的点（会弹系统浏览器，测试台不该干扰桌面）；只验证按钮存在与通道可用
+    const probe = await window.finalcheck.browserOpenExternal('').catch((e) => ({ error: String(e?.message || e) }));
+    const infoAfter = await window.finalcheck.browserTabs();
+    return {
+      present: true,
+      emptyUrlRejected: probe?.ok === false,
+      tabsUnchanged: (infoBefore?.tabs || []).length === (infoAfter?.tabs || []).length
+    };
+  })()`);
+  console.log('[S12 external]', JSON.stringify(extBtn));
+  record('S12', '「在默认浏览器打开」按钮存在，空网址被拒，且不影响内嵌标签',
+    extBtn?.present === true && extBtn?.emptyUrlRejected === true && extBtn?.tabsUnchanged === true,
+    JSON.stringify(extBtn));
+
+  /* S13 会话隔离：切到另一个真实会话后右栏必须收起（不能把当前会话的网页带过去） */
+  const newSession = await ev(`(async () => {
+    // 明确点「会话二」那一行（真实会话，不是草稿）
+    const rows = [...document.querySelectorAll('div[title]')].filter((x) => {
+      const tt = x.getAttribute('title') || '';
+      return tt.startsWith('会话二') && x.offsetParent !== null;
+    });
+    if (!rows.length) return { missing: true, count: 0 };
+    rows[0].click();
+    await new Promise((r) => setTimeout(r, 1600));
+    const rail = document.querySelector('[data-rail]');
+    const info = await window.finalcheck.browserTabs();
+    return {
+      rowsSeen: rows.length,
+      railExists: !!rail,
+      railMode: rail?.getAttribute('data-rail') || null,
+      showing: (info?.showing || []).length
+    };
+  })()`);
+  console.log('[S13 switch to other session]', JSON.stringify(newSession));
+  record('S13', '切到另一个会话：右栏收起（旧会话的网页不会跟过去），且画面已隐藏',
+    newSession?.railExists === false && (newSession?.showing || 0) === 0,
+    JSON.stringify(newSession));
+  await shot('s13-other-session.png');
+
+  /* S14 切回原会话：右栏恢复（会话隔离是"记住并恢复"，不是"丢掉"） */
+  const backToOld = await ev(`(async () => {
+    const rows = [...document.querySelectorAll('div[title]')].filter((x) => {
+      const tt = x.getAttribute('title') || '';
+      return tt.startsWith('会话一') && x.offsetParent !== null;
+    });
+    if (!rows.length) return { missing: true, count: 0 };
+    rows[0].click();
+    await new Promise((r) => setTimeout(r, 1800));
+    const rail = document.querySelector('[data-rail]');
+    const info = await window.finalcheck.browserTabs();
+    return {
+      rowsSeen: rows.length,
+      railMode: rail?.getAttribute('data-rail') || null,
+      showing: (info?.showing || []).length,
+      webTabs: (info?.tabs || []).length
+    };
+  })()`);
+  console.log('[S14 back to old session]', JSON.stringify(backToOld));
+  record('S14', '切回原会话：右栏与它自己的网页恢复（能接着用）',
+    Boolean(backToOld?.railMode) && (backToOld?.webTabs || 0) > 0,
+    JSON.stringify(backToOld));
+  await shot('s14-restored.png');
+
+  await writeFile(path.join(out, 'result.json'), JSON.stringify({ origin, results, s1, s2, s6, s7, s10, zoomCheck, newSession, backToOld }, null, 2), 'utf8');
   const failed = results.filter((r) => !r.ok);
   console.log(`\n=== 真人链路测试台 ${failed.length === 0 ? '全过' : failed.length + ' 项失败'}（${results.length - failed.length}/${results.length}） ===`);
   console.log('证据:', out);

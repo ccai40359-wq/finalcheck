@@ -107,6 +107,36 @@ export function patchRailTab(rail, key, patch = {}) {
  * 会话切换时要清掉哪些 tab：子代理 tab 属于具体会话，切走就不该继续挂在那儿；
  * 产物与浏览器则不跟会话走（产物是文件、浏览器是进程级页面）。
  */
+/**
+ * 切会话时的右栏处理。
+ *
+ * ⚠️ 0.32.4 修正（用户两次强调「我切了会话，这个右边栏还是保留，这个问题给我记好了，以后不要再犯」）：
+ * 旧实现只清子代理 tab，注释里写着「产物与浏览器 tab 留着」——那是错的。
+ * **右栏内容属于当前会话**：切走时旧会话的产物/浏览器/子代理 tab 都必须收起来，
+ * 切回来再恢复（恢复由调用方用 railBySessionRef 做，见 App.jsx）。
+ *
+ * 所以这个函数现在做两件事：
+ *   ① 返回「这个会话应有的右栏」（从缓存里取，没缓存就是空）
+ *   ② 提供 pruneForSession 兼容旧行为（只清子代理 tab）——**不再用于切会话**
+ *
+ * @param {{tabs:Array, activeKey:string|null}|null} cached 该会话上次保存的右栏
+ */
+export function railForSession(cached) {
+  if (!cached || !Array.isArray(cached.tabs)) return emptyRail();
+  // 深拷贝一层：调用方 setRail 后不会再改到缓存里的对象
+  return { tabs: cached.tabs.map((t) => ({ ...t, payload: { ...(t.payload || {}) } })), activeKey: cached.activeKey || null };
+}
+
+/** 存档时用：把当前右栏存成可恢复的快照。 */
+export function snapshotRail(rail) {
+  if (!rail || !Array.isArray(rail.tabs)) return emptyRail();
+  return { tabs: rail.tabs.map((t) => ({ ...t, payload: { ...(t.payload || {}) } })), activeKey: rail.activeKey || null };
+}
+
+/**
+ * 只清掉属于其它会话的子代理 tab（保留同会话的）。
+ * 保留给「同一会话内切换视图」这类场景；**切会话请用 railForSession**。
+ */
 export function pruneForSession(rail, sessionId) {
   const cur = rail || emptyRail();
   const kept = cur.tabs.filter((t) => {

@@ -10,7 +10,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
 import {
-  SIDEBAR_WIDTH, MIN_MAIN_WIDTH, CLOSE_AT,
+  SIDEBAR_WIDTH, MIN_MAIN_WIDTH, CLOSE_AT, MAX_PANEL_WIDTH,
   maxRailWidth, planPanelLayout, clampPanelWidth, shouldClosePanel
 } from '../desktop/src/renderer/lib/panel-layout.mjs';
 
@@ -44,10 +44,34 @@ test('panel-layout: 窗口太小连 MIN_PANEL_WIDTH 都给不出时，两边对�
   assert.equal(r.width, Math.round((700 - SIDEBAR_WIDTH) / 2));
 });
 
-test('panel-layout: maxRailWidth = 窗口 − 侧栏 − 正文最小宽', () => {
-  assert.equal(maxRailWidth(1010), 1010 - SIDEBAR_WIDTH - MIN_MAIN_WIDTH); // 378
-  assert.equal(maxRailWidth(1920), 1920 - SIDEBAR_WIDTH - MIN_MAIN_WIDTH); // 1288
+test('panel-layout: maxRailWidth = 窗口 − 侧栏 − 正文最小宽，且不超过绝对上限', () => {
+  assert.equal(maxRailWidth(1010), 1010 - SIDEBAR_WIDTH - MIN_MAIN_WIDTH); // 378（未触顶）
+  // 0.32.4：1920 窗口原本会给 1288，但绝对上限 1280 先封顶（用户要求"宽也要限制"）
+  assert.equal(maxRailWidth(1920), MAX_PANEL_WIDTH, `宽窗口要封顶到 ${MAX_PANEL_WIDTH}，不是无限放宽`);
+  assert.equal(maxRailWidth(2560), MAX_PANEL_WIDTH, '再宽的窗口也封顶');
   assert.equal(maxRailWidth(600), 0);
+});
+
+test('panel-layout: 0.32.4 宽窄双向都有界（绝不无限放宽/放宽）', () => {
+  // 窄：正文永远保住 MIN_MAIN_WIDTH
+  for (const win of [1010, 1280, 1440]) {
+    const r = planPanelLayout({ windowWidth: win, desiredWidth: 2000 });
+    assert.ok(win - SIDEBAR_WIDTH - r.width >= MIN_MAIN_WIDTH, `窗口 ${win}：正文被压太窄`);
+    assert.ok(r.width <= MAX_PANEL_WIDTH, `窗口 ${win}：右栏超过绝对上限`);
+  }
+  // 宽：即便用户把期望拖到 3000，也封顶到 MAX_PANEL_WIDTH
+  const wide = planPanelLayout({ windowWidth: 2560, desiredWidth: 3000 });
+  assert.equal(wide.width, MAX_PANEL_WIDTH);
+  assert.equal(wide.capped, true, '要如实报告"被上限截断了"');
+});
+
+test('panel-layout: 浏览器需要的宽度上限足够（1280 设计宽度的网页能完整排开）', () => {
+  // 1920 窗口下右栏能拿到 1280，足够放下按 1280 设计的主流网页
+  const r = planPanelLayout({ windowWidth: 1920, desiredWidth: 1280 });
+  assert.equal(r.width, 1280);
+  // 1440 窗口下能拿到多少（受正文 MIN_MAIN_WIDTH 约束）
+  const r2 = planPanelLayout({ windowWidth: 1440, desiredWidth: 1280 });
+  assert.equal(r2.width, 1440 - SIDEBAR_WIDTH - MIN_MAIN_WIDTH, '1440 下给到上限，正文仍保 420');
 });
 
 test('panel-layout: 穷举 —— 任何窗口下正文都不会少于 MIN_MAIN_WIDTH（除非窗口本身放不下）', () => {

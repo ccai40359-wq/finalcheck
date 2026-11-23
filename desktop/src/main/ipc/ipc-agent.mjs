@@ -239,9 +239,28 @@ export function registerAgentIpc({
     const dt = await loadDesktopTools().catch(() => null);
     try { return await (dt?.browserUse?.openTab?.(String(url)) || { ok: false, error: '浏览器未就绪' }); } catch (e) { return { ok: false, error: String(e?.message || e) }; }
   });
+  // 用户在界面点网页标签：**只改他看哪一页**，不动 AI 的工作目标（0.32.4 P0 见 browser-use.viewTab）
   ipcMain.handle('finalcheck:browser-tab-switch', async (_e, id = '') => {
     const dt = await loadDesktopTools().catch(() => null);
-    try { return dt?.browserUse?.switchTabTo?.(String(id)) || { ok: false, error: '浏览器未就绪' }; } catch (e) { return { ok: false, error: String(e?.message || e) }; }
+    try { return dt?.browserUse?.viewTab?.(String(id)) || { ok: false, error: '浏览器未就绪' }; } catch (e) { return { ok: false, error: String(e?.message || e) }; }
+  });
+  // AI 工作标签 vs 用户正在看的标签（UI 在两者不一致时要提示，避免用户误以为 AI 跑偏）
+  ipcMain.handle('finalcheck:browser-tab-focus', async () => {
+    const dt = await loadDesktopTools().catch(() => null);
+    try { return dt?.browserUse?.tabFocusInfo?.() || { ok: false, error: '浏览器未就绪' }; } catch (e) { return { ok: false, error: String(e?.message || e) }; }
+  });
+  // 用户主动要求「在默认浏览器打开当前网页」（右栏右上角按钮）。
+  // 这是**唯一**允许把内嵌浏览器的页面送到系统浏览器的方式——页面自己不会跑出去（见 index.mjs 的守卫）。
+  ipcMain.handle('finalcheck:browser-open-external', async (_e, url = '') => {
+    try {
+      const target = String(url || '').trim();
+      if (!target) return { ok: false, error: '没有可打开的网址' };
+      const u = new URL(target);
+      if (u.protocol !== 'http:' && u.protocol !== 'https:') return { ok: false, error: '只能打开 http/https 网址' };
+      const { shell } = await import('electron');
+      await shell.openExternal(u.href);
+      return { ok: true, url: u.href };
+    } catch (e) { return { ok: false, error: String(e?.message || e) }; }
   });
   ipcMain.handle('finalcheck:browser-tab-close', async (_e, id = '') => {
     const dt = await loadDesktopTools().catch(() => null);

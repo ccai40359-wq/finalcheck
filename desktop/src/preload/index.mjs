@@ -74,6 +74,9 @@ contextBridge.exposeInMainWorld('finalcheck', {
   browserTabSwitch: (id) => ipcRenderer.invoke('finalcheck:browser-tab-switch', id),
   browserTabClose: (id) => ipcRenderer.invoke('finalcheck:browser-tab-close', id),
   browserGoto: (url) => ipcRenderer.invoke('finalcheck:browser-goto', url),
+  // 0.32.4：用户主动「在默认浏览器打开当前网页」（唯一允许把内嵌页面送去系统浏览器的入口）
+  browserOpenExternal: (url) => ipcRenderer.invoke('finalcheck:browser-open-external', url),
+  browserTabFocus: () => ipcRenderer.invoke('finalcheck:browser-tab-focus'),
   // AI 或用户打开网页时主进程推一次 → 右栏自动跳到浏览器 tab
   onBrowserRailOpen: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('finalcheck:browser-rail-open', h); return () => ipcRenderer.removeListener('finalcheck:browser-rail-open', h); },
   testProvider: (p) => ipcRenderer.invoke('finalcheck:test-provider', p),
