@@ -29,6 +29,8 @@ await writeFile(path.join(userData, 'config.json'), JSON.stringify({
   providers: [{ id: 'p-ui', name: 'UI Test', baseUrl: 'http://127.0.0.1:1/v1', apiFormat: 'chat-completions',
     apiKey: 'test-key', models: [{ id: 'deepseek-v4.1-flash', contextWindow: 200000 }], enabled: true }],
   activeProviderId: 'p-ui', language: 'zh', theme: 'dark',
+  // 权限规则设置页截图用
+  permissionRules: { allow: ['run_command(npm test:*)', 'run_command(git status)', 'edit_file(src/**)'], deny: ['run_command(git push*)', 'read_file(**/.env)'] },
   // MCP 设置页截图用：一个能连上的测试服务器 + 一个配置有误的
   mcpServers: {
     fixture: { command: process.execPath, args: [path.join(root, 'tests/fixtures/mcp-fixture-server.mjs')] },
@@ -168,6 +170,22 @@ try {
   await shot('7-mcp-dark.png');
   await setTheme('light'); await sleep(500);
   await shot('8-mcp-light.png');
+
+  // ⑥ 权限规则设置页（0.33.0）：「试一下」填一条复合命令，看判定
+  await setTheme('dark'); await sleep(300);
+  await clickText('权限规则');
+  await sleep(1200);
+  await ev(`(() => {
+    const inp = [...document.querySelectorAll('input')].find((x) => /git status/.test(x.placeholder || ''));
+    if (!inp) return;
+    const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    set.call(inp, 'git status && git push origin main');
+    inp.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`);
+  await sleep(800);
+  await shot('9-rules-dark.png');
+  await setTheme('light'); await sleep(500);
+  await shot('10-rules-light.png');
 } finally {
   try { ws?.close(); } catch { /* 忽略 */ }
   try { child.kill(); } catch { /* 忽略 */ }

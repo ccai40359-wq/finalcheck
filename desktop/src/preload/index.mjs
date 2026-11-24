@@ -78,6 +78,11 @@ contextBridge.exposeInMainWorld('finalcheck', {
   mcpStatus: () => ipcRenderer.invoke('finalcheck:mcp-status'),
   mcpSave: (servers) => ipcRenderer.invoke('finalcheck:mcp-save', servers),
   mcpRestart: (name) => ipcRenderer.invoke('finalcheck:mcp-restart', name),
+  // 0.33.0 持久权限规则
+  permissionRulesGet: () => ipcRenderer.invoke('finalcheck:permission-rules-get'),
+  permissionRulesSave: (rules) => ipcRenderer.invoke('finalcheck:permission-rules-save', rules),
+  permissionRulesTest: (req) => ipcRenderer.invoke('finalcheck:permission-rules-test', req),
+  permissionRulesAdd: (kind, rule) => ipcRenderer.invoke('finalcheck:permission-rules-add', kind, rule),
   // 0.33.0 文件检查点回退
   checkpointPlan: (sessionId, keepUserTurns) => ipcRenderer.invoke('finalcheck:checkpoint-plan', sessionId, keepUserTurns),
   checkpointRestore: (sessionId, keepUserTurns) => ipcRenderer.invoke('finalcheck:checkpoint-restore', sessionId, keepUserTurns),

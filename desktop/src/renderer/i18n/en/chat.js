@@ -361,4 +361,7 @@ export const EN_CHAT = {
   '恢复 {n} 个文件': 'Restore {n} files',
   '这个会话还在运行，先停止再恢复文件': 'This session is still running — stop it before restoring files',
   '同时把 AI 之后改过的 {n} 个文件恢复到这条消息之前': 'Also restore the {n} files the AI changed after this message',
+  '已存为长期规则：{rule}（可在设置 → 权限规则里改）': 'Saved as a lasting rule: {rule} (edit it in Settings → Permission rules)',
+  '写入设置 → 权限规则：{rule}': 'Adds to Settings → Permission rules: {rule}',
+  '总是允许': 'Always allow',
 };

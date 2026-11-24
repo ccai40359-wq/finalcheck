@@ -1257,9 +1257,16 @@ export default function App() {
   }, [y]);
 
   // 回填审批决定：点击即回传主进程并收起确认条（主进程侧超时 120s 兜底拒绝）
-  const decideApproval = async (decision) => {
+  const decideApproval = async (decision, { saveRule = false } = {}) => {
     if (!approval || !y?.approvalDecide) return;
-    const { callId } = approval;
+    const { callId, rule } = approval;
+    // 0.33.0「总是允许（存为规则）」：先写进 config.permissionRules（以后的会话都免审），本次按本会话总是允许放行
+    if (saveRule && rule && y.permissionRulesAdd) {
+      try {
+        const r = await y.permissionRulesAdd('allow', rule);
+        if (r?.ok) pushNotice(t('已存为长期规则：{rule}（可在设置 → 权限规则里改）', { rule }));
+      } catch { /* 存规则失败不影响本次决定 */ }
+    }
     // 并发子代理可能同时要审批：先弹下一个排队项，再回传决定
     const next = approvalsRef.current.shift() || null;
     setApproval(next);

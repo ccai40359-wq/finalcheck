@@ -208,6 +208,13 @@ export default function Composer({
                 className="btn-primary px-3 py-1.5 text-xs">{t('允许一次')}</button>
               <button data-testid="approval-allow-session" onClick={() => decideApproval('always-session')}
                 className="btn-ghost px-3 py-1.5 text-xs !text-goldSoft !border-gold/40 hover:!bg-gold/10">{t('本会话总是允许')}</button>
+              {approval.rule ? (
+                <button data-testid="approval-allow-rule" onClick={() => decideApproval('always-session', { saveRule: true })}
+                  title={t('写入设置 → 权限规则：{rule}', { rule: approval.rule })}
+                  className="btn-ghost px-3 py-1.5 text-xs text-mute hover:text-ink">
+                  {t('总是允许')} <code className="font-mono text-[11px] text-goldSoft/80">{approval.rule}</code>
+                </button>
+              ) : null}
               <button data-testid="approval-reject" onClick={() => decideApproval('rejected')}
                 className="ml-auto rounded-lg border border-red-500/40 px-3 py-1.5 text-xs text-red-300 hover:bg-red-500/10 transition-all duration-200">{t('拒绝')}</button>
             </div>

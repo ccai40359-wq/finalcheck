@@ -514,6 +514,14 @@ export function registerAgentIpc({
     permissions.setMode(unattended ? 'ask' : (await store.loadConfig()).permissionMode);
     const userMsg = [...messages].reverse().find((m) => m.role === 'user')?.content || '';
     const cfg = await store.loadConfig();
+    // 0.33.0 持久权限规则：deny 对所有回合生效（含子代理、工作流 gate、无人值守）；
+    // allow 在无人值守回合不生效——0.32.7 定下「没人看着时不自动写文件/跑命令」，规则不能把它放开。
+    let permissionRules = null;
+    try {
+      const { parseRules } = await import(engineUrl('desktop/src/main/permission-rules.mjs'));
+      const pr = parseRules(cfg.permissionRules);
+      permissionRules = { allow: unattended ? [] : pr.allow, deny: pr.deny };
+    } catch (e) { console.warn('[permission-rules] 解析失败：' + (e?.message || e)); }
     // 每个会话有自己的模型配置（模型/供应商/思考强度）；没有就回退全局默认
     const sess = sessionId ? await sessions.loadSession(sessionId).catch(() => null) : null;
     const mc = sess?.modelConfig || {};
@@ -838,6 +846,7 @@ export function registerAgentIpc({
         const tools = createAgentTools({
           repoRoot,
           permissions,
+          permissionRules,
           recordAudit,
           projectPath: turnProjectPath,
           policy,
@@ -1152,6 +1161,7 @@ export function registerAgentIpc({
       tools: (turnTools = createAgentTools({
         repoRoot,
         permissions,
+        permissionRules,
         // MCP：schema 与函数用同一份回合快照；调用时再按名字找活的客户端（断了就明确报错）
         mcp: mcpSchemas.length ? { schemas: () => mcpSchemas, resolve: (n) => state.mcp?.resolve(n) } : null,
         recordAudit,
@@ -1224,6 +1234,7 @@ export function registerAgentIpc({
           const gateTools = createAgentTools({
             repoRoot,
             permissions,
+            permissionRules,
             recordAudit,
             projectPath: turnProjectPath,
             policy,

@@ -150,6 +150,47 @@ export function createBackend({ ipcMain, getWin, getDataRoot, engineUrl, repoRoo
       const status = await syncMcp();
       return { ok: true, warnings: bad, status };
     });
+    // 0.33.0 持久权限规则（config.permissionRules = { allow:[], deny:[] }，对齐 Claude Code）
+    const cleanRuleList = (v) => (Array.isArray(v) ? v : String(v ?? '').split(/\r?\n/))
+      .map((s) => String(s ?? '').trim()).filter(Boolean).slice(0, 500);
+    ipcMain.handle('finalcheck:permission-rules-get', async () => {
+      const pr = (await store.loadConfig())?.permissionRules || {};
+      return { allow: cleanRuleList(pr.allow), deny: cleanRuleList(pr.deny) };
+    });
+    ipcMain.handle('finalcheck:permission-rules-save', async (_e, rules) => {
+      const { parseRules } = await import(engineUrl('desktop/src/main/permission-rules.mjs'));
+      const next = { allow: cleanRuleList(rules?.allow), deny: cleanRuleList(rules?.deny) };
+      const parsed = parseRules(next);
+      if (parsed.errors.length) return { ok: false, errors: parsed.errors };
+      const cfg = await store.loadConfig();
+      await store.saveConfig({ ...cfg, permissionRules: next });
+      return { ok: true, rules: next };
+    });
+    // 审批条「总是允许（存为规则）」：追加一条 allow；只接受能解析的单条规则
+    ipcMain.handle('finalcheck:permission-rules-add', async (_e, kind, rule) => {
+      const { parseRule } = await import(engineUrl('desktop/src/main/permission-rules.mjs'));
+      const k = kind === 'deny' ? 'deny' : 'allow';
+      const r = parseRule(rule);
+      if (!r || r.error) return { ok: false, error: r?.error || '规则为空' };
+      const cfg = await store.loadConfig();
+      const cur = cfg.permissionRules || {};
+      const list = cleanRuleList(cur[k]);
+      if (!list.includes(r.raw)) list.push(r.raw);
+      const next = { allow: cleanRuleList(cur.allow), deny: cleanRuleList(cur.deny), [k]: list };
+      await store.saveConfig({ ...cfg, permissionRules: next });
+      return { ok: true, rules: next };
+    });
+    // 「试一下」：用编辑框里还没保存的规则，判定一次假想的工具调用会怎样
+    ipcMain.handle('finalcheck:permission-rules-test', async (_e, { rules, tool, input } = {}) => {
+      const { parseRules, evaluateRules } = await import(engineUrl('desktop/src/main/permission-rules.mjs'));
+      const parsed = parseRules({ allow: cleanRuleList(rules?.allow), deny: cleanRuleList(rules?.deny) });
+      const name = String(tool || 'run_command');
+      const value = String(input ?? '');
+      const args = name === 'run_command' ? { command: value }
+        : name === 'browser_navigate' ? { url: value }
+          : { path: value };
+      return { ...evaluateRules(parsed, name, args, { projectPath: activeProjectPath }), errors: parsed.errors };
+    });
     // 0.33.0 文件检查点：把 AI 在某条用户消息之后改过的文件恢复原样（先出计划，确认后执行）
     const checkpointPlan = async (sessionId, keepUserTurns) => {
       const { planRewindFiles } = await import(engineUrl('desktop/src/main/checkpoints.mjs'));

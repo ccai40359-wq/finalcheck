@@ -26,6 +26,7 @@ import { decideBrowserChoice, buildChoicePrompt, parseBrowserChoice, parseRealCo
 // 用户选了模式后要按它重建窗口，所以这里也要用到 partition 纯函数（该模块不 import electron）
 import { resolvePartition } from './browser-session.mjs';
 import { toToolResult as toMcpToolResult } from './mcp-client.mjs';
+import { evaluateRules as evaluatePermissionRules } from './permission-rules.mjs';
 
 /** 提问卡里给用户看的主机名（非法 URL 就退回截断原文，绝不把整条 URL 塞进问题里） */
 function safeHost(url) {
@@ -542,7 +543,7 @@ export function collectInjectedScriptBodies(cmd, cwd = null) {
   return { files, bodies };
 }
 
-export function createAgentTools({ repoRoot, permissions, recordAudit = async () => {}, playbookRoot, runWorkflow = null, projectPath = null, policy = null, hooksConfig = null, hooksRunner = null, sessionId = null, cwd = null, signal = null, commandIdleMs = DEFAULT_COMMAND_IDLE_MS, askUser = null, todoWrite = null, spawnAgent = null, onActivity = null, requireAuditIntent = null, shellAppRoot = null, aclSandbox = undefined, userStatedTier = null, getDesktopToolsAsync = null, browserSessionPolicy = null, onBrowserFirstUse = null, getBrowserRealAsync = null, browserUserDataDir = null, browserChoice = null, ensureViewHostAsync = null, mcp = null } = {}) {
+export function createAgentTools({ repoRoot, permissions, recordAudit = async () => {}, playbookRoot, runWorkflow = null, projectPath = null, policy = null, hooksConfig = null, hooksRunner = null, sessionId = null, cwd = null, signal = null, commandIdleMs = DEFAULT_COMMAND_IDLE_MS, askUser = null, todoWrite = null, spawnAgent = null, onActivity = null, requireAuditIntent = null, shellAppRoot = null, aclSandbox = undefined, userStatedTier = null, getDesktopToolsAsync = null, browserSessionPolicy = null, onBrowserFirstUse = null, getBrowserRealAsync = null, browserUserDataDir = null, browserChoice = null, ensureViewHostAsync = null, mcp = null, permissionRules = null } = {}) {
   let askedThisTurn = false; // 本回合已经通过 ask_user 问过用户（验收前置闸据此放行）
   // 0.31.1：本会话内用户已经选过的浏览器模式（主进程按 sessionId 存，跨回合有效）。
   // createAgentTools 每个回合重建一次——把记忆放在这里会让「同一任务里连续导航」每轮都弹卡。
@@ -575,14 +576,17 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
   const canonicalApprovalTarget = (raw, write, tool) => {
     const abs = path.resolve(String(raw || ''));
     if (!policy) return abs;
-    const check = assertPathAllowed(policy, abs, { write, tool });
-    return check.ok ? check.path : abs;
+    // 和工具内部一样把原始参数交给 assertPathAllowed（相对路径按项目根解析），key 才对得上
+    const check = assertPathAllowed(policy, raw, { write, tool });
+    return check.ok ? path.resolve(check.path) : abs;
   };
   const approvalTarget = (name, args) => {
     if (name === 'edit_file' || name === 'write_file') return canonicalApprovalTarget(args?.path, true, name);
     if (name === 'quality_gate') return canonicalApprovalTarget(args?.dir || projectPath, false, name);
     if (name === 'run_command') {
       const cmd = String(args?.command ?? '');
+      // 与 run_command 内部审批键一致：复合命令用整条，单段用前缀
+      if (typeof permissions?.approvalPatternFor === 'function') return permissions.approvalPatternFor(cmd);
       return typeof permissions?.commandPrefix === 'function' ? permissions.commandPrefix(cmd) : cmd;
     }
     // hook ask 已人工批准 → 免审券的 key 要和工具内部 preApproved 查的一致
@@ -1927,6 +1931,27 @@ ${expr.slice(0, 400)}`, ...approvalScope });
         } catch (e) {
           return { error: `MCP ${hit.server}/${hit.tool}：${String(e?.message || e).slice(0, 500)}` };
         }
+      };
+    }
+  }
+
+  // ---- 0.33.0 持久权限规则（config.permissionRules，对齐 Claude Code permissions.allow / deny） ----
+  // deny 最优先：完全权限模式、本会话总是允许、MCP autoApprove 都绕不过去；
+  // allow：给工具内部的审批检查发一张一次性免审券（与 hook ask 获批同一条路），用完即收回。
+  // 包在 hook 外层之内：hook 改过的参数也要再过一遍规则。
+  if (permissionRules && ((permissionRules.allow || []).length || (permissionRules.deny || []).length)) {
+    for (const [name, fn] of Object.entries(tools)) {
+      tools[name] = async (args, ctx) => {
+        const a = args && typeof args === 'object' ? args : {};
+        const verdict = evaluatePermissionRules(permissionRules, name, a, { projectPath: projectPath || cwd || null });
+        if (verdict.decision === 'deny') {
+          return { error: `被权限规则拒绝（${verdict.rule}）。这是用户在设置 → 权限规则里定的，不要换个写法绕过；确实需要就请用户修改规则。`, deniedBy: 'rule', rule: verdict.rule };
+        }
+        if (verdict.decision !== 'allow' || !needsApproval(name)) return fn(args, ctx);
+        const target = approvalTarget(name, a);
+        permissions?.grantOnce?.(name, target, approvalScope);
+        try { return await fn(args, ctx); }
+        finally { try { permissions?.consumeGrant?.(name, target, approvalScope); } catch { /* 忽略 */ } }
       };
     }
   }
