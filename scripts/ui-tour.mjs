@@ -28,7 +28,12 @@ await mkdir(sessionsDir, { recursive: true });
 await writeFile(path.join(userData, 'config.json'), JSON.stringify({
   providers: [{ id: 'p-ui', name: 'UI Test', baseUrl: 'http://127.0.0.1:1/v1', apiFormat: 'chat-completions',
     apiKey: 'test-key', models: [{ id: 'deepseek-v4.1-flash', contextWindow: 200000 }], enabled: true }],
-  activeProviderId: 'p-ui', language: 'zh', theme: 'dark'
+  activeProviderId: 'p-ui', language: 'zh', theme: 'dark',
+  // MCP 设置页截图用：一个能连上的测试服务器 + 一个配置有误的
+  mcpServers: {
+    fixture: { command: process.execPath, args: [path.join(root, 'tests/fixtures/mcp-fixture-server.mjs')] },
+    legacy: { type: 'sse', url: 'https://example.com/sse' }
+  }
 }, null, 2), 'utf8');
 
 process.env.FINALCHECK_SESSIONS_DIR = sessionsDir;
@@ -153,6 +158,16 @@ try {
   await shot('5-settings-dark.png');
   await setTheme('light'); await sleep(500);
   await shot('6-settings-light.png');
+
+  // ⑤ MCP 服务器设置页（0.33.0）
+  await setTheme('dark'); await sleep(300);
+  await clickText('MCP 服务器');
+  await sleep(2500);
+  await ev(`(() => { const b = [...document.querySelectorAll('button')].find((x) => /个工具/.test(x.textContent || '')); b?.click(); })()`);
+  await sleep(500);
+  await shot('7-mcp-dark.png');
+  await setTheme('light'); await sleep(500);
+  await shot('8-mcp-light.png');
 } finally {
   try { ws?.close(); } catch { /* 忽略 */ }
   try { child.kill(); } catch { /* 忽略 */ }

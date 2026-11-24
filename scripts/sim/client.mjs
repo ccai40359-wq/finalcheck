@@ -142,7 +142,9 @@ export async function createSimClient({
   // ---- 自动处理审批条 / 提问卡（像用户在界面上点） ----
   listeners.add((channel, p) => {
     if (channel === 'finalcheck:approval-request') {
-      const d = typeof approvals === 'function' ? approvals(p) : (approvals === 'reject' ? 'rejected' : 'approved');
+      // 审批决定只认 allowed-once / always-session / rejected（permissions.mjs 闭集）；
+      // 以前这里给的是 'approved'——非法值按 rejected 处理，只是剧本都跑 full 模式才没暴露
+      const d = typeof approvals === 'function' ? approvals(p) : (approvals === 'reject' ? 'rejected' : 'allowed-once');
       log.write('approval', { tool: p?.tool, summary: clip(p?.summary, 200), decision: d });
       log.human(`审批：${p?.tool} → ${d}`);
       setImmediate(() => { void invoke('finalcheck:approval-decide', p.callId, d); });

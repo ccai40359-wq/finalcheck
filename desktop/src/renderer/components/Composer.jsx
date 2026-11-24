@@ -61,7 +61,7 @@ export default function Composer({
   slashIndex, setSlashIndex,
   inputRef, modelMenuRef,
   setDragging, setMenu, setProviderMenu, setEffortPos, setSessCfg, setCfg, setPermMode,
-  cancelEdit, chooseSlash,
+  cancelEdit, chooseSlash, onToggleEditRestore,
   decideApproval, steerQueueItem, moveQueueItemToInput, removeQueueItem, sendQueueItemNow, queueHeld = false,
   send, stop, onGoSettings
 }) {
@@ -267,6 +267,12 @@ export default function Composer({
               <span className="text-mute/60">{t('发送后将从这条消息重开，后面的对话会被丢弃')}</span>
               <button onClick={cancelEdit} className="ml-auto text-mute/60 hover:text-ink transition-colors">{t('取消')}</button>
             </div>
+          )}
+          {editing && editing.restorable > 0 && (
+            <label className="flex items-center gap-2 px-3 pt-1.5 text-[11px] text-mute/80 cursor-pointer select-none">
+              <input type="checkbox" checked={!!editing.restoreFiles} onChange={(e) => onToggleEditRestore?.(e.target.checked)} className="accent-[rgb(var(--fc-gold))]" />
+              {t('同时把 AI 之后改过的 {n} 个文件恢复到这条消息之前', { n: editing.restorable })}
+            </label>
           )}
           {attachments.length > 0 && (
             <div className="flex flex-wrap gap-1.5 px-3 pt-2.5">

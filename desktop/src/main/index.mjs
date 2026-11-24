@@ -494,6 +494,8 @@ app.on('before-quit', () => {
       stopScheduler();
     } catch { /* 没启动过就没事 */ }
   })();
+  // 0.33.0：关掉 MCP 子进程（Windows 上父进程退出不会顺带结束 stdio 子进程）
+  void backend.shutdown?.().catch?.(() => {});
 });
 
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });

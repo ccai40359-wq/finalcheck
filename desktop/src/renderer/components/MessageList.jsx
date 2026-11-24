@@ -13,7 +13,7 @@ import { ProcessTimeline, WorkingStatus } from '../chat/ProcessTimeline.jsx';
 import { TraceBlock, WorkflowLiveCard } from '../chat/TraceCards.jsx';
 import { ArtifactChips, collectArtifacts } from '../chat/ArtifactPanel.jsx';
 import { renderMarkdown } from '../chat/md.jsx';
-import { IconChevron, IconCopy, IconEdit } from './Icons.jsx';
+import { IconChevron, IconCopy, IconEdit, IconRewind } from './Icons.jsx';
 import AskUserCard from './AskUserCard.jsx';
 import { TodoPanel, TodoHistoryRow } from './TodoCard.jsx';
 
@@ -88,7 +88,7 @@ function PastedTextBlock({ text }) {
 export default function MessageList({
   messages, activeId, providers, artifactPath, openWorkflowRaw, setOpenWorkflowRaw,
   scrollRef, stickRef, jumpingRef, showJump, setShowJump,
-  y, onSendRecover, onOpenArtifact, onEditMessage, onOpenStep,
+  y, onSendRecover, onOpenArtifact, onEditMessage, onOpenStep, onRewindFiles,
   askCards = [], onAskUserAnswer = null
 }) {
   // 当前会话最新一份验收单：面板只显示这一份；消息流里同一份不再内联渲染（避免一屏两份）。
@@ -221,6 +221,10 @@ export default function MessageList({
                       }
                     }}
                     className="p-1.5 rounded-md text-mute/55 hover:text-goldSoft hover:bg-lift/5 transition-colors"><IconEdit /></button>
+                  {onRewindFiles ? (
+                    <button title={t('恢复文件到这条消息之前')} onClick={() => onRewindFiles(keepTurns)}
+                      className="p-1.5 rounded-md text-mute/55 hover:text-goldSoft hover:bg-lift/5 transition-colors"><IconRewind /></button>
+                  ) : null}
                 </div>
               </div>
             );

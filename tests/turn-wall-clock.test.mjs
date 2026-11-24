@@ -26,6 +26,34 @@ test('wall-clock: maxTurnMs caps a turn even when the gateway never responds', a
   assert.ok(elapsed < 5000, `turn must end near the deadline, took ${elapsed}ms`);
 });
 
+// 0.33.0 回归：满载时这条用例卡过两次、每次正好 547.5s——回合还没发出第一个请求预算就用完（加载系统提示词超过 300ms），
+// 直接进了收尾请求；收尾请求只有 180s 静默看门狗 × 3 次重试 + 退避，网关不回字节就挂 ~9 分钟。
+// 这里用 turn-start 回调忙等 400ms 稳定复现「进循环前预算已耗尽」。
+test('wall-clock: 预算在第一个请求前就用完 → 收尾请求也受宽限窗约束，不会挂 9 分钟', { timeout: 15000 }, async () => {
+  const hang = (url, init) => new Promise((resolve, reject) => {
+    init?.signal?.addEventListener('abort', () => reject(Object.assign(new Error('This operation was aborted'), { name: 'AbortError' })), { once: true });
+  });
+  const events = [];
+  const t0 = Date.now();
+  const out = await runAgentTurn({
+    config: BASE,
+    messages: [{ role: 'user', content: 'hi' }],
+    tools: {},
+    toolsSchema: [],
+    maxTurnMs: 300,
+    fetchImpl: hang,
+    onEvent: (ev) => {
+      events.push(ev.kind);
+      if (ev.kind === 'turn-start') { const s = Date.now(); while (Date.now() - s < 400) { /* 模拟满载：进循环前预算已耗尽 */ } }
+    }
+  });
+  const elapsed = Date.now() - t0;
+  assert.equal(out.budgetStop, 'time', '走的是「预算用完 → 收尾请求」这条路');
+  assert.equal(out.deadlineHit, true, '宽限到点按 deadline 收尾');
+  assert.ok(elapsed < 4000, `收尾请求必须在宽限窗内结束（1s），实际 ${elapsed}ms`);
+  assert.ok(!events.includes('retry'), '时间预算收尾只试一次，不重试');
+});
+
 test('wall-clock: normal fast turns are unaffected (no deadlineHit)', async () => {
   const sse = (text) => new Response(
     `data: {"choices":[{"delta":{"content":"${text}"}}]}\n\ndata: [DONE]\n\n`,

@@ -2489,6 +2489,25 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
   const workedMs = () => Date.now() - turnStart;
   // 收尾请求：网关抖动（503/429/5xx）也要重试，别把一小时攒下的证据丢在最后一步
   const FINALIZE_ATTEMPTS = noLimits ? 1 : 3;
+  // 0.33.0：时间预算用完后的收尾请求也必须有界。以前它只有静默看门狗（180s）× 3 次重试 + 退避，
+  // 网关在这一刻不回字节，回合会再挂约 547 秒（实测：tests/turn-wall-clock 在满载时正好卡 547.5s）。
+  // 现在给一个宽限窗：预算的 25%，夹在 1s～2min；按「距上一个字节」计（慢但在出字的结论照样收完），只试一次；
+  // 宽限到了就和回合内 deadline 一样按 deadlineHit 收尾。token / 轮次上限的收尾不受影响。
+  const finalGraceMs = budgetStop === 'time' && Number.isFinite(maxTurnMs)
+    ? Math.min(120000, Math.max(1000, Math.round(maxTurnMs * 0.25)))
+    : 0;
+  const finSilenceMs = finalGraceMs ? (SILENCE_MS > 0 ? Math.min(SILENCE_MS, finalGraceMs) : finalGraceMs) : SILENCE_MS;
+  const finalizeAttempts = finalGraceMs ? 1 : FINALIZE_ATTEMPTS;
+  const graceExpired = (partial = '') => {
+    onEvent?.({ kind: 'turn-end', ms: workedMs(), deadline: true });
+    onEvent?.({ kind: 'warning', message: t('本轮到达时间上限（{s}s），已按现状收尾。', { s: Math.round(maxTurnMs / 1000) }) });
+    return {
+      interrupted: true, deadlineHit: true, budgetStop,
+      partialContent: partial, answer: '', trace,
+      warnings, reasoning: reasoningAll || undefined, usage: lastUsage || undefined,
+      workedMs: workedMs(), roundsUsed: turnsUsed
+    };
+  };
   let fctl = null;
   let fwatch = null;
   let fsilence = null;
@@ -2519,14 +2538,14 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
     let withUsage = STREAM_USAGE;
     let res = null;
     let ferr = '';
-    for (let attempt = 1; attempt <= FINALIZE_ATTEMPTS; attempt += 1) {
+    for (let attempt = 1; attempt <= finalizeAttempts; attempt += 1) {
       const ctl = new AbortController();
       const onOuterAbort = () => ctl.abort();
       signal?.addEventListener('abort', onOuterAbort, { once: true });
       const watchdog = FINALIZE_WATCHDOG_MS > 0 ? setTimeout(() => ctl.abort(), FINALIZE_WATCHDOG_MS) : null;
       // 收尾请求同样挂静默看门狗：网关零字节 → 按 attempt 重试；noLimits 也生效
       let silenceHit = false;
-      const silence = startSilenceWatchdog(SILENCE_MS, {
+      const silence = startSilenceWatchdog(finSilenceMs, {
         abort: () => { silenceHit = true; ctl.abort(); }
       });
       let attemptRes = null;
@@ -2554,15 +2573,16 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
         signal?.removeEventListener('abort', onOuterAbort);
       }
       if (sendFailed) {
-        if (attempt >= FINALIZE_ATTEMPTS) break;
-        onEvent?.({ kind: 'retry', attempt: attempt + 1, max: FINALIZE_ATTEMPTS, reason: ferr });
+        if (finalGraceMs && silenceHit) return graceExpired();
+        if (attempt >= finalizeAttempts) break;
+        onEvent?.({ kind: 'retry', attempt: attempt + 1, max: finalizeAttempts, reason: ferr });
         await sleepAbort(backoffMs(attempt), signal);
         continue;
       }
       if (attemptRes?.ok) { res = attemptRes; break; }
       ferr = `HTTP ${attemptRes?.status ?? '?'}`;
-      if (attemptRes && RETRYABLE.has(attemptRes.status) && attempt < FINALIZE_ATTEMPTS) {
-        onEvent?.({ kind: 'retry', attempt: attempt + 1, max: FINALIZE_ATTEMPTS, reason: t('收尾请求 {err}', { err: ferr }) });
+      if (attemptRes && RETRYABLE.has(attemptRes.status) && attempt < finalizeAttempts) {
+        onEvent?.({ kind: 'retry', attempt: attempt + 1, max: finalizeAttempts, reason: t('收尾请求 {err}', { err: ferr }) });
         await sleepAbort(backoffMs(attempt), signal);
         continue;
       }
@@ -2579,7 +2599,7 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
     fwatch = FINALIZE_WATCHDOG_MS > 0 ? setTimeout(() => fctl.abort(), FINALIZE_WATCHDOG_MS) : null;
     // 收尾流同样按「距上一个字节」计时：零字节才中止，慢但不断流的回答照样收完
     let fsilenceHit = false;
-    fsilence = startSilenceWatchdog(SILENCE_MS, {
+    fsilence = startSilenceWatchdog(finSilenceMs, {
       abort: () => { fsilenceHit = true; fctl.abort(); }
     });
     let ffirstChunk = true;
@@ -2600,6 +2620,7 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
     }
     if (fin.aborted) {
       const partial = fin.content || '';
+      if (finalGraceMs && fsilenceHit && !signal?.aborted) return graceExpired(partial);
       const abortLabel = fsilenceHit ? t('网关静默 {s}s 无任何响应', { s: silenceSec(SILENCE_MS) }) : t('收尾请求超时（{s}s）', { s: watchdogSec(FINALIZE_WATCHDOG_MS) });
       onEvent?.({ kind: 'turn-end', ms: workedMs(), interrupted: true });
       return await runStopHook({ answer: (partial ? partial + '\n\n' : '') + t('[{reason}，以上为已输出部分；本轮工具证据仍保留]', { reason: abortLabel }), reasoning: reasoningAll, trace, workedMs: workedMs(), usage: lastUsage || undefined, usageTotal, finishReason: lastFinishReason, warnings, roundsUsed: turnsUsed, ...(budgetStop ? { budgetStop } : {}) });

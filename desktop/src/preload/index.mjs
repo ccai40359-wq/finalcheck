@@ -74,6 +74,14 @@ contextBridge.exposeInMainWorld('finalcheck', {
   confirmHost: (host) => ipcRenderer.invoke('finalcheck:confirm-host', host),
   confirmDir: (dir) => ipcRenderer.invoke('finalcheck:confirm-dir', dir),
   getConfig: () => ipcRenderer.invoke('finalcheck:get-config'),
+  // 0.33.0 MCP 服务器
+  mcpStatus: () => ipcRenderer.invoke('finalcheck:mcp-status'),
+  mcpSave: (servers) => ipcRenderer.invoke('finalcheck:mcp-save', servers),
+  mcpRestart: (name) => ipcRenderer.invoke('finalcheck:mcp-restart', name),
+  // 0.33.0 文件检查点回退
+  checkpointPlan: (sessionId, keepUserTurns) => ipcRenderer.invoke('finalcheck:checkpoint-plan', sessionId, keepUserTurns),
+  checkpointRestore: (sessionId, keepUserTurns) => ipcRenderer.invoke('finalcheck:checkpoint-restore', sessionId, keepUserTurns),
+  onMcpChanged: (cb) => { const h = () => cb(); ipcRenderer.on('finalcheck:mcp-changed', h); return () => ipcRenderer.removeListener('finalcheck:mcp-changed', h); },
   setConfig: (cfg) => ipcRenderer.invoke('finalcheck:set-config', cfg),
   // 0.31.0 浏览器会话（无痕 / 持久）：清空持久数据 + 读当前策略 + 首次使用提示事件
   browserClearData: () => ipcRenderer.invoke('finalcheck:browser-clear-data'),

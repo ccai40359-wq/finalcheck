@@ -342,5 +342,23 @@ export const EN_CHAT = {
   '请说明到点要做什么：/wake 25m 看一下网课进度':
     'Say what to do when it fires: /wake 25m check the course progress',
   '去掉 repeat 参数后没有任务描述了': 'No task description is left after removing the repeat argument',
-  '发送失败': 'Send failed'
+  '发送失败': 'Send failed',
+  // 0.33.0 文件检查点回退
+  '恢复文件到这条消息之前': 'Restore files to before this message',
+  '把 AI 在这条消息之后用 edit_file / write_file 改过的文件恢复原样。对话本身不变；run_command、子代理和你自己手改的文件不在范围内。': 'Restores files the AI changed with edit_file / write_file after this message. The conversation stays as is; changes from run_command, sub-agents or your own edits are not covered.',
+  '正在计算…': 'Working it out…',
+  '这条消息之后 AI 没有改过文件，没有需要恢复的。': 'The AI did not change any files after this message — nothing to restore.',
+  '恢复': 'Restore',
+  '删除（AI 新建的）': 'Delete (created by AI)',
+  '无法恢复': 'Cannot restore',
+  '已不存在': 'Already gone',
+  '那次修改没有留下快照': 'No snapshot was taken for that change',
+  '快照已被清理（每个文件只保留最近 20 份）': 'Snapshot was pruned (only the latest 20 per file are kept)',
+  '文件已经不在了': 'The file no longer exists',
+  '已恢复 {r} 个、删除 {d} 个文件': 'Restored {r} and deleted {d} files',
+  '，{n} 个失败': ', {n} failed',
+  '恢复中…': 'Restoring…',
+  '恢复 {n} 个文件': 'Restore {n} files',
+  '这个会话还在运行，先停止再恢复文件': 'This session is still running — stop it before restoring files',
+  '同时把 AI 之后改过的 {n} 个文件恢复到这条消息之前': 'Also restore the {n} files the AI changed after this message',
 };

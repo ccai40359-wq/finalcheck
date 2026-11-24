@@ -25,6 +25,7 @@ import { checkProbeBudget, checkScreenshotBudget, isProbeCommand, workflowBudget
 import { decideBrowserChoice, buildChoicePrompt, parseBrowserChoice, parseRealConsent, buildRealConsentPrompt, choiceNote, realEdgeRedirect, NO_CHANNEL_REAL_DENY } from './browser-choice.mjs';
 // 用户选了模式后要按它重建窗口，所以这里也要用到 partition 纯函数（该模块不 import electron）
 import { resolvePartition } from './browser-session.mjs';
+import { toToolResult as toMcpToolResult } from './mcp-client.mjs';
 
 /** 提问卡里给用户看的主机名（非法 URL 就退回截断原文，绝不把整条 URL 塞进问题里） */
 function safeHost(url) {
@@ -35,6 +36,8 @@ const PREVIEW_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', 
 
 // hook 说 ask 时可以接上现有审批通道的工具（其余工具没有审批通道 → 明确报错，不静默执行）
 const APPROVAL_TOOLS = new Set(['edit_file', 'write_file', 'run_command', 'quality_gate', 'browser_evaluate']);
+// 0.33.0：MCP 工具（mcp__<server>__<tool>）同样走审批（服务器配置 autoApprove 的除外）
+const needsApproval = (name) => APPROVAL_TOOLS.has(name) || String(name).startsWith('mcp__');
 
 function policyDenyResult(check) {
   // 2026-11-17：沙箱默认关闭后这层是**应用层策略闸**（正则/路径白名单/黑名单），
@@ -539,7 +542,7 @@ export function collectInjectedScriptBodies(cmd, cwd = null) {
   return { files, bodies };
 }
 
-export function createAgentTools({ repoRoot, permissions, recordAudit = async () => {}, playbookRoot, runWorkflow = null, projectPath = null, policy = null, hooksConfig = null, hooksRunner = null, sessionId = null, cwd = null, signal = null, commandIdleMs = DEFAULT_COMMAND_IDLE_MS, askUser = null, todoWrite = null, spawnAgent = null, onActivity = null, requireAuditIntent = null, shellAppRoot = null, aclSandbox = undefined, userStatedTier = null, getDesktopToolsAsync = null, browserSessionPolicy = null, onBrowserFirstUse = null, getBrowserRealAsync = null, browserUserDataDir = null, browserChoice = null, ensureViewHostAsync = null } = {}) {
+export function createAgentTools({ repoRoot, permissions, recordAudit = async () => {}, playbookRoot, runWorkflow = null, projectPath = null, policy = null, hooksConfig = null, hooksRunner = null, sessionId = null, cwd = null, signal = null, commandIdleMs = DEFAULT_COMMAND_IDLE_MS, askUser = null, todoWrite = null, spawnAgent = null, onActivity = null, requireAuditIntent = null, shellAppRoot = null, aclSandbox = undefined, userStatedTier = null, getDesktopToolsAsync = null, browserSessionPolicy = null, onBrowserFirstUse = null, getBrowserRealAsync = null, browserUserDataDir = null, browserChoice = null, ensureViewHostAsync = null, mcp = null } = {}) {
   let askedThisTurn = false; // 本回合已经通过 ask_user 问过用户（验收前置闸据此放行）
   // 0.31.1：本会话内用户已经选过的浏览器模式（主进程按 sessionId 存，跨回合有效）。
   // createAgentTools 每个回合重建一次——把记忆放在这里会让「同一任务里连续导航」每轮都弹卡。
@@ -582,6 +585,9 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
       const cmd = String(args?.command ?? '');
       return typeof permissions?.commandPrefix === 'function' ? permissions.commandPrefix(cmd) : cmd;
     }
+    // hook ask 已人工批准 → 免审券的 key 要和工具内部 preApproved 查的一致
+    if (name === 'browser_evaluate') return '*';
+    if (String(name).startsWith('mcp__')) return name;
     return String(args?.path ?? '');
   };
   const approvalScope = { sessionId, projectPath };
@@ -1713,7 +1719,7 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
       // 在用户登录过的真实 Edge 里尤其敏感。与 run_command 同级审批（完全权限模式下自动放行）。
       // 「本会话总是允许」按通道记（真实 Edge / 内置浏览器分开），不按脚本内容记。
       const channel = real ? 'real-edge' : 'embedded';
-      if (!preApproved('browser_evaluate', channel) && !permissions?.sessionAllowed?.('browser_evaluate', channel, approvalScope)) {
+      if (!preApproved('browser_evaluate', '*') && !permissions?.sessionAllowed?.('browser_evaluate', channel, approvalScope)) {
         const where = real ? '你的真实 Edge（含登录态）' : '内置浏览器';
         const decision = await permissions?.requestApproval?.({ tool: 'browser_evaluate', target: channel, summary: `在${where}的当前页面执行脚本：
 ${expr.slice(0, 400)}`, ...approvalScope });
@@ -1897,6 +1903,34 @@ ${expr.slice(0, 400)}`, ...approvalScope });
     };
   }
 
+  // ---- 0.33.0 MCP 工具：按回合开始时的快照注册（schema 同一快照，模型看到的和能调的一致） ----
+  if (mcp && typeof mcp.schemas === 'function') {
+    for (const s of mcp.schemas()) {
+      const qname = s?.function?.name;
+      if (!qname || tools[qname]) continue;
+      tools[qname] = async (args, ctx) => {
+        const hit = mcp.resolve(qname);
+        if (!hit) return { error: `MCP 工具 ${qname} 已不可用（服务器断开或配置已改），可在设置 → MCP 里查看状态` };
+        // 默认每次审批（第三方代码、可能有副作用）；服务器配置 autoApprove 的工具、本会话「总是允许」过的免审
+        if (!hit.autoApprove && !preApproved(qname, qname) && !permissions?.sessionAllowed?.(qname, qname, approvalScope)) {
+          let argText = '';
+          try { argText = JSON.stringify(args ?? {}); } catch { argText = '(参数无法序列化)'; }
+          const decision = await permissions?.requestApproval?.({
+            tool: qname, target: qname,
+            summary: `调用 MCP 服务器「${hit.server}」的工具 ${hit.tool}\n参数：${argText.slice(0, 360)}`,
+            ...approvalScope
+          });
+          if (decision !== 'allowed-once' && decision !== 'always-session') return { error: '用户拒绝了这次 MCP 工具调用' };
+        }
+        try {
+          return toMcpToolResult(await hit.client.callTool(hit.tool, args && typeof args === 'object' ? args : {}, { signal: ctx?.signal || signal }));
+        } catch (e) {
+          return { error: `MCP ${hit.server}/${hit.tool}：${String(e?.message || e).slice(0, 500)}` };
+        }
+      };
+    }
+  }
+
   if (!hooksOn) return tools;
 
   // ---- Hooks 接线：所有工具调用统一经过 PreToolUse / PostToolUse(Failure) ----
@@ -1922,7 +1956,7 @@ ${expr.slice(0, 400)}`, ...approvalScope });
       if (pre.args && typeof pre.args === 'object') callArgs = { ...callArgs, ...pre.args };
       if (pre.decision === 'ask') {
         const reason = pre.messages.join('；') || 'PreToolUse hook 要求人工确认';
-        if (!APPROVAL_TOOLS.has(name) || typeof permissions?.requestApproval !== 'function') {
+        if (!needsApproval(name) || typeof permissions?.requestApproval !== 'function') {
           return { error: 'hook 要求人工确认，但当前工具无审批通道', deniedBy: 'hook', reason };
         }
         const decision = await permissions.requestApproval({ tool: name, summary: `Hook 要求确认（${name}）：${reason}`, ...approvalScope });
@@ -1940,7 +1974,7 @@ ${expr.slice(0, 400)}`, ...approvalScope });
         result = { error: e?.message || String(e) };
       }
       // 兜底回收：工具内部没消费掉的一次性免审券不能跨调用遗留
-      if (APPROVAL_TOOLS.has(name)) {
+      if (needsApproval(name)) {
         try { permissions?.consumeGrant?.(name, approvalTarget(name, callArgs), approvalScope); } catch { /* 忽略 */ }
       }
       try {

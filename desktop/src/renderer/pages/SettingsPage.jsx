@@ -3,6 +3,7 @@
 // models 兼容 string[] 与混合对象数组：{ id, contextWindow?, maxOutputTokens?, vision? }
 import React, { useEffect, useId, useRef, useState } from 'react';
 import { api, Card, ErrorNote } from '../lib/ui.jsx';
+import McpSettings from '../components/McpSettings.jsx';
 import { initialUpdateState, reduceUpdateEvent, describeUpdate } from '../lib/updater-state.mjs';
 import { changelogView, pickChangelogEntries } from '../lib/changelog.mjs';
 import UsagePage from './UsagePage.jsx';
@@ -32,7 +33,7 @@ export const LANGUAGE_MODES = [
   { value: 'zh', label: '中文', desc: '界面文案用中文；AI 回复与报告跟随你的提问语言。' },
   { value: 'en', label: 'English', desc: '界面文案用英文；AI 回复与报告跟随你的提问语言。' }
 ];
-const SECTIONS = ['models', 'appearance', 'language', 'runtime', 'browser', 'usage', 'about'];
+const SECTIONS = ['models', 'appearance', 'language', 'runtime', 'browser', 'mcp', 'usage', 'about'];
 // 浏览器会话模式（0.31.0）：默认（''）＝还没选过，按无痕运行；选过之后按值运行。
 // value 与配置字段同名（browserSessionMode），便于直接写回。
 export const BROWSER_SESSION_MODES = [
@@ -871,6 +872,7 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
             <NavRow label={t('运行时')} active={section === 'runtime'} onClick={() => setSection('runtime')} icon={<IconSliders />} />
             <NavRow label={t('浏览器会话')} active={section === 'browser'} onClick={() => { setSection('browser'); refreshBrowserPolicy(); }} icon={<IconGlobe />}
               trailing={browserPolicy?.persistent === true ? <span className="text-red-400">{t('记住登录')}</span> : ''} />
+            <NavRow label={t('MCP 服务器')} active={section === 'mcp'} onClick={() => setSection('mcp')} icon={<IconPlug />} />
           </NavGroup>
           <NavGroup label={t('数据与统计')}>
             <NavRow label={t('用量统计')} active={section === 'usage'} onClick={() => setSection('usage')} icon={<IconChart />} trailing="Tokens" />
@@ -892,7 +894,7 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
         <div className="shrink-0 px-8 pt-6 pb-5 flex items-start justify-between gap-4">
           <div className="min-w-0">
             <h1 className="fc-title text-[22px] leading-tight">
-              {section === 'models' ? t('模型设置') : section === 'appearance' ? t('外观') : section === 'language' ? t('语言') : section === 'runtime' ? t('运行时') : section === 'browser' ? t('浏览器会话') : t('关于')}
+              {section === 'models' ? t('模型设置') : section === 'appearance' ? t('外观') : section === 'language' ? t('语言') : section === 'runtime' ? t('运行时') : section === 'browser' ? t('浏览器会话') : section === 'mcp' ? t('MCP 服务器') : t('关于')}
             </h1>
             <p className="text-[12px] text-mute mt-1.5 leading-relaxed">
               {section === 'models'
@@ -905,7 +907,9 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
                     ? t('沙箱与工具并发：对所有供应商生效，与权限模式（Full access）独立。')
                     : section === 'browser'
                       ? t('AI 操作网页时的会话模式：默认一次性（无痕），可切换为长期保留登录。')
-                      : t('版本信息与更新：检查 GitHub Release，下载后重启安装。')}
+                      : section === 'mcp'
+                        ? t('接入外部 MCP 服务器（GitHub、数据库、设计工具……），它们的工具会出现在 AI 的工具箱里。')
+                        : t('版本信息与更新：检查 GitHub Release，下载后重启安装。')}
             </p>
           </div>
           {section === 'models' && (
@@ -1153,6 +1157,10 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
           ) : section === 'browser' ? (
             <div className="flex-1 min-w-0 overflow-y-auto">
               <div className="max-w-2xl px-6 py-6">{browserCard}</div>
+            </div>
+          ) : section === 'mcp' ? (
+            <div className="flex-1 min-w-0 overflow-y-auto">
+              <div className="max-w-2xl px-6 py-6"><McpSettings /></div>
             </div>
           ) : (
             <div className="flex-1 min-w-0 overflow-y-auto">
@@ -1493,6 +1501,13 @@ function IconPalette() {
       <circle cx="7.5" cy="10" r="1.1" fill="currentColor" stroke="none" />
       <circle cx="10" cy="6.5" r="1.1" fill="currentColor" stroke="none" />
       <circle cx="14.5" cy="6.5" r="1.1" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+function IconPlug() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M9 7V3M15 7V3" /><path d="M6 7h12v4a6 6 0 0 1-12 0V7Z" /><path d="M12 17v4" />
     </svg>
   );
 }
