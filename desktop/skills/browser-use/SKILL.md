@@ -1,5 +1,6 @@
 ---
 name: browser-use
+name_cn: 网页操作
 description: Use when 操作网页：打开页面/点击/填表/读控制台/需要真实登录态。用户点名 /browser-use 或要求 AI 打开网址做验证/抓取/自动化时加载；桌面软件改用 /computer-use。
 description_en: Automate web pages with the browser_* tools across three modes (private offscreen, persistent offscreen, CDP real Edge). Navigate returns a structural snapshot with refs; act only on the latest refs; pass observe:true to verify after clicks; check browser_console when a page misbehaves; use mode:real only when a site genuinely needs the user's real login.
 ---

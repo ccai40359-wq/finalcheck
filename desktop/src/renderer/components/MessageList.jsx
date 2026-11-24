@@ -15,6 +15,7 @@ import { ArtifactChips, collectArtifacts } from '../chat/ArtifactPanel.jsx';
 import { renderMarkdown } from '../chat/md.jsx';
 import { IconChevron, IconCopy, IconEdit } from './Icons.jsx';
 import AskUserCard from './AskUserCard.jsx';
+import CompactionStatus from './CompactionStatus.jsx';
 import { TodoPanel, TodoHistoryRow } from './TodoCard.jsx';
 
 // 技能 chip：金色符号 + 名称，细底无边框（不是药丸）；title 只在 hover 时暴露 playbook id
@@ -89,7 +90,7 @@ export default function MessageList({
   messages, activeId, providers, artifactPath, openWorkflowRaw, setOpenWorkflowRaw,
   scrollRef, stickRef, jumpingRef, showJump, setShowJump,
   y, onSendRecover, onOpenArtifact, onEditMessage, onOpenStep,
-  askCards = [], onAskUserAnswer = null
+  askCards = [], onAskUserAnswer = null, compaction = null
 }) {
   // 当前会话最新一份验收单：面板只显示这一份；消息流里同一份不再内联渲染（避免一屏两份）。
   const language = useLanguage();
@@ -269,6 +270,11 @@ export default function MessageList({
             <AskUserCard key={card.callId} payload={card}
               onSubmit={onAskUserAnswer ? ({ selected, text }) => onAskUserAnswer(card.callId, { selected, text }) : null} />
           ))}
+          {/* 上下文压缩：作为**正文流里的一条分隔线**（CC/ZCode 观感）。
+              放在消息末尾而不是输入框上方——压缩是会话事件，改的是这条会话的历史，
+              完成后那条线要留在历史里，让人回头能看见「这里压过一次、上下文为什么变短」。
+              自动压缩不落 notice（只有手动 /compact 落），所以 done 态必须自己渲染。 */}
+          <CompactionStatus state={compaction} lang={language} />
         </div>
       </div>
       {/* 不在底部时：底部居中的回到底部箭头（不挡输入框、不压 WorkingStatus） */}

@@ -91,9 +91,12 @@ test('skills:list 并入自动化技能：computer-use / browser-use 可被斜�
   // topic 用 slug 本身（read_playbook(topic="computer-use") 能按 loadSkills 目录解析）
   assert.equal(cu.id, 'computer-use');
   assert.equal(bu.id, 'browser-use');
-  // 中文菜单标签：目录名是英文 slug 时用中文触发描述替代，用户能一眼看出用途
-  assert.ok(CJK.test(cu.cn) && /操控电脑/.test(cu.cn), `computer-use 的中文标签应可读（实际：${cu.cn}）`);
-  assert.ok(CJK.test(bu.cn) && /操作网页/.test(bu.cn), `browser-use 的中文标签应可读（实际：${bu.cn}）`);
+  // 中文菜单标签：frontmatter 的 name_cn 是短名（网页操作 / 桌面操控），
+  // 不是整句触发描述 —— 后者会把会话标题（prettyTitle 取 cn）撑成一段话。
+  assert.ok(CJK.test(cu.cn), `computer-use 的中文标签应可读（实际：${cu.cn}）`);
+  assert.ok(cu.cn.length <= 12, `computer-use 的 cn 应是短名（实际：${cu.cn}）`);
+  assert.ok(CJK.test(bu.cn), `browser-use 的中文标签应可读（实际：${bu.cn}）`);
+  assert.ok(bu.cn.length <= 12, `browser-use 的 cn 应是短名（实际：${bu.cn}）`);
   // dev-fix（41-50，dev 轨系统提示已带）不重复进菜单；web-vuln 不因 loadSkills 重复
   assert.ok(!list.some((x) => /^(4[1-9]|50)$/.test(x.id)), 'dev-fix 41-50 不应进斜杠菜单');
   const names = list.map((x) => x.name.toLowerCase());

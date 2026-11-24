@@ -160,7 +160,12 @@ export const EN_APP = {
 
   // / 命令与技能菜单
   '压缩上下文': 'Compact context',
+  '定时唤醒': 'Scheduled wake-up',
   '多 agent 工作流': 'Multi-agent workflow',
+  '方法论': 'Methodology',
+  '自带技能': 'Built-in skills',
+  '项目技能': 'Project skills',
+  '外部技能': 'External skills',
   '没有匹配的命令或技能': 'No matching commands or skills',
   '命令': 'Command',
   '技能': 'Skill',

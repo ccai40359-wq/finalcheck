@@ -29,7 +29,6 @@ import ChatHeader from './components/ChatHeader.jsx';
 import MessageList from './components/MessageList.jsx';
 import EmptyState from './components/EmptyState.jsx';
 import Composer from './components/Composer.jsx';
-import CompactionStatus from './components/CompactionStatus.jsx';
 import Dialogs from './components/Dialogs.jsx';
 import { IDLE as COMPACTION_IDLE, reduce as reduceCompaction } from './lib/compaction.mjs';
 import { SIDEBAR_UPDATE_INITIAL, reduceSidebarUpdateEvent } from './lib/sidebar-update.mjs';
@@ -1303,7 +1302,14 @@ export default function App() {
       // 失败原因交给活动行显示（「压缩失败：…」），不再往消息流里塞一条重复提示
       if (r?.cancelled) mark({ kind: 'compact-end', scope: 'manual', cancelled: true });
       else if (r?.error) mark({ kind: 'compact-end', scope: 'manual', error: r.reason || r.error });
-      else await openSession(sid);
+      else {
+        // 手动 /compact 成功：主进程已落一条 'compact' notice（自带「约 X → Y token」详情），
+        // openSession 会把它读回来渲染成同样的分隔线。这里把状态复位，
+        // 否则界面会出现两条一模一样的「上下文已压缩」（0.32.9 分隔线改造时踩到）。
+        compactionRef.current = COMPACTION_IDLE;
+        setCompaction(COMPACTION_IDLE);
+        await openSession(sid);
+      }
     } catch (e) {
       mark({ kind: 'compact-end', scope: 'manual', error: e?.message || String(e) });
     } finally {
@@ -1997,6 +2003,7 @@ export default function App() {
                 showJump={showJump} setShowJump={setShowJump} y={y}
                 onSendRecover={(text) => send({ text, pasted: [] })}
                 onOpenArtifact={openArtifact} onEditMessage={editMessage} onOpenStep={openStep}
+                compaction={compaction}
                 askCards={visibleAskCards}
                 onAskUserAnswer={answerAskUser}
               />
@@ -2005,8 +2012,9 @@ export default function App() {
                 setMessages={setMessages} setInput={setInput} inputRef={inputRef} />
             )}
 
-            {/* 上下文压缩进行中/失败：贴在输入区上方的活动行（完成提示仍走会话里的 notice） */}
-            <CompactionStatus state={compaction} />
+            {/* 上下文压缩已移到 MessageList 内部作为正文分隔线（0.32.9）：
+                压缩是会话事件（改的是这条会话的历史长度），完成后的分隔线要留在历史里；
+                挂在输入框上方会随状态消失，自动压缩更是完全无痕。 */}
 
             {/* 输入区（与消息区同宽） */}
             <Composer

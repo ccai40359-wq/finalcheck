@@ -33,7 +33,7 @@ export function projectSkillsRoot(projectDir) {
   return d ? path.join(d, '.finalcheck', 'skills') : null;
 }
 
-export async function buildLooseCatalog(root, scope) {
+export async function buildLooseCatalog(root, scope, origin = scope) {
   let entries;
   try { entries = await readdir(root, { withFileTypes: true }); } catch { return []; }
   const dirs = entries
@@ -58,13 +58,16 @@ export async function buildLooseCatalog(root, scope) {
       id: dir.toLowerCase(),
       dir,
       name: front.name || dir.toLowerCase(),
-      cn: dir,
+      // cn 是「人读的中文短名」：优先 frontmatter 的 name_cn（自带技能都写了），
+      // 没有就用目录名（内置方法论目录本身就带中文名，外部技能就是英文 slug）。
+      cn: front.nameCn || dir,
       title: dir,
       description: front.description,
       descriptionEn: front.descriptionEn,
       triggers: triggersOf(front.description),
       files,
       scope,
+      origin,
       __root: root,
     });
   }
@@ -94,14 +97,15 @@ export async function loadSkills({ projectDir = null } = {}) {
       const builtin = await buildBuiltinDomains().catch(() => []);
       // user 层两个来源：FC 自带（desktop/skills）+ 跨 agent 互通文件夹（~/.agents/skills）。
       // 同名时 FC 自带优先（它是 FC 语境下人工维护的版本）——先按 norm 键去重，FC 自带留、互通让。
-      const own = await buildLooseCatalog(userSkillsRoot(), 'user').catch(() => []);
-      const common = await buildLooseCatalog(commonSkillsRoot(), 'user').catch(() => []);
+      // origin 用于斜杠菜单分组：自带的和外来的不该混在一起（外部文件夹里可能有几十套别人的技能）。
+      const own = await buildLooseCatalog(userSkillsRoot(), 'user', 'own').catch(() => []);
+      const common = await buildLooseCatalog(commonSkillsRoot(), 'user', 'common').catch(() => []);
       const norm = (s) => String(s || '').replace(/[^a-z0-9]/gi, '').toLowerCase();
       const ownKeys = new Set();
       for (const e of own) { ownKeys.add(norm(e.name)); ownKeys.add(norm(e.dir)); }
       const user = [...own, ...common.filter((e) => !ownKeys.has(norm(e.name)) && !ownKeys.has(norm(e.dir)))];
       const pRoot = projectSkillsRoot(projectDir);
-      const project = pRoot ? await buildLooseCatalog(pRoot, 'project').catch(() => []) : [];
+      const project = pRoot ? await buildLooseCatalog(pRoot, 'project', 'project').catch(() => []) : [];
       // 就近覆盖 project > user > builtin：两遍算法——先登记每个键的最高层级，
       // 再只保留「自己所有键都没有被更高层级占用」的条目（name/dir 双键不留残影）。
       const keyRank = new Map();
@@ -130,16 +134,65 @@ export function clearSkillsCache() { skillsCache.clear(); }
 
 const catalogCache = new Map();
 
-function parseFrontmatter(text) {
-  if (!text.startsWith('---')) return { name: '', description: '', descriptionEn: '' };
-  const end = text.indexOf('\n---', 3);
-  if (end === -1) return { name: '', description: '', descriptionEn: '' };
-  const block = text.slice(3, end);
-  const name = (block.match(/^name:\s*(.+)$/m) || [])[1]?.trim() || '';
-  const description = (block.match(/^description:\s*(.+)$/m) || [])[1]?.trim() || '';
-  // 英文一句话（菜单展示用）；旧手册没有该字段时留空，渲染层回退中文
-  const descriptionEn = (block.match(/^description_en:\s*(.+)$/m) || [])[1]?.trim() || '';
-  return { name, description, descriptionEn };
+// 取 frontmatter 里一个标量字段。必须支持 YAML 块标量（> / >- / >+ / | / |- / |+）：
+// Agent Skills 规范里多行描述就是 `description: >` + 缩进正文写的
+// （本机 ~/.agents/skills 下 11 个技能都是这种）。老的 `^description:\s*(.+)$` 单行正则
+// 只会抓到 `>` 这个符号本身 —— 斜杠菜单里一行孤零零的 `>` 就是它。
+function frontmatterValue(block, key) {
+  // 统一换行：Windows 上 SKILL.md 多半是 CRLF，必须在切行前规整掉 \r。
+  // 不规整的话，frontmatter 的**最后一行**会带尾部 \r，`^key:...$` 的 $ 就匹配不上
+  // （实测：description_en 永远是空 —— 本机 12 个自带/内置技能全中）。
+  const lines = String(block || '').replace(/\r\n?/g, '\n').split('\n');
+  const keyRe = new RegExp(`^${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}:[ \\t]*(.*)$`);
+  for (let i = 0; i < lines.length; i++) {
+    const m = keyRe.exec(lines[i]);
+    if (!m) continue; // description_en 不会被当成 description（key 后紧跟 '_' 不匹配冒号）
+    const inline = m[1].trim();
+    if (/^[>|][-+]?$/.test(inline)) {
+      const style = inline[0];
+      const chomp = inline.slice(1);
+      const body = [];
+      for (let j = i + 1; j < lines.length; j++) {
+        const line = lines[j];
+        if (line.trim() === '' || /^[ \t]/.test(line)) body.push(line);
+        else break; // 回到顶格 = 下一个字段，块到此结束
+      }
+      const indents = body.filter((l) => l.trim()).map((l) => l.match(/^[ \t]*/)[0].length);
+      const pad = indents.length ? Math.min(...indents) : 0;
+      const raw = body.map((l) => l.slice(pad)).join('\n');
+      // 折叠（>）：段内换行变空格，空行变换行；字面（|）：原样保留
+      const text = style === '|' ? raw : raw.replace(/\n{2,}/g, '\u0000').replace(/\n/g, ' ').replace(/\u0000/g, '\n');
+      // chomp：'-' 去掉尾部空行，'+' 全部保留，缺省保留一个换行
+      const kept = chomp === '+' ? text : text.replace(/\n+$/, '');
+      return kept.trim().replace(/[ \t]{2,}/g, ' ');
+    }
+    if (/^["']/.test(inline)) { // 引号标量："..." / '...'（菜单里以前连引号一起显示）
+      const q = inline[0];
+      const close = inline.lastIndexOf(q);
+      return (close > 0 ? inline.slice(1, close) : inline.slice(1)).trim();
+    }
+    return inline;
+  }
+  return '';
+}
+
+export function parseFrontmatter(text) {
+  const empty = { name: '', nameCn: '', description: '', descriptionEn: '' };
+  const s = String(text || '').replace(/^\uFEFF/, '');
+  if (!s.startsWith('---')) return empty;
+  const end = s.indexOf('\n---', 3);
+  if (end === -1) return empty;
+  const block = s.slice(3, end);
+  return {
+    name: frontmatterValue(block, 'name'),
+    // 中文短名（菜单标签 / 会话标题 / 展开给模型看的技能名）。
+    // 没有它就只能拿目录名（英文 slug）或一整句触发描述当标签，
+    // 后者会把会话标题撑成一段话（prettyTitle 取的就是 cn）。
+    nameCn: frontmatterValue(block, 'name_cn'),
+    description: frontmatterValue(block, 'description'),
+    // 英文一句话（英文界面菜单展示用）；旧手册没有该字段时留空，渲染层按语言回退
+    descriptionEn: frontmatterValue(block, 'description_en')
+  };
 }
 
 // 目录名 → 中文短名：去掉编号与末尾英文段（36-401-403绕过-AccessBypass → 401-403绕过）
@@ -191,7 +244,7 @@ async function buildCatalog(root) {
       id,
       dir,
       name,
-      cn: cnOf(dir),
+      cn: front.nameCn || cnOf(dir),
       title: dir.replace(/^\d+[-_]/, ''),
       description: front.description,
       descriptionEn: front.descriptionEn,

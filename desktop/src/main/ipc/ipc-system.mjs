@@ -102,17 +102,26 @@ export function registerSystemIpc({ ipcMain, getWin, engineUrl, store, getHooksC
     // （FINALCHECK_SKILLS_DIR 或 desktop/skills、<项目>/.finalcheck/skills）都并入列表尾部。
     // web-vuln（audit 轨系统提示已带）与 dev-fix（dev 轨系统提示已带）不重复进菜单。
     const extras = await loadSkills({}).catch(() => []);
-    const CJK = /[\u3400-\u9fff]/;
     const known = new Set(catalog.map((e) => String(e.name || '').toLowerCase()));
+    // cn 在 src/playbooks.mjs 里已经算好了（frontmatter 的 name_cn > 内置中文目录名 > slug），
+    // 这里不再改写它：以前那版「把整句触发描述塞进 cn」会让中文菜单露一整段英文，
+    // 而 prettyTitle 取 cn，会话标题也被撑成一段描述。
     const merged = [
-      ...catalog,
+      ...catalog.map((e) => ({ ...e, scope: 'builtin' })),
       ...extras
         .filter((e) => e.scope !== 'builtin' || (e.domain !== 'web-vuln' && e.domain !== 'dev-fix'))
         .filter((e) => !known.has(String(e.name || '').toLowerCase()))
-        // 用户级技能目录名是英文 slug（cn===name），中文菜单没有可读标签 → 用中文触发描述当标签
-        .map((e) => (CJK.test(String(e.cn || '')) ? e : { ...e, cn: e.triggers || e.cn }))
     ];
-    return catalogSummary(merged).map((x) => ({ id: x.id, name: x.name, cn: x.cn, description: x.triggers, descriptionEn: x.descriptionEn || '' }));
+    // scope/origin/domain 必须一并透传：渲染层要靠它们分组（命令 / 方法论 / 自带 / 项目 / 外部），
+    // 只在 IPC 里排好序是没用的——菜单要按组显示分节标题。
+    return catalogSummary(merged).map((x, i) => {
+      const src = merged[i] || {};
+      return {
+        id: x.id, name: x.name, cn: x.cn,
+        description: x.triggers, descriptionEn: x.descriptionEn || '',
+        scope: src.scope || 'user', origin: src.origin || src.scope || 'user', domain: src.domain || ''
+      };
+    });
   });
 
   // ---- 权限台账（fail-closed 闭集审批） ----

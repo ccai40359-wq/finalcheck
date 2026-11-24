@@ -1,5 +1,6 @@
 ---
 name: computer-use
+name_cn: 桌面操控
 description: Use when 操控电脑：点击/输入/截屏/键盘操作桌面软件（Word/Excel/微信等）。用户点名 /computer-use 或要求 AI 亲自操作桌面应用时加载；网页操作改用 /browser-use。
 description_en: Drive desktop apps (Word, Excel, WeChat, etc.) with the computer_* tools: request access, confirm the foreground app, take a canAct full-screen screenshot, act with its screenshot_id, re-screenshot after every pointer action, verify each change with observe, and know the read/click tier limits plus the stop entry in the top-right mini window.
 ---

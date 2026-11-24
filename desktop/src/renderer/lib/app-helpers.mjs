@@ -134,10 +134,93 @@ export const buildSkillSegment = (s) => `[技能] ${s.cn}（playbook ${s.id}）�
 
 // slash 菜单里的技能描述：英文界面优先用 SKILL.md frontmatter 的 descriptionEn，
 // 缺英文（旧手册 / frontmatter 坏）时回退中文 description；zh 界面始终用中文。
+// 外部技能（~/.agents/skills 里别人写的）没有中文版时，中文界面照样显示它的原文
+// —— 我们没法替第三方技能造中文翻译，硬塞「触发描述当标签」只会更糊涂。
 export const skillDescription = (skill, lang) => {
   const en = String(skill?.descriptionEn || '').trim();
   if (lang === 'en' && en) return en;
   return String(skill?.description || '');
+};
+
+// 技能条目的菜单分组标签（仿 Claude Code 的 Commands / Custom commands / Skills 分节）：
+//   methodology → 内置方法论（web-vuln 01-40 / dev-fix 41-50）
+//   own         → FC 自带技能（desktop/skills：browser-use / computer-use）
+//   project     → 项目级技能（<项目>/.finalcheck/skills）
+//   external    → ~/.agents/skills 等跨 agent 互通文件夹里的第三方技能
+// 分组的实际意义：外部文件夹可能塞进几十套别人的技能，绝不能跟"本产品的命令"混在一屏；
+// 而且 /browser-use（自带）与 /fc-browser-use（外部同名副本）必须一眼能分。
+export const SKILL_GROUPS = Object.freeze([
+  { id: 'methodology', label: '方法论' },
+  { id: 'own', label: '自带技能' },
+  { id: 'project', label: '项目技能' },
+  { id: 'external', label: '外部技能' }
+]);
+
+export const skillGroupOf = (skill) => {
+  const scope = String(skill?.scope || '');
+  const origin = String(skill?.origin || '');
+  if (scope === 'builtin') return 'methodology';
+  if (scope === 'project') return 'project';
+  if (origin === 'common') return 'external';
+  if (origin === 'own' || scope === 'user') return 'own';
+  return 'methodology';
+};
+
+// 稳定排序键：命令用固定数组序（用户心智里 /compact 排第一），
+// 方法论按编号数值（01→40），其余按 name 的 code-unit 序（不用 localeCompare，避免随系统语言变）。
+//
+// 注意：比较对象可能是「原始技能」也可能是「菜单条目」。
+// 菜单条目只有 group 字段（没有 scope/origin），所以要优先吃 group——
+// 0.32.9 第一版就是漏了这点：比较器对菜单条目调 skillGroupOf 全落回 methodology，
+// 分组排序形同虚设（测试直接抓到）。
+const groupKeyOf = (x) => {
+  const explicit = String(x?.group || '');
+  if (explicit && SKILL_GROUPS.some((g) => g.id === explicit)) return explicit;
+  return skillGroupOf(x);
+};
+const nameKey = (s) => String(s || '').toLowerCase();
+export const compareSkillsForMenu = (a, b) => {
+  const ga = SKILL_GROUPS.findIndex((g) => g.id === groupKeyOf(a));
+  const gb = SKILL_GROUPS.findIndex((g) => g.id === groupKeyOf(b));
+  if (ga !== gb) return ga - gb;
+  // 内置方法论：编号必须按数值排（01,02,…,10），字符串序会把 10 排到 02 前面
+  const na = Number.parseInt(String(a?.id || ''), 10);
+  const nb = Number.parseInt(String(b?.id || ''), 10);
+  const aNum = Number.isFinite(na) && /^\d+$/.test(String(a?.id || '').trim());
+  const bNum = Number.isFinite(nb) && /^\d+$/.test(String(b?.id || '').trim());
+  if (aNum && bNum && na !== nb) return na - nb;
+  if (aNum !== bNum) return aNum ? -1 : 1; // 编号技能排在无编号技能前面
+  const byName = nameKey(a?.name) < nameKey(b?.name) ? -1 : nameKey(a?.name) > nameKey(b?.name) ? 1 : 0;
+  return byName || (nameKey(a?.id) < nameKey(b?.id) ? -1 : nameKey(a?.id) > nameKey(b?.id) ? 1 : 0);
+};
+
+// 菜单条目构造（纯函数，便于单测）：
+// 组顺序固定 = 命令 → 方法论 → 自动化技能 → 项目技能 → 自带技能 → 外部技能。
+// 搜索时组内仍是稳定序，不因命中数量变化而乱跳。
+export const buildSlashItems = ({ commands = [], skills = [], lang = 'zh', query = '' } = {}) => {
+  const q = String(query || '').trim().toLowerCase();
+  const cmdItems = commands.map((c, i) => ({
+    type: 'command', id: c.id, name: c.name, cn: c.cn,
+    // 命令文案是中文原文，渲染时走 t()；descriptionEn 只用于英文界面的搜索命中
+    description: c.description || '', descriptionEn: c.descriptionEn || '',
+    descriptionZh: c.cn || '', order: i, group: 'command'
+  }));
+  const skillItems = skills.map((s, i) => ({
+    type: 'skill', id: s.id, name: s.name, cn: s.cn,
+    description: skillDescription(s, lang),
+    descriptionEn: s.descriptionEn || '',
+    descriptionZh: s.description || '',
+    order: i, group: skillGroupOf(s)
+  }));
+  const all = [...cmdItems, ...skillItems.slice().sort(compareSkillsForMenu)];
+  const hit = all.filter((i) => !q
+    || nameKey(i.name).includes(q)
+    || nameKey(i.cn).includes(q)
+    || nameKey(i.description).includes(q)
+    || nameKey(i.descriptionEn).includes(q)
+    || nameKey(i.descriptionZh).includes(q));
+  // slice 必须发生在排序之后：以前先 slice(0,50) 再拼，85 条里第 51 位的 fc-browser-use 直接看不见
+  return hit;
 };
 
 export const tidySkillRemoval = (s) => String(s || '')
@@ -266,9 +349,21 @@ export const EFFORTS = [
   { v: 'max', label: 'Max', desc: '最大思考强度（默认）' }
 ];
 export const COMMANDS = [
-  { type: 'command', id: 'compact', name: 'compact', cn: '压缩上下文', description: '把当前对话压成摘要，后续只带摘要 + 最近 6 条' },
-  { type: 'command', id: 'wake', name: 'wake', cn: '定时唤醒', description: '例如 /wake 25m 看一下网课进度 —— 到点自动起一个只读回合' },
-  { type: 'command', id: 'workflow', name: 'workflow', cn: '多 agent 工作流', description: '你自己写步骤，引擎按依赖并行调度多个子代理' }
+  {
+    type: 'command', id: 'compact', name: 'compact', cn: '压缩上下文',
+    description: '把当前对话压成摘要，后续只带摘要 + 最近 6 条',
+    descriptionEn: 'Compress the conversation into a summary; later turns carry the summary plus the last 6 messages'
+  },
+  {
+    type: 'command', id: 'wake', name: 'wake', cn: '定时唤醒',
+    description: '例如 /wake 25m 看一下网课进度 —— 到点自动起一个只读回合',
+    descriptionEn: 'e.g. /wake 25m check the course progress — fires a read-only turn when the timer hits'
+  },
+  {
+    type: 'command', id: 'workflow', name: 'workflow', cn: '多 agent 工作流',
+    description: '你自己写步骤，引擎按依赖并行调度多个子代理',
+    descriptionEn: 'You write the steps; the engine schedules sub-agents in parallel by dependency'
+  }
 ];
 
 /**

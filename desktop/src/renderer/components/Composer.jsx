@@ -5,7 +5,7 @@ import { api } from '../lib/ui.jsx';
 import { t, getLanguage } from '../i18n/core.mjs';
 import {
   IMG_EXT_RE, previewFromPath, isLongPaste, countLines, fmtTokens, modelIdsOf, modelEntriesOf, EFFORTS, COMMANDS,
-  nextPasteId, baseName, readBase64, fileToDataUrl, shrinkImageDataUrl, skillDescription, modelDisplayLabel
+  nextPasteId, baseName, readBase64, fileToDataUrl, shrinkImageDataUrl, skillDescription, modelDisplayLabel, buildSlashItems, SKILL_GROUPS
 } from '../lib/app-helpers.mjs';
 import { IconPlus, IconPaste, IconTrash, IconEdit, IconShield, IconSend, IconCube, ContextRing } from './Icons.jsx';
 
@@ -78,22 +78,12 @@ export default function Composer({
   const effortLabel = EFFORTS[Math.round(sliderPos)]?.label || 'Max';
   // 语言每次渲染都现读（Composer 随 App 重渲染）；不做模块级缓存，切换语言后菜单立即跟着变
   const lang = getLanguage();
-  const skillItems = skills.map((s) => ({
-    type: 'skill', id: s.id, name: s.name, cn: s.cn,
-    description: skillDescription(s, lang),
-    descriptionEn: s.descriptionEn || '',
-    descriptionZh: s.description || ''
-  }));
   const slashMatch = input.match(/(^|\s)\/([a-z0-9-]*)$/i);
   const slashQ = (slashMatch?.[2] || '').toLowerCase();
-  const slashItems = [...COMMANDS, ...skillItems]
-    .filter((i) => !slashQ
-      || String(i.name).toLowerCase().includes(slashQ)
-      || String(i.cn).toLowerCase().includes(slashQ)
-      || String(i.description).toLowerCase().includes(slashQ)
-      || String(i.descriptionEn || '').toLowerCase().includes(slashQ)
-      || String(i.descriptionZh || '').toLowerCase().includes(slashQ))
-    .slice(0, 50);
+  // 菜单构造抽到 app-helpers.buildSlashItems（纯函数可单测）：
+  // 组顺序 命令 → 方法论(01-40 按编号) → 自带技能 → 项目技能 → 外部技能，
+  // 且**先排序再截断**——以前先 slice(0,50) 会把排在后面的自带技能整段切掉。
+  const slashItems = buildSlashItems({ commands: COMMANDS, skills, lang, query: slashQ }).slice(0, 60);
   const slashOpen = !!slashMatch;
 
   // ---- 权限 / 模型 / 思考强度（按会话保存，不再改全局默认） ----
@@ -562,27 +552,42 @@ export default function Composer({
             )}
           </div>
 
-          {/* / 技能菜单（命令 + 40 类方法论） */}
+          {/* / 技能菜单（命令 + 方法论 + 自带/项目/外部技能，按组分节，仿 Claude Code） */}
           {slashOpen && (
             <div className="glass-pop absolute bottom-full mb-2 left-0 right-0 rounded-2xl overflow-hidden z-50 pop-in">
               <div className="max-h-80 overflow-y-auto p-1.5">
                 {slashItems.length === 0 ? (
                   <div className="px-3 py-4 text-[11px] text-mute">{t('没有匹配的命令或技能')}</div>
-                ) : slashItems.map((item, idx) => (
-                  <button key={item.type + item.id}
-                    onMouseDown={(e) => e.preventDefault()}
-                    onClick={() => chooseSlash(item)}
-                    onMouseEnter={() => setSlashIndex(idx)}
-                    className={`w-full flex items-center gap-2 px-2.5 py-[7px] rounded-lg transition-colors ${idx === Math.min(slashIndex, slashItems.length - 1) ? 'bg-gold/12' : 'hover:bg-lift/5'}`}>
-                    <span className={`shrink-0 font-mono text-[12px] ${item.type === 'command' ? 'text-goldSoft' : 'text-jade'}`}>/{item.name}</span>
-                    <span className="min-w-0 flex-1 truncate text-[11px] text-ink/70">
-                      {item.type === 'skill' && lang === 'en' ? (item.description || t(item.cn)) : t(item.cn)}
-                    </span>
-                    <span className={`shrink-0 text-[9px] px-1.5 py-0.5 rounded-full ${item.type === 'command' ? 'text-goldDeep/80 bg-gold/10' : 'text-mute/50 bg-lift/[0.05]'}`}>
-                      {item.type === 'command' ? t('命令') : t('技能')}
-                    </span>
-                  </button>
-                ))}
+                ) : slashItems.map((item, idx) => {
+                  // 分组标题：只在「组变了」时插一行，不参与键盘选中（索引仍按 item 计）
+                  const showHead = idx === 0 || slashItems[idx - 1].group !== item.group;
+                  const head = item.type === 'command'
+                    ? t('命令')
+                    : t(SKILL_GROUPS.find((g) => g.id === item.group)?.label || '技能');
+                  // 副标题：命令显示短标签（/wake → 定时唤醒 / Scheduled wake-up），
+                  // 技能显示真正的 description（按当前语言选好的，第三方的原样英文）
+                  const sub = item.type === 'command' ? t(item.cn) : (item.description || t(item.cn));
+                  return (
+                    <React.Fragment key={item.group + item.type + item.id}>
+                      {showHead && (
+                        <div className="px-2.5 pt-2 pb-1 text-[9.5px] uppercase tracking-[0.08em] text-mute/45">
+                          {head}
+                        </div>
+                      )}
+                      <button
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => chooseSlash(item)}
+                        onMouseEnter={() => setSlashIndex(idx)}
+                        className={`w-full flex items-center gap-2 px-2.5 py-[7px] rounded-lg transition-colors ${idx === Math.min(slashIndex, slashItems.length - 1) ? 'bg-gold/12' : 'hover:bg-lift/5'}`}>
+                        <span className={`shrink-0 font-mono text-[12px] ${item.type === 'command' ? 'text-goldSoft' : 'text-jade'}`}>/{item.name}</span>
+                        <span className="min-w-0 flex-1 truncate text-[11px] text-ink/70">{sub}</span>
+                        <span className={`shrink-0 text-[9px] px-1.5 py-0.5 rounded-full ${item.type === 'command' ? 'text-goldDeep/80 bg-gold/10' : 'text-mute/50 bg-lift/[0.05]'}`}>
+                          {item.type === 'command' ? t('命令') : t('技能')}
+                        </span>
+                      </button>
+                    </React.Fragment>
+                  );
+                })}
                 <div className="px-3 py-1.5 text-[10px] text-mute/35 border-t border-lift/[0.06] mt-1">
                   {t('↑↓ 选择 · Enter 确认 · Esc 关闭')}
                 </div>

@@ -34,9 +34,10 @@ export const EN_CHAT = {
   '补交结论（{n}/{max}）…': 'Submitting conclusion ({n}/{max})…',
   '重试 {attempt}/{max}': 'Retrying {attempt}/{max}',
 
-  // 上下文压缩活动行（CompactionStatus.jsx / lib/compaction.mjs）
+  // 上下文压缩活动行 / 正文分隔线（CompactionStatus.jsx / lib/compaction.mjs）
   // '压缩失败：{msg}' 与 app.js 的同名条目共用，这里不重复登记
   '正在压缩上下文…': 'Compressing context…',
+  '上下文已压缩': 'Context compressed',
   '未知原因': 'Unknown reason',
 
   // 工具错误 / 入参摘要（humanize.js）

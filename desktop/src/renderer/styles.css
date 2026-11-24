@@ -207,9 +207,45 @@ code, kbd, samp, pre { font-family: var(--ui-font-mono); font-variant-ligatures:
 .fc-compact-dot { animation: fc-compact-breathe 1.25s ease-in-out infinite; }
 .fc-compact-dots .fc-compact-dot:nth-child(2) { animation-delay: .16s; }
 .fc-compact-dots .fc-compact-dot:nth-child(3) { animation-delay: .32s; }
+
+/* 消息流里的压缩分隔线（0.32.9）：
+   进行中 = 文字上有一条渐变扫光从左到右移动（不闪、不转圈，读起来仍是文字）；
+   完成后立刻停（done 态不套这个 class），只在 120ms 后淡入，避免本地瞬时压缩闪一下。 */
+.fc-compact-appear { animation: fc-compact-in .2s ease-out .12s both; }
+/* 注意：gradient 的色标**必须写显式颜色，不能用 currentColor**。
+   background-clip:text 的用法是「文字填充透明 + 背景渐变透出」，
+   而 color 已经是 transparent，currentColor 解析出来就是 rgba(0,0,0,0)，
+   结果只有中间那一小段有色、整句几乎看不见（0.32.9 第一版实测踩到，截图证据）。 */
+.fc-compact-sweep {
+  background-image: linear-gradient(
+    90deg,
+    rgb(var(--fc-gold-soft) / .82) 0%,
+    rgb(var(--fc-gold-soft) / .82) 38%,
+    rgb(255 240 210) 50%,
+    rgb(var(--fc-gold-soft) / .82) 62%,
+    rgb(var(--fc-gold-soft) / .82) 100%
+  );
+  background-size: 260% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  animation: fc-compact-sweep 1.8s linear infinite;
+}
+@keyframes fc-compact-sweep {
+  0% { background-position: 130% 0; }
+  100% { background-position: -130% 0; }
+}
 @media (prefers-reduced-motion: reduce) {
   .fc-compact-row { animation: none; }
   .fc-compact-dot { animation: none; opacity: .9; }
+  .fc-compact-appear { animation: none; }
+  .fc-compact-sweep {
+    animation: none;
+    background: none;
+    color: inherit;
+    -webkit-text-fill-color: currentColor;
+  }
 }
 
 /* ============ 液态玻璃（Apple Liquid Glass 风格） ============ */
