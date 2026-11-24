@@ -6,6 +6,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.33.0] - 2026-11-24
+
+This release brings several core Claude Code capabilities: MCP servers, one-click restore of files the AI changed, lasting permission rules, plus a round of security hardening.
+
+### Added
+
+- **MCP servers**: a new "MCP servers" page in Settings uses the same config format as Claude Code / Claude Desktop, so you can paste it in; local (stdio) and remote (HTTP) servers both work, their tools show up in the AI's toolbox, and every call asks for your approval by default.
+- **Restore files to before this message**: user messages now have a rewind button that first lists the files the AI changed or created afterwards and what will happen to each, and only restores after you confirm; when editing and resending you can also tick "restore files" (off by default).
+- **Permission rules**: a new "Permission rules" page in Settings for lasting allow / deny rules such as `run_command(npm test:*)` or `read_file(**/.env)`; deny rules apply even in Full access, and you can "try it" before saving.
+- **"Always allow" on the approval card**: when approving a command or MCP tool you can save it as a lasting rule so you are not asked again.
+
+### Fixed
+
+- **No more long hang after the time budget runs out**: the final wrap-up request used to wait about 9 more minutes when the gateway sent nothing; it now waits at most a quarter of the budget (2 minutes max) before wrapping up.
+
+### Improved
+
+- **Security hardening**: page snapshots no longer include passwords, one-time codes or card numbers; running scripts inside web pages needs your approval; connecting to your Edge now uses a random port and checks it is the one FinalCheck started; the system prompt states that content from pages, files and tools is data, not instructions.
+
 ## [0.32.9] - 2026-11-24
 
 A front-end polish pass: a new logo, a cleaner sidebar and menus, smoother motion, and redrawn GitHub images.
