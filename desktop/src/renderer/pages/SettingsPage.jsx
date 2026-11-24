@@ -5,6 +5,7 @@ import React, { useEffect, useId, useRef, useState } from 'react';
 import { api, Card, ErrorNote } from '../lib/ui.jsx';
 import McpSettings from '../components/McpSettings.jsx';
 import PermissionRules from '../components/PermissionRules.jsx';
+import WebSearchSettings from '../components/WebSearchSettings.jsx';
 import { initialUpdateState, reduceUpdateEvent, describeUpdate } from '../lib/updater-state.mjs';
 import { changelogView, pickChangelogEntries } from '../lib/changelog.mjs';
 import UsagePage from './UsagePage.jsx';
@@ -1172,7 +1173,7 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
             </div>
           ) : (
             <div className="flex-1 min-w-0 overflow-y-auto">
-              <div className="max-w-2xl px-6 py-6">{runtimeCard}</div>
+              <div className="max-w-2xl px-6 py-6 space-y-4">{runtimeCard}<WebSearchSettings /></div>
             </div>
           )}
         </div>

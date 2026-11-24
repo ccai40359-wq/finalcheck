@@ -57,10 +57,12 @@ export function createAskUserRegistry({ emit = null, maxPerTurn = ASK_USER_MAX_P
     if (!norm.question) return { error: t('提问内容不能为空') };
     const sessionId = input?.sessionId ?? null;
     const key = sessionKey(sessionId);
+    // 0.33.1：计划审批卡（exit_plan_mode）不占 ask_user 的次数——改几轮计划很正常
+    const isPlan = input?.kind === 'plan';
     const used = counts.get(key) || 0;
-    if (used >= maxPerTurn) return { error: t('本次回合提问次数已达上限') };
+    if (!isPlan && used >= maxPerTurn) return { error: t('本次回合提问次数已达上限') };
     if (typeof emit !== 'function') return { error: t('没有可用的界面通道，无法向用户提问') };
-    counts.set(key, used + 1);
+    if (!isPlan) counts.set(key, used + 1);
 
     const callId = `ask-${randomUUID()}`;
     const payload = {
@@ -68,6 +70,7 @@ export function createAskUserRegistry({ emit = null, maxPerTurn = ASK_USER_MAX_P
       question: norm.question,
       options: norm.options,
       multiSelect: norm.multiSelect,
+      ...(isPlan ? { kind: 'plan' } : {}),
       ...(sessionId == null ? {} : { sessionId }),
       askedAt: now()
     };

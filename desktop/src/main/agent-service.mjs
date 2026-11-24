@@ -10,7 +10,7 @@ import { readChatText } from './summarize-core.mjs';
 export { readChatText };
 import { compactZone, splitByTurns, lastCoveredCallIdOf, isRealUserText, isPinnedSystem } from './compact.mjs';
 import { crossTurnBudgetTokens } from './model-config.mjs';
-import { GREP_CODE_SCHEMA, TODO_CC_RULES_TEXT } from './agent-tools.mjs';
+import { GREP_CODE_SCHEMA, TODO_CC_RULES_TEXT, GLOB_FILES_SCHEMA, LIST_DIR_SCHEMA, WEB_FETCH_SCHEMA, WEB_SEARCH_SCHEMA } from './agent-tools.mjs';
 // token 估算/两级压缩原语实现放在 context.mjs（与上下文视图同源）；这里重新导出，单测可直接从 agent-service 取
 export { estimateTokens, estimateMessagesTokens, microcompact, fullCompact, contextBudget } from './context.mjs';
 import { loadCatalog, loadSkills, renderCatalog } from '../../../src/playbooks.mjs';
@@ -351,7 +351,7 @@ export const AGENT_ONLY_TOOLS_SCHEMA = [
   // 可多次调用更新状态；done 必须带 evidence，failed/skipped 会被报告闸要求写进 ## Not covered。
   { type: 'function', function: { name: 'todo_write', description: '维护本轮任务的验收单（勾选清单）：2-8 条，每条必须给 acceptance（怎么算做完）；可多次调用按 id 更新 status。开工时先写一遍，做完一条就把 status 改成 done 并补 evidence（文件:行 / 命令输出 / HTTP 复现）。不能做或跳过的条目标 failed/skipped，最终回答的 ## Not covered 必须点名它们。' + TODO_CC_RULES_TEXT, parameters: { type: 'object', properties: { items: { type: 'array', minItems: 2, maxItems: 8, description: '2-8 条任务（只有一两个目标时写 2 条也行，不要硬凑）；id 稳定（更新状态时按 id 合并）', items: { type: 'object', properties: { id: { type: 'string', description: '稳定标识（如 s1 / step-1）' }, task: { type: 'string', description: '这一步要做什么（一句话）' }, acceptance: { type: 'string', description: '验收标准（必填）：怎么算这一步完成，可检查的条件' }, status: { type: 'string', enum: ['pending', 'running', 'done', 'failed', 'skipped'], description: '状态，默认 pending' }, evidence: { type: 'string', description: '证据（done 时必填）：文件:行 / 命令输出摘要 / HTTP 复现' } }, required: ['id', 'task', 'acceptance'] } } }, required: ['items'] } } }
 ];
-export const AGENT_TOOLS_SCHEMA = [...TOOLS_SCHEMA, GREP_CODE_SCHEMA, ...AGENT_ONLY_TOOLS_SCHEMA];
+export const AGENT_TOOLS_SCHEMA = [...TOOLS_SCHEMA, GREP_CODE_SCHEMA, GLOB_FILES_SCHEMA, LIST_DIR_SCHEMA, WEB_FETCH_SCHEMA, WEB_SEARCH_SCHEMA, ...AGENT_ONLY_TOOLS_SCHEMA];
 
 // 工作流子代理工具集：与主 agent 同一份 schema，按 swarm.mjs 的清单过滤。
 // 共 14 个：含 review_diff（review_diff 只在 AGENT_ONLY_TOOLS_SCHEMA），
@@ -1023,7 +1023,7 @@ export function pruneConvo(list, config) {
 // 其余全部串行：run_command / edit_file / write_file 有写顺序依赖；audit_project / download_gate / quality_gate /
 // get_report / run_workflow 是主线程 CPU 或子进程任务，并行只会堵事件循环，甚至让 UI 卡住。
 // spawn_agent（0.26）：一次回复里的多个子代理同时跑（对齐 Claude Code 的 Agent 工具）
-const PARALLEL_TOOLS = new Set(['read_file', 'read_playbook', 'probe_target', 'stress_target', 'review_diff', 'grep_code', 'view_image', 'capture_screenshot', 'spawn_agent']);
+const PARALLEL_TOOLS = new Set(['read_file', 'read_playbook', 'probe_target', 'stress_target', 'review_diff', 'grep_code', 'glob_files', 'list_dir', 'web_fetch', 'web_search', 'view_image', 'capture_screenshot', 'spawn_agent']);
 
 // 思考强度 → 请求参数。界面上的「Default（跟随模型默认）」= 不发这个参数；
 // 0.26 以前会把 reasoning_effort: 'default' 原样发出去，有的网关直接回 HTTP 400（模拟客户端真模型评测抓到的）。

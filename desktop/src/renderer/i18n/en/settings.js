@@ -295,4 +295,16 @@ export const EN_SETTINGS = {
   '工具名也能通配，常用于 MCP 工具': 'Tool names can use wildcards too — handy for MCP tools',
   '权限规则': 'Permission rules',
   '长期有效的允许 / 拒绝规则：常用命令不用每次点批准，危险操作永远不让 AI 做。': 'Lasting allow / deny rules: stop approving routine commands every time, and never let the AI do the dangerous ones.',
+  // 0.33.1 联网搜索
+  '联网搜索': 'Web search',
+  'AI 用 web_search 查资料时走哪个搜索引擎。搜索词会发给所选的服务；网页抓取（web_fetch）不受这里影响。': 'Which search engine the AI uses for web_search. Search terms are sent to the selected service; page fetching (web_fetch) is not affected.',
+  '搜索服务': 'Search service',
+  '实例地址': 'Instance URL',
+  '这个服务需要填 API Key': 'This service needs an API key',
+  '填 SearXNG 实例地址（http / https 开头）': 'Enter the SearXNG instance URL (starting with http / https)',
+  '自动（必应，失败回退 DuckDuckGo）': 'Auto (Bing, falls back to DuckDuckGo)',
+  '必应': 'Bing',
+  'Tavily（API）': 'Tavily (API)',
+  'Brave Search（API）': 'Brave Search (API)',
+  'SearXNG（自建实例）': 'SearXNG (self-hosted)',
 };

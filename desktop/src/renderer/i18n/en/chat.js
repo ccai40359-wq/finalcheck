@@ -365,4 +365,15 @@ export const EN_CHAT = {
   '已存为长期规则：{rule}（可在设置 → 权限规则里改）': 'Saved as a lasting rule: {rule} (edit it in Settings → Permission rules)',
   '写入设置 → 权限规则：{rule}': 'Adds to Settings → Permission rules: {rule}',
   '总是允许': 'Always allow',
+  // 0.33.1 计划模式
+  '计划已批准，开始执行': 'Plan approved — starting work',
+  '已批准': 'Approved',
+  '要求修改：{f}': 'Changes requested: {f}',
+  '计划待批准': 'Plan awaiting approval',
+  '想改哪里？写下意见，AI 会改好计划再交': 'What should change? Leave feedback and the AI will revise the plan',
+  '计划模式已开：AI 先调查、出计划，你批准后才改文件（Shift+Tab 关闭）': 'Plan mode is on: the AI investigates and proposes a plan, and only changes files after you approve (Shift+Tab to turn off)',
+  '计划模式：先出计划、批准后再动手（Shift+Tab）': 'Plan mode: plan first, act after approval (Shift+Tab)',
+  '计划': 'Plan',
+  '批准，开始执行': 'Approve and start',
+  '继续完善计划': 'Keep refining the plan',
 };

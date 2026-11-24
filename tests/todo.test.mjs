@@ -56,7 +56,7 @@ test('todo: todo_write 只在主 agent schema / 工具表，子代理没有', as
   assert.ok(agentNames.includes('todo_write'), '主 agent schema 必须有 todo_write');
   const subNames = SUBAGENT_TOOLS_SCHEMA.map((x) => x.function.name);
   assert.ok(!subNames.includes('todo_write'), '子代理 schema 不得有 todo_write');
-  assert.equal(SUBAGENT_TOOLS_SCHEMA.length, 17, '子代理工具数不变（17 个）');
+  assert.equal(SUBAGENT_TOOLS_SCHEMA.length, 21, '子代理工具数不变（21 个，0.33.1 加了文件查找与联网）');
 
   const schema = AGENT_TOOLS_SCHEMA.find((x) => x.function.name === 'todo_write');
   const items = schema.function.parameters.properties.items;

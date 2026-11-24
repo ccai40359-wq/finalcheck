@@ -5,6 +5,7 @@ import React, { useEffect, useState } from 'react';
 import { t } from '../i18n/core.mjs';
 import { useLanguage } from '../i18n/index.jsx';
 import { EN_QUESTION_FALLBACK, displayAskText, translateAskText } from '../lib/ask-user-i18n.mjs';
+import { renderMarkdown } from '../chat/md.jsx';
 
 const STATUS_DONE = new Set(['answered', 'cancelled', 'expired', 'rejected']);
 
@@ -52,6 +53,7 @@ export default function AskUserCard({ payload, onSubmit = null }) {
   const interactive = status === 'pending' && typeof onSubmit === 'function';
   const options = Array.isArray(data.options) ? data.options.slice(0, 6) : [];
   const multi = data.multiSelect === true;
+  const isPlan = data.kind === 'plan'; // 0.33.1 exit_plan_mode 的计划审批卡
 
   // 同一张卡被主进程回填（answered/cancelled）或换了 callId 时，重置本地输入
   useEffect(() => {
@@ -87,12 +89,17 @@ export default function AskUserCard({ payload, onSubmit = null }) {
     <div data-testid="ask-user-card" data-status={status}
       className="my-3 rounded-xl border border-gold/45 bg-gold/[0.07] px-4 py-3 animate-[fadeIn_.2s_ease]">
       <div className="flex items-center gap-2">
-        <span className="badge shrink-0 bg-gold/15 text-goldSoft">{t('需要你的选择')}</span>
+        <span className="badge shrink-0 bg-gold/15 text-goldSoft">{isPlan ? t('计划待批准') : t('需要你的选择')}</span>
         {multi && status === 'pending' ? <span className="text-[10px] text-mute/60">{t('可多选')}</span> : null}
         {status === 'pending' ? <span className="ml-auto text-[10px] text-mute/45">{t('回答后本回合继续')}</span> : null}
       </div>
 
-      <div className="mt-2 text-sm leading-relaxed text-ink/95 break-words whitespace-pre-wrap">{displayAskText(data.question, lang, EN_QUESTION_FALLBACK)}</div>
+      {isPlan ? (
+        <div data-testid="plan-body" className="md mt-2 max-h-[420px] overflow-y-auto rounded-lg bg-lift/[0.03] px-3 py-2 text-sm leading-relaxed text-ink/95 break-words"
+          dangerouslySetInnerHTML={{ __html: renderMarkdown(String(data.question || '')) }} />
+      ) : (
+        <div className="mt-2 text-sm leading-relaxed text-ink/95 break-words whitespace-pre-wrap">{displayAskText(data.question, lang, EN_QUESTION_FALLBACK)}</div>
+      )}
 
       {status === 'pending' ? (
         <>
@@ -124,7 +131,7 @@ export default function AskUserCard({ payload, onSubmit = null }) {
               data-testid="ask-user-input"
               onChange={(e) => setText(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void submit(); } }}
-              placeholder={options.length ? t('也可以直接输入回答…') : t('输入你的回答…')}
+              placeholder={isPlan ? t('想改哪里？写下意见，AI 会改好计划再交') : options.length ? t('也可以直接输入回答…') : t('输入你的回答…')}
               className="min-w-0 flex-1 rounded-md bg-lift/[0.04] px-3 py-2 text-xs text-ink placeholder:text-mute/40 focus:bg-lift/[0.07] focus:outline-none disabled:opacity-50" />
             <button type="button" disabled={submitting || (!selected.length && !text.trim())}
               data-testid="ask-user-submit" onClick={() => void submit()}

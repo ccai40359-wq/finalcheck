@@ -55,6 +55,14 @@ function AttachmentChip({ item, onRemove }) {
   );
 }
 
+function IconPlanMode() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M9 4h6a1 1 0 0 1 1 1v1H8V5a1 1 0 0 1 1-1Z" /><path d="M8 6H6a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V7a1 1 0 0 0-1-1h-2" /><path d="M9 12h6M9 16h4" />
+    </svg>
+  );
+}
+
 export default function Composer({
   y, input, setInput, attachments, setAttachments, pastedBlocks, setPastedBlocks, editing, dragging, busy, stopping, steering, compacting,
   approval, queueItems, menu, providerMenu, permMode, ctxStats, skills, cfg, sessCfg, effortPos, activeId, onNotice,
@@ -63,7 +71,7 @@ export default function Composer({
   setDragging, setMenu, setProviderMenu, setEffortPos, setSessCfg, setCfg, setPermMode,
   cancelEdit, chooseSlash, onToggleEditRestore,
   decideApproval, steerQueueItem, moveQueueItemToInput, removeQueueItem, sendQueueItemNow, queueHeld = false,
-  send, stop, onGoSettings
+  send, stop, onGoSettings, planMode = false, onTogglePlan = null
 }) {
   // ---- 输入框下方的模型 / 思考强度 / 技能菜单（按当前会话的配置显示） ----
   const allProviders = cfg?.providers || [];
@@ -167,6 +175,8 @@ export default function Composer({
   const removePasted = (id) => setPastedBlocks((prev) => prev.filter((b) => b.id !== id));
 
   const onComposerKeyDown = (e) => {
+    // 0.33.1：Shift+Tab 切换计划模式（Claude Code 同款快捷键）
+    if (e.key === 'Tab' && e.shiftKey && onTogglePlan) { e.preventDefault(); onTogglePlan(); return; }
     if (slashOpen && slashItems.length) {
       if (e.key === 'ArrowDown') { e.preventDefault(); setSlashIndex((v) => (v + 1) % slashItems.length); return; }
       if (e.key === 'ArrowUp') { e.preventDefault(); setSlashIndex((v) => (v - 1 + slashItems.length) % slashItems.length); return; }
@@ -361,6 +371,15 @@ export default function Composer({
                 </div>
               )}
             </div>
+
+            {onTogglePlan ? (
+              <button onClick={onTogglePlan} data-testid="plan-toggle" aria-pressed={planMode}
+                title={planMode ? t('计划模式已开：AI 先调查、出计划，你批准后才改文件（Shift+Tab 关闭）') : t('计划模式：先出计划、批准后再动手（Shift+Tab）')}
+                className={`inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-[11px] whitespace-nowrap transition-colors ${planMode ? 'bg-gold/[0.12] text-goldSoft' : 'text-mute/70 hover:text-ink hover:bg-lift/[0.06]'}`}>
+                <IconPlanMode />
+                <span className="fc-hide-narrow">{t('计划')}</span>
+              </button>
+            ) : null}
 
             <div className="ml-auto flex items-center gap-1 fc-right-group">
               <div className="relative">

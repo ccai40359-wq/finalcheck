@@ -9,6 +9,9 @@ export const CJK_TEXT = /[\u3400-\u9fff]/;
 export const EN_QUESTION_FALLBACK = 'Choose from the options below.';
 
 const PHRASES = Object.freeze({
+  // 0.33.1 计划审批卡的两个按钮
+  '批准，开始执行': 'Approve and start',
+  '继续完善计划': 'Keep refining the plan',
   // 审计前置问法的整句（模型照抄系统提示时的高频写法）
   '这次体检要覆盖哪些维度': 'Which dimensions should this audit cover',
   '本次体检要覆盖哪些维度': 'Which dimensions should this audit cover',

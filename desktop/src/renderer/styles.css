@@ -679,6 +679,7 @@ button, [role="button"] {
   .fc-composer-bar .fc-model-full { display: none; }
   .fc-composer-bar .fc-model-icon { display: inline-flex; }
   .fc-composer-bar .fc-model-btn { width: 28px; padding-left: 0; padding-right: 0; }
+  .fc-composer-bar .fc-hide-narrow { display: none; }
 }
 
 /* ============ 侧栏折叠过渡（性能优先） ============

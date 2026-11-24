@@ -1052,7 +1052,7 @@ export function GenericToolDetail({ name = '', args, result, running }) {
 export function TraceBlock({ trace, onOpenStep = null, onRecover = null }) {
   if (!trace?.length) return null;
   // ask_user 的问答卡也放在这里：历史加载后从 tool part 还原（answered/cancelled/expired 只读态）
-  const cards = trace.filter((entry) => BODY_CARD_TOOLS.has(entry.tool) || entry.tool === 'ask_user');
+  const cards = trace.filter((entry) => BODY_CARD_TOOLS.has(entry.tool) || entry.tool === 'ask_user' || entry.tool === 'exit_plan_mode');
   if (!cards.length) return null;
   const slots = collapseResultCards(cards);
   return (
@@ -1060,6 +1060,13 @@ export function TraceBlock({ trace, onOpenStep = null, onRecover = null }) {
       {slots.map(({ entry, count }, i) => {
         const repeatLabel = count > 1 ? t('重复执行 {n} 次', { n: count }) : null;
         if (entry.tool === 'ask_user') return <AskUserCard key={i} payload={askUserCardFromTrace(entry)} />;
+        if (entry.tool === 'exit_plan_mode') {
+          // 0.33.1：计划审批卡从 tool part 还原成只读态
+          const r = entry.result && typeof entry.result === 'object' ? entry.result : {};
+          const status = r.approved === true ? 'answered' : r.cancelled ? 'cancelled' : r.approved === false ? 'answered' : 'expired';
+          const answer = r.approved === true ? t('已批准') : r.approved === false ? t('要求修改：{f}', { f: r.feedback || '' }) : '';
+          return <AskUserCard key={i} payload={{ kind: 'plan', callId: entry.callId || null, question: String(entry.args?.plan || ''), options: [], status, answer }} />;
+        }
         if (entry.tool === 'audit_project' || entry.tool === 'get_report') return <ReportCard key={i} args={entry.args} result={entry.result} repeatLabel={repeatLabel} />;
         if (entry.tool === 'probe_target') return <ProbeCard key={i} args={entry.args} result={entry.result} repeatLabel={repeatLabel} />;
         if (entry.tool === 'stress_target') return <StressCard key={i} args={entry.args} result={entry.result} repeatLabel={repeatLabel} />;

@@ -189,7 +189,8 @@ export const DELIVERY_DISCIPLINE = [
 export const SUBAGENT_TOOL_NAMES = [
   'audit_project', 'quality_gate', 'download_gate', 'probe_target', 'stress_target',
   'get_report', 'list_playbooks', 'read_playbook', 'read_file', 'edit_file',
-  'write_file', 'present_artifact', 'run_command', 'review_diff', 'grep_code', 'view_image', 'capture_screenshot'
+  'write_file', 'present_artifact', 'run_command', 'review_diff', 'grep_code', 'view_image', 'capture_screenshot',
+  'glob_files', 'list_dir', 'web_fetch', 'web_search'
 ];
 export const SUBAGENT_TOOL_DENIED = ['run_workflow', 'remember_project'];
 
