@@ -194,12 +194,12 @@ desktop/      Electron app (main / preload / renderer)
 playbooks/    audit playbooks
 integrations/ skill + hook wiring for coding agents
 docs/         ACCEPTANCE.md — tier SSOT; RELIABILITY.md — implemented scope and evidence limits
-tests/        node:test suites (2103 passing)
+tests/        node:test suites (2138 passing)
 ```
 
 ## Status
 
-Early but real: the engine, the desktop app, tiered gates, agent workflows (DAG + script DSL), adversarial verification and in-app updates are in place, with 2103 tests passing on every change. Development follows the project's own L3 standard — a known violation of any L2 item in this repository counts as a bug.
+Early but real: the engine, the desktop app, tiered gates, agent workflows (DAG + script DSL), adversarial verification and in-app updates are in place, with 2138 tests passing on every change. Development follows the project's own L3 standard — a known violation of any L2 item in this repository counts as a bug.
 
 ## Author
 

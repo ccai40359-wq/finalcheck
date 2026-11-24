@@ -177,12 +177,12 @@ desktop/      Electron 桌面端（main / preload / renderer）
 playbooks/    体检 playbook
 integrations/ 编码 agent 的 skill + hook 接线
 docs/         ACCEPTANCE.md（分级验收的唯一事实源）、RELIABILITY.md（已实现范围与边界）
-tests/        node:test 测试（当前 2103 项全绿）
+tests/        node:test 测试（当前 2138 项全绿）
 ```
 
 ## 状态
 
-已能真用但仍在早期：引擎、桌面端、分级闸门、Agent 工作流（DAG + 脚本 DSL）、对抗复核与内置更新都已落地，每次改动跑 2103 项测试。本项目自身按 L3 标准开发——本仓库违反 L2 矩阵任何一条，都算 bug。
+已能真用但仍在早期：引擎、桌面端、分级闸门、Agent 工作流（DAG + 脚本 DSL）、对抗复核与内置更新都已落地，每次改动跑 2138 项测试。本项目自身按 L3 标准开发——本仓库违反 L2 矩阵任何一条，都算 bug。
 
 ## 作者
 
