@@ -105,6 +105,12 @@ export default function MessageList({
     [messages, providers, language]
   );
 
+  // 贴底滚动期间临时关掉 content-visibility 的收尾函数（幂等）。
+  // 存 ref 是为了让「再点一次」和「组件卸载」都先把上一轮收尾：上一轮的定时器若迟到，
+  // 会把这一轮刚加上的 cv-off 摘掉 → 又按 400px 估计滚 → 又停在半路。
+  const cvOffReleaseRef = useRef(null);
+  useEffect(() => () => { cvOffReleaseRef.current?.(); }, []); // 卸载时摘掉（DOM 一起没了，但定时器要清）
+
   // 只有用户本来就在底部附近才自动跟随；往上看历史时保持不动（判定逻辑与拆分前一致）
   const handleScroll = (e) => {
     const el = e.currentTarget;
@@ -113,14 +119,58 @@ export default function MessageList({
     if (jumpingRef.current) { if (stuck) setShowJump(false); }
     else setShowJump(!stuck);
   };
-  // 一键回到底部：平滑滚动，立刻隐藏按钮（滚动事件里会再兜底校正）
+  // 一键回到底部：平滑滚动，立刻隐藏按钮（滚动事件里会再兜底校正）。
+  // 0.33.3 用户实测「滚到半路就停」的根因：消息行带 content-visibility:auto（styles.css 的 .cv-auto），
+  // 屏幕外的行只按 400px 占位，而一条含大标题/表格的 AI 回答真实高度有 1500-2500px
+  // → scrollHeight 被严重低估 → 平滑滚到「假底部」停住；停稳后视口内消息按真实内容撑开，人又离底部很远
+  // （消息越长越明显）。所以：滚动期间给容器挂 .cv-off，让所有行按真实高度参与布局，量到真 scrollHeight 再滚。
+  // 摘掉 .cv-off 后高度不会缩回去——contain-intrinsic-size:auto 已把这一轮实测的真实高度记住了。
   const jumpToBottom = () => {
+    const el = scrollRef.current;
+    if (!el) { jumpingRef.current = false; return; } // 没有滚动容器：别留下「动画中」的悬空状态
+    // 上一轮（若有）先收尾：它的定时器/scrollend 若迟到，会把这一轮刚加的 cv-off 摘掉。
+    // 必须在置 jumpingRef=true **之前**调：release 里会把它复位成 false，
+    // 顺序反了就变成「正在平滑滚动，但 jumpingRef 是 false」→ 滚动事件会把箭头又弹出来。
+    cvOffReleaseRef.current?.();
     stickRef.current = true;
     jumpingRef.current = true;
     setShowJump(false);
-    const el = scrollRef.current;
-    if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
-    setTimeout(() => { jumpingRef.current = false; }, 500);
+    el.classList.add('cv-off');
+    let released = false;
+    let timer = 0;
+    const release = () => {
+      if (released) return; // 幂等：scrollend / 兜底定时器 / 卸载 三条路径谁先到谁干活
+      released = true;
+      clearTimeout(timer);
+      el.removeEventListener('scrollend', release);
+      el.classList.remove('cv-off'); // 必须摘：留着等于整条会话永久全量渲染，长会话滚动会卡
+      if (cvOffReleaseRef.current === release) cvOffReleaseRef.current = null;
+      jumpingRef.current = false;
+      // 摘掉后高度理论上不变（已记住实测值），但字体/图片可能正好在这一刻才落位：
+      // 只要用户还在跟随态就再贴一次底；已经贴底时这句是 no-op，不会造成可见跳动。
+      if (stickRef.current) el.scrollTop = el.scrollHeight;
+    };
+    cvOffReleaseRef.current = release;
+    // 兜底定时器先挂上，再排 rAF：下面任何一步抛异常都不会把 .cv-off 永久留在容器上
+    // （永久留着 = 整条会话全量渲染，长会话每帧多排 14k 节点，滚动会明显发卡）。
+    // 时长必须盖住整段平滑滚动——实测 Chromium 的 smooth 与距离无关，
+    // 3.6 万 px 和 21.6 万 px 都是 ~1500ms 停住（见 .tmp 验证），所以给 1600ms。
+    // 本来就在底部时不会产生滚动、scrollend 不来；系统开了「减少动效」时 smooth 被降级成
+    // 瞬间跳，同样可能不来——这两种情况都靠这个定时器兜底。
+    timer = setTimeout(release, 1600);
+    try {
+      el.addEventListener('scrollend', release, { passive: true });
+      // 等一帧再滚：class 刚加上，浏览器还没重新布局，同一任务里读到的 scrollHeight 仍是旧的估计值。
+      requestAnimationFrame(() => {
+        if (released) return; // 这一帧到来前已被收尾（重新点过 / 容器被卸载）
+        el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+        // 本来就在底部（连点/已在底部）：不会产生滚动，也就没有 scrollend，不必白等那 1.6s
+        if (el.scrollHeight - el.scrollTop - el.clientHeight < 2) release();
+      });
+    } catch (err) {
+      release(); // 异常路径也一定摘掉 .cv-off，再把错误抛回去（不吞，免得掩盖真 bug）
+      throw err;
+    }
   };
   return (
     <div className="flex-1 min-h-0 flex" data-testid="message-host">

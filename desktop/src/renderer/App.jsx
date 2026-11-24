@@ -312,6 +312,10 @@ export default function App() {
   const modelMenuRef = useRef(null); // 模型菜单 + 供应商子菜单 + 触发按钮
   const rowMenuRef = useRef(null);   // 会话右键菜单内容
 
+  // 0.33.3：自动跟随的补滚帧（见 autoScroll）。每个 token 都会走一次 autoScroll，
+  // 不先取消上一帧就会叠出一串排队 rAF，长会话里这些帧互相踩，滚动位置来回抖。
+  const followRafRef = useRef(0);
+
   const scrollDown = () => {
     stickRef.current = true;
     setShowJump(false);
@@ -320,11 +324,36 @@ export default function App() {
       if (el) el.scrollTop = el.scrollHeight;
     });
   };
-  // 只有用户本来就在底部附近才自动跟随；往上看历史时保持不动
+  // 只有用户本来就在底部附近才自动跟随；往上看历史时保持不动。
+  // 0.33.3（用户实测「流式输出跟不到底」）：不能再只写一次 `scrollTop = scrollHeight`。
+  // 消息行带 content-visibility:auto（styles.css 的 .cv-auto），视口外的行只按 400px 记账，
+  // 而一条含大标题/表格的回答真实高度 1500-2500px；新长出来的那段在视口下方、按估计值参与布局，
+  // 赋值那一刻读到的 scrollHeight 是「假底部」，下一帧真实布局追上来才撑开 → 人总被落下一屏。
+  // 这里改成连续贴几帧：**每帧都重新读 scrollHeight 再赋值**，让刚滚进视口的行按真实高度撑开，
+  // 下一帧再把这段新高度吃掉；连续 3 帧足够走完「进入视口 → 真实布局 → 再贴一次」。
+  //
+  // 两个都试过、被实测否掉的写法（别再改回去）：
+  //   · 最后一个节点 scrollIntoView({block:'end'})：目标节点自身在视口外时几何同样是 400px 估计值，
+  //     实测 1800px 的新块之后仍然落后 1768px（和单次赋值一模一样）；还会顺带滚外层容器。
+  //   · 同帧内循环「赋值 → 读回 gap 判断要不要再来一次」：刚赋值完 gap 恒为 0，
+  //     判定必然当场收手，等于没修；必须跨帧判定（下一帧的重排结果才是真的）。
+  // 为什么不在流式期间常挂 .cv-off：那等于每来一个 token 把整条会话（实测一个会话 14k DOM 节点）
+  // 全量布局一次，输入框和动画会明显发卡。这里每批 token 只多花 2 帧的滚动赋值。
   const autoScroll = () => {
     if (!stickRef.current) return;
     const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    if (!el) { setShowJump(false); return; }
+    // 每个 token 都走一次：先取消上一批排着的帧，免得几串帧互相踩、滚动位置来回抖
+    cancelAnimationFrame(followRafRef.current);
+    let frames = 0;
+    const pin = () => {
+      followRafRef.current = 0;
+      // 用户在这几帧之间往上翻了：立刻停手，别把人家拽回底部
+      if (!stickRef.current || scrollRef.current !== el) return;
+      el.scrollTop = el.scrollHeight;
+      if (++frames < 3) followRafRef.current = requestAnimationFrame(pin);
+    };
+    pin();
     setShowJump(false);
   };
   useEffect(autoScroll, [messages, askCards]);

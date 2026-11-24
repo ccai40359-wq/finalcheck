@@ -646,6 +646,26 @@ button, [role="button"] {
   contain-intrinsic-size: auto 28px;
 }
 
+/* 临时关闭免渲染：滚动容器挂 .cv-off 期间，行按真实内容参与布局。
+   0.33.3 用户实测「回到底部滚到半路就停」的根因就在这里——屏幕外的行只按 400px 记账，
+   而一条含大标题/表格的 AI 回答真实高度有 1500-2500px，于是 scrollHeight 被严重低估，
+   滚动目标是「假底部」。修法不是把估计值调大（真实高度差异太大，调大调小都有副作用，
+   也会让滚动条长度随内容失真），而是**只在需要精确高度的滚动期间**临时打开布局。
+   实测（Playwright + Chrome，20 条 1500-2000px 消息）：
+     · 默认：scrollHeight 13899（真实 36088）→ 点「回到底部」停在离真实底部 7347px 处
+     · 挂上 .cv-off 后：scrollHeight 立刻变 36088，滚到位，误差 -32px（底部 padding）
+     · 摘掉 .cv-off 后：高度仍是 36088，不缩水（contain-intrinsic-size:auto 已记住实测值）
+   作用域限定在 .cv-off 的后代上：只有「正在做精确滚动」的那一小段时间打开，
+   其余时间全量布局的代价不外泄（长会话常挂 = 每帧多排 14k 节点）。
+   contain-intrinsic-size 这里写 auto 单值，与默认的 `auto 400px` 实测在 content-visibility:visible
+   下对 scrollHeight 没有区别；写成 auto 是为了语义一致——打开布局后不再需要 400px 占位估计。 */
+.cv-off .cv-auto,
+.cv-off .timeline-segment,
+.cv-off .fc-tool-entry {
+  content-visibility: visible;
+  contain-intrinsic-size: auto;
+}
+
 /* 尊重系统的「减少动效」设置：全局停跳动画与过渡（省电、无障碍） */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
