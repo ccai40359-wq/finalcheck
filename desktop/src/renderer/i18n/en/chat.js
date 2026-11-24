@@ -324,5 +324,23 @@ export const EN_CHAT = {
   // 0.32.4：在默认浏览器打开（ZCode 同款按钮）+ 右栏宽度自适配提示
   '在默认浏览器打开（当前网页）': 'Open this page in the default browser',
   '在默认浏览器打开': 'Open in default browser',
-  '没有可打开的网址': 'No URL to open'
+  '没有可打开的网址': 'No URL to open',
+  // 0.32.7 定时唤醒（类似 cron 的单次/重复延时版）
+  '⏰ 定时唤醒「{label}」没能切到目标会话，已跳过本次（避免把消息发进错误的会话）':
+    '⏰ Scheduled wake-up "{label}" could not switch to the target session, so this run was skipped (to avoid posting into the wrong session)',
+  '⏰ 定时唤醒已执行：{label}': '⏰ Scheduled wake-up ran: {label}',
+  '⏰ 定时唤醒「{label}」执行失败：{msg}': '⏰ Scheduled wake-up "{label}" failed: {msg}',
+  '请先打开一个会话，再设定时唤醒': 'Open a session first, then schedule a wake-up',
+  '定时唤醒没建成：{msg}': 'Could not schedule the wake-up: {msg}',
+  '⏰ 已设定：{in}执行「{label}」{rep}（无人值守回合只做只读操作）':
+    '⏰ Scheduled: "{label}" will run {in}{rep} (unattended runs are read-only)',
+  '稍后': 'later',
+  '，之后一直重复': ', then repeats indefinitely',
+  '，共重复 {n} 次': ', repeating {n} more times',
+  '用法：/wake 25m 看一下网课进度（延时必须带单位）':
+    'Usage: /wake 25m check the course progress (the delay needs a unit)',
+  '请说明到点要做什么：/wake 25m 看一下网课进度':
+    'Say what to do when it fires: /wake 25m check the course progress',
+  '去掉 repeat 参数后没有任务描述了': 'No task description is left after removing the repeat argument',
+  '发送失败': 'Send failed'
 };

@@ -13,6 +13,8 @@ import { loadHooksConfig } from './hooks.mjs';
 import { getSessionDir, scanSessionsDir, projectRootOfSessionsDir } from './session-projects.mjs';
 import { planProjectSwitch } from './project-switch.mjs';
 import { registerSessionIpc } from './ipc/ipc-sessions.mjs';
+// 0.32.7：定时唤醒（类似 cron 的单次/重复延时版）的 IPC
+import { registerWakeupIpc } from './ipc/ipc-wakeups.mjs';
 import { registerAgentIpc } from './ipc/ipc-agent.mjs';
 import { registerCompactIpc } from './ipc/ipc-compact.mjs';
 import { registerSystemIpc } from './ipc/ipc-system.mjs';
@@ -110,6 +112,11 @@ export function createBackend({ ipcMain, getWin, getDataRoot, engineUrl, repoRoo
   async function registerCoreIpc() {
     registerSystemIpc({ ipcMain, getWin, engineUrl, store, getHooksConfig: () => hooksConfig, sessionProjectPathOf, sessionUsage: state.sessionUsage });
     registerSessionIpc({ ipcMain, state, sessionProjectPathOf, runSessionStart });
+    // 定时唤醒：不依赖 Electron，纯 Node 可测（存储用 JSON，见 wakeup-store.mjs）
+    // ⚠️ 必须把 engineUrl 传进去：否则 IPC 侧走相对路径 import、index.mjs 走 engineUrl，
+    // 会拿到**两个不同的模块实例** —— 真机 W0 实测就撞了：IPC 通了但 running 永远 false，
+    // 于是「设了定时任务」也永远不会触发。
+    registerWakeupIpc({ ipcMain, engineUrl });
     registerCompactIpc({ ipcMain, getWin, store, sessionProjectPathOf, sessionUsage: state.sessionUsage });
     await registerAgentIpc({
       ipcMain,

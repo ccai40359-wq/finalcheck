@@ -27,6 +27,17 @@ contextBridge.exposeInMainWorld('finalcheck', {
   cancelChat: (sessionId) => ipcRenderer.invoke('finalcheck:agent-cancel', sessionId),
   workflowControl: (sessionId, payload) => ipcRenderer.invoke('finalcheck:workflow-control', sessionId, payload),
   workflowStepContext: (sessionId, stepId) => ipcRenderer.invoke('finalcheck:workflow-step', sessionId, stepId),
+  // 0.32.7 定时唤醒（类似 cron 的单次/重复延时版）。
+  // 到点由主进程推 finalcheck:wakeup-due；渲染层收到后用**现有的 send()** 起一个新回合
+  // —— 不另造执行体系：定时唤醒走的就是「用户手打一条消息」完全相同的路径。
+  wakeups: {
+    list: () => ipcRenderer.invoke('finalcheck:wakeups:list'),
+    add: (input) => ipcRenderer.invoke('finalcheck:wakeups:add', input),
+    remove: (id) => ipcRenderer.invoke('finalcheck:wakeups:remove', id),
+    enable: (id, enabled) => ipcRenderer.invoke('finalcheck:wakeups:enable', id, enabled === true),
+    stopAll: () => ipcRenderer.invoke('finalcheck:wakeups:stop-all')
+  },
+  onWakeupDue: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('finalcheck:wakeup-due', h); return () => ipcRenderer.removeListener('finalcheck:wakeup-due', h); },
   sessions: {
     list: () => ipcRenderer.invoke('finalcheck:sessions:list'),
     open: (id) => ipcRenderer.invoke('finalcheck:sessions:open', id),

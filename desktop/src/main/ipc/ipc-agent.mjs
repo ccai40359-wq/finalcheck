@@ -405,6 +405,10 @@ export function registerAgentIpc({
     return { ...step, ms: step.done ? step.ms : Date.now() - (step.startedAt || Date.now()) };
   });
 
+  // 0.32.7：定时唤醒到点时就是**模拟用户发一条消息**（和 CC/Codex 一致）。
+  // 不需要"无人值守"特殊模式：产品本来就有审批闸——edit_file/write_file/run_command
+  // 都要用户点批准，人不在场 120 秒后自动拒绝。自造的白名单已删（它才是
+  // UNATTENDED_ALLOW / UNATTENDED_SCHEMA 两个作用域 bug 的来源）。
   ipcMain.handle('finalcheck:agent-chat', async (_e, messages, _legacyConfirmedHosts = [], sessionId = null) => {
     const chatAbort = new AbortController();
     chatAbort.snapshot = {
@@ -446,6 +450,7 @@ export function registerAgentIpc({
     return true;
   });
 
+
   // agent-chat 的实现：注册在上面（异常清理包在外层），这里只负责一个回合的正文
   const runAgentChat = async ({ messages, sessionId, chatAbort }) => {
     const sendToken = (text) => {
@@ -484,6 +489,7 @@ export function registerAgentIpc({
       getWin()?.webContents.send('finalcheck:agent-event', { sessionId, ev, runId: chatAbort.snapshot.runId, seq: chatAbort.snapshot.seq });
     };
     const { runAgentTurn, injectSessionHookContext, resolveWorkflowStepModel, computeCrossFamilyWarnings } = await import(engineUrl('desktop/src/main/agent-service.mjs'));
+
     // 本回合的项目上下文快照：按「会话所属项目」，之后无论 UI 切到哪个项目都不再重读全局
     const turnProjectPath = sessionProjectPathOf(sessionId);
     permissions.setMode((await store.loadConfig()).permissionMode); // 每轮按当前配置应用权限模式（全局审批模式，非项目策略）
@@ -1108,6 +1114,11 @@ export function registerAgentIpc({
         }
       } : null,
       // 提到变量：回合结束的 turn-context 快照要列本次工具清单（tools 在此作用域才可见）
+      // 0.32.7：无人值守回合（定时唤醒触发）只给只读工具。
+      // 为什么包一层而不是逐个改工具入口：一处收窄比散落改 8 个入口更不容易漏，
+      // 而且以后新增的工具默认就会被挡住（fail-closed）。
+      // schema 也必须一起收窄 —— 只挡 handler 不够：模型仍会看到能点页面/能写文件，
+      // 就会反复尝试被拒的工具，白烧轮次还让用户看到一堆失败卡片。
       tools: (turnTools = createAgentTools({
         repoRoot,
         permissions,

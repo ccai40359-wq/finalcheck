@@ -443,6 +443,57 @@ app.whenReady().then(async () => {
     } catch { /* 模块加载失败不影响 CU 本体（工具走 loadDesktopTools 自己的实例） */ }
   })();
   updater.ensureUpdater(); // dev 下内部直接返回 null（不 import、不联网）
+
+  // 0.32.7：定时唤醒调度器（类似 cron 的单次/重复延时版）。
+  // 为什么放在这里而不是 ipc 模块里：它必须**常驻**（不随某个 IPC 注册而活），
+  // 而且要能跟着 app 退出一起停。
+  // 职责边界：调度器只负责「到点通知渲染层：该唤醒某会话了」，**不自己起回合**——
+  // 起回合的完整逻辑（落盘/UI/停止语义/队列泵）渲染层的 send() 已经实现好了，
+  // 让定时唤醒走和"用户手打一条消息"完全相同的路径，不需要另造一套执行体系。
+  void (async () => {
+    try {
+      const { startScheduler } = await import(engineUrl('desktop/src/main/wakeup-scheduler.mjs'));
+      await startScheduler({
+        getDataRoot: () => DATA_ROOT,
+        onDue: (item) => {
+          // 发到渲染层；窗口不在/已销毁时这条唤醒**丢失**（feature 说明里写明了这个限制）。
+          // ⚠️ 必须用模块级 `win`：本文件**没有** getWin() 函数（`getWin: () => win` 只是
+          // 传给各 IPC 注册器的属性）。真机第一次跑 W3 就撞了：调用不存在的 getWin()
+          // → ReferenceError → 被下面的 catch 吞掉 → 任务被消费但界面毫无反应。
+          //
+          // 0.32.7：先**落库**一条 notice 再通知渲染层。
+          // 为什么必须先落库（真机 W4 实测）：渲染层加的那条 notice 会被随后的
+          // openSession 重载覆盖掉（send 内部会 reload 会话），用户看不到"定时唤醒发生过"。
+          // 写进会话历史就不会丢——重载会话时它自然带回来，跟 /compact 那条提示一个机制。
+          void (async () => {
+            try {
+              const { appendNotice } = await import(engineUrl('desktop/src/main/sessions.mjs'));
+              await appendNotice(item.sessionId,
+                `⏰ 定时唤醒触发：${String(item.label || item.prompt || '').slice(0, 60)}`, 'wakeup');
+            } catch { /* 落库失败不阻塞唤醒（界面还有实时提示） */ }
+            try {
+              if (win && !win.isDestroyed()) win.webContents.send('finalcheck:wakeup-due', item);
+            } catch { /* 窗口没了：这条唤醒丢失，不做补偿（下次 tick 也不会重放，因为时间已推进） */ }
+          })();
+        }
+      });
+    } catch (e) {
+      // 调度器起不来不能拖垮主进程：定时功能不可用，其余照常
+      try { console.warn('[wakeups] 调度器启动失败：' + (e?.message || e)); } catch { /* 忽略 */ }
+    }
+  })();
+
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
+// 0.32.7：退出时停掉定时调度器（不停的话进程退出时定时器还挂在那儿，日志会很难看，
+// 而且 before-quit 里停掉能保证不会在退出瞬间触发一次没必要的唤醒）
+app.on('before-quit', () => {
+  void (async () => {
+    try {
+      const { stopScheduler } = await import(engineUrl('desktop/src/main/wakeup-scheduler.mjs'));
+      stopScheduler();
+    } catch { /* 没启动过就没事 */ }
+  })();
+});
+
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });

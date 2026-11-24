@@ -267,5 +267,37 @@ export const EFFORTS = [
 ];
 export const COMMANDS = [
   { type: 'command', id: 'compact', name: 'compact', cn: '压缩上下文', description: '把当前对话压成摘要，后续只带摘要 + 最近 6 条' },
+  { type: 'command', id: 'wake', name: 'wake', cn: '定时唤醒', description: '例如 /wake 25m 看一下网课进度 —— 到点自动起一个只读回合' },
   { type: 'command', id: 'workflow', name: 'workflow', cn: '多 agent 工作流', description: '你自己写步骤，引擎按依赖并行调度多个子代理' }
 ];
+
+/**
+ * 解析 `/wake <延时> <要做的事>`。
+ * 纯函数（无 React / 无 IO），便于单测。
+ *
+ * 为什么要命令形式而先不做设置页列表：
+ *   用户的真实用法是「一句话就定」——「25 分钟后叫我再看一眼」。
+ *   让他去设置页填表单反而多几步。命令形式还能直接复用会话上下文。
+ *
+ * @returns {{ok:true, delay:string, prompt:string, repeat:number} | {ok:false, error:string}}
+ */
+export function parseWakeCommand(text) {
+  const raw = String(text ?? '').trim();
+  // 允许 `/wake` 与「wake」两种写法；命令本身的识别由调用方做，这里只解参数
+  const body = raw.replace(/^\/?wake\s*/i, '').trim();
+  if (!body) return { ok: false, error: '用法：/wake 25m 看一下网课进度（延时必须带单位）' };
+  const parts = body.split(/\s+/);
+  const delay = parts[0] || '';
+  const prompt = parts.slice(1).join(' ').trim();
+  if (!prompt) return { ok: false, error: '请说明到点要做什么：/wake 25m 看一下网课进度' };
+  // repeat 语法：末尾写 `repeat=N`（N 为次数，-1 为无限），例如 /wake 25m 看进度 repeat=3
+  const repeatMatch = prompt.match(/\s+repeat=(-?\d+)\s*$/i);
+  let repeat = 0;
+  let cleanPrompt = prompt;
+  if (repeatMatch) {
+    repeat = Number(repeatMatch[1]);
+    cleanPrompt = prompt.slice(0, repeatMatch.index).trim();
+  }
+  if (!cleanPrompt) return { ok: false, error: '去掉 repeat 参数后没有任务描述了' };
+  return { ok: true, delay, prompt: cleanPrompt, repeat };
+}

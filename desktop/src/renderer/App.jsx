@@ -20,7 +20,8 @@ import { useLanguage } from './i18n/index.jsx';
 // 这里只管状态、持久化与落到 <html data-theme>。
 import { readCachedTheme, writeCachedTheme, applyThemeToDocument, normalizeTheme, nextTheme } from './lib/theme.mjs';
 import {
-  modelIdsOf, nextQueueId, nextPasteId, countLines, needsFirstRunSetup, prettyTitle, baseName, expandSkill, modelDisplayLabel
+  modelIdsOf, nextQueueId, nextPasteId, countLines, needsFirstRunSetup, prettyTitle, baseName, expandSkill, modelDisplayLabel,
+  parseWakeCommand
 } from './lib/app-helpers.mjs';
 import TitleBar from './components/TitleBar.jsx';
 import Sidebar from './components/Sidebar.jsx';
@@ -192,6 +193,7 @@ export default function App() {
   const pumpingRef = useRef(false);   // 正在消费队首 → 防止 effect 在 runningIds 落定前重复派发
   const turnOutcomeRef = useRef(new Map()); // sid → 上一轮收尾类型（ok/stopped/error）：stopped/error 不自动发队列
   const inflightRef = useRef(new Set()); // 仍在 send 里的会话：回合收尾前不自动发下一条（防旧 finally 清掉新一轮状态）
+  // 0.32.7：定时唤醒到点就是模拟用户发一条消息，不需要特殊模式（审批闸本身即护栏）。
   const jumpingRef = useRef(false);   // 平滑回到底部动画中：滚动事件不要重新弹出箭头
   const [queueBySession, setQueueBySession] = useState({}); // 会话 id → 待发消息 FIFO：[{id,text,pasted,previews}]（必须先于 queueItems 声明）
   const busy = !!runningIds[activeId];
@@ -1100,9 +1102,70 @@ export default function App() {
     });
   }, [y]);
 
-  // 0.32.1：右栏整体卸载时（切到设置页/用量页、右栏被收起/折叠）必须有兜底——
-  // 内嵌浏览器的 WebContentsView 画在主窗口上，**不会随 React 卸载自动消失**。
-  // BrowserPane 卸载时自己会藏一次，这里再补一道：任何"右栏不该显示"的状态都强制隐藏。
+  // 0.32.7：定时唤醒到点 —— 起一个**新回合**（不是回合内 sleep）。
+  //
+  // 为什么走渲染层而不是主进程直接跑：回合启动的完整逻辑（落盘 / UI 呈现 / 停止语义 /
+  // 队列泵 / CU 收尾）都在渲染层的 send() → agentChat 这条路径上。
+  // 定时唤醒复用它，就等于「定时触发」和「用户手打一条消息」走完全相同的代码，
+  // 不需要另造一套执行体系（也不用去动 ipc-agent 里那个约 600 行的 runAgentChat 闭包）。
+  //
+  // 代价（刻意接受的取舍）：跨会话唤醒会把你**切到那个会话**（sendOnce 绑定 activeId）。
+  // 不这么做就得重写整条发送链路。为了让这件事不至于突兀，唤醒前会先写一条可见提示。
+  useEffect(() => {
+    if (!y?.onWakeupDue) return undefined;
+    return y.onWakeupDue(async (item) => {
+      const sid = String(item?.sessionId || '');
+      const prompt = String(item?.prompt || '').trim();
+      if (!sid || !prompt) return;
+      const label = String(item?.label || prompt).slice(0, 60);
+      try {
+        // 目标会话 ≠ 当前会话：必须**确认切换真的落定**再发。
+        //
+        // ⚠️ 绝不能写 `await sleep(600)` 猜时间（第一版就是那样，被审查指出）：
+        // openSession 内部是多次 IPC（agentRunState → sessions.open → queueGet）+ 多个 setState，
+        // 慢磁盘/大会话时 600ms 不够 → sendRef 拿到的还是**旧 activeId 的闭包**，
+        // 而 wire history 用旧会话的 messages 却带新 sid → 消息发进错误会话，而且已落盘。
+        // 正确做法：轮询 activeIdRef 直到它真的是目标会话（有超时兜底，失败就明确跳过）。
+        if (activeIdRef.current !== sid) {
+          await openSessionRef.current?.(sid);
+          const deadline = Date.now() + 8000;
+          while (activeIdRef.current !== sid && Date.now() < deadline) {
+            await new Promise((r) => setTimeout(r, 50));
+          }
+          if (activeIdRef.current !== sid) {
+            // 宁可放弃这次唤醒，也不能把消息发到错误的会话里
+            setMessages((prev) => [...prev, {
+              role: 'notice',
+              content: t('⏰ 定时唤醒「{label}」没能切到目标会话，已跳过本次（避免把消息发进错误的会话）', { label })
+            }]);
+            return;
+          }
+        }
+        // 起回合：就是**模拟用户发一条消息**（和 CC/Codex 一致，不另造特殊模式）。
+        // 审批闸本身就是护栏：edit_file/write_file/run_command 人不在场会 120 秒后自动拒绝。
+        const sent = await sendRef.current?.({ text: prompt, pasted: [] });
+        // 按 send 的真实返回值判定：失败时不再谎报"已执行"
+        if (sent?.ok !== true) {
+          setMessages((prev) => [...prev, {
+            role: 'notice',
+            content: t('⏰ 定时唤醒「{label}」执行失败：{msg}', { label, msg: String(sent?.error || t('发送失败')) })
+          }]);
+          return;
+        }
+        setMessages((prev) => [...prev, {
+          role: 'notice',
+          content: t('⏰ 定时唤醒已执行：{label}', { label })
+        }]);
+      } catch (e) {
+        setMessages((prev) => [...prev, {
+          role: 'notice',
+          content: t('⏰ 定时唤醒「{label}」执行失败：{msg}', { label, msg: String(e?.message || e) })
+        }]);
+      }
+    });
+  }, [y]);
+
+
   const railBelongsToSession = railSessionRef.current === activeId;
   const currentRailTab = railBelongsToSession ? activeRailTab(rail) : null;
   const railBrowserShowing = currentRailTab?.kind === 'browser'
@@ -1326,11 +1389,16 @@ export default function App() {
   // send(override)：override = 队首消息（自动发送时使用，不改动输入框里的草稿）
   // 发送入口：内部对「可预期失败」各自 catch（建会话/落盘/agent-chat）；
   // 这里只兜住意外异常，保证不会出现「点了发送、界面既没消息也没提示」。
-  const send = async (override = null) => {
+  // 返回值：{ ok }（成功派出去了没有）。
+  // 为什么需要返回值（0.32.7 真机踩到）：send 内部自己 catch 掉异常只弹提示，
+  // 调用方（定时唤醒）无法分辨"真的跑了"还是"失败了" → 失败了也提示"已执行"，是假成功。
+  const send = async (override = null, opts = null) => {
     try {
-      await sendOnce(override);
+      await sendOnce(override, opts || {});
+      return { ok: true };
     } catch (e) {
       setMessages((prev) => [...prev, { role: 'notice', content: t('发送失败：{msg}（消息未发出，可直接重试）', { msg: e?.message || e }) }]);
+      return { ok: false, error: String(e?.message || e) };
     } finally {
       pumpingRef.current = false; // 任何分支都要释放队列泵，否则排队消息永远不发出
     }
@@ -1369,6 +1437,51 @@ export default function App() {
         return;
       }
       runCompact();
+      return;
+    }
+    // 0.32.7：`/wake 25m 看一下网课进度` → 建一条定时唤醒，不立即发给模型。
+    // 之所以做成命令：用户真实用法就是「一句话定」，比去设置页填表单少几步，
+    // 而且天然带着当前会话的上下文（唤醒时就回到这个会话继续）。
+    if (!pastedTexts.length && /^\/?wake\s/i.test(typedRaw)) {
+      if (!queued) {
+        setInput('');
+        setPastedBlocks([]);
+        setAttachments([]);
+        if (inputRef.current) inputRef.current.style.height = 'auto';
+      }
+      pumpingRef.current = false;
+      if (!activeId) {
+        setMessages((prev) => [...prev, { role: 'notice', content: t('请先打开一个会话，再设定时唤醒') }]);
+        return;
+      }
+      const parsed = parseWakeCommand(typedRaw);
+      if (!parsed.ok) {
+        setMessages((prev) => [...prev, { role: 'notice', content: parsed.error }]);
+        return;
+      }
+      void (async () => {
+        try {
+          const r = await y.wakeups?.add({
+            sessionId: activeId, prompt: parsed.prompt, delay: parsed.delay, repeat: parsed.repeat
+          });
+          if (!r || r.ok === false) {
+            setMessages((prev) => [...prev, { role: 'notice', content: t('定时唤醒没建成：{msg}', { msg: String(r?.error || t('未知错误')) }) }]);
+            return;
+          }
+          const it = r.item || {};
+          setMessages((prev) => [...prev, {
+            role: 'notice',
+            content: t('⏰ 已设定：{in}执行「{label}」{rep}（无人值守回合只做只读操作）', {
+              // 倒计时文案用主进程算好的 humanIn（IPC 返回里已带），避免渲染层再维护一份格式化逻辑
+              in: String(it.humanIn || '') || t('稍后'),
+              label: String(it.label || parsed.prompt).slice(0, 40),
+              rep: parsed.repeat === -1 ? t('，之后一直重复') : (parsed.repeat > 0 ? t('，共重复 {n} 次', { n: parsed.repeat }) : '')
+            })
+          }]);
+        } catch (e) {
+          setMessages((prev) => [...prev, { role: 'notice', content: t('定时唤醒没建成：{msg}', { msg: String(e?.message || e) }) }]);
+        }
+      })();
       return;
     }
     if (!activeModel) {
@@ -1749,6 +1862,14 @@ export default function App() {
   // 轻量子代理（spawn_agent）的「打开子代理过程」：时间线里用窗口事件请求打开右侧面板
   const openStepRef = useRef(openStep);
   openStepRef.current = openStep;
+  // 0.32.7 定时唤醒要用「最新的」openSession / send，但那个 effect 只订阅一次（依赖 [y]）。
+  // 直接用闭包会捕获首次渲染的旧函数（send 依赖 input/busy 等一堆状态），
+  // 于是「唤醒时用旧 send」→ 拿着过期的 busy/activeId 判定，行为不可预期。
+  // 所以走 ref 拿最新值（与 openStepRef 同一套做法）。
+  const openSessionRef = useRef(openSession);
+  openSessionRef.current = openSession;
+  // 注意：sendRef 在文件更早处（队列泵那段）**已经声明**（`const sendRef = useRef(null)` + 赋值）。
+  // 这里绝不能再声明一次 —— 重复 const 会让渲染层直接编译失败（esbuild: symbol already declared）。
   useEffect(() => {
     const onOpen = (ev) => { if (ev?.detail?.id) openStepRef.current(ev.detail); };
     window.addEventListener(OPEN_STEP_EVENT, onOpen);
