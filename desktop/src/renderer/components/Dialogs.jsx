@@ -74,7 +74,7 @@ export default function Dialogs({
       {confirmBox && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-[2px]" onClick={() => confirmBox.resolve(false)}>
           <div className="glass-pop w-[380px] rounded-2xl p-5" onClick={(e) => e.stopPropagation()}>
-            <div className="font-kai text-goldSoft text-base tracking-wider">{t('确认操作')}</div>
+            <div className="fc-title text-base">{t('确认操作')}</div>
             <div className="mt-2.5 text-sm text-ink/90 leading-relaxed">{confirmBox.text}</div>
             <div className="mt-4 flex justify-end gap-2">
               <button onClick={() => confirmBox.resolve(false)} className="btn-ghost px-3.5 py-1.5 text-xs">{t('取消')}</button>

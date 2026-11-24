@@ -18,7 +18,7 @@ const contentTokens = (m) => {
   return estTokens(c);
 };
 
-export function registerSystemIpc({ ipcMain, getWin, engineUrl, store, getHooksConfig, sessionProjectPathOf, sessionUsage }) {
+export function registerSystemIpc({ ipcMain, getWin, engineUrl, store, getHooksConfig, sessionProjectPathOf, sessionUsage, mcpSchemas = null }) {
   // 输入框 Context 指示器：按当前会话 + 系统提示 + 工具 schema + 技能目录估算
   ipcMain.handle('finalcheck:context:stats', async (_e, payload = {}) => {
     const cfg = await store.loadConfig();
@@ -58,7 +58,7 @@ export function registerSystemIpc({ ipcMain, getWin, engineUrl, store, getHooksC
     const breakdown = {
       messages: messagesTokens,
       systemTools: estTokens(JSON.stringify(TOOLS_SCHEMA)),
-      mcpTools: 0,
+      mcpTools: mcpSchemas ? estTokens(JSON.stringify(mcpSchemas())) : 0,
       metaContext: metaTokens,
       skills: estTokens(parts.skills),
       systemPrompt: estTokens(parts.base)

@@ -67,7 +67,7 @@ export default function FirstRunCard({ y, cfg, onSaved, onSkip }) {
             <span className="text-[10px] tracking-[0.18em] uppercase text-goldDeep">{t('首次使用')}</span>
             <span className="h-px flex-1 bg-gold/20" />
           </div>
-          <div className="mt-1 font-kai text-base text-goldSoft tracking-wider">{t('连接 OpenAI 兼容网关')}</div>
+          <div className="mt-1 fc-title text-base">{t('连接 OpenAI 兼容网关')}</div>
           <p className="mt-1 text-[11px] text-mute leading-relaxed">
             {t('FinalCheck 需要连接一个 OpenAI 兼容网关（Base URL + API Key + 模型名）才能对话、跑体检和工作流。Key 只存本机 config.json。')}
           </p>

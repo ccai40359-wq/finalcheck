@@ -30,6 +30,7 @@ import MessageList from './components/MessageList.jsx';
 import EmptyState from './components/EmptyState.jsx';
 import Composer from './components/Composer.jsx';
 import Dialogs from './components/Dialogs.jsx';
+import RewindFilesDialog from './components/RewindFilesDialog.jsx';
 import { IDLE as COMPACTION_IDLE, reduce as reduceCompaction } from './lib/compaction.mjs';
 import { SIDEBAR_UPDATE_INITIAL, reduceSidebarUpdateEvent } from './lib/sidebar-update.mjs';
 import { OPEN_STEP_EVENT } from './lib/spawn-agent.mjs';
@@ -176,6 +177,7 @@ export default function App() {
   const [messages, setMessages] = useState([]);       // 当前会话消息（含流式助手占位）
   const [input, setInput] = useState('');
   const [editing, setEditing] = useState(null); // {index, keepTurns}：编辑历史消息，发送后从该条重开
+  const [rewindBox, setRewindBox] = useState(null); // 0.33.0「恢复文件到这条消息之前」：{ keepTurns, plan, loading, applying, result, error }
   const [runningIds, setRunningIds] = useState({}); // 会话 id → 是否正在跑（多会话可同时跑）
   const [stoppingIds, setStoppingIds] = useState({}); // 会话 id → 已点停止、等待主进程收尾
   const [steeringIds, setSteeringIds] = useState({}); // 会话 id → 正在 Steer（中断旧回合 → 起新回合），按钮禁用
@@ -1254,9 +1256,16 @@ export default function App() {
   }, [y]);
 
   // 回填审批决定：点击即回传主进程并收起确认条（主进程侧超时 120s 兜底拒绝）
-  const decideApproval = async (decision) => {
+  const decideApproval = async (decision, { saveRule = false } = {}) => {
     if (!approval || !y?.approvalDecide) return;
-    const { callId } = approval;
+    const { callId, rule } = approval;
+    // 0.33.0「总是允许（存为规则）」：先写进 config.permissionRules（以后的会话都免审），本次按本会话总是允许放行
+    if (saveRule && rule && y.permissionRulesAdd) {
+      try {
+        const r = await y.permissionRulesAdd('allow', rule);
+        if (r?.ok) pushNotice(t('已存为长期规则：{rule}（可在设置 → 权限规则里改）', { rule }));
+      } catch { /* 存规则失败不影响本次决定 */ }
+    }
     // 并发子代理可能同时要审批：先弹下一个排队项，再回传决定
     const next = approvalsRef.current.shift() || null;
     setApproval(next);
@@ -1507,6 +1516,13 @@ export default function App() {
     let baseMessages = messages;
     if (!queued && editing) {
       baseMessages = messages.slice(0, editing.index);
+      if (activeId && editing.restoreFiles && y.checkpointRestore) {
+        try {
+          const r = await y.checkpointRestore(activeId, editing.keepTurns);
+          if (r?.error) setMessages((prev) => [...prev, { role: 'notice', content: String(r.error) }]);
+          else pushNotice(t('已恢复 {r} 个、删除 {d} 个文件', { r: r.restored || 0, d: r.deleted || 0 }) + (r.failed ? t('，{n} 个失败', { n: r.failed }) : ''));
+        } catch { /* 恢复失败不阻断发送 */ }
+      }
       if (activeId && y.sessions?.rewind) {
         try { await y.sessions.rewind(activeId, editing.keepTurns); } catch { /* 回退失败不阻断 */ }
       }
@@ -1845,11 +1861,47 @@ export default function App() {
   // 编辑历史用户消息：回填输入框；发送时先把会话回退到该条之前
   const startEdit = (index, text, keepTurns, files = []) => {
     setEditing({ index, keepTurns, prevAttachments: attachments, prevPasted: pastedBlocks });
+    // 0.33.0：算一下这条之后 AI 改过几个能恢复的文件（有才在横幅里给「同时恢复文件」的勾选，默认不勾）
+    if (activeId && y?.checkpointPlan) {
+      const sid = activeId;
+      y.checkpointPlan(sid, keepTurns).then((plan) => {
+        const n = (plan?.files || []).filter((f) => f.action === 'restore' || f.action === 'delete').length;
+        setEditing((e) => (e && e.index === index && activeIdRef.current === sid ? { ...e, restorable: n } : e));
+      }).catch(() => {});
+    }
     setInput(text);
     // 被编辑的消息里如果有图片/附件，一起带回输入框（可删可加，和正常发送一致）
     setAttachments((files || []).map((p) => ({ path: p, name: baseName(p), preview: null })));
     setMenu(null);
     requestAnimationFrame(() => inputRef.current?.focus());
+  };
+  // 0.33.0：用户消息上的「恢复文件到这条消息之前」：先出计划给用户看，确认后执行（对话不动）
+  const openRewindFiles = async (keepTurns) => {
+    if (!activeId || !y?.checkpointPlan) return;
+    const sid = activeId;
+    setRewindBox({ sid, keepTurns, loading: true });
+    try {
+      const plan = await y.checkpointPlan(sid, keepTurns);
+      setRewindBox((b) => (b && b.sid === sid ? { ...b, loading: false, plan } : b));
+    } catch (e) {
+      setRewindBox((b) => (b && b.sid === sid ? { ...b, loading: false, error: String(e?.message || e) } : b));
+    }
+  };
+  const confirmRewindFiles = async () => {
+    const box = rewindBox;
+    if (!box) return;
+    if (runningIds[box.sid]) { setRewindBox({ ...box, error: t('这个会话还在运行，先停止再恢复文件') }); return; }
+    setRewindBox({ ...box, applying: true, error: '' });
+    try {
+      const r = await y.checkpointRestore(box.sid, box.keepTurns);
+      if (r?.error) setRewindBox({ ...box, applying: false, error: String(r.error) });
+      else {
+        setRewindBox({ ...box, applying: false, result: r });
+        pushNotice(t('已恢复 {r} 个、删除 {d} 个文件', { r: r.restored || 0, d: r.deleted || 0 }) + (r.failed ? t('，{n} 个失败', { n: r.failed }) : ''));
+      }
+    } catch (e) {
+      setRewindBox({ ...box, applying: false, error: String(e?.message || e) });
+    }
   };
   const cancelEdit = () => {
     setAttachments(editing?.prevAttachments || []);
@@ -2002,7 +2054,7 @@ export default function App() {
                 scrollRef={scrollRef} stickRef={stickRef} jumpingRef={jumpingRef}
                 showJump={showJump} setShowJump={setShowJump} y={y}
                 onSendRecover={(text) => send({ text, pasted: [] })}
-                onOpenArtifact={openArtifact} onEditMessage={editMessage} onOpenStep={openStep}
+                onOpenArtifact={openArtifact} onEditMessage={editMessage} onOpenStep={openStep} onRewindFiles={busy ? null : openRewindFiles}
                 compaction={compaction}
                 askCards={visibleAskCards}
                 onAskUserAnswer={answerAskUser}
@@ -2021,6 +2073,7 @@ export default function App() {
               y={y} input={input} setInput={setInput} attachments={attachments} setAttachments={setAttachments}
               pastedBlocks={pastedBlocks} setPastedBlocks={setPastedBlocks}
               editing={editing} dragging={dragging} busy={busy} stopping={stopping} compacting={compacting}
+              onToggleEditRestore={(on) => setEditing((e) => (e ? { ...e, restoreFiles: on } : e))}
               steering={!!steeringIds[activeId]}
               approval={approval} queueItems={queueItems} menu={menu} providerMenu={providerMenu}
               permMode={permMode} ctxStats={ctxStats} skills={skills} cfg={cfg} sessCfg={sessCfg}
@@ -2068,6 +2121,7 @@ export default function App() {
       </div>
       </div>
       {/* 会话右键菜单 / 重命名 / 确认框（顺序与拆分前一致） */}
+      <RewindFilesDialog state={rewindBox} onConfirm={confirmRewindFiles} onClose={() => setRewindBox(null)} />
       <Dialogs
         y={y} rowMenu={rowMenu} moveOpen={moveOpen} renameBox={renameBox} confirmBox={confirmBox}
         projects={projects} activeModel={activeModel} ctxStats={ctxStats} rowMenuRef={rowMenuRef}

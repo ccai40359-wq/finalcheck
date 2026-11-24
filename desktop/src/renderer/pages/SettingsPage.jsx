@@ -3,6 +3,8 @@
 // models 兼容 string[] 与混合对象数组：{ id, contextWindow?, maxOutputTokens?, vision? }
 import React, { useEffect, useId, useRef, useState } from 'react';
 import { api, Card, ErrorNote } from '../lib/ui.jsx';
+import McpSettings from '../components/McpSettings.jsx';
+import PermissionRules from '../components/PermissionRules.jsx';
 import { initialUpdateState, reduceUpdateEvent, describeUpdate } from '../lib/updater-state.mjs';
 import { changelogView, pickChangelogEntries } from '../lib/changelog.mjs';
 import UsagePage from './UsagePage.jsx';
@@ -32,7 +34,7 @@ export const LANGUAGE_MODES = [
   { value: 'zh', label: '中文', desc: '界面文案用中文；AI 回复与报告跟随你的提问语言。' },
   { value: 'en', label: 'English', desc: '界面文案用英文；AI 回复与报告跟随你的提问语言。' }
 ];
-const SECTIONS = ['models', 'appearance', 'language', 'runtime', 'browser', 'usage', 'about'];
+const SECTIONS = ['models', 'appearance', 'language', 'runtime', 'browser', 'mcp', 'permissions', 'usage', 'about'];
 // 浏览器会话模式（0.31.0）：默认（''）＝还没选过，按无痕运行；选过之后按值运行。
 // value 与配置字段同名（browserSessionMode），便于直接写回。
 export const BROWSER_SESSION_MODES = [
@@ -487,7 +489,7 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
           return (
             <button key={m.value} type="button" role="radio" aria-checked={on}
               onClick={() => onPickTheme(m.value)} disabled={!y}
-              className={`relative rounded-lg border px-4 py-3 text-left transition-colors disabled:opacity-50 ${on ? 'border-gold/45 bg-gold/10' : 'border-edge bg-well hover:bg-cardHover'}`}>
+              className={`relative rounded-lg border px-4 py-3 text-left transition-colors disabled:opacity-50 ${on ? 'border-gold/40 bg-gold/[0.06]' : 'border-edge/80 bg-well hover:bg-cardHover'}`}>
               <div className="text-sm text-ink flex items-center gap-2">
                 {t(m.label)}
                 {on && <span className="text-[10px] text-goldSoft border border-gold/30 rounded px-1 leading-tight">{t('已选')}</span>}
@@ -532,7 +534,7 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
           return (
             <button key={m.value} type="button" role="radio" aria-checked={on}
               onClick={() => { setLanguageChoice(m.value); touch(); applyLanguage(m.value); }} disabled={!y}
-              className={`relative rounded-lg border px-4 py-3 text-left transition-colors disabled:opacity-50 ${on ? 'border-gold/45 bg-gold/10' : 'border-edge bg-well hover:bg-cardHover'}`}>
+              className={`relative rounded-lg border px-4 py-3 text-left transition-colors disabled:opacity-50 ${on ? 'border-gold/40 bg-gold/[0.06]' : 'border-edge/80 bg-well hover:bg-cardHover'}`}>
               <div className="text-sm text-ink flex items-center gap-2">
                 {m.label}
                 {on && <span className="text-[10px] text-goldSoft border border-gold/30 rounded px-1 leading-tight">{t('已选')}</span>}
@@ -589,7 +591,7 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
             const effective = browserMode === m.value || (browserMode === '' && m.value === 'oneshot');
             return (
               <button key={m.value} type="button" onClick={() => { setBrowserMode(m.value); touch(); }} disabled={!y}
-                className={`rounded-lg border px-3 py-2.5 text-left transition-colors disabled:opacity-50 ${effective ? 'border-gold/45 bg-gold/10' : 'border-edge bg-well hover:bg-cardHover'}`}>
+                className={`rounded-lg border px-3 py-2.5 text-left transition-colors disabled:opacity-50 ${effective ? 'border-gold/40 bg-gold/[0.06]' : 'border-edge/80 bg-well hover:bg-cardHover'}`}>
                 <div className={`text-xs font-mono ${effective ? 'text-goldSoft' : 'text-ink/85'}`}>
                   {t(m.label)}{browserMode === '' && m.value === 'oneshot' ? ` · ${t('尚未选择')}` : ''}
                 </div>
@@ -665,7 +667,7 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
             const on = sandboxMode === m.value;
             return (
               <button key={m.value} type="button" onClick={() => { setSandboxMode(m.value); touch(); }} disabled={!y}
-                className={`rounded-lg border px-3 py-2.5 text-left transition-colors disabled:opacity-50 ${on ? 'border-gold/45 bg-gold/10' : 'border-edge bg-well hover:bg-cardHover'}`}>
+                className={`rounded-lg border px-3 py-2.5 text-left transition-colors disabled:opacity-50 ${on ? 'border-gold/40 bg-gold/[0.06]' : 'border-edge/80 bg-well hover:bg-cardHover'}`}>
                 <div className={`text-xs font-mono ${on ? 'text-goldSoft' : 'text-ink/85'}`}>{m.label}</div>
                 <div className="text-[11px] text-mute/80 mt-1 leading-relaxed">{t(m.desc)}</div>
               </button>
@@ -871,6 +873,8 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
             <NavRow label={t('运行时')} active={section === 'runtime'} onClick={() => setSection('runtime')} icon={<IconSliders />} />
             <NavRow label={t('浏览器会话')} active={section === 'browser'} onClick={() => { setSection('browser'); refreshBrowserPolicy(); }} icon={<IconGlobe />}
               trailing={browserPolicy?.persistent === true ? <span className="text-red-400">{t('记住登录')}</span> : ''} />
+            <NavRow label={t('MCP 服务器')} active={section === 'mcp'} onClick={() => setSection('mcp')} icon={<IconPlug />} />
+            <NavRow label={t('权限规则')} active={section === 'permissions'} onClick={() => setSection('permissions')} icon={<IconShieldRule />} />
           </NavGroup>
           <NavGroup label={t('数据与统计')}>
             <NavRow label={t('用量统计')} active={section === 'usage'} onClick={() => setSection('usage')} icon={<IconChart />} trailing="Tokens" />
@@ -891,8 +895,8 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
         {/* 页头：大标题 + 副标题 + 主操作（仿 ZCode） */}
         <div className="shrink-0 px-8 pt-6 pb-5 flex items-start justify-between gap-4">
           <div className="min-w-0">
-            <h1 className="font-kai text-[22px] leading-tight text-goldSoft">
-              {section === 'models' ? t('模型设置') : section === 'appearance' ? t('外观') : section === 'language' ? t('语言') : section === 'runtime' ? t('运行时') : section === 'browser' ? t('浏览器会话') : t('关于')}
+            <h1 className="fc-title text-[22px] leading-tight">
+              {section === 'models' ? t('模型设置') : section === 'appearance' ? t('外观') : section === 'language' ? t('语言') : section === 'runtime' ? t('运行时') : section === 'browser' ? t('浏览器会话') : section === 'mcp' ? t('MCP 服务器') : section === 'permissions' ? t('权限规则') : t('关于')}
             </h1>
             <p className="text-[12px] text-mute mt-1.5 leading-relaxed">
               {section === 'models'
@@ -905,7 +909,11 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
                     ? t('沙箱与工具并发：对所有供应商生效，与权限模式（Full access）独立。')
                     : section === 'browser'
                       ? t('AI 操作网页时的会话模式：默认一次性（无痕），可切换为长期保留登录。')
-                      : t('版本信息与更新：检查 GitHub Release，下载后重启安装。')}
+                      : section === 'mcp'
+                        ? t('接入外部 MCP 服务器（GitHub、数据库、设计工具……），它们的工具会出现在 AI 的工具箱里。')
+                        : section === 'permissions'
+                          ? t('长期有效的允许 / 拒绝规则：常用命令不用每次点批准，危险操作永远不让 AI 做。')
+                        : t('版本信息与更新：检查 GitHub Release，下载后重启安装。')}
             </p>
           </div>
           {section === 'models' && (
@@ -930,12 +938,12 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
                     return (
                       <div key={p.id} onClick={() => { setSelectedId(p.id); setTestRes(null); }}
                         className={`group relative cursor-pointer rounded-lg pl-3 pr-7 py-2 border transition-all duration-200 ${
-                          sel ? 'border-gold/45 bg-gold/10' : 'border-transparent hover:bg-cardHover hover:border-edge'}`}>
+                          sel ? 'border-lift/[0.10] bg-lift/[0.07]' : 'border-transparent hover:bg-lift/[0.04]'}`}>
                         <div className="flex items-center gap-2 min-w-0">
                           {/* 绿点 = 已启用（与 ZCode 一致） */}
                           <span title={p.enabled !== false ? t('已启用') : t('已停用')}
                             className={`w-2 h-2 rounded-full shrink-0 ${p.enabled !== false ? 'bg-jade' : 'bg-mute/30'}`} />
-                          <span className={`text-sm truncate ${sel ? 'text-goldSoft' : 'text-ink/90'}`}>{p.name || t('未命名供应商')}</span>
+                          <span className={`text-sm truncate ${sel ? 'text-ink font-medium' : 'text-ink/80'}`}>{p.name || t('未命名供应商')}</span>
                         </div>
                         {p.id === activeId && (
                           <span className="badge bg-gold/15 text-goldSoft border border-gold/30 !px-1.5 !text-[10px] absolute right-1.5 top-1.5">{t('当前')}</span>
@@ -965,7 +973,7 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
                     <div className="h-14 w-14 rounded-2xl bg-gold/10 border border-gold/30 flex items-center justify-center mb-4">
                       <IconGearBig />
                     </div>
-                    <div className="font-kai text-lg text-goldSoft mb-1">{t('还没有模型供应商')}</div>
+                    <div className="fc-title text-lg mb-1">{t('还没有模型供应商')}</div>
                     <p className="text-sm text-mute mb-6 max-w-sm leading-relaxed">
                       {t('添加一个 OpenAI 兼容网关（Base URL + API Key + 模型），对话即可用。')}<br />{t('API Key 只存本机 config.json。')}
                     </p>
@@ -1077,7 +1085,7 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
                 </div>
                 <button role="switch" aria-checked={selected.enabled} aria-label={t('启用供应商')} onClick={() => patchSelected({ enabled: !selected.enabled })}
                   className={`relative w-11 h-6 rounded-full transition-colors duration-200 shrink-0 ${selected.enabled ? 'bg-jade' : 'bg-edge'}`}>
-                  <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-ink shadow transition-all duration-200 ${selected.enabled ? 'left-[22px]' : 'left-0.5'}`} />
+                  <span className={`absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-[rgb(var(--fc-knob))] shadow-[0_1px_3px_rgba(0,0,0,0.35)] transition-transform duration-200 ease-[cubic-bezier(.22,1,.36,1)] ${selected.enabled ? 'translate-x-5' : 'translate-x-0'}`} />
                 </button>
               </div>
 
@@ -1154,6 +1162,14 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
             <div className="flex-1 min-w-0 overflow-y-auto">
               <div className="max-w-2xl px-6 py-6">{browserCard}</div>
             </div>
+          ) : section === 'mcp' ? (
+            <div className="flex-1 min-w-0 overflow-y-auto">
+              <div className="max-w-2xl px-6 py-6"><McpSettings /></div>
+            </div>
+          ) : section === 'permissions' ? (
+            <div className="flex-1 min-w-0 overflow-y-auto">
+              <div className="max-w-2xl px-6 py-6"><PermissionRules /></div>
+            </div>
           ) : (
             <div className="flex-1 min-w-0 overflow-y-auto">
               <div className="max-w-2xl px-6 py-6">{runtimeCard}</div>
@@ -1203,7 +1219,7 @@ function Switch({ checked, onChange, label }) {
   return (
     <button type="button" role="switch" aria-checked={!!checked} aria-label={label} onClick={() => onChange(!checked)}
       className={`relative w-11 h-6 rounded-full transition-colors duration-200 shrink-0 ${checked ? 'bg-jade' : 'bg-edge'}`}>
-      <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-ink shadow transition-all duration-200 ${checked ? 'left-[22px]' : 'left-0.5'}`} />
+      <span className={`absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-[rgb(var(--fc-knob))] shadow-[0_1px_3px_rgba(0,0,0,0.35)] transition-transform duration-200 ease-[cubic-bezier(.22,1,.36,1)] ${checked ? 'translate-x-5' : 'translate-x-0'}`} />
     </button>
   );
 }
@@ -1336,7 +1352,7 @@ function ModelEditorDialog({ provider, isNew, initialEntry, otherIds, onSave, on
         {/* 标题行 */}
         <div className="flex items-start justify-between gap-3 px-5 pt-4 pb-3 border-b border-edge/60">
           <div className="min-w-0">
-            <h3 id={titleId} className="font-kai text-base text-goldSoft">{isNew ? t('添加模型') : t('编辑模型设置')}</h3>
+            <h3 id={titleId} className="fc-title text-base">{isNew ? t('添加模型') : t('编辑模型设置')}</h3>
             <div className="text-[11px] text-mute/60 mt-0.5">{isNew ? t('新增模型；留空字段继承供应商') : t('修改模型参数')}</div>
           </div>
           <button type="button" className="p-1.5 -mr-1 rounded-md text-mute/60 hover:text-ink hover:bg-lift/[0.06] transition-colors shrink-0"
@@ -1496,6 +1512,20 @@ function IconPalette() {
     </svg>
   );
 }
+function IconShieldRule() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 3 5 6v5c0 4.5 3 8.3 7 10 4-1.7 7-5.5 7-10V6l-7-3Z" /><path d="m9 12 2 2 4-4" />
+    </svg>
+  );
+}
+function IconPlug() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M9 7V3M15 7V3" /><path d="M6 7h12v4a6 6 0 0 1-12 0V7Z" /><path d="M12 17v4" />
+    </svg>
+  );
+}
 function IconSliders() {
   return (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -1509,7 +1539,7 @@ function IconSliders() {
 function NavGroup({ label, children }) {
   return (
     <div>
-      <div className="px-3 mb-1 text-[10px] uppercase tracking-[0.14em] text-mute/45">{label}</div>
+      <div className="px-3 mb-1 text-[10.5px] font-medium uppercase tracking-[0.09em] text-mute/55">{label}</div>
       <div className="space-y-0.5">{children}</div>
     </div>
   );
@@ -1518,7 +1548,7 @@ function NavRow({ label, icon, active = false, onClick, disabled = false, traili
   return (
     <button onClick={onClick} disabled={disabled} aria-current={active ? 'page' : undefined}
       className={`w-full flex items-center gap-2 rounded-lg px-3 py-2 text-[12.5px] transition-colors duration-150 disabled:opacity-40 ${
-        active ? 'bg-gold/10 text-goldSoft border border-gold/30' : 'border border-transparent text-ink/85 hover:bg-lift/[0.045] hover:text-ink'}`}>
+        active ? 'fc-row-active fc-ind-in relative bg-lift/[0.08] text-ink border border-transparent' : 'border border-transparent text-ink/75 hover:bg-lift/[0.045] hover:text-ink'}`}>
       <span className={active ? 'text-goldSoft' : 'text-mute/70'}>{icon}</span>
       <span className="truncate">{label}</span>
       {trailing ? <span className="ml-auto text-[10px] text-mute/40 shrink-0">{trailing}</span> : null}

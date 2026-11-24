@@ -1,7 +1,10 @@
-// CDP 接真 Edge（0.31.0 模式③）：跨进程遥控**用户真实 Edge**（隔离 profile + 独立端口 9224）。
+// CDP 接真 Edge（0.31.0 模式③）：跨进程遥控**用户真实 Edge**（隔离 profile + 随机本地端口）。
 //
 // 纪律（来自任务书 + datacrawler 的实施经验）：
-//   · 端口 9224（datacrawler 占 9223，互不干扰）
+//   · 0.33.0 起端口随机：--remote-debugging-port=0，Edge 自己挑空闲端口并写进 profile/DevToolsActivePort；
+//     连接前用文件里的 GUID 校验「端口上的浏览器就是这个 profile 起的那一个」（CDP 本身无鉴权）。
+//     以前固定 9224：任何本机程序都能先占住它冒充，或者直接连上去读用户的登录态。
+//   · 9223 是 datacrawler 的端口，显式传入一律拒绝
 //   · 独立 profile（默认放在 userData/edge-profile，绝不碰用户日常 Edge 与 datacrawler 的 profile）
 //   · 连接断开时**不杀** Edge：人工/半自动启动的浏览器应继续存活，登录态留给下一次
 //   · 只引 playwright-core，不引 playwright 完整包（体积：14MB vs 数百 MB + 浏览器下载）
@@ -10,12 +13,14 @@
 // 与离屏模式的差异（为什么会有人想用它）：真 UA、真登录态（用户自己扫码登录过的站）。
 // 代价：窗口是真实可见的，首次启动会抢前台（这是可接受且必要的——用户要扫码）；后续 CDP 操作不抢前台。
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, unlinkSync } from 'node:fs';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { chromium } from 'playwright-core';
 
-export const DEFAULT_CDP_PORT = 9224;
+// 0 = 让 Edge 随机分配（0.33.0 起的默认；以前是固定 9224）
+export const DEFAULT_CDP_PORT = 0;
+export const LEGACY_CDP_PORT = 9224;
 export const CDP_HEADER = 'finalcheck'; // 红线：不冒充其它产品
 const LOOPBACK = '127.0.0.1';
 
@@ -24,6 +29,7 @@ const LOOPBACK = '127.0.0.1';
 // 问 3 次，任一次答得上就算「浏览器在」。
 export async function isCdpUp(port = DEFAULT_CDP_PORT, attempts = 3) {
   const p = Number(port) || DEFAULT_CDP_PORT;
+  if (!p) return false;
   for (let attempt = 0; attempt < attempts; attempt++) {
     try {
       const res = await fetch(`http://${LOOPBACK}:${p}/json/version`, { signal: AbortSignal.timeout(2500) });
@@ -37,9 +43,53 @@ export async function isCdpUp(port = DEFAULT_CDP_PORT, attempts = 3) {
   return false;
 }
 
+// ---- 0.33.0 归属校验：端口上的浏览器必须是「用我们这个 profile 启动的那一个」 ----
+// CDP 端口本身没有鉴权。若别的程序占了端口（或用户自己用同一端口开了日常 Edge），
+// 我们会把它当成隔离 Edge 去遥控。Chromium 启动时会在 user-data-dir 写 DevToolsActivePort：
+//   第 1 行 = 端口，第 2 行 = /devtools/browser/<随机 GUID>
+// GUID 每次启动随机生成，只有拿得到这个 profile 目录的进程才知道。
+// 端口上 /json/version 报出的 webSocketDebuggerUrl 必须以这个路径结尾，才认定是自己人；
+// 之后直接连这个 ws 地址（而不是再问一次 /json/version），中间被换掉也连不上。
+export function readActivePort(profile) {
+  try {
+    const lines = readFileSync(path.join(profile, 'DevToolsActivePort'), 'utf8').split('\n').map((s) => s.trim()).filter(Boolean);
+    const port = Number(lines[0]);
+    if (!Number.isInteger(port) || port <= 0 || port > 65535) return null;
+    return { port, path: lines[1] || '' };
+  } catch { return null; }
+}
+
+/** 从 profile 的 DevToolsActivePort 找到端口并校验归属；成功返回 { ok, port, wsEndpoint } */
+export async function discoverOwned(profile) {
+  const ap = profile ? readActivePort(profile) : null;
+  if (!ap) return { ok: false, reason: 'no-active-port-file' };
+  const own = await verifyOwnership(ap.port, profile);
+  return own.ok ? { ...own, port: ap.port } : own;
+}
+
+export async function verifyOwnership(port, profile) {
+  const p = Number(port);
+  if (!p) return { ok: false, reason: 'no-port' };
+  if (!profile) return { ok: false, reason: 'no-profile' };
+  let lines;
+  try {
+    lines = readFileSync(path.join(profile, 'DevToolsActivePort'), 'utf8').split('\n').map((s) => s.trim()).filter(Boolean);
+  } catch { return { ok: false, reason: 'no-active-port-file' }; }
+  if (Number(lines[0]) !== p || !/^\/devtools\/browser\/[\w-]+$/.test(lines[1] || '')) return { ok: false, reason: 'port-mismatch' };
+  let ws = '';
+  try {
+    const res = await fetch(`http://${LOOPBACK}:${p}/json/version`, { signal: AbortSignal.timeout(2500) });
+    ws = String((await res.json())?.webSocketDebuggerUrl || '');
+  } catch { return { ok: false, reason: 'no-version' }; }
+  let wsPath = '';
+  try { wsPath = new URL(ws).pathname; } catch { /* 非法 URL */ }
+  if (wsPath !== lines[1]) return { ok: false, reason: 'guid-mismatch' };
+  return { ok: true, wsEndpoint: `ws://${LOOPBACK}:${p}${lines[1]}` };
+}
+
 // ---- 连接（3 次重试：握手失败不等于 Edge 没开，是同一个 loopback 抖动） ----
 // 返回 { browser, ctx }；连不上抛 Error('cdp-down') 或 Error('cdp-down:<原因>')。
-export async function connect(port = DEFAULT_CDP_PORT, { attempts = 3 } = {}) {
+export async function connect(port = DEFAULT_CDP_PORT, { attempts = 3, wsEndpoint = '' } = {}) {
   const p = Number(port) || DEFAULT_CDP_PORT;
   let lastErr = null;
   for (let attempt = 1; attempt <= attempts; attempt++) {
@@ -49,7 +99,7 @@ export async function connect(port = DEFAULT_CDP_PORT, { attempts = 3 } = {}) {
       continue;
     }
     try {
-      const browser = await chromium.connectOverCDP(`http://${LOOPBACK}:${p}`, { headers: { 'User-Agent': CDP_HEADER } });
+      const browser = await chromium.connectOverCDP(wsEndpoint || `http://${LOOPBACK}:${p}`, { headers: { 'User-Agent': CDP_HEADER } });
       const ctx = browser.contexts()[0] || await browser.newContext();
       return { browser, ctx };
     } catch (e) {
@@ -108,7 +158,7 @@ export function profileDir(userDataDir) {
 // 那个窗口级 modal 会拦住所有点击）；--use-mock-keychain 避免凭据弹窗。
 export function edgeArgs({ port = DEFAULT_CDP_PORT, profile, urls = [] } = {}) {
   return [
-    '--remote-debugging-port=' + (Number(port) || DEFAULT_CDP_PORT),
+    '--remote-debugging-port=' + (Number(port) || 0),
     '--user-data-dir=' + profile,
     '--no-first-run',
     '--no-default-browser-check',
@@ -128,20 +178,25 @@ export function edgeArgs({ port = DEFAULT_CDP_PORT, profile, urls = [] } = {}) {
  * @returns {{ started: boolean, port: number, profile: string, exe: string }}
  */
 export async function startIsolatedEdge({ port = DEFAULT_CDP_PORT, profile, urls = [], exe = null, waitMs = 30000 } = {}) {
-  const p = Number(port) || DEFAULT_CDP_PORT;
-  if (p === 9223) throw new Error('拒绝使用 9223：那是 datacrawler 的端口');
+  if (Number(port) === 9223) throw new Error('拒绝使用 9223：那是 datacrawler 的端口');
   if (!profile) throw new Error('startIsolatedEdge 需要 profile 目录');
-  if (await isCdpUp(p, 1)) return { started: false, port: p, profile, exe: exe || '' };
+  // 已在运行且归属校验通过 → 幂等返回
+  const running = await discoverOwned(profile);
+  if (running.ok) return { started: false, port: running.port, wsEndpoint: running.wsEndpoint, profile, exe: exe || '' };
   mkdirSync(profile, { recursive: true });
+  // 旧的 DevToolsActivePort（上次 Edge 退出后残留）先删，避免读到过期端口
+  try { unlinkSync(path.join(profile, 'DevToolsActivePort')); } catch { /* 不存在 */ }
   const resolved = exe || resolveEdgePath();
-  const child = spawn(resolved, edgeArgs({ port: p, profile, urls }), { stdio: 'ignore', detached: true });
+  const child = spawn(resolved, edgeArgs({ port: 0, profile, urls }), { stdio: 'ignore', detached: true });
   child.unref();
   const deadline = Date.now() + waitMs;
   while (Date.now() < deadline) {
     await sleep(500);
-    if (await isCdpUp(p, 1)) return { started: true, port: p, profile, exe: resolved };
+    const own = await discoverOwned(profile);
+    if (own.ok) return { started: true, port: own.port, wsEndpoint: own.wsEndpoint, profile, exe: resolved };
   }
-  throw new Error(`CDP ${Math.round(waitMs / 1000)}s 内未就绪（端口 ${p}）`);
+  // 最常见原因：这个 profile 已被一个旧版本（固定 9224 端口）启动的 Edge 占着——新进程把参数交给它就退出了
+  throw new Error(`cdp-foreign：${Math.round(waitMs / 1000)}s 内没等到隔离 Edge 的调试端口。如果隔离 Edge 的窗口已经开着（旧版本启动的），请先关掉那个窗口再重试。`);
 }
 
 /**
@@ -229,18 +284,15 @@ export function judgeLoginState(seen) {
  * @param {string|object} [o.url] 可选：覆盖判据表里的首页
  * @returns {Promise<{ state: 'signed-in'|'signed-out'|'unknown'|'unavailable', platform: string, detail: string, url?: string }>}
  */
-export async function probeLoginState({ platform, port = DEFAULT_CDP_PORT, url = '' } = {}) {
+export async function probeLoginState({ platform, url = '' } = {}) {
   const book = PLATFORM_PLAYBOOKS[String(platform || '').toLowerCase()];
   if (!book) {
     throw new Error(`未支持的平台：${platform}（可用：${PLAYBOOK_PLATFORMS.join(' / ')}）`);
   }
-  const p = Number(port) || DEFAULT_CDP_PORT;
-  if (!(await isCdpUp(p))) return { state: 'unavailable', platform, detail: 'cdp-down' };
-  let browser;
+  // 0.33.0：只用已经过归属校验的连接（不再盲连某个固定端口）
+  if (!realIsConnected()) return { state: 'unavailable', platform, detail: 'cdp-down：先调用 browser_connect_real' };
   try {
-    const conn = await connect(p);
-    browser = conn.browser;
-    return await withPage(conn.ctx, async (page) => {
+    return await withPage(real.ctx, async (page) => {
       const target = String(url || book.home);
       await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 30000 });
       if (book.waitMs > 0) await sleep(book.waitMs);
@@ -258,8 +310,6 @@ export async function probeLoginState({ platform, port = DEFAULT_CDP_PORT, url =
     });
   } catch (e) {
     return { state: 'unavailable', platform, detail: shortNetError(e) };
-  } finally {
-    await disconnect(browser);
   }
 }
 
@@ -296,7 +346,7 @@ export function realIsConnected() {
 }
 
 export function realInfo() {
-  if (!real) return { connected: false, port: DEFAULT_CDP_PORT, profile: '', pid: 0 };
+  if (!real) return { connected: false, port: 0, profile: '', pid: 0 };
   return {
     connected: realIsConnected(), port: real.port, profile: real.profile,
     pages: real.ctx ? real.ctx.pages().length : 0,
@@ -330,19 +380,22 @@ export async function browserProcessId() {
  * @returns {Promise<{ ok: true, started: boolean, port: number, profile: string, pages: number }>}
  */
 export async function connectReal({ port = DEFAULT_CDP_PORT, userDataDir = '', profile = '', urls = [], start = true } = {}) {
-  const p = Number(port) || DEFAULT_CDP_PORT;
-  if (p === 9223) throw new Error('拒绝使用 9223：那是 datacrawler 的端口');
+  if (Number(port) === 9223) throw new Error('拒绝使用 9223：那是 datacrawler 的端口');
   if (realIsConnected()) return { ok: true, started: false, ...realInfo() };
   const dir = profile || (userDataDir ? profileDir(userDataDir) : '');
   if (!dir) throw new Error('connectReal 需要 profile 或 userDataDir');
   let started = false;
-  if (start) {
-    const r = await startIsolatedEdge({ port: p, profile: dir, urls });
+  // 0.33.0：端口从 profile 的 DevToolsActivePort 读、按 GUID 校验归属，再钉死 ws 地址去连
+  let own = await discoverOwned(dir);
+  if (!own.ok) {
+    if (!start) throw new Error('cdp-down：真 Edge 没在运行，且 start=false（不自动启动）');
+    const r = await startIsolatedEdge({ profile: dir, urls });
     started = r.started;
-  } else if (!(await isCdpUp(p))) {
-    throw new Error('cdp-down：真 Edge 没在运行，且 start=false（不自动启动）');
+    own = await discoverOwned(dir);
+    if (!own.ok) throw new Error(`cdp-foreign：隔离 Edge 的调试端口没通过归属校验（${own.reason}），拒绝遥控。`);
   }
-  const conn = await connect(p);
+  const p = own.port;
+  const conn = await connect(p, { wsEndpoint: own.wsEndpoint });
   real = { browser: conn.browser, ctx: conn.ctx, port: p, profile: dir, refs: new Map(), seq: 0, consoleBuf: [], pageUrl: '' };
   // 控制台：只收集「当前页」的消息（和离屏引擎一样的取最近 50 条语义）
   const bind = (page) => {
@@ -428,6 +481,10 @@ export async function snapshotReal({ maxNodes = 220, includeText = true, query =
     const structural = ['a', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'main', 'nav', 'p', 'td', 'label', 'img', 'section', 'article', 'form'];
     const skip = ['script', 'style', 'noscript', 'template'];
     const norm = (v) => String(v == null ? '' : v).replace(/\s+/g, ' ').trim();
+    // 敏感输入框（密码/隐藏/卡号/验证码）的值绝不进快照——快照会原样发给模型网关。
+    // 与 locatorOf 里的 nameOf 必须同一口径，否则动作时签名对不上。
+    const sensitive = (el) => el.localName === 'input' && (/^(password|hidden)$/i.test(el.type || '')
+      || /(password|cc-|one-time-code)/i.test(el.getAttribute('autocomplete') || ''));
     const out = [];
     const walk = (el, depth) => {
       if (!el || el.nodeType !== 1) return;
@@ -440,7 +497,7 @@ export async function snapshotReal({ maxNodes = 220, includeText = true, query =
       const actionable = actionTags.includes(tag) || role === 'button' || role === 'link' || el.hasAttribute('onclick')
         || tag === 'input' || role === 'textbox' || role === 'checkbox' || role === 'combobox';
       const name = norm(el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.innerText
-        || (tag === 'input' ? el.value : '') || el.getAttribute('alt') || el.getAttribute('title')).slice(0, 80);
+        || (tag === 'input' && !sensitive(el) ? el.value : '') || el.getAttribute('alt') || el.getAttribute('title')).slice(0, 80);
       const text = withText && !actionable ? norm(el.innerText).slice(0, 100) : '';
       if (actionable || structural.includes(tag) || el.hasAttribute('role')) {
         out.push({ tag, role, name, actionable, depth, text, href: el.hasAttribute('href') ? norm(el.getAttribute('href')).slice(0, 80) : '' });
@@ -501,8 +558,10 @@ async function locatorOf(ref) {
   const page = await pageOf();
   const found = await page.evaluate(({ tag, name, role, ordinal, total, marker }) => {
     const norm = (v) => String(v == null ? '' : v).replace(/\s+/g, ' ').trim();
+    const sensitive = (el) => el.localName === 'input' && (/^(password|hidden)$/i.test(el.type || '')
+      || /(password|cc-|one-time-code)/i.test(el.getAttribute('autocomplete') || ''));
     const nameOf = (el) => norm(el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.innerText
-      || (el.localName === 'input' ? el.value : '') || el.getAttribute('alt') || el.getAttribute('title')).slice(0, 80);
+      || (el.localName === 'input' && !sensitive(el) ? el.value : '') || el.getAttribute('alt') || el.getAttribute('title')).slice(0, 80);
     const roleOf = (el) => el.getAttribute('role') || (el.localName === 'a' && el.hasAttribute('href') ? 'link'
       : (el.localName === 'textarea' ? 'textbox' : el.localName));
     const all = [...document.querySelectorAll('*')].filter((el) => {

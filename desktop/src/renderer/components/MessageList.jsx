@@ -13,7 +13,7 @@ import { ProcessTimeline, WorkingStatus } from '../chat/ProcessTimeline.jsx';
 import { TraceBlock, WorkflowLiveCard } from '../chat/TraceCards.jsx';
 import { ArtifactChips, collectArtifacts } from '../chat/ArtifactPanel.jsx';
 import { renderMarkdown } from '../chat/md.jsx';
-import { IconChevron, IconCopy, IconEdit } from './Icons.jsx';
+import { IconChevron, IconCopy, IconEdit, IconRewind } from './Icons.jsx';
 import AskUserCard from './AskUserCard.jsx';
 import CompactionStatus from './CompactionStatus.jsx';
 import { TodoPanel, TodoHistoryRow } from './TodoCard.jsx';
@@ -27,7 +27,7 @@ function SkillChips({ skills }) {
         <span key={`${s.id}-${k}`} title={`playbook ${s.id}`}
           className="inline-flex items-center gap-1 whitespace-nowrap rounded-[5px] bg-gold/[0.10] px-1.5 py-[1px] text-[12.5px] leading-relaxed text-goldSoft shadow-[inset_0_1px_0_rgba(255,255,255,0.07)]">
           <span aria-hidden="true" className="text-[10px] leading-none text-gold">✦</span>
-          <span className="font-kai tracking-[0.03em]">{s.name}</span>
+          <span className="font-medium">{s.name}</span>
         </span>
       ))}
     </div>
@@ -89,7 +89,7 @@ function PastedTextBlock({ text }) {
 export default function MessageList({
   messages, activeId, providers, artifactPath, openWorkflowRaw, setOpenWorkflowRaw,
   scrollRef, stickRef, jumpingRef, showJump, setShowJump,
-  y, onSendRecover, onOpenArtifact, onEditMessage, onOpenStep,
+  y, onSendRecover, onOpenArtifact, onEditMessage, onOpenStep, onRewindFiles,
   askCards = [], onAskUserAnswer = null, compaction = null
 }) {
   // 当前会话最新一份验收单：面板只显示这一份；消息流里同一份不再内联渲染（避免一屏两份）。
@@ -171,7 +171,7 @@ export default function MessageList({
               );
             }
             return (
-              <div key={mk} className="group flex flex-col items-end">
+              <div key={mk} className={`group flex flex-col items-end ${i >= shown.length - 2 ? 'fc-msg-in' : ''}`}>
                 <div className={`glass-bubble max-w-[75%] rounded-2xl rounded-br-md px-3.5 py-2 text-sm break-words leading-relaxed ${wf || m.pasted?.length || hasSkills ? '' : 'whitespace-pre-wrap'}`}>
                   {m.pasted?.length ? (
                     <div className="min-w-0">
@@ -188,7 +188,7 @@ export default function MessageList({
                     <div className="min-w-0">
                       <div className="flex items-center gap-1.5">
                         <span aria-hidden="true" className="text-[12px] leading-none text-goldSoft/90 [text-shadow:0_0_10px_rgba(227,197,107,0.35)]">✦</span>
-                        <span className="font-kai text-[15px] font-semibold leading-none tracking-[0.14em] text-goldSoft">Workflow</span>
+                        <span className="fc-title text-[14px] leading-none">Workflow</span>
                       </div>
                       <div className="mt-2 text-[13.5px] leading-relaxed text-ink/90 break-words">{wf.task || t('多 agent 并行执行')}</div>
                       {openWorkflowRaw === i ? (
@@ -222,12 +222,16 @@ export default function MessageList({
                       }
                     }}
                     className="p-1.5 rounded-md text-mute/55 hover:text-goldSoft hover:bg-lift/5 transition-colors"><IconEdit /></button>
+                  {onRewindFiles ? (
+                    <button title={t('恢复文件到这条消息之前')} onClick={() => onRewindFiles(keepTurns)}
+                      className="p-1.5 rounded-md text-mute/55 hover:text-goldSoft hover:bg-lift/5 transition-colors"><IconRewind /></button>
+                  ) : null}
                 </div>
               </div>
             );
           })() : (
             /* AI 回答去气泡：无底色卡片，仅左侧金竖线（错误消息换红线）区分 */
-            <div key={mk} className={`w-full border-l-2 pl-4 transition-all duration-200 cv-auto ${m.error ? 'border-red-500/50' : m.interrupted ? 'border-gold/30' : 'border-lift/[0.07]'}`}>
+            <div key={mk} className={`w-full border-l-2 pl-4 transition-all duration-200 cv-auto ${i >= shown.length - 2 ? 'fc-msg-in' : ''} ${m.error ? 'border-red-500/50' : m.interrupted ? 'border-gold/30' : 'border-lift/[0.07]'}`}>
               <ProcessTimeline msg={m} />
               {/* 验收单：最新一份钉在右上角面板；这里只在旧回合留一行只读摘要（同一份不渲染两次） */}
               {latestTodo?.index === i ? null : <TodoHistoryRow msg={m} />}

@@ -18,6 +18,10 @@ import { registerWakeupIpc } from './ipc/ipc-wakeups.mjs';
 import { registerAgentIpc } from './ipc/ipc-agent.mjs';
 import { registerCompactIpc } from './ipc/ipc-compact.mjs';
 import { registerSystemIpc } from './ipc/ipc-system.mjs';
+// 0.33.0：MCP 客户端（接外部 MCP 服务器）
+import { createMcpManager, parseServers } from './mcp-client.mjs';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 
 export const IMAGE_MIME = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml', '.bmp': 'image/bmp' };
 
@@ -50,8 +54,23 @@ export function createBackend({ ipcMain, getWin, getDataRoot, engineUrl, repoRoo
     // 0.31.1：sessionId → 用户在本会话里选过的浏览器模式（oneshot/persistent/real）。
     // 存在每个会话里而不是一次回合里：同一任务里连续导航不该反复弹三选一卡片。
     browserChoices: new Map(),
-    hookSessionContext
+    hookSessionContext,
+    mcp: null
   };
+
+  // ---- 0.33.0 MCP：进程级管理器，配置在 config.json 的 mcpServers（和 Claude Code 同形） ----
+  let appVersion = '0';
+  try { appVersion = JSON.parse(readFileSync(path.join(repoRoot, 'desktop', 'package.json'), 'utf8')).version || '0'; } catch { /* 测试台 */ }
+  const mcp = createMcpManager({
+    clientInfo: { name: 'finalcheck', version: appVersion },
+    log,
+    onChange: () => { try { getWin()?.webContents?.send('finalcheck:mcp-changed'); } catch { /* 窗口未就绪 */ } }
+  });
+  state.mcp = mcp;
+  async function syncMcp() {
+    try { await mcp.sync((await store.loadConfig())?.mcpServers); } catch (e) { log('[mcp] 同步失败：' + (e?.message || e)); }
+    return mcp.status();
+  }
 
   // SessionStart：项目选择 / 会话打开·新建各跑一次。fail-open：deny 或 hook 崩溃都不影响会话可用；
   // 结果只记内存，下一轮 agent-chat 把 context 作为 system 消息注入（项目记忆之后）。
@@ -105,12 +124,14 @@ export function createBackend({ ipcMain, getWin, getDataRoot, engineUrl, repoRoo
     let interrupted = 0;
     for (const p of ordered) interrupted += await sessions.markInterruptedRunningParts(projects.sessionDirOf(p.path)).catch(() => 0);
     if (interrupted) log(`启动收尾：${interrupted} 个遗留的工具调用已标记为「应用重启导致中断」`);
+    // MCP 服务器在后台连（npx 首次可能要下载几十秒），不拖慢启动；连上后工具在下一回合出现
+    void syncMcp();
     return { activeProject, interrupted };
   }
 
   /** 注册不依赖 Electron 的 IPC（顺序与拆分前一致） */
   async function registerCoreIpc() {
-    registerSystemIpc({ ipcMain, getWin, engineUrl, store, getHooksConfig: () => hooksConfig, sessionProjectPathOf, sessionUsage: state.sessionUsage });
+    registerSystemIpc({ ipcMain, getWin, engineUrl, store, getHooksConfig: () => hooksConfig, sessionProjectPathOf, sessionUsage: state.sessionUsage, mcpSchemas: () => mcp.schemas() });
     registerSessionIpc({ ipcMain, state, sessionProjectPathOf, runSessionStart });
     // 定时唤醒：不依赖 Electron，纯 Node 可测（存储用 JSON，见 wakeup-store.mjs）
     // ⚠️ 必须把 engineUrl 传进去：否则 IPC 侧走相对路径 import、index.mjs 走 engineUrl，
@@ -118,6 +139,75 @@ export function createBackend({ ipcMain, getWin, getDataRoot, engineUrl, repoRoo
     // 于是「设了定时任务」也永远不会触发。
     registerWakeupIpc({ ipcMain, engineUrl });
     registerCompactIpc({ ipcMain, getWin, store, sessionProjectPathOf, sessionUsage: state.sessionUsage });
+    // MCP：状态 / 保存配置并重连 / 单个重启
+    ipcMain.handle('finalcheck:mcp-status', () => mcp.status());
+    ipcMain.handle('finalcheck:mcp-save', async (_e, servers) => {
+      const obj = servers && typeof servers === 'object' && !Array.isArray(servers) ? servers : null;
+      if (!obj) return { ok: false, error: 'mcpServers 必须是一个对象：{ "名字": { "command": ... } }' };
+      const bad = parseServers(obj).filter((s) => s.error).map((s) => `${s.name}：${s.error}`);
+      const cfg = await store.loadConfig();
+      await store.saveConfig({ ...cfg, mcpServers: obj });
+      const status = await syncMcp();
+      return { ok: true, warnings: bad, status };
+    });
+    // 0.33.0 持久权限规则（config.permissionRules = { allow:[], deny:[] }，对齐 Claude Code）
+    const cleanRuleList = (v) => (Array.isArray(v) ? v : String(v ?? '').split(/\r?\n/))
+      .map((s) => String(s ?? '').trim()).filter(Boolean).slice(0, 500);
+    ipcMain.handle('finalcheck:permission-rules-get', async () => {
+      const pr = (await store.loadConfig())?.permissionRules || {};
+      return { allow: cleanRuleList(pr.allow), deny: cleanRuleList(pr.deny) };
+    });
+    ipcMain.handle('finalcheck:permission-rules-save', async (_e, rules) => {
+      const { parseRules } = await import(engineUrl('desktop/src/main/permission-rules.mjs'));
+      const next = { allow: cleanRuleList(rules?.allow), deny: cleanRuleList(rules?.deny) };
+      const parsed = parseRules(next);
+      if (parsed.errors.length) return { ok: false, errors: parsed.errors };
+      const cfg = await store.loadConfig();
+      await store.saveConfig({ ...cfg, permissionRules: next });
+      return { ok: true, rules: next };
+    });
+    // 审批条「总是允许（存为规则）」：追加一条 allow；只接受能解析的单条规则
+    ipcMain.handle('finalcheck:permission-rules-add', async (_e, kind, rule) => {
+      const { parseRule } = await import(engineUrl('desktop/src/main/permission-rules.mjs'));
+      const k = kind === 'deny' ? 'deny' : 'allow';
+      const r = parseRule(rule);
+      if (!r || r.error) return { ok: false, error: r?.error || '规则为空' };
+      const cfg = await store.loadConfig();
+      const cur = cfg.permissionRules || {};
+      const list = cleanRuleList(cur[k]);
+      if (!list.includes(r.raw)) list.push(r.raw);
+      const next = { allow: cleanRuleList(cur.allow), deny: cleanRuleList(cur.deny), [k]: list };
+      await store.saveConfig({ ...cfg, permissionRules: next });
+      return { ok: true, rules: next };
+    });
+    // 「试一下」：用编辑框里还没保存的规则，判定一次假想的工具调用会怎样
+    ipcMain.handle('finalcheck:permission-rules-test', async (_e, { rules, tool, input } = {}) => {
+      const { parseRules, evaluateRules } = await import(engineUrl('desktop/src/main/permission-rules.mjs'));
+      const parsed = parseRules({ allow: cleanRuleList(rules?.allow), deny: cleanRuleList(rules?.deny) });
+      const name = String(tool || 'run_command');
+      const value = String(input ?? '');
+      const args = name === 'run_command' ? { command: value }
+        : name === 'browser_navigate' ? { url: value }
+          : { path: value };
+      return { ...evaluateRules(parsed, name, args, { projectPath: activeProjectPath }), errors: parsed.errors };
+    });
+    // 0.33.0 文件检查点：把 AI 在某条用户消息之后改过的文件恢复原样（先出计划，确认后执行）
+    const checkpointPlan = async (sessionId, keepUserTurns) => {
+      const { planRewindFiles } = await import(engineUrl('desktop/src/main/checkpoints.mjs'));
+      const s = await sessions.loadSession(String(sessionId || ''));
+      return planRewindFiles(s?.messages || [], keepUserTurns);
+    };
+    ipcMain.handle('finalcheck:checkpoint-plan', (_e, sessionId, keepUserTurns) => checkpointPlan(sessionId, keepUserTurns));
+    ipcMain.handle('finalcheck:checkpoint-restore', async (_e, sessionId, keepUserTurns) => {
+      if (state.activeChats.has(sessionId)) return { error: '这个会话还在运行，先停止再恢复文件' };
+      const { applyRewindFiles } = await import(engineUrl('desktop/src/main/checkpoints.mjs'));
+      // 执行时重新算一遍计划（不信任渲染层传回来的文件清单）
+      return applyRewindFiles(await checkpointPlan(sessionId, keepUserTurns));
+    });
+    ipcMain.handle('finalcheck:mcp-restart', async (_e, name) => {
+      await mcp.restart(String(name || ''));
+      return mcp.status();
+    });
     await registerAgentIpc({
       ipcMain,
       getWin,
@@ -142,6 +232,9 @@ export function createBackend({ ipcMain, getWin, getDataRoot, engineUrl, repoRoo
     sessionProjectPathOf,
     getActiveProjectId: () => activeProjectId,
     getActiveProjectPath: () => activeProjectPath,
-    getHooksConfig: () => hooksConfig
+    getHooksConfig: () => hooksConfig,
+    mcp,
+    syncMcp,
+    shutdown: () => mcp.closeAll()
   };
 }

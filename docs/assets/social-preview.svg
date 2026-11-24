@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640" role="img" aria-label="FinalCheck">
+  <defs><linearGradient id="pagebg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#19191d"/><stop offset="1" stop-color="#131316"/></linearGradient>
+  <radialGradient id="warm" cx="0.12" cy="0" r="0.7"><stop offset="0" stop-color="#d9a95c" stop-opacity="0.07"/><stop offset="1" stop-color="#d9a95c" stop-opacity="0"/></radialGradient></defs>
+  <rect width="1280" height="640" fill="url(#pagebg)"/>
+  <rect width="1280" height="640" fill="url(#warm)"/>
+
+<defs><filter id="ssh" x="-20%" y="-20%" width="140%" height="160%"><feDropShadow dx="0" dy="18" stdDeviation="22" flood-color="#000" flood-opacity="0.45"/></filter><pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse"><path d="M32 0H0V32" fill="none" stroke="#fff" stroke-opacity="0.025"/></pattern></defs>
+<rect width="1280" height="640" fill="url(#grid)"/>
+
+  <g transform="translate(96 170) scale(0.1875)">
+    <defs>
+      <linearGradient id="sbg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2a2a30"/><stop offset="1" stop-color="#151518"/></linearGradient>
+      <linearGradient id="sau" gradientUnits="userSpaceOnUse" x1="130" y1="130" x2="440" y2="390">
+        <stop offset="0" stop-color="#f0d29c"/><stop offset="0.55" stop-color="#d9a95c"/><stop offset="1" stop-color="#b8843e"/></linearGradient>
+    </defs>
+    <rect x="16" y="16" width="480" height="480" rx="112" fill="url(#sbg)"/>
+    <rect x="17.5" y="17.5" width="477" height="477" rx="110.5" fill="none" stroke="#fff" stroke-opacity="0.1" stroke-width="4"/>
+    <g fill="none" stroke="url(#sau)" stroke-width="32" stroke-linecap="round" stroke-linejoin="round" transform="translate(-14 0)"><path d="M140 362 V196 q0 -44 44 -44 H226"/><path d="M140 258 H208"/><path d="M392 200 A88 88 0 1 0 374 338"/><path d="M356 272 L384 300 L436 240"/></g>
+  </g>
+<text x="96" y="340" font-family="'Segoe UI Variable Display','Segoe UI','Microsoft YaHei UI','Microsoft YaHei','PingFang SC',sans-serif" font-size="72" font-weight="700" fill="#ecebe8" text-anchor="start" letter-spacing="-1">Final<tspan fill="#8f8e96">Check</tspan></text>
+<text x="468" y="340" font-family="'Segoe UI Variable Display','Segoe UI','Microsoft YaHei UI','Microsoft YaHei','PingFang SC',sans-serif" font-size="44" font-weight="400" fill="#ecc78e" text-anchor="start" >终检</text>
+<text x="98" y="392" font-family="'Segoe UI Variable Display','Segoe UI','Microsoft YaHei UI','Microsoft YaHei','PingFang SC',sans-serif" font-size="24" font-weight="400" fill="#c9c8cc" text-anchor="start" >Pre-flight check for AI-written code.</text>
+<text x="98" y="428" font-family="'Segoe UI Variable Display','Segoe UI','Microsoft YaHei UI','Microsoft YaHei','PingFang SC',sans-serif" font-size="18" font-weight="400" fill="#8f8e96" text-anchor="start" >11 dimensions · file:line evidence · one verdict</text>
+<text x="98" y="560" font-family="'Cascadia Mono','Cascadia Code',Consolas,monospace" font-size="16" font-weight="400" fill="#62616a" text-anchor="start" >github.com/ccai40359-wq/finalcheck</text>
+<g filter="url(#ssh)">
+<rect x="800" y="136" width="380" height="284" rx="16" fill="#1e1e23" stroke="#2c2c33"/></g>
+<circle cx="822" cy="160" r="4" fill="#3a3a42"/><circle cx="836" cy="160" r="4" fill="#3a3a42"/><circle cx="850" cy="160" r="4" fill="#3a3a42"/>
+<text x="1158" y="164" font-family="'Cascadia Mono','Cascadia Code',Consolas,monospace" font-size="11" font-weight="400" fill="#8f8e96" text-anchor="end" >L2 · acceptance</text>
+<line x1="800" y1="180" x2="1180" y2="180" stroke="#24242a"/>
+<text x="822" y="208" font-family="'Segoe UI Variable Display','Segoe UI','Microsoft YaHei UI','Microsoft YaHei','PingFang SC',sans-serif" font-size="13" font-weight="400" fill="#c9c8cc" text-anchor="start" >Security</text>
+<line x1="940" y1="204" x2="1088" y2="204" stroke="#24242a" stroke-dasharray="2 4"/>
+<rect x="1098" y="192" width="60" height="22" rx="11" fill="#5cb88a" fill-opacity="0.14"/>
+<text x="1128" y="207" font-family="'Cascadia Mono','Cascadia Code',Consolas,monospace" font-size="11" font-weight="600" fill="#5cb88a" text-anchor="middle" >pass</text>
+<text x="822" y="242" font-family="'Segoe UI Variable Display','Segoe UI','Microsoft YaHei UI','Microsoft YaHei','PingFang SC',sans-serif" font-size="13" font-weight="400" fill="#c9c8cc" text-anchor="start" >Privacy</text>
+<line x1="940" y1="238" x2="1088" y2="238" stroke="#24242a" stroke-dasharray="2 4"/>
+<rect x="1098" y="226" width="60" height="22" rx="11" fill="#5cb88a" fill-opacity="0.14"/>
+<text x="1128" y="241" font-family="'Cascadia Mono','Cascadia Code',Consolas,monospace" font-size="11" font-weight="600" fill="#5cb88a" text-anchor="middle" >pass</text>
+<text x="822" y="276" font-family="'Segoe UI Variable Display','Segoe UI','Microsoft YaHei UI','Microsoft YaHei','PingFang SC',sans-serif" font-size="13" font-weight="400" fill="#c9c8cc" text-anchor="start" >Supply chain</text>
+<line x1="940" y1="272" x2="1088" y2="272" stroke="#24242a" stroke-dasharray="2 4"/>
+<rect x="1098" y="260" width="60" height="22" rx="11" fill="#d9a95c" fill-opacity="0.14"/>
+<text x="1128" y="275" font-family="'Cascadia Mono','Cascadia Code',Consolas,monospace" font-size="11" font-weight="600" fill="#d9a95c" text-anchor="middle" >fix</text>
+<text x="822" y="310" font-family="'Segoe UI Variable Display','Segoe UI','Microsoft YaHei UI','Microsoft YaHei','PingFang SC',sans-serif" font-size="13" font-weight="400" fill="#c9c8cc" text-anchor="start" >Robustness</text>
+<line x1="940" y1="306" x2="1088" y2="306" stroke="#24242a" stroke-dasharray="2 4"/>
+<rect x="1098" y="294" width="60" height="22" rx="11" fill="#5cb88a" fill-opacity="0.14"/>
+<text x="1128" y="309" font-family="'Cascadia Mono','Cascadia Code',Consolas,monospace" font-size="11" font-weight="600" fill="#5cb88a" text-anchor="middle" >pass</text>
+<text x="822" y="344" font-family="'Segoe UI Variable Display','Segoe UI','Microsoft YaHei UI','Microsoft YaHei','PingFang SC',sans-serif" font-size="13" font-weight="400" fill="#c9c8cc" text-anchor="start" >Handover</text>
+<line x1="940" y1="340" x2="1088" y2="340" stroke="#24242a" stroke-dasharray="2 4"/>
+<rect x="1098" y="328" width="60" height="22" rx="11" fill="#8f8e96" fill-opacity="0.14"/>
+<text x="1128" y="343" font-family="'Cascadia Mono','Cascadia Code',Consolas,monospace" font-size="11" font-weight="600" fill="#8f8e96" text-anchor="middle" >gap</text>
+<rect x="816" y="370" width="348" height="38" rx="10" fill="#d9a95c" fill-opacity="0.10" stroke="#d9a95c" stroke-opacity="0.35"/>
+<path d="M832 389 l5 5 l10 -11" fill="none" stroke="#ecc78e" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="856" y="394" font-family="'Segoe UI Variable Display','Segoe UI','Microsoft YaHei UI','Microsoft YaHei','PingFang SC',sans-serif" font-size="13" font-weight="600" fill="#ecc78e" text-anchor="start" >Fix, then pass</text>
+<text x="1150" y="394" font-family="'Segoe UI Variable Display','Segoe UI','Microsoft YaHei UI','Microsoft YaHei','PingFang SC',sans-serif" font-size="11" font-weight="400" fill="#8f8e96" text-anchor="end" >1 open item</text>
+</svg>

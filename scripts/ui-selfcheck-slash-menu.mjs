@@ -117,8 +117,15 @@ try {
       }
     }
     for (const btn of pop.querySelectorAll('button')) {
-      const spans = [...btn.querySelectorAll('span')].map((s) => s.textContent.trim());
-      items.push({ head: '', name: (spans[0] || '').replace(/^\\//, ''), desc: spans[1] || '', badge: spans[2] || '' });
+      // 按**内容特征**取，不按索引：0.32.9 的圆点样式让每行多了一个空 span，
+      // 写死 spans[1] 会把圆点/名称当描述（合并时踩到过，4 项假失败）。
+      const spans = [...btn.querySelectorAll('span')].map((s) => s.textContent.trim()).filter(Boolean);
+      const slashAt = spans.findIndex((t) => t.startsWith('/'));
+      const name = slashAt >= 0 ? spans[slashAt].slice(1) : '';
+      const rest = spans.filter((_, i) => i !== slashAt);
+      const badgeText = rest.find((t) => /^(命令|技能|Command|Skill)$/.test(t)) || '';
+      const desc = rest.filter((t) => t !== badgeText).sort((a, b) => b.length - a.length)[0] || '';
+      items.push({ head: '', name, desc, badge: badgeText });
     }
     return { heads, items, text: pop.innerText.slice(0, 4000) };
   })()`);
@@ -155,9 +162,13 @@ try {
   record('M6 分组标题按固定顺序出现', expected.every((h, i) => heads[i] === h), JSON.stringify(heads));
 
   // ③ 方法论按编号 01..40 连续升序（取前 5 个名字对应的顺序）
+  // 名字从每行的 `/xxx` span 取（不按固定 span 索引，圆点会移位）
   const ordered = await ev(`(() => {
     const pop = document.querySelector('.glass-pop');
-    return [...pop.querySelectorAll('button')].slice(3, 43).map((b) => b.querySelector('span')?.textContent.trim());
+    return [...pop.querySelectorAll('button')].slice(3, 43).map((b) => {
+      const t = [...b.querySelectorAll('span')].map((s) => s.textContent.trim()).find((x) => x.startsWith('/'));
+      return t || '';
+    });
   })()`);
   record('M7 方法论前 5 条是 01-05 顺序', Array.isArray(ordered) && ordered.slice(0, 5).join(',') === '/port-service-scan,/tech-fingerprint,/dir-brute,/js-api-recon,/sql-injection',
     JSON.stringify(ordered?.slice(0, 6)));

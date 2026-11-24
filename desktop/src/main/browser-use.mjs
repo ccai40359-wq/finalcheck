@@ -3,7 +3,7 @@
 // 0.31.0 三模式（2 个宿主 + 2 种存储策略，选择逻辑见 ./browser-session.mjs）：
 //   ① 离屏无痕（默认）：partition 'fc-browser-use'，session 在内存，关窗即丢
 //   ② 离屏持久：partition 'persist:fc-browser-use'，cookie 写进 userData/Partitions/，重开 FC 仍在
-//   ③ CDP 接真 Edge：browser-real.mjs（端口 9224），本模块不参与
+//   ③ CDP 接真 Edge：browser-real.mjs（随机端口），本模块不参与
 // partition 创建后不能改：resolvePartition 的结果与当前窗口不一致时必须先关窗再重建，
 // 否则同一进程里会同时存在两套 cookie（登录态看起来「一会儿有一会儿没有」）。
 //
@@ -247,6 +247,12 @@ function createPageState(salt) {
   const valueRoles = new Set(['meter', 'progressbar', 'scrollbar', 'slider', 'spinbutton']);
   const textInputTypes = new Set(['email', 'number', 'password', 'search', 'tel', 'text', 'url']);
   const skipTags = new Set(['noscript', 'script', 'style', 'template']);
+  // 敏感输入框的值不进快照（快照原样发给模型网关）：密码、隐藏域、卡号、验证码
+  function isSecretInput(element) {
+    if (!element || element.localName !== 'input') return false;
+    return /^(password|hidden)$/i.test(element.type || '')
+      || /(password|cc-|one-time-code)/i.test(element.getAttribute('autocomplete') || '');
+  }
 
   // 0.29.2：节点被移除时不再直接删除 ref——保留 entry 并标记 dead，让 tryRebind 拿得到身份
   // 签名做「同一控件找回」；真找不到（重绑失败）时 stale 照旧拒绝。
@@ -430,7 +436,7 @@ function createPageState(salt) {
     }
     if (valueRoles.has(role)) {
       return normalize(element.getAttribute('aria-valuetext') ?? element.getAttribute('aria-valuenow') ??
-        (tag === 'input' && element.type === 'password' ? '' : element.value));
+        (isSecretInput(element) ? '' : element.value));
     }
     return '';
   }
@@ -498,7 +504,7 @@ function createPageState(salt) {
           if (actionable) line += ` [ref=${refFor(element, identityOf(element, role, name, href))}]`;
           if (actionable && disabled(element)) line += ' [disabled]';
           if ((tag === 'input' || tag === 'textarea') && element.readOnly) line += ' [readonly]';
-          if (tag === 'input' && element.type !== 'password' && element.value) {
+          if (tag === 'input' && !isSecretInput(element) && element.value) {
             line += ` value=${JSON.stringify(String(element.value).slice(0, 40))}`;
           }
           if (href) line += ` href=${JSON.stringify(href.slice(0, 80))}`;

@@ -9,6 +9,7 @@
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { t } from '../renderer/i18n/core.mjs';
+import { suggestRule } from './permission-rules.mjs';
 
 const VALID_DECISIONS = new Set(['allowed-once', 'always-session', 'rejected']);
 
@@ -85,7 +86,9 @@ export async function requestApproval({ callId, tool, summary, target = null, se
     }, approvalTimeoutMs);
     pending.set(id, entry);
     try {
-      emitApproval({ callId: id, tool: toolName, summary: s });
+      // 0.33.0：附上「存为长期规则」的建议（null = 这类调用不建议概括成规则）
+      const rule = suggestRule(toolName, target ?? (toolName === 'run_command' ? approvalPatternFor(s) : null));
+      emitApproval({ callId: id, tool: toolName, summary: s, ...(rule ? { rule } : {}) });
     } catch {
       if (pending.get(id) === entry) { pending.delete(id); clearTimeout(entry.timer); }
       entry.resolve('rejected'); // 通道故障 = denied

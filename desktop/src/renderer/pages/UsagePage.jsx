@@ -654,7 +654,7 @@ export default function UsagePage({ running = false }) {
       {/* 页头：与设置页其他分节一致（大标题 + 副标题 + 右侧操作） */}
       <div className="shrink-0 px-8 pt-6 pb-5 flex items-start justify-between gap-4">
         <div className="min-w-0">
-          <h1 className="font-kai text-[22px] leading-tight text-goldSoft">{t('用量统计')}</h1>
+          <h1 className="fc-title text-[22px] leading-tight">{t('用量统计')}</h1>
           <p className="text-[12px] text-mute mt-1.5 leading-relaxed">{t('本机 token 活动、每日趋势与模型占比。')}</p>
         </div>
         <div className="flex items-center gap-2 shrink-0">

@@ -61,7 +61,7 @@ export default function Composer({
   slashIndex, setSlashIndex,
   inputRef, modelMenuRef,
   setDragging, setMenu, setProviderMenu, setEffortPos, setSessCfg, setCfg, setPermMode,
-  cancelEdit, chooseSlash,
+  cancelEdit, chooseSlash, onToggleEditRestore,
   decideApproval, steerQueueItem, moveQueueItemToInput, removeQueueItem, sendQueueItemNow, queueHeld = false,
   send, stop, onGoSettings
 }) {
@@ -198,6 +198,13 @@ export default function Composer({
                 className="btn-primary px-3 py-1.5 text-xs">{t('允许一次')}</button>
               <button data-testid="approval-allow-session" onClick={() => decideApproval('always-session')}
                 className="btn-ghost px-3 py-1.5 text-xs !text-goldSoft !border-gold/40 hover:!bg-gold/10">{t('本会话总是允许')}</button>
+              {approval.rule ? (
+                <button data-testid="approval-allow-rule" onClick={() => decideApproval('always-session', { saveRule: true })}
+                  title={t('写入设置 → 权限规则：{rule}', { rule: approval.rule })}
+                  className="btn-ghost px-3 py-1.5 text-xs text-mute hover:text-ink">
+                  {t('总是允许')} <code className="font-mono text-[11px] text-goldSoft/80">{approval.rule}</code>
+                </button>
+              ) : null}
               <button data-testid="approval-reject" onClick={() => decideApproval('rejected')}
                 className="ml-auto rounded-lg border border-red-500/40 px-3 py-1.5 text-xs text-red-300 hover:bg-red-500/10 transition-all duration-200">{t('拒绝')}</button>
             </div>
@@ -257,6 +264,12 @@ export default function Composer({
               <span className="text-mute/60">{t('发送后将从这条消息重开，后面的对话会被丢弃')}</span>
               <button onClick={cancelEdit} className="ml-auto text-mute/60 hover:text-ink transition-colors">{t('取消')}</button>
             </div>
+          )}
+          {editing && editing.restorable > 0 && (
+            <label className="flex items-center gap-2 px-3 pt-1.5 text-[11px] text-mute/80 cursor-pointer select-none">
+              <input type="checkbox" checked={!!editing.restoreFiles} onChange={(e) => onToggleEditRestore?.(e.target.checked)} className="accent-[rgb(var(--fc-gold))]" />
+              {t('同时把 AI 之后改过的 {n} 个文件恢复到这条消息之前', { n: editing.restorable })}
+            </label>
           )}
           {attachments.length > 0 && (
             <div className="flex flex-wrap gap-1.5 px-3 pt-2.5">
@@ -565,12 +578,13 @@ export default function Composer({
                     ? t('命令')
                     : t(SKILL_GROUPS.find((g) => g.id === item.group)?.label || '技能');
                   // 副标题：命令显示短标签（/wake → 定时唤醒 / Scheduled wake-up），
-                  // 技能显示真正的 description（按当前语言选好的，第三方的原样英文）
+                  // 技能显示真正的 description（buildSlashItems 已按语言选好，第三方的原样英文），
+                  // 所以这里不再判 lang —— 再判一次会让中文界面的第三方技能只剩 slug。
                   const sub = item.type === 'command' ? t(item.cn) : (item.description || t(item.cn));
                   return (
                     <React.Fragment key={item.group + item.type + item.id}>
                       {showHead && (
-                        <div className="px-2.5 pt-2 pb-1 text-[9.5px] uppercase tracking-[0.08em] text-mute/45">
+                        <div className="fc-menu-head px-2.5 pt-2 pb-1 text-[9.5px] uppercase tracking-[0.08em] text-mute/50">
                           {head}
                         </div>
                       )}
@@ -578,17 +592,18 @@ export default function Composer({
                         onMouseDown={(e) => e.preventDefault()}
                         onClick={() => chooseSlash(item)}
                         onMouseEnter={() => setSlashIndex(idx)}
-                        className={`w-full flex items-center gap-2 px-2.5 py-[7px] rounded-lg transition-colors ${idx === Math.min(slashIndex, slashItems.length - 1) ? 'bg-gold/12' : 'hover:bg-lift/5'}`}>
-                        <span className={`shrink-0 font-mono text-[12px] ${item.type === 'command' ? 'text-goldSoft' : 'text-jade'}`}>/{item.name}</span>
-                        <span className="min-w-0 flex-1 truncate text-[11px] text-ink/70">{sub}</span>
-                        <span className={`shrink-0 text-[9px] px-1.5 py-0.5 rounded-full ${item.type === 'command' ? 'text-goldDeep/80 bg-gold/10' : 'text-mute/50 bg-lift/[0.05]'}`}>
+                        className={`fc-menu-row w-full flex items-center gap-3 px-2.5 py-[7px] rounded-lg text-left ${idx === Math.min(slashIndex, slashItems.length - 1) ? 'bg-lift/[0.08]' : 'hover:bg-lift/[0.05]'}`}>
+                        <span className={`shrink-0 w-1.5 h-1.5 rounded-full ${item.type === 'command' ? 'bg-gold' : 'bg-jade/80'}`} />
+                        <span className="shrink-0 min-w-[148px] font-mono text-[12px] text-ink/90">/{item.name}</span>
+                        <span className="min-w-0 flex-1 truncate text-left text-[11.5px] text-mute">{sub}</span>
+                        <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded-md ${item.type === 'command' ? 'text-goldSoft/90 bg-gold/[0.10]' : 'text-mute/70 bg-lift/[0.05]'}`}>
                           {item.type === 'command' ? t('命令') : t('技能')}
                         </span>
                       </button>
                     </React.Fragment>
                   );
                 })}
-                <div className="px-3 py-1.5 text-[10px] text-mute/35 border-t border-lift/[0.06] mt-1">
+                <div className="px-3 pt-2 pb-1 text-[10px] text-mute/50 border-t border-lift/[0.06] mt-1">
                   {t('↑↓ 选择 · Enter 确认 · Esc 关闭')}
                 </div>
               </div>
