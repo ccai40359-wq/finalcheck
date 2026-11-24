@@ -62,6 +62,12 @@ function allowResult() {
   return { ok: true, decision: 'allow', messages: [], outputs: [], warnings: [], errors: [] };
 }
 
+/** 0.33.1 设置页用：hooks.json 的实际路径 */
+export function hooksFilePath() { return resolveHooksFile(); }
+
+/** 0.33.1 设置页用：按运行时同一套规则归一（返回 { enabled, events, timeoutMs, maxOutputBytes, warnings }） */
+export function normalizeHooksConfig(raw) { return normalizeConfig(raw, []); }
+
 /** 默认配置文件：FINALCHECK_HOOKS_FILE > %APPDATA%/FinalCheck/hooks.json（非 Windows 用 homedir） */
 function resolveHooksFile(file) {
   if (typeof file === 'string' && file.trim()) return path.resolve(file.trim());
