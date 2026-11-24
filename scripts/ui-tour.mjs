@@ -38,6 +38,16 @@ await writeFile(path.join(userData, 'config.json'), JSON.stringify({
   }
 }, null, 2), 'utf8');
 
+// Hooks 设置页截图用：隔离的 hooks.json（绝不读写本机真实的 %APPDATA%/FinalCheck/hooks.json）
+const hooksFile = path.join(userData, 'hooks.json');
+await writeFile(hooksFile, JSON.stringify({ enabled: true, events: {
+  PreToolUse: [{ matcher: 'run_command', command: 'node D:/hooks/check-command.mjs', timeoutMs: 10000 }],
+  PostToolUse: [{ matcher: 'edit_file|write_file', command: 'npx prettier --write "$FILE"' }]
+} }, null, 2), 'utf8');
+// @ 文件引用截图用：默认项目里放几个文件
+await mkdir(path.join(projectDir, 'src', 'components'), { recursive: true });
+for (const f of ['src/app.js', 'src/api.js', 'src/components/AppHeader.jsx', 'README.md', 'package.json']) await writeFile(path.join(projectDir, f), '// demo', 'utf8');
+
 process.env.FINALCHECK_SESSIONS_DIR = sessionsDir;
 process.env.FINALCHECK_PROJECTS_FILE = projectsFile;
 process.env.FINALCHECK_DEFAULT_PROJECT = projectDir;
@@ -85,7 +95,7 @@ const child = spawn(electronExe, [
   path.join(root, 'desktop'), `--remote-debugging-port=${PORT}`, `--user-data-dir=${userData}`, '--no-first-run'
 ], {
   env: { ...env, FINALCHECK_UI_SELFCHECK: '1', FINALCHECK_CONFIG_FILE: path.join(userData, 'config.json'),
-    FINALCHECK_PROJECTS_FILE: projectsFile, FINALCHECK_DEFAULT_PROJECT: projectDir, FINALCHECK_SESSIONS_DIR: sessionsDir },
+    FINALCHECK_PROJECTS_FILE: projectsFile, FINALCHECK_DEFAULT_PROJECT: projectDir, FINALCHECK_SESSIONS_DIR: sessionsDir, FINALCHECK_HOOKS_FILE: hooksFile },
   stdio: 'ignore', windowsHide: false
 });
 
@@ -154,6 +164,19 @@ try {
   await ev(`(() => { const ta = document.querySelector('textarea'); ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set; set.call(ta, ''); ta.dispatchEvent(new Event('input', { bubbles: true })); })()`);
   await sleep(400);
 
+  // ③b @ 文件引用候选 + ③c 计划模式开关（0.33.2）
+  await ev(`(async () => {
+    const ta = document.querySelector('textarea'); ta.focus();
+    const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+    set.call(ta, '看看 @app'); ta.dispatchEvent(new Event('input', { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 1200)); })()`);
+  await shot('4b-mention-dark.png');
+  await ev(`(() => { const ta = document.querySelector('textarea'); const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set; set.call(ta, ''); ta.dispatchEvent(new Event('input', { bubbles: true })); ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true })); })()`);
+  await sleep(600);
+  await shot('4c-plan-dark.png');
+  await ev(`(() => { const ta = document.querySelector('textarea'); ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true })); })()`);
+  await sleep(300);
+
   // ④ 设置页
   await clickText('Settings');
   await sleep(1200);
@@ -186,6 +209,14 @@ try {
   await shot('9-rules-dark.png');
   await setTheme('light'); await sleep(500);
   await shot('10-rules-light.png');
+
+  // ⑦ Hooks 设置页（0.33.2）
+  await setTheme('dark'); await sleep(300);
+  await clickText('Hooks');
+  await sleep(1200);
+  await shot('11-hooks-dark.png');
+  await setTheme('light'); await sleep(500);
+  await shot('12-hooks-light.png');
 } finally {
   try { ws?.close(); } catch { /* 忽略 */ }
   try { child.kill(); } catch { /* 忽略 */ }

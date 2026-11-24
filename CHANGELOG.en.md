@@ -6,6 +6,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.33.2] - 2026-11-24
+
+This release continues closing the gap with Claude Code: the AI can search the web and find files by name, a new Plan mode proposes before it acts, you can @-mention files in the composer, Hooks get a settings page, and there is a new command-line agent, fc-agent.
+
+### Added
+
+- **Web search and page reading**: the AI can search the web (Bing by default, which works in mainland China; Tavily / Brave / SearXNG can be configured in Settings) and read page text; requests to localhost and private network addresses are blocked.
+- **Find files by name and list directories**: the AI can find files with glob patterns (such as `src/**/*.test.js`) and browse directory structure without detouring through shell commands.
+- **Plan mode**: with the Plan toggle next to the composer (or Shift+Tab) on, the AI only investigates and submits a plan for your approval; once approved it starts working in the same turn, and you can send feedback to have it revise the plan.
+- **@ file mentions**: typing `@` in the composer pops up matching project files; the selected files' contents are attached when you send, and folders can be mentioned too.
+- **Hooks settings page**: under Settings → Hooks you can add and remove hook commands per event, set matchers, and "test run" each one with sample input; changes take effect as soon as you save.
+- **Isolated workspaces for sub-agents**: sub-agents that edit files can work on their own git branch, leaving your working tree untouched; with no changes it cleans up after itself, otherwise it tells you the branch name and how to merge it.
+- **Command-line agent `fc-agent`**: `fc-agent -p "task" --project <dir>` runs a turn without opening a window, reusing the desktop app's model setup and permission rules; with nobody to approve, risky actions are denied by default and can be allowed with `--allow` / `--yes`, with JSON output and session resume supported.
+
 ## [0.33.1] - 2026-11-24
 
 This release fixes two details in the slash menu and context compaction: skill descriptions used to show up as a lone `>` and now display properly, and compaction used to be a pill that flashed above the composer and is now a divider line that stays visible in the conversation.

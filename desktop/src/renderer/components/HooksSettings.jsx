@@ -105,7 +105,7 @@ export default function HooksSettings() {
           <button type="button" role="switch" aria-checked={enabled} aria-label={t('启用 Hooks')} data-testid="hooks-enabled"
             onClick={() => { setEnabled((v) => !v); touch(); }}
             className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${enabled ? 'bg-gold/80' : 'bg-lift/15'}`}>
-            <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${enabled ? 'translate-x-4' : 'translate-x-0.5'}`} />
+            <span className={`absolute left-0 top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${enabled ? 'translate-x-4' : 'translate-x-0.5'}`} />
           </button>
         </div>
         {file && <div className="text-[11px] text-mute/70 font-mono break-all">{file}</div>}
