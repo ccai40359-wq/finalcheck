@@ -172,6 +172,20 @@ h1, h2 {
   letter-spacing: 0.08em;
 }
 code, kbd, samp, pre { font-family: var(--ui-font-mono); font-variant-ligatures: none; }
+
+/* 页面/卡片标题（0.32.9）：替代散落各处的 font-kai text-goldSoft。
+   深色：无衬线 + 正文色 + 字重；浅色：保持金色楷书（宣纸观感不变）。 */
+.fc-title {
+  font-family: var(--ui-font-heading);
+  letter-spacing: var(--ui-heading-spacing);
+  color: rgb(var(--fc-ink));
+  font-weight: 600;
+}
+[data-theme="light"] .fc-title { color: rgb(var(--fc-gold-soft)); font-weight: 400; letter-spacing: 0.06em; }
+
+/* 键盘焦点：统一一圈柔和琥珀描边（鼠标点击不出现） */
+:focus-visible { outline: 2px solid rgb(var(--fc-gold) / 0.55); outline-offset: 2px; border-radius: 6px; }
+textarea:focus-visible, input:focus-visible { outline: none; }
 /* 代码里不许连字：>= 被画成 ≥ 会让人误读源码 */
 
 ::selection {
@@ -260,14 +274,15 @@ code, kbd, samp, pre { font-family: var(--ui-font-mono); font-variant-ligatures:
 /* 玻璃按钮 / 玻璃行：内侧一道高光 + 外侧软阴影，按下轻微回弹 */
 .glass-row {
   position: relative;
-  background-color: rgb(var(--fc-lift) / 0.07);
-  background-image: linear-gradient(180deg, rgb(var(--fc-lift) / 0.07), rgb(var(--fc-lift) / 0) 46%);
-  box-shadow: inset 0 1px 0 rgb(var(--fc-lift) / 0.12), inset 0 0 0 1px rgb(var(--fc-lift) / 0.06), 0 6px 18px rgb(0 0 0 / 0.25);
+  background-color: rgb(var(--fc-lift) / 0.045);
+  background-image: linear-gradient(180deg, rgb(var(--fc-lift) / 0.04), rgb(var(--fc-lift) / 0) 46%);
+  box-shadow: inset 0 1px 0 rgb(var(--fc-lift) / 0.08), inset 0 0 0 1px rgb(var(--fc-lift) / 0.06), 0 1px 2px rgb(0 0 0 / 0.25);
   transition: background-color 0.28s var(--fc-ease), box-shadow 0.28s var(--fc-ease), transform 0.28s var(--fc-ease), color 0.28s var(--fc-ease);
 }
 .glass-row:hover {
-  background-color: rgb(var(--fc-lift) / 0.078);
-  box-shadow: inset 0 1px 0 rgb(var(--fc-lift) / 0.14), inset 0 0 0 1px rgb(var(--fc-lift) / 0.10), 0 8px 22px rgb(0 0 0 / 0.26);
+  background-color: rgb(var(--fc-lift) / 0.075);
+  box-shadow: inset 0 1px 0 rgb(var(--fc-lift) / 0.10), inset 0 0 0 1px rgb(var(--fc-lift) / 0.11), 0 6px 16px rgb(0 0 0 / 0.22);
+  transform: translateY(-1px);
 }
 .glass-row:active:not(:disabled) { transform: scale(0.985); }
 [data-theme="light"] .glass-row {
@@ -314,7 +329,7 @@ code, kbd, samp, pre { font-family: var(--ui-font-mono); font-variant-ligatures:
   background-color: rgb(var(--fc-pop));
   background-image: linear-gradient(180deg, rgb(var(--fc-lift) / 0.06), rgb(var(--fc-lift) / 0) 42%);
   border: 1px solid rgb(var(--fc-lift) / 0.10);
-  box-shadow: inset 0 1px 0 rgb(var(--fc-lift) / 0.12), 0 28px 80px rgb(0 0 0 / 0.65);
+  box-shadow: inset 0 1px 0 rgb(var(--fc-lift) / 0.08), 0 0 0 1px rgb(0 0 0 / 0.35), 0 24px 60px rgb(0 0 0 / 0.5);
 }
 [data-theme="light"] .glass-pop {
   border: 1px solid rgb(0 0 0 / 0.10);
@@ -323,7 +338,7 @@ code, kbd, samp, pre { font-family: var(--ui-font-mono); font-variant-ligatures:
 
 /* 弹层出现：苹果式 spring（缩放 + 上浮 + 淡入） */
 @keyframes popIn {
-  from { opacity: 0; transform: translateY(6px) scale(0.97); }
+  from { opacity: 0; transform: translateY(4px) scale(0.98); }
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
 .pop-in { animation: popIn 0.22s cubic-bezier(.22, 1, .36, 1); transform-origin: bottom right; }
@@ -332,7 +347,7 @@ code, kbd, samp, pre { font-family: var(--ui-font-mono); font-variant-ligatures:
 .glass-card {
   background-color: rgb(var(--fc-lift) / 0.055);
   background-image: linear-gradient(180deg, rgb(var(--fc-lift) / 0.06), rgb(var(--fc-lift) / 0) 55%);
-  box-shadow: inset 0 1px 0 rgb(var(--fc-lift) / 0.08), inset 0 0 0 1px rgb(var(--fc-lift) / 0.05), 0 10px 30px rgb(0 0 0 / 0.28);
+  box-shadow: inset 0 1px 0 rgb(var(--fc-lift) / 0.06), inset 0 0 0 1px rgb(var(--fc-lift) / 0.055), 0 4px 14px rgb(0 0 0 / 0.18);
 }
 [data-theme="light"] .glass-card {
   background-color: #fff;
@@ -363,7 +378,7 @@ code, kbd, samp, pre { font-family: var(--ui-font-mono); font-variant-ligatures:
   .btn-primary {
     @apply btn text-base bg-gold hover:bg-goldSoft;
     color: rgb(var(--fc-on-gold));
-    box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.35), inset 0 -1px 0 rgb(0 0 0 / 0.25), 0 6px 18px rgb(var(--fc-gold-deep) / 0.30);
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.28), inset 0 -1px 0 rgb(0 0 0 / 0.18), 0 1px 2px rgb(0 0 0 / 0.3);
   }
   .btn-ghost {
     @apply btn text-ink rounded-xl;
@@ -560,6 +575,23 @@ button, [role="button"] {
 .wf-scroll::-webkit-scrollbar-thumb { background: rgb(var(--fc-lift) / 0.14); border-radius: 8px; }
 .wf-scroll::-webkit-scrollbar-thumb:hover { background: rgb(var(--fc-gold-soft) / 0.35); }
 .wf-scroll::-webkit-scrollbar-track { background: transparent; }
+
+/* 侧栏选中会话：左侧 2px 琥珀指示条（替代整行金字，选中态清楚又不吵） */
+.fc-row-active::before {
+  content: ''; position: absolute; left: -9px; top: 22%; bottom: 22%; width: 2px; border-radius: 2px;
+  background: rgb(var(--fc-gold));
+  animation: fc-indicator-in .22s var(--fc-ease);
+}
+/* 指示条画在行内侧（设置页导航这类贴边的列表） */
+.fc-row-active.fc-ind-in::before { left: 3px; }
+@keyframes fc-indicator-in { from { transform: scaleY(0.2); opacity: 0; } to { transform: none; opacity: 1; } }
+
+/* 新消息淡入（只作用于新挂载的行；屏幕外的历史行有 content-visibility，不受影响） */
+@keyframes fc-msg-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.fc-msg-in { animation: fc-msg-in .28s var(--fc-ease) both; }
+
+/* 下拉/弹层里的行：统一悬停底色与圆角 */
+.fc-menu-row { transition: background-color .16s var(--fc-ease), color .16s var(--fc-ease); }
 
 /* ============ 屏幕外内容免渲染（content-visibility） ============ */
 /* 浏览器会跳过屏幕外元素的布局与绘制，只保留一个占位盒。

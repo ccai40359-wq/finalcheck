@@ -77,14 +77,14 @@ export default function Sidebar({
       {/* 最上面一条：New Session（居中、全英文，仿 ZCode） */}
       <div className="px-2 pt-2.5 pb-1">
         <button onClick={onNewSession} disabled={!y || !activeProjectId}
-          className="glass-row w-full flex items-center justify-center gap-2 rounded-xl px-2.5 h-9 text-[13px] text-ink/90 hover:text-ink disabled:opacity-35">
+          className="glass-row w-full flex items-center justify-center gap-2 rounded-xl px-2.5 h-9 text-[13px] font-medium text-ink/90 hover:text-ink disabled:opacity-35">
           <IconPlusCircle /> New Session
         </button>
       </div>
 
       {/* Workspaces 标题 + 新建项目文件夹（右边这个图标） */}
       <div className="px-3.5 pt-3.5 pb-1 flex items-center justify-between">
-        <span className="text-[10px] tracking-[0.16em] text-mute/45 select-none">Workspaces</span>
+        <span className="text-[10.5px] font-medium uppercase tracking-[0.09em] text-mute/60 select-none">Workspaces</span>
         <button onClick={onAddProject} title={t('新建项目文件夹（会话与记忆存到该目录 .finalcheck/）')}
           className="h-6 w-6 -mr-1 rounded-lg text-mute/55 hover:text-goldSoft hover:bg-lift/[0.07] transition-colors flex items-center justify-center">
           <IconFolderPlus />
@@ -116,8 +116,8 @@ export default function Sidebar({
               <div key={s.id} onClick={() => onOpenSession(p, s)}
                 onContextMenu={(e) => { e.preventDefault(); onOpenRowMenu(e.clientX, e.clientY, s, p); }}
                 title={`${prettyTitle(s.title)} · ${new Date(s.updatedAt).toLocaleString('zh-CN')}${s.turns ? ` · ${t('{n} 轮', { n: s.turns })}` : ''}`}
-                className={`group relative flex items-center gap-1.5 rounded-lg pl-2 pr-1.5 py-1.5 cursor-pointer transition-colors ${s.archived ? 'opacity-45' : ''} ${
-                  sActive ? 'bg-lift/[0.09] text-ink' : 'text-ink/85 hover:bg-lift/[0.06] hover:text-ink'}`}>
+                className={`group relative flex items-center gap-1.5 rounded-lg pl-2 pr-1.5 py-1.5 cursor-pointer transition-colors duration-150 ${s.archived ? 'opacity-45' : ''} ${
+                  sActive ? 'fc-row-active bg-lift/[0.08] text-ink' : 'text-ink/75 hover:bg-lift/[0.05] hover:text-ink'}`}>
                 {s.pinned ? <span className="text-goldDeep/70 text-[9px] shrink-0">▴</span> : null}
                 {/* 状态槽：跑的时候转圈，跑完才是绿点 */}
                 <span className="w-3 shrink-0 flex items-center justify-center">
@@ -126,7 +126,7 @@ export default function Sidebar({
                     : s.unread ? <span title={t('已完成')} className="w-1.5 h-1.5 rounded-full bg-jade" /> : null}
                 </span>
                 <span className="flex-1 min-w-0 truncate text-[12px]">{prettyTitle(s.title)}</span>
-                <span className="shrink-0 text-[10px] text-mute/60 tabular-nums group-hover:opacity-0 transition-opacity">{relTime(s.updatedAt)}</span>
+                <span className="shrink-0 text-[10px] text-mute/50 tabular-nums group-hover:opacity-0 transition-opacity">{relTime(s.updatedAt)}</span>
                 <button title={s.archived ? t('恢复会话') : t('归档会话（历史与记忆保留，在 Archived 里可找回）')}
                   onClick={(e) => { e.stopPropagation(); onArchiveSession(s, p.id); }}
                   className="absolute right-1 top-1/2 -translate-y-1/2 p-1 rounded-md text-mute/40 opacity-0 group-hover:opacity-100 hover:text-goldSoft hover:bg-lift/[0.08] transition-opacity">
@@ -139,7 +139,7 @@ export default function Sidebar({
             <div key={p.id} className="mb-0.5">
               <div onClick={() => onToggleProject(p)} title={p.path}
                 className={`group relative flex items-center gap-1 rounded-lg pl-1 pr-1.5 py-1.5 cursor-pointer transition-colors ${
-                  isActive ? 'text-ink bg-lift/[0.045]' : 'text-ink/80 hover:bg-lift/[0.05] hover:text-ink'}`}>
+                  isActive ? 'text-ink' : 'text-ink/70 hover:bg-lift/[0.05] hover:text-ink'}`}>
                 <span role="button" tabIndex={-1}
                   onClick={(e) => { e.stopPropagation(); onToggleProject(p); }}
                   className="shrink-0 p-0.5 rounded text-mute/45 hover:text-ink transition-colors">
@@ -148,7 +148,7 @@ export default function Sidebar({
                 </span>
                 <IconFolder active={isActive} />
                 <span className={`flex-1 min-w-0 truncate text-[13px] ${isActive ? 'font-medium' : ''}`}>{p.name}</span>
-                <span className="shrink-0 text-[10px] text-mute/55 tabular-nums group-hover:opacity-0 transition-opacity">{headerCount}</span>
+                <span className="shrink-0 text-[10px] text-mute/45 tabular-nums group-hover:opacity-0 transition-opacity">{headerCount > 0 ? headerCount : ''}</span>
                 {/* hover 操作槽：＋（新建对话）/ 删除项目；flex 容器方便以后再加 … 与列表图标，不写死宽度 */}
                 <span className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
                   <button title={t('在这个项目里新建对话')}
@@ -164,7 +164,7 @@ export default function Sidebar({
               </div>
 
               {open && (
-                <div className="mt-0.5 mb-1 ml-[13px] pl-2 border-l border-lift/[0.06]">
+                <div className="mt-0.5 mb-1.5 ml-[13px] pl-2 border-l border-lift/[0.07]">
                   {loading ? (
                     <div className="px-2 py-1 text-[10px] text-mute/30">{t('加载中…')}</div>
                   ) : (

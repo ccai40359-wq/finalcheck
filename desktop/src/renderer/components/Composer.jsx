@@ -573,17 +573,18 @@ export default function Composer({
                     onMouseDown={(e) => e.preventDefault()}
                     onClick={() => chooseSlash(item)}
                     onMouseEnter={() => setSlashIndex(idx)}
-                    className={`w-full flex items-center gap-2 px-2.5 py-[7px] rounded-lg transition-colors ${idx === Math.min(slashIndex, slashItems.length - 1) ? 'bg-gold/12' : 'hover:bg-lift/5'}`}>
-                    <span className={`shrink-0 font-mono text-[12px] ${item.type === 'command' ? 'text-goldSoft' : 'text-jade'}`}>/{item.name}</span>
-                    <span className="min-w-0 flex-1 truncate text-[11px] text-ink/70">
+                    className={`fc-menu-row w-full flex items-center gap-3 px-2.5 py-[7px] rounded-lg text-left ${idx === Math.min(slashIndex, slashItems.length - 1) ? 'bg-lift/[0.08]' : 'hover:bg-lift/[0.05]'}`}>
+                    <span className={`shrink-0 w-1.5 h-1.5 rounded-full ${item.type === 'command' ? 'bg-gold' : 'bg-jade/80'}`} />
+                    <span className="shrink-0 min-w-[148px] font-mono text-[12px] text-ink/90">/{item.name}</span>
+                    <span className="min-w-0 flex-1 truncate text-left text-[11.5px] text-mute">
                       {item.type === 'skill' && lang === 'en' ? (item.description || t(item.cn)) : t(item.cn)}
                     </span>
-                    <span className={`shrink-0 text-[9px] px-1.5 py-0.5 rounded-full ${item.type === 'command' ? 'text-goldDeep/80 bg-gold/10' : 'text-mute/50 bg-lift/[0.05]'}`}>
+                    <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded-md ${item.type === 'command' ? 'text-goldSoft/90 bg-gold/[0.10]' : 'text-mute/70 bg-lift/[0.05]'}`}>
                       {item.type === 'command' ? t('命令') : t('技能')}
                     </span>
                   </button>
                 ))}
-                <div className="px-3 py-1.5 text-[10px] text-mute/35 border-t border-lift/[0.06] mt-1">
+                <div className="px-3 pt-2 pb-1 text-[10px] text-mute/50 border-t border-lift/[0.06] mt-1">
                   {t('↑↓ 选择 · Enter 确认 · Esc 关闭')}
                 </div>
               </div>

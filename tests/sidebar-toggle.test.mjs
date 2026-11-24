@@ -15,8 +15,8 @@ const enApp = readFileSync(path.join(repoRoot, 'desktop/src/renderer/i18n/en/app
 
 test('侧栏开关按钮就在 FC logo 位置（同一个 button）', () => {
   assert.match(titleBar, /data-ui="sidebar-toggle"/);
-  // 按钮内含 FC 常态字 + 侧栏图标的悬停态
-  assert.match(titleBar, />FC<\/span>/, '按钮里要有 FC 常态');
+  // 按钮内含 FC 标识常态（0.32.9 起是 SVG 标识 LogoMark，不再是「FC」两个字）+ 侧栏图标的悬停态
+  assert.match(titleBar, /<LogoMark size=\{20\} \/>/, '按钮里要有 FC 标识常态');
   assert.match(titleBar, /<IconSidebarToggle collapsed=\{sidebarCollapsed\} \/>/);
 });
 
