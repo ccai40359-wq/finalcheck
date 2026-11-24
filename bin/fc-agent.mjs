@@ -11,7 +11,7 @@
 //   · 没人点审批：默认需要审批的操作一律拒绝（模型会收到「被拒绝」继续想办法），
 //     --allow 给持久规则放行，--yes 等同桌面端的「完全权限」
 //   · ask_user 提问卡：自动回答「没有用户在线，按你的判断继续」
-import { mkdirSync, readFileSync, writeFileSync, existsSync, statSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
