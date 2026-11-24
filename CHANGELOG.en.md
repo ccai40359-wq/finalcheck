@@ -6,6 +6,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.33.1] - 2026-11-24
+
+This release fixes two details in the slash menu and context compaction: skill descriptions used to show up as a lone `>` and now display properly, and compaction used to be a pill that flashed above the composer and is now a divider line that stays visible in the conversation.
+
+### Fixed
+
+- **Skill descriptions no longer show as a lone `>`**: skill files write their description as a multi-line folded block, and we only read the format marker itself, so the menu showed just a `>`; those skills now show their full descriptions in both languages.
+- **The English UI no longer leaks Chinese**: `/wake` used to show the Chinese label in the English interface; it now shows Scheduled wake-up.
+- **Built-in skills no longer disappear from the menu**: the list used to cut to the first 50 entries before sorting, so built-in skills that fell past that point (web automation, desktop control) were never visible. It now sorts by group before truncating.
+- **Automatic compaction leaves a trace**: auto compaction (triggered at turn start or mid-turn) used to leave nothing in the UI; it now leaves a "Context compressed" record.
+- **Manual compaction no longer shows two identical notices**: `/compact` used to produce two copies of the same compaction message; now there is only one.
+
+### Improved
+
+- **Grouped skill menu**: the slash menu is now sectioned into Commands → Methodology → Built-in skills → Project skills → External skills, with a stable order inside each group, so it is clear at a glance which skills ship with the product and which came from outside.
+- **Compaction progress in the conversation body**: while compacting, the text carries a gradient sweep and stays visible; when done it becomes "Context compressed · 162k → 29k" with an icon, so scrolling back shows that a compaction happened here and why the context got shorter.
+
 ## [0.33.0] - 2026-11-24
 
 This release brings several core Claude Code capabilities: MCP servers, one-click restore of files the AI changed, lasting permission rules, plus a round of security hardening.
