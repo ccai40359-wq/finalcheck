@@ -3,7 +3,7 @@
 // 三种模式共用 2 个宿主 + 2 种存储策略（0.31.0）：
 //   ① 离屏无痕（默认）：Electron 离屏 Chromium，partition 无 persist: 前缀 → session 在内存
 //   ② 离屏持久：同一窗口实现，partition 加 persist: 前缀 → cookie 写磁盘（userData/Partitions/）
-//   ③ CDP 接真 Edge（高级）：跨进程遥控隔离 Edge（见 browser-real.mjs，端口 9224）
+//   ③ CDP 接真 Edge（高级）：跨进程遥控隔离 Edge（见 browser-real.mjs，随机端口）
 //
 // 这里只放「选哪个 partition / 清哪些目录」这类可在进程外验证的判定，窗口生命周期留在 browser-use.mjs。
 

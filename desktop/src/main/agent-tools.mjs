@@ -34,7 +34,7 @@ function safeHost(url) {
 const PREVIEW_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp', '.html', '.htm', '.pdf', '.mp4', '.m4v', '.webm', '.mov', '.ogv', '.pptx', '.ppt', '.pps', '.ppsx', '.odp', '.key', '.docx', '.doc', '.odt', '.rtf', '.txt', '.md', '.json', '.js', '.mjs', '.css', '.csv', '.log', '.xml', '.yml', '.yaml']);
 
 // hook 说 ask 时可以接上现有审批通道的工具（其余工具没有审批通道 → 明确报错，不静默执行）
-const APPROVAL_TOOLS = new Set(['edit_file', 'write_file', 'run_command', 'quality_gate']);
+const APPROVAL_TOOLS = new Set(['edit_file', 'write_file', 'run_command', 'quality_gate', 'browser_evaluate']);
 
 function policyDenyResult(check) {
   // 2026-11-17：沙箱默认关闭后这层是**应用层策略闸**（正则/路径白名单/黑名单），
@@ -1709,6 +1709,16 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
       const expr = String(args?.expression || '').trim();
       if (!expr) return { error: '缺少 expression' };
       const real = await realConnected();
+      // 0.33.0：在页面里执行任意脚本 = 能读这个站点的 cookie / 本地存储 / 页面上的一切，
+      // 在用户登录过的真实 Edge 里尤其敏感。与 run_command 同级审批（完全权限模式下自动放行）。
+      // 「本会话总是允许」按通道记（真实 Edge / 内置浏览器分开），不按脚本内容记。
+      const channel = real ? 'real-edge' : 'embedded';
+      if (!preApproved('browser_evaluate', channel) && !permissions?.sessionAllowed?.('browser_evaluate', channel, approvalScope)) {
+        const where = real ? '你的真实 Edge（含登录态）' : '内置浏览器';
+        const decision = await permissions?.requestApproval?.({ tool: 'browser_evaluate', target: channel, summary: `在${where}的当前页面执行脚本：
+${expr.slice(0, 400)}`, ...approvalScope });
+        if (decision !== 'allowed-once' && decision !== 'always-session') return { error: '用户拒绝了在页面里执行脚本' };
+      }
       if (real) {
         try { return await real.evaluateReal(expr); }
         catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
@@ -1759,7 +1769,7 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
       return { ok: true, note: '浏览器已关闭' };
     });
 
-    // ---- 真 Edge（CDP 9224）：连接 / 登录态 / 断开 ----
+    // ---- 真 Edge（CDP 随机端口）：连接 / 登录态 / 断开 ----
     // 红线：断开不杀 Edge（人工启动、用户登录过的浏览器要继续活着）。
     tools.browser_connect_real = async (args) => {
       const real = await loadBrowserReal();

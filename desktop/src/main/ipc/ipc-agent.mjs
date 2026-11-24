@@ -1167,7 +1167,7 @@ export function registerAgentIpc({
         // 0.31.0：浏览器会话策略（无痕/持久）与首次使用提示，按当前配置每次导航解析
         browserSessionPolicy,
         onBrowserFirstUse,
-        // 0.31.0 模式③：真 Edge（CDP 9224）。懒加载；不可用时工具返回明确错误
+        // 0.31.0 模式③：真 Edge（CDP 随机端口）。懒加载；不可用时工具返回明确错误
         getBrowserRealAsync: () => loadBrowserReal(),
         browserUserDataDir,
         // 0.32.0：右栏内嵌宿主预热器。browser_navigate 是 async，可以在动手前 await 一次

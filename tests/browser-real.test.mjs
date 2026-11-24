@@ -25,9 +25,10 @@ const pkg = JSON.parse(readSrc('package.json'));
 
 /* ---------------- 端口纪律（红线） ---------------- */
 
-test('browser-real: 默认端口 9224，且明确拒绝 9223（datacrawler 的端口）', async () => {
-  assert.equal(DEFAULT_CDP_PORT, 9224, 'FC 必须用 9224，绝不能和 datacrawler 抢 9223');
-  assert.match(realSrc, /p === 9223/, '启动/连接路径必须有 9223 的硬拒绝');
+test('browser-real: 端口随机（0.33.0 起不再固定 9224），且明确拒绝 9223（datacrawler 的端口）', async () => {
+  assert.equal(DEFAULT_CDP_PORT, 0, '0 = Edge 随机分配端口；固定端口谁都能先占住冒充');
+  assert.match(realSrc, /edgeArgs\(\{ port: 0, profile, urls \}\)/, '启动隔离 Edge 必须用随机端口');
+  assert.match(realSrc, /Number\(port\) === 9223/, '启动/连接路径必须有 9223 的硬拒绝');
   // 两次拒绝：connectReal 与 startIsolatedEdge 各一处，缺一处就有绕过去的可能
   const rejects = (realSrc.match(/拒绝使用 9223/g) || []).length;
   assert.equal(rejects, 2, `9223 的硬拒绝应有两处（connectReal / startIsolatedEdge），实际 ${rejects}`);
@@ -106,7 +107,7 @@ test('browser-real: 未连接时的工具调用给出可执行的错误（不是
   assert.equal(realIsConnected(), false, '纯 Node 环境默认未连接');
   const info = realInfo();
   assert.equal(info.connected, false);
-  assert.equal(info.port, 9224);
+  assert.equal(info.port, 0);
   assert.deepEqual(await disconnectReal(), { ok: true, connected: false, note: '本来就没连' }, '未连接时断开必须幂等');
   await assert.rejects(() => navigateReal('https://example.com/'), /未连接|browser_connect_real/);
 });
@@ -239,7 +240,7 @@ test('schema: 三个真 Edge 工具在 AGENT_TOOLS_SCHEMA 里，描述含关键�
   assert.deepEqual(nav.parameters.properties.mode.enum, ['local', 'persistent', 'oneshot', 'real'], 'browser_navigate 的 mode 覆盖三模式');
   assert.match(nav.description, /ask_user/, '描述里必须要求先问用户三选一，不许模型自己拍板');
   const connect = AGENT_TOOLS_SCHEMA.find((t) => t.function.name === 'browser_connect_real').function;
-  assert.match(connect.description, /9224/, '必须写明端口');
+  assert.match(connect.description, /随机本地端口/, '必须写明端口策略');
   assert.match(connect.description, /不抢前台/, '必须写明不抢前台');
   const disc = AGENT_TOOLS_SCHEMA.find((t) => t.function.name === 'browser_disconnect_real').function;
   assert.match(disc.description, /Edge 继续运行/, '必须写明断开不杀浏览器');
