@@ -994,6 +994,12 @@ export default function App() {
       // 主进程 notice（进程级异常兜底，sessionId 可能为 null）与回合 warning：
       // 以前这些事件被 reducer 的 default 分支丢掉，用户完全看不到「主进程出事了」。
       // 0.33.1：计划被批准 → 这个会话的计划模式自动关掉（同一回合已经在接着执行了）
+      // 0.33.1 @文件引用：有没附上的给个提示（附上的模型自己看得到，不打扰）
+      if (ev.kind === 'mentions') {
+        const skipped = Array.isArray(ev.skipped) ? ev.skipped : [];
+        if (skipped.length && activeIdRef.current === sid) pushNotice(t('有 {n} 个 @ 引用没附上：{list}', { n: skipped.length, list: skipped.map((s) => `${s.path}（${s.reason}）`).join('；') }));
+        return;
+      }
       if (ev.kind === 'plan-mode') {
         if (sid && ev.active === false) {
           setPlanModes((m) => ({ ...m, [sid]: false }));

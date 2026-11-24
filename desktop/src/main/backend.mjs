@@ -9,6 +9,7 @@
 import { mkdir } from 'node:fs/promises';
 import * as sessions from './sessions.mjs';
 import * as projects from './projects.mjs';
+import { fileSuggestions } from './mentions.mjs';
 import { loadHooksConfig, hooksFilePath, normalizeHooksConfig, runHookEvent, HOOK_EVENTS } from './hooks.mjs';
 import { writeFile as writeFileAsync, mkdir as mkdirAsync } from 'node:fs/promises';
 import { getSessionDir, scanSessionsDir, projectRootOfSessionsDir } from './session-projects.mjs';
@@ -152,6 +153,10 @@ export function createBackend({ ipcMain, getWin, getDataRoot, engineUrl, repoRoo
       return { ok: true, warnings: bad, status };
     });
     // 0.33.1 Hooks 设置页：读 / 存 hooks.json（存完立即重载，下一次工具调用起生效）/ 用示例输入试跑一条
+    // 0.33.1 @文件引用：输入框候选（项目文件模糊匹配）
+    ipcMain.handle('finalcheck:project-files', async (_e, sessionId, query) => {
+      try { return await fileSuggestions(sessionProjectPathOf(sessionId) || activeProjectPath, String(query || '').slice(0, 200), 30); } catch { return []; }
+    });
     ipcMain.handle('finalcheck:hooks-get', async () => {
       const file = hooksFilePath();
       let raw = null;

@@ -376,4 +376,7 @@ export const EN_CHAT = {
   '计划': 'Plan',
   '批准，开始执行': 'Approve and start',
   '继续完善计划': 'Keep refining the plan',
+  // 0.33.1 @文件引用
+  '@ 引用项目文件：发送时附上文件内容 · ↑↓ 选择 · Enter/Tab 确认 · Esc 关闭': '@ mention project files: their contents are attached on send · ↑↓ select · Enter/Tab confirm · Esc close',
+  '有 {n} 个 @ 引用没附上：{list}': '{n} @ mention(s) not attached: {list}',
 };

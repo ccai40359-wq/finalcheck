@@ -17,6 +17,7 @@ import { listJournals, pickResumableRun } from '../workflow-journal.mjs';
 import { writeStepTranscript, readStepTranscript, pruneRuns, trimTranscriptMessages } from '../transcripts.mjs';
 import { createAskUserRegistry } from '../ask-user.mjs';
 import { createTodoRegistry } from '../todo-list.mjs';
+import { expandMentions, appendMentionBlocks } from '../mentions.mjs';
 import { t } from '../../renderer/i18n/core.mjs';
 
 // 附件里的图片 → OpenAI 多模态 content parts（本机网关已验证支持 image_url data:）
@@ -737,6 +738,21 @@ export function registerAgentIpc({
       contextMessages = lastUser >= 0
         ? [...contextMessages.slice(0, lastUser), note, ...contextMessages.slice(lastUser)]
         : [...contextMessages, note];
+    }
+    // 0.33.1 @文件引用：只在发给模型的副本里展开最后一条用户消息（不写回会话；路径限定在本会话的项目目录）
+    {
+      const lastUser = contextMessages.map((m) => m?.role).lastIndexOf('user');
+      const lu = lastUser >= 0 ? contextMessages[lastUser] : null;
+      const text = typeof lu?.content === 'string' ? lu.content : Array.isArray(lu?.content) ? lu.content.filter((p) => p?.type === 'text').map((p) => p.text).join(' ') : '';
+      if (text.includes('@') && turnProjectPath) {
+        try {
+          const ex = await expandMentions(text, { root: turnProjectPath });
+          if (ex.blocks.length || ex.skipped.length) {
+            contextMessages = contextMessages.map((m, i) => (i === lastUser ? { ...m, content: appendMentionBlocks(m.content, ex) } : m));
+            sendEvent({ kind: 'mentions', attached: ex.attached, skipped: ex.skipped });
+          }
+        } catch { /* 展开失败不挡这一轮 */ }
+      }
     }
     contextMessages = await attachImagesToLastUser(contextMessages, imageMime);
     // 本轮窗口/输出预留按实际解析到的模型走（model > provider > 默认 1M/32k），跨轮预算用同一对值推导
