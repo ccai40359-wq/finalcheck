@@ -6,6 +6,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.33.3] - 2026-11-25
+
+This release only fixes scrolling: in long sessions the scroll-to-bottom button used to stop halfway, and streaming output could never keep up with the bottom. Both now land properly.
+
+### Fixed
+
+- **Scroll to bottom no longer stops halfway**: in long sessions the down arrow used to stop thousands of pixels short of the bottom, and the longer the messages the worse the offset. In a session with 12 long answers, it used to stop 9705 pixels from the bottom; it now lands within a pixel.
+- **Streaming output keeps up with the bottom**: while a reply grows, the view used to lag by roughly a screen; it now re-measures the height every frame and stays pinned.
+- **Scrolling up through history is not yanked back down**: auto-follow stops immediately while you are reading earlier messages.
+
 ## [0.33.2] - 2026-11-24
 
 This release continues closing the gap with Claude Code: the AI can search the web and find files by name, a new Plan mode proposes before it acts, you can @-mention files in the composer, Hooks get a settings page, and there is a new command-line agent, fc-agent.
