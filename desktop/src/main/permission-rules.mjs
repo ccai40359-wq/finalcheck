@@ -115,8 +115,9 @@ export function subjectOf(name, args) {
   const a = args && typeof args === 'object' ? args : {};
   if (name === 'run_command') return { kind: 'command', value: String(a.command ?? '') };
   if (PATH_TOOLS.has(name)) return a.path ? { kind: 'path', value: String(a.path) } : null;
-  if (name === 'grep_code' && a.path) return { kind: 'path', value: String(a.path) };
-  if (name === 'browser_navigate' && a.url) return { kind: 'text', value: String(a.url) };
+  if ((name === 'grep_code' || name === 'glob_files' || name === 'list_dir') && a.path) return { kind: 'path', value: String(a.path) };
+  if ((name === 'browser_navigate' || name === 'web_fetch') && a.url) return { kind: 'text', value: String(a.url) };
+  if (name === 'web_search' && a.query) return { kind: 'text', value: String(a.query) };
   return null;
 }
 

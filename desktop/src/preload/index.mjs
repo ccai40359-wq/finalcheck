@@ -83,6 +83,11 @@ contextBridge.exposeInMainWorld('finalcheck', {
   permissionRulesSave: (rules) => ipcRenderer.invoke('finalcheck:permission-rules-save', rules),
   permissionRulesTest: (req) => ipcRenderer.invoke('finalcheck:permission-rules-test', req),
   permissionRulesAdd: (kind, rule) => ipcRenderer.invoke('finalcheck:permission-rules-add', kind, rule),
+  // 0.33.1 Hooks 设置页
+  hooksGet: () => ipcRenderer.invoke('finalcheck:hooks-get'),
+  projectFiles: (sessionId, query) => ipcRenderer.invoke('finalcheck:project-files', sessionId, query),
+  hooksSave: (cfg) => ipcRenderer.invoke('finalcheck:hooks-save', cfg),
+  hooksTest: (req) => ipcRenderer.invoke('finalcheck:hooks-test', req),
   // 0.33.0 文件检查点回退
   checkpointPlan: (sessionId, keepUserTurns) => ipcRenderer.invoke('finalcheck:checkpoint-plan', sessionId, keepUserTurns),
   checkpointRestore: (sessionId, keepUserTurns) => ipcRenderer.invoke('finalcheck:checkpoint-restore', sessionId, keepUserTurns),

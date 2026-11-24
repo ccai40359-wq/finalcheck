@@ -187,7 +187,7 @@ export async function createSimClient({
    * @param {string} text
    * @param {{ onEvent?: (ev:any, ctl:{cancel:()=>Promise<any>, steer:(t:string)=>Promise<any>}) => void, cancelAfterMs?: number }} [o]
    */
-  const send = async (sid, text, { onEvent = null, cancelAfterMs = null } = {}) => {
+  const send = async (sid, text, { onEvent = null, cancelAfterMs = null, chatOpts = null } = {}) => {
     if (!ui.has(sid)) await open(sid);
     const startedAt = Date.now();
     const reqBefore = gateway.requests ? gateway.requests.length : 0;
@@ -219,7 +219,7 @@ export async function createSimClient({
     if (cancelAfterMs != null) timer = setTimeout(() => { void ctl.cancel(); }, cancelAfterMs);
     let r;
     try {
-      r = await invoke('finalcheck:agent-chat', wire, [], sid);
+      r = await invoke('finalcheck:agent-chat', wire, [], sid, chatOpts);
     } finally {
       listeners.delete(onMsg);
       if (timer) clearTimeout(timer);

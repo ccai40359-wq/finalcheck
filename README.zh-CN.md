@@ -1,7 +1,7 @@
 <img src="docs/assets/hero.webp" alt="FinalCheck 终检" width="100%">
 
 [![CI](https://github.com/ccai40359-wq/finalcheck/actions/workflows/ci.yml/badge.svg)](https://github.com/ccai40359-wq/finalcheck/actions/workflows/ci.yml)
-![tests](https://img.shields.io/badge/tests-2180%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-2224%20passing-brightgreen)
 ![license](https://img.shields.io/badge/license-Apache--2.0-blue)
 
 # FinalCheck · 终检
@@ -84,6 +84,14 @@ node bin/finalcheck.js audit . --tier L2
 审计**默认只做静态检查**：不执行被审项目的测试或质量命令，Q1/Q2 记为覆盖缺口，不会冒充通过。只有显式加 `--run-tests` 才执行；`--no-tests` 优先于 `--run-tests`，两者同时出现时一律禁止执行。`scan-download` 存在 `coverageGap` 时退出码非零，避免「未验证」被当成「通过」。
 
 已实现范围、边界与人工证据契约见 [docs/RELIABILITY.md](docs/RELIABILITY.md)。
+
+### 命令行 agent（`fc-agent`）
+
+```bash
+node bin/fc-agent.mjs -p "给 utils.js 补单测" --project . --allow "run_command(npm test:*)"
+```
+
+不开窗口跑一轮 agent，和桌面端同一套引擎，只读借用桌面端的模型配置、权限规则和 hooks。没人审批时，需要审批的操作默认拒绝，用 `--allow` 规则或 `--yes`（完全权限）放行。另有 `--plan`（只出计划不动手）、`--output json|stream-json`、`--continue` / `--resume <会话id>`、`--model <供应商>/<模型>`。它的会话存在 `FinalCheck/cli` 下，不和桌面端混在一起。
 
 想在本地跑构建产物冒烟：在仓库根执行 `npm run smoke:e2e`（需先有 `desktop/out`）。它会开真实窗口并只用临时隔离配置，不碰你本机的真实 FinalCheck 数据。
 
@@ -177,12 +185,12 @@ desktop/      Electron 桌面端（main / preload / renderer）
 playbooks/    体检 playbook
 integrations/ 编码 agent 的 skill + hook 接线
 docs/         ACCEPTANCE.md（分级验收的唯一事实源）、RELIABILITY.md（已实现范围与边界）
-tests/        node:test 测试（当前 2180 项全绿）
+tests/        node:test 测试（当前 2224 项全绿）
 ```
 
 ## 状态
 
-已能真用但仍在早期：引擎、桌面端、分级闸门、Agent 工作流（DAG + 脚本 DSL）、对抗复核与内置更新都已落地，每次改动跑 2180 项测试。本项目自身按 L3 标准开发——本仓库违反 L2 矩阵任何一条，都算 bug。
+已能真用但仍在早期：引擎、桌面端、分级闸门、Agent 工作流（DAG + 脚本 DSL）、对抗复核与内置更新都已落地，每次改动跑 2224 项测试。本项目自身按 L3 标准开发——本仓库违反 L2 矩阵任何一条，都算 bug。
 
 ## 作者
 

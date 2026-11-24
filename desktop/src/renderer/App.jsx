@@ -177,6 +177,9 @@ export default function App() {
   const [messages, setMessages] = useState([]);       // 当前会话消息（含流式助手占位）
   const [input, setInput] = useState('');
   const [editing, setEditing] = useState(null); // {index, keepTurns}：编辑历史消息，发送后从该条重开
+  const [planModes, setPlanModes] = useState({}); // 0.33.1 计划模式：{ [sessionId]: true }
+  const planModesRef = useRef({});
+  planModesRef.current = planModes;
   const [rewindBox, setRewindBox] = useState(null); // 0.33.0「恢复文件到这条消息之前」：{ keepTurns, plan, loading, applying, result, error }
   const [runningIds, setRunningIds] = useState({}); // 会话 id → 是否正在跑（多会话可同时跑）
   const [stoppingIds, setStoppingIds] = useState({}); // 会话 id → 已点停止、等待主进程收尾
@@ -1019,6 +1022,20 @@ export default function App() {
       }
       // 主进程 notice（进程级异常兜底，sessionId 可能为 null）与回合 warning：
       // 以前这些事件被 reducer 的 default 分支丢掉，用户完全看不到「主进程出事了」。
+      // 0.33.1：计划被批准 → 这个会话的计划模式自动关掉（同一回合已经在接着执行了）
+      // 0.33.1 @文件引用：有没附上的给个提示（附上的模型自己看得到，不打扰）
+      if (ev.kind === 'mentions') {
+        const skipped = Array.isArray(ev.skipped) ? ev.skipped : [];
+        if (skipped.length && activeIdRef.current === sid) pushNotice(t('有 {n} 个 @ 引用没附上：{list}', { n: skipped.length, list: skipped.map((s) => `${s.path}（${s.reason}）`).join('；') }));
+        return;
+      }
+      if (ev.kind === 'plan-mode') {
+        if (sid && ev.active === false) {
+          setPlanModes((m) => ({ ...m, [sid]: false }));
+          if (activeIdRef.current === sid) pushNotice(t('计划已批准，开始执行'));
+        }
+        return;
+      }
       if (ev.kind === 'notice' || ev.kind === 'warning') {
         const message = String(ev.message || (ev.kind === 'warning' ? ev.text : '') || '').trim();
         if (message) pushNotice(sid && activeIdRef.current !== sid ? t('（后台会话）{msg}', { msg: message }) : message);
@@ -1577,6 +1594,12 @@ export default function App() {
       try {
         const s = unwrapIpc(await y.sessions.create(t('新会话')));
         sid = s.id;
+        // 0.33.1：空白页上打开的计划模式跟着新会话走
+        if (planModesRef.current.__draft__) {
+          const { __draft__: _d, ...rest } = planModesRef.current;
+          planModesRef.current = { ...rest, [sid]: true };
+          setPlanModes(planModesRef.current);
+        }
         setActiveId(sid);
         activeIdRef.current = sid;
         if (sendProjectId) rememberSessionProject(sendProjectId); // 草稿落盘后：会话归属与创建它的项目一致
@@ -1623,7 +1646,7 @@ export default function App() {
 
     try {
       // unattended=true → 主进程把这一轮强制成 ask 模式（Full access 下也不许自动写文件）
-      const r = await y.agentChat(wireHistory, [], sid, { unattended: unattendedRoundRef.current === sid });
+      const r = await y.agentChat(wireHistory, [], sid, { unattended: unattendedRoundRef.current === sid, planMode: !!planModesRef.current[sid] });
       turnOutcomeRef.current.set(sid, turnOutcomeOf(r)); // 停止/报错收尾：队列泵不再自动发下一条
       if (isActive()) {
         setMessages((prev) => {
@@ -2103,6 +2126,8 @@ export default function App() {
               pastedBlocks={pastedBlocks} setPastedBlocks={setPastedBlocks}
               editing={editing} dragging={dragging} busy={busy} stopping={stopping} compacting={compacting}
               onToggleEditRestore={(on) => setEditing((e) => (e ? { ...e, restoreFiles: on } : e))}
+              planMode={!!planModes[activeId || '__draft__']}
+              onTogglePlan={() => setPlanModes((m) => { const k = activeId || '__draft__'; return { ...m, [k]: !m[k] }; })}
               steering={!!steeringIds[activeId]}
               approval={approval} queueItems={queueItems} menu={menu} providerMenu={providerMenu}
               permMode={permMode} ctxStats={ctxStats} skills={skills} cfg={cfg} sessCfg={sessCfg}

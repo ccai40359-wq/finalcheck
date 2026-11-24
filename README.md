@@ -1,7 +1,7 @@
 <img src="docs/assets/hero.webp" alt="FinalCheck — pre-flight check for code" width="100%">
 
 [![CI](https://github.com/ccai40359-wq/finalcheck/actions/workflows/ci.yml/badge.svg)](https://github.com/ccai40359-wq/finalcheck/actions/workflows/ci.yml)
-![tests](https://img.shields.io/badge/tests-2180%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-2224%20passing-brightgreen)
 ![license](https://img.shields.io/badge/license-Apache--2.0-blue)
 
 # FinalCheck
@@ -84,6 +84,14 @@ node bin/finalcheck.js audit . --tier L2
 The audit is **static by default**: it does not run the audited project's test suite or quality commands, and Q1/Q2 are reported as coverage gaps instead of passes. Add `--run-tests` only for a project you trust and explicitly want executed; `--no-tests` wins over `--run-tests` when both are present. `scan-download` exits non-zero whenever it has a coverage gap, so "could not verify" never looks like a pass.
 
 Implemented scope, limits and the manual-evidence contract are in [docs/RELIABILITY.md](docs/RELIABILITY.md).
+
+### Command-line agent (`fc-agent`)
+
+```bash
+node bin/fc-agent.mjs -p "add unit tests for utils.js" --project . --allow "run_command(npm test:*)"
+```
+
+Runs one agent turn headlessly with the same engine as the desktop app, reusing its model providers, permission rules and hooks (read-only). With nobody to approve, actions that need approval are denied unless covered by `--allow` rules or `--yes` (full access). Also: `--plan` (print a plan without acting), `--output json|stream-json`, `--continue` / `--resume <id>`, `--model <provider>/<model>`. Its sessions live in `FinalCheck/cli`, separate from the desktop app.
 
 ### Desktop app
 
@@ -194,12 +202,12 @@ desktop/      Electron app (main / preload / renderer)
 playbooks/    audit playbooks
 integrations/ skill + hook wiring for coding agents
 docs/         ACCEPTANCE.md — tier SSOT; RELIABILITY.md — implemented scope and evidence limits
-tests/        node:test suites (2180 passing)
+tests/        node:test suites (2224 passing)
 ```
 
 ## Status
 
-Early but real: the engine, the desktop app, tiered gates, agent workflows (DAG + script DSL), adversarial verification and in-app updates are in place, with 2180 tests passing on every change. Development follows the project's own L3 standard — a known violation of any L2 item in this repository counts as a bug.
+Early but real: the engine, the desktop app, tiered gates, agent workflows (DAG + script DSL), adversarial verification and in-app updates are in place, with 2224 tests passing on every change. Development follows the project's own L3 standard — a known violation of any L2 item in this repository counts as a bug.
 
 ## Author
 

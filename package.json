@@ -1,13 +1,14 @@
 {
   "name": "finalcheck",
-  "version": "0.33.1",
+  "version": "0.33.2",
   "description": "分级生产就绪验收：人看不懂的代码，跑之前先过闸",
   "author": "Sean (https://github.com/ccai40359-wq)",
   "type": "module",
   "private": true,
   "bin": {
     "finalcheck": "./bin/finalcheck.js",
-    "finalcheck-mcp": "./bin/finalcheck-mcp.js"
+    "finalcheck-mcp": "./bin/finalcheck-mcp.js",
+    "fc-agent": "./bin/fc-agent.mjs"
   },
   "scripts": {
     "test": "node scripts/run-tests.mjs",

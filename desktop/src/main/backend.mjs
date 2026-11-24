@@ -9,7 +9,9 @@
 import { mkdir } from 'node:fs/promises';
 import * as sessions from './sessions.mjs';
 import * as projects from './projects.mjs';
-import { loadHooksConfig } from './hooks.mjs';
+import { fileSuggestions } from './mentions.mjs';
+import { loadHooksConfig, hooksFilePath, normalizeHooksConfig, runHookEvent, HOOK_EVENTS } from './hooks.mjs';
+import { writeFile as writeFileAsync, mkdir as mkdirAsync } from 'node:fs/promises';
 import { getSessionDir, scanSessionsDir, projectRootOfSessionsDir } from './session-projects.mjs';
 import { planProjectSwitch } from './project-switch.mjs';
 import { registerSessionIpc } from './ipc/ipc-sessions.mjs';
@@ -149,6 +151,48 @@ export function createBackend({ ipcMain, getWin, getDataRoot, engineUrl, repoRoo
       await store.saveConfig({ ...cfg, mcpServers: obj });
       const status = await syncMcp();
       return { ok: true, warnings: bad, status };
+    });
+    // 0.33.1 Hooks 设置页：读 / 存 hooks.json（存完立即重载，下一次工具调用起生效）/ 用示例输入试跑一条
+    // 0.33.1 @文件引用：输入框候选（项目文件模糊匹配）
+    ipcMain.handle('finalcheck:project-files', async (_e, sessionId, query) => {
+      try { return await fileSuggestions(sessionProjectPathOf(sessionId) || activeProjectPath, String(query || '').slice(0, 200), 30); } catch { return []; }
+    });
+    ipcMain.handle('finalcheck:hooks-get', async () => {
+      const file = hooksFilePath();
+      let raw = null;
+      try { raw = JSON.parse(readFileSync(file, 'utf8')); } catch { /* 不存在或坏了：给默认 */ }
+      const cfg = hooksConfig || loadHooksConfig();
+      return { file, events: HOOK_EVENTS, enabled: cfg.enabled, config: raw && typeof raw === 'object' ? raw : { enabled: false, events: {} }, warnings: cfg.warnings || [] };
+    });
+    ipcMain.handle('finalcheck:hooks-save', async (_e, raw) => {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { ok: false, error: 'hooks 配置必须是 JSON 对象' };
+      const norm = normalizeHooksConfig(raw);
+      const file = hooksFilePath();
+      await mkdirAsync(path.dirname(file), { recursive: true });
+      await writeFileAsync(file, JSON.stringify(raw, null, 2), 'utf8');
+      hooksConfig = loadHooksConfig();
+      return { ok: true, file, enabled: hooksConfig.enabled, warnings: norm.warnings };
+    });
+    ipcMain.handle('finalcheck:hooks-test', async (_e, { event, hook } = {}) => {
+      if (!HOOK_EVENTS.includes(event)) return { error: '未知事件' };
+      const command = String(hook?.command || '').trim();
+      if (!command) return { error: '先填命令' };
+      const samples = {
+        SessionStart: { source: 'startup' },
+        UserPromptSubmit: { prompt: '（试跑）帮我看看这个项目' },
+        PreToolUse: { tool: 'run_command', args: { command: 'echo hello' } },
+        PermissionRequest: { tool: 'run_command', summary: 'echo hello' },
+        PostToolUse: { tool: 'run_command', args: { command: 'echo hello' }, result: { stdout: 'hello' } },
+        PostToolUseFailure: { tool: 'run_command', args: { command: 'echo hello' }, error: '（试跑）示例错误' },
+        Stop: { response: '（试跑）示例回复' }
+      };
+      const started = Date.now();
+      // 试跑只跑这一条，不带 matcher（matcher 是否命中另说）；cwd = 当前项目
+      const r = await runHookEvent(event, { ...samples[event], sessionId: 'hooks-test', cwd: activeProjectPath || process.cwd() }, {
+        cwd: activeProjectPath || undefined,
+        config: { enabled: true, events: { [event]: [{ command, timeoutMs: Math.min(Number(hook?.timeoutMs) || 30000, 60000) }] } }
+      });
+      return { ...r, ms: Date.now() - started, sample: samples[event] };
     });
     // 0.33.0 持久权限规则（config.permissionRules = { allow:[], deny:[] }，对齐 Claude Code）
     const cleanRuleList = (v) => (Array.isArray(v) ? v : String(v ?? '').split(/\r?\n/))

@@ -55,6 +55,14 @@ function AttachmentChip({ item, onRemove }) {
   );
 }
 
+function IconPlanMode() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M9 4h6a1 1 0 0 1 1 1v1H8V5a1 1 0 0 1 1-1Z" /><path d="M8 6H6a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V7a1 1 0 0 0-1-1h-2" /><path d="M9 12h6M9 16h4" />
+    </svg>
+  );
+}
+
 export default function Composer({
   y, input, setInput, attachments, setAttachments, pastedBlocks, setPastedBlocks, editing, dragging, busy, stopping, steering, compacting,
   approval, queueItems, menu, providerMenu, permMode, ctxStats, skills, cfg, sessCfg, effortPos, activeId, onNotice,
@@ -63,7 +71,7 @@ export default function Composer({
   setDragging, setMenu, setProviderMenu, setEffortPos, setSessCfg, setCfg, setPermMode,
   cancelEdit, chooseSlash, onToggleEditRestore,
   decideApproval, steerQueueItem, moveQueueItemToInput, removeQueueItem, sendQueueItemNow, queueHeld = false,
-  send, stop, onGoSettings
+  send, stop, onGoSettings, planMode = false, onTogglePlan = null
 }) {
   // ---- 输入框下方的模型 / 思考强度 / 技能菜单（按当前会话的配置显示） ----
   const allProviders = cfg?.providers || [];
@@ -85,6 +93,35 @@ export default function Composer({
   // 且**先排序再截断**——以前先 slice(0,50) 会把排在后面的自带技能整段切掉。
   const slashItems = buildSlashItems({ commands: COMMANDS, skills, lang, query: slashQ }).slice(0, 60);
   const slashOpen = !!slashMatch;
+
+  // 0.33.1 @文件引用：光标前是「@xxx」时弹项目文件候选（主进程模糊匹配，150ms 防抖）
+  const mentionMatch = slashOpen ? null : input.match(/(^|\s)@([^\s@"]*)$/);
+  const mentionQ = mentionMatch ? mentionMatch[2] : null;
+  const [mentionItems, setMentionItems] = useState([]);
+  const [mentionIndex, setMentionIndex] = useState(0);
+  const [mentionClosed, setMentionClosed] = useState(null); // Esc 关掉的那个查询，换了字再弹
+  useEffect(() => {
+    if (mentionQ == null || !y?.projectFiles) { setMentionItems([]); return undefined; }
+    let alive = true;
+    const timer = setTimeout(() => {
+      y.projectFiles(activeId || null, mentionQ).then((r) => { if (alive) { setMentionItems(Array.isArray(r) ? r : []); setMentionIndex(0); } }).catch(() => {});
+    }, 150);
+    return () => { alive = false; clearTimeout(timer); };
+  }, [mentionQ, activeId, y]);
+  const mentionOpen = mentionQ != null && mentionClosed !== mentionQ && mentionItems.length > 0;
+  const chooseMention = (rel) => {
+    if (!rel || !mentionMatch) return;
+    const head = input.slice(0, mentionMatch.index) + (mentionMatch[1] || '');
+    const token = /\s/.test(rel) ? `@"${rel}"` : `@${rel}`;
+    // 选了目录：留在 @ 里继续往下挑；选了文件：补空格结束
+    const next = head + token + (rel.endsWith('/') ? '' : ' ');
+    setInput(next);
+    requestAnimationFrame(() => {
+      const el = inputRef.current;
+      el?.focus();
+      try { el?.setSelectionRange(next.length, next.length); } catch { /* 忽略 */ }
+    });
+  };
 
   // ---- 权限 / 模型 / 思考强度（按会话保存，不再改全局默认） ----
   const changeMode = async (m) => {
@@ -167,6 +204,14 @@ export default function Composer({
   const removePasted = (id) => setPastedBlocks((prev) => prev.filter((b) => b.id !== id));
 
   const onComposerKeyDown = (e) => {
+    // 0.33.1：Shift+Tab 切换计划模式（Claude Code 同款快捷键）
+    if (e.key === 'Tab' && e.shiftKey && onTogglePlan) { e.preventDefault(); onTogglePlan(); return; }
+    if (mentionOpen) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); setMentionIndex((v) => (v + 1) % mentionItems.length); return; }
+      if (e.key === 'ArrowUp') { e.preventDefault(); setMentionIndex((v) => (v - 1 + mentionItems.length) % mentionItems.length); return; }
+      if ((e.key === 'Enter' || e.key === 'Tab') && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); chooseMention(mentionItems[Math.min(mentionIndex, mentionItems.length - 1)]); return; }
+      if (e.key === 'Escape') { e.preventDefault(); setMentionClosed(mentionQ); return; }
+    }
     if (slashOpen && slashItems.length) {
       if (e.key === 'ArrowDown') { e.preventDefault(); setSlashIndex((v) => (v + 1) % slashItems.length); return; }
       if (e.key === 'ArrowUp') { e.preventDefault(); setSlashIndex((v) => (v - 1 + slashItems.length) % slashItems.length); return; }
@@ -361,6 +406,15 @@ export default function Composer({
                 </div>
               )}
             </div>
+
+            {onTogglePlan ? (
+              <button onClick={onTogglePlan} data-testid="plan-toggle" aria-pressed={planMode}
+                title={planMode ? t('计划模式已开：AI 先调查、出计划，你批准后才改文件（Shift+Tab 关闭）') : t('计划模式：先出计划、批准后再动手（Shift+Tab）')}
+                className={`inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-[11px] whitespace-nowrap transition-colors ${planMode ? 'bg-gold/[0.12] text-goldSoft' : 'text-mute/70 hover:text-ink hover:bg-lift/[0.06]'}`}>
+                <IconPlanMode />
+                <span className="fc-hide-narrow">{t('计划')}</span>
+              </button>
+            ) : null}
 
             <div className="ml-auto flex items-center gap-1 fc-right-group">
               <div className="relative">
@@ -564,6 +618,35 @@ export default function Composer({
               </button>
             )}
           </div>
+
+          {/* @ 文件引用候选 */}
+          {mentionOpen && (
+            <div className="glass-pop absolute bottom-full mb-2 left-0 right-0 rounded-2xl overflow-hidden z-50 pop-in" data-testid="mention-menu">
+              <div className="max-h-72 overflow-y-auto p-1.5">
+                {mentionItems.map((rel, idx) => {
+                  const isDir = rel.endsWith('/');
+                  const trimmed = isDir ? rel.slice(0, -1) : rel;
+                  const cut = trimmed.lastIndexOf('/');
+                  const name = trimmed.slice(cut + 1) + (isDir ? '/' : '');
+                  const dir = cut > 0 ? trimmed.slice(0, cut) : '';
+                  return (
+                    <button key={rel}
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => chooseMention(rel)}
+                      onMouseEnter={() => setMentionIndex(idx)}
+                      className={`fc-menu-row w-full flex items-center gap-2.5 px-2.5 py-[6px] rounded-lg text-left ${idx === Math.min(mentionIndex, mentionItems.length - 1) ? 'bg-lift/[0.08]' : 'hover:bg-lift/[0.05]'}`}>
+                      <span className={`shrink-0 w-1.5 h-1.5 rounded-full ${isDir ? 'bg-gold/80' : 'bg-jade/70'}`} />
+                      <span className="shrink-0 max-w-[55%] truncate font-mono text-[12px] text-ink/90">{name}</span>
+                      <span className="min-w-0 flex-1 truncate text-left font-mono text-[11px] text-mute/70">{dir}</span>
+                    </button>
+                  );
+                })}
+                <div className="px-3 pt-2 pb-1 text-[10px] text-mute/50 border-t border-lift/[0.06] mt-1">
+                  {t('@ 引用项目文件：发送时附上文件内容 · ↑↓ 选择 · Enter/Tab 确认 · Esc 关闭')}
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* / 技能菜单（命令 + 方法论 + 自带/项目/外部技能，按组分节，仿 Claude Code） */}
           {slashOpen && (
