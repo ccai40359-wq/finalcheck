@@ -880,8 +880,13 @@ export function registerAgentIpc({
           permissionRules,
           webSearchConfig: cfg.webSearch || null,
           recordAudit,
-          projectPath: turnProjectPath,
-          policy,
+          projectPath: spawn?.projectPath || turnProjectPath,
+          // worktree 子代理：路径闸 / 命令默认 cwd 都以 worktree 为项目根
+          policy: spawn?.projectPath ? createPolicy({
+            projectPath: spawn.projectPath,
+            mode: store.sandboxModeOf(cfg),
+            allowPaths: [...store.sandboxAllowPathsOf(cfg), ...crossAllowed]
+          }) : policy,
           hooksConfig: hooksCfg,
           sessionId,
           commandIdleMs: cfg.commandIdleMs,
@@ -1041,11 +1046,21 @@ export function registerAgentIpc({
       return `你是 FinalCheck 子代理（只读调查）。${common}用工具取证（read_file / grep_code / 只读命令），不要修改任何文件。\n\n${report}`;
     };
     let spawnSeq = 0;
-    const spawnAgent = async ({ description, prompt, type }, ctx = {}) => {
+    const spawnAgent = async ({ description, prompt, type, isolation = null }, ctx = {}) => {
       spawnSeq++;
       const id = spawnAgentStepId(ctx.callId, spawnSeq); // 界面按同一规则推出 id，点「打开子代理过程」直接对上
       const t0 = Date.now();
-      sendEvent({ kind: 'subagent-start', id, name: description, type, callId: ctx.callId || null });
+      // 0.33.1 worktree 隔离：先建好 worktree，失败就直接告诉模型（不悄悄退回主工作区去改）
+      let wt = null;
+      if (isolation === 'worktree') {
+        const { createAgentWorktree } = await import(engineUrl('desktop/src/main/worktree.mjs'));
+        wt = await createAgentWorktree({ projectPath: turnProjectPath, id: `${Date.now().toString(36)}-${spawnSeq}` });
+        if (!wt.ok) return { agentId: id, description, type, error: wt.error };
+      }
+      sendEvent({ kind: 'subagent-start', id, name: description, type, callId: ctx.callId || null, ...(wt ? { worktree: wt.branch } : {}) });
+      const wtNote = wt
+        ? `\n\n【隔离工作区】你在独立的 git worktree 里工作：${wt.projectDir}（分支 ${wt.branch}）。所有读写和命令都在这里进行（相对路径就是相对它），不要碰原项目目录 ${turnProjectPath}。改完不用自己提交，结束后会自动提交到该分支。`
+        : '';
       const r = await callSubagent({
         id,
         name: description,
@@ -1053,8 +1068,18 @@ export function registerAgentIpc({
         prompt,
         runId: `spawn-${chatAbort.snapshot.runId}`,
         signal: ctx.signal || null,
-        spawn: { systemPrompt: spawnSystemPrompt(type), toolNames: type === 'general' ? null : SPAWN_READONLY_TOOLS, requireTools: true }
+        spawn: { systemPrompt: spawnSystemPrompt(type) + wtNote, toolNames: type === 'general' ? null : SPAWN_READONLY_TOOLS, requireTools: true, ...(wt ? { projectPath: wt.projectDir } : {}) }
       });
+      let worktree = null;
+      if (wt) {
+        try {
+          const { finishAgentWorktree, worktreeSummary } = await import(engineUrl('desktop/src/main/worktree.mjs'));
+          const fin = await finishAgentWorktree(wt, { message: `fc-agent: ${description}` });
+          worktree = { ...fin, summary: worktreeSummary(fin) };
+        } catch (e) {
+          worktree = { error: String(e?.message || e), branch: wt.branch, dir: wt.dir };
+        }
+      }
       const full = String(r?.content || '');
       const reportText = full.length > SPAWN_REPORT_MAX
         ? `${full.slice(0, SPAWN_REPORT_MAX)}\n…[报告过长，已截到前 ${SPAWN_REPORT_MAX} 字符；原长 ${full.length}]`
@@ -1067,7 +1092,8 @@ export function registerAgentIpc({
         toolCount: Number(r?.toolCount) || 0,
         ms: Date.now() - t0,
         ...(r?.error ? { error: String(r.error) } : {}),
-        ...(r?.salvaged ? { salvaged: true } : {})
+        ...(r?.salvaged ? { salvaged: true } : {}),
+        ...(worktree ? { worktree } : {})
       };
       sendEvent({ kind: 'subagent-end', id, name: description, ok: !r?.error, toolCount: out.toolCount, ms: out.ms });
       return out;

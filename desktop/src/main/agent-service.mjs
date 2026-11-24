@@ -307,7 +307,8 @@ export const SPAWN_AGENT_SCHEMA = {
       properties: {
         description: { type: 'string', description: '3-12 字的任务标题（界面显示），如「查鉴权实现」' },
         prompt: { type: 'string', description: '交给子代理的完整任务（自包含：目标、范围、交付物）' },
-        type: { type: 'string', enum: ['explore', 'general', 'verify'], description: 'explore=只读调查（默认）；general=可改文件；verify=独立复核结论' }
+        type: { type: 'string', enum: ['explore', 'general', 'verify'], description: 'explore=只读调查（默认）；general=可改文件；verify=独立复核结论' },
+        isolation: { type: 'string', enum: ['worktree'], description: '仅 type=general：让子代理在独立的 git worktree（新分支 fc-agent/…，从当前 HEAD 拉出）里改文件，主工作区不受影响。适合试验性改动、并行改同一批文件、或想先看 diff 再决定要不要。没改动自动清理；有改动会提交到该分支，报告里给分支名和合并方法。注意：主工作区未提交的改动不在 worktree 里。' }
       },
       required: ['description', 'prompt']
     }
