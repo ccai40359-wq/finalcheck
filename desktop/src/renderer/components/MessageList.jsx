@@ -226,7 +226,7 @@ export default function MessageList({
             );
           })() : (
             /* AI 回答去气泡：无底色卡片，仅左侧金竖线（错误消息换红线）区分 */
-            <div key={mk} className={`w-full border-l-2 pl-4 transition-all duration-200 cv-auto ${m.error ? 'border-red-500/50' : m.interrupted ? 'border-gold/25' : 'border-gold/45'}`}>
+            <div key={mk} className={`w-full border-l-2 pl-4 transition-all duration-200 cv-auto ${m.error ? 'border-red-500/50' : m.interrupted ? 'border-gold/30' : 'border-lift/[0.07]'}`}>
               <ProcessTimeline msg={m} />
               {/* 验收单：最新一份钉在右上角面板；这里只在旧回合留一行只读摘要（同一份不渲染两次） */}
               {latestTodo?.index === i ? null : <TodoHistoryRow msg={m} />}

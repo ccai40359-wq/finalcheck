@@ -117,7 +117,7 @@ export default function Sidebar({
                 onContextMenu={(e) => { e.preventDefault(); onOpenRowMenu(e.clientX, e.clientY, s, p); }}
                 title={`${prettyTitle(s.title)} · ${new Date(s.updatedAt).toLocaleString('zh-CN')}${s.turns ? ` · ${t('{n} 轮', { n: s.turns })}` : ''}`}
                 className={`group relative flex items-center gap-1.5 rounded-lg pl-2 pr-1.5 py-1.5 cursor-pointer transition-colors ${s.archived ? 'opacity-45' : ''} ${
-                  sActive ? 'bg-lift/[0.09] text-goldSoft' : 'text-ink/85 hover:bg-lift/[0.06] hover:text-ink'}`}>
+                  sActive ? 'bg-lift/[0.09] text-ink' : 'text-ink/85 hover:bg-lift/[0.06] hover:text-ink'}`}>
                 {s.pinned ? <span className="text-goldDeep/70 text-[9px] shrink-0">▴</span> : null}
                 {/* 状态槽：跑的时候转圈，跑完才是绿点 */}
                 <span className="w-3 shrink-0 flex items-center justify-center">
@@ -139,7 +139,7 @@ export default function Sidebar({
             <div key={p.id} className="mb-0.5">
               <div onClick={() => onToggleProject(p)} title={p.path}
                 className={`group relative flex items-center gap-1 rounded-lg pl-1 pr-1.5 py-1.5 cursor-pointer transition-colors ${
-                  isActive ? 'text-goldSoft bg-lift/[0.045]' : 'text-ink/80 hover:bg-lift/[0.05] hover:text-ink'}`}>
+                  isActive ? 'text-ink bg-lift/[0.045]' : 'text-ink/80 hover:bg-lift/[0.05] hover:text-ink'}`}>
                 <span role="button" tabIndex={-1}
                   onClick={(e) => { e.stopPropagation(); onToggleProject(p); }}
                   className="shrink-0 p-0.5 rounded text-mute/45 hover:text-ink transition-colors">
@@ -203,7 +203,7 @@ export default function Sidebar({
       <div className="px-2 py-2 border-t border-lift/[0.06] flex items-center gap-1">
         <button onClick={onSettings}
           className={`flex-1 flex items-center gap-2 rounded-lg px-2 py-1.5 text-[13px] transition-colors ${
-            page === 'settings' ? 'bg-lift/[0.06] text-goldSoft' : 'text-mute hover:text-ink hover:bg-lift/[0.045]'}`}>
+            page === 'settings' ? 'bg-lift/[0.06] text-ink' : 'text-mute hover:text-ink hover:bg-lift/[0.045]'}`}>
           <IconGear active={page === 'settings'} />Settings
         </button>
         <SidebarUpdateButton state={sidebarUpdate} onAction={onUpdateAction} />

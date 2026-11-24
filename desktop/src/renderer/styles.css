@@ -18,42 +18,45 @@
    白色叠白色等于没效果。
    ============================================================================ */
 :root {
-  /* ---- 语义色（深色：墨黑鎏金） ----
-     层次阶梯（由深到浅）：sunken 7 → base 11 → panel 18 → card 20 → well/composer 23
-     → cardHover 28 → pop 31。每一级差 4~7 个色阶——旧版全挤在 10~19 之间，
-     侧栏和主区差不到 2 阶，看起来就是一整块纯黑，没有「玻璃浮在墨上」的感觉。 */
-  --fc-base: 11 11 14;          /* 页面底（画布） */
-  --fc-card: 20 20 24;
-  --fc-card-hover: 28 28 34;
-  --fc-edge: 44 44 52;          /* 分隔线/边框：提亮到能在新底色上看清 */
-  --fc-ink: 236 231 220;        /* 正文墨（宣纸白） */
-  --fc-mute: 156 149 140;       /* 次要文字 */
-  --fc-gold: 201 162 39;        /* 鎏金主色 */
-  --fc-gold-soft: 227 197 107;  /* 亮金（标题/强调） */
-  --fc-gold-deep: 143 116 29;
-  --fc-jade: 63 158 110;        /* 通过绿 */
+  /* ---- 语义色（深色：石墨琥珀，0.32.8 重做） ----
+     旧版「墨黑鎏金」的问题（用户截图）：正文、加粗、标题、行内代码、表头全是金色，
+     画面只剩一种颜色，层级全靠字体；底色接近纯黑，玻璃面板浮不起来。
+     新方向：
+       · 底色从纯黑抬到中性石墨（L≈7%→10%），层次面每级差 5~6 阶，面板能读出「浮起」；
+       · 正文改成中性微暖的灰白（不是宣纸黄），金色只留给「交互态 / 链接 / 运行中」；
+       · 金本身去掉发绿的柠檬黄，换成低饱和琥珀（更像真的金属而不是荧光黄）。
+     层次阶梯（由深到浅）：sunken 13 → base 17 → panel 21 → card 25 → well/composer 29
+     → cardHover 34 → pop 37。 */
+  --fc-base: 17 17 19;          /* 页面底（画布）：石墨，不是纯黑 */
+  --fc-card: 25 25 28;
+  --fc-card-hover: 34 34 38;
+  --fc-edge: 50 50 56;          /* 分隔线/边框 */
+  --fc-ink: 230 229 226;        /* 正文：中性微暖灰白（14.8:1），不再偏黄 */
+  --fc-mute: 152 151 158;       /* 次要文字：中性灰，6.6:1，过程行也读得清 */
+  --fc-gold: 214 168 92;        /* 琥珀主色（交互态/强调用，克制使用） */
+  --fc-gold-soft: 230 196 138;  /* 亮琥珀（选中/悬停/链接） */
+  --fc-gold-deep: 158 120 62;
+  --fc-jade: 92 184 138;        /* 通过绿：稍提亮，石墨底上更清楚 */
 
   /* ---- 层次面 ---- */
-  --fc-sunken: 7 7 9;           /* 下沉面：代码块 / 内嵌井（必须比画布更深＝凹陷感） */
-  --fc-panel: 18 18 22;         /* 侧栏 / 右侧预览面板（比画布亮＝浮起） */
-  --fc-well: 23 23 28;          /* 设置页里的行容器 */
-  --fc-composer: 23 23 28;
-  --fc-pop: 31 31 37;           /* 弹层（几乎不透明，优先可读性） */
+  --fc-sunken: 13 13 15;        /* 下沉面：代码块 / 内嵌井 */
+  --fc-panel: 21 21 24;         /* 侧栏 / 右侧预览面板 */
+  --fc-well: 29 29 33;          /* 设置页里的行容器 */
+  --fc-composer: 29 29 33;
+  --fc-pop: 37 37 42;           /* 弹层 */
 
   /* ---- 叠加层色调：深色下提亮，浅色下压暗 ---- */
   --fc-lift: 255 255 255;
 
   /* ---- 固定色（不随主题变） ---- */
   --fc-gold-ink: 20 16 8;       /* 金底上的文字，永远是深色 */
-  --fc-knob: 236 231 220;       /* 开关圆点 */
+  --fc-knob: 240 239 236;       /* 开关圆点 */
 
-  /* 金底按钮上的文字色。两套主题的金不是同一个明度，配字必须跟着换：
-     深色的金 #c9a227 偏亮 → 配深字（7.8:1）；浅色的金压深到 4.5:1 才够正文 →
-     配深字只剩 3.8:1，得配白字（5.0:1）。 */
-  --fc-on-gold: 20 16 8;
+  /* 金底按钮上的文字色：深色的琥珀偏亮 → 配深字（≈9:1） */
+  --fc-on-gold: 24 18 8;
 
   /* ---- 语义告警色（红/琥珀/翠绿）----
-     深色主题用浅档（300/400，亮色文字才在墨底上看得清）。 */
+     深色主题用浅档（300/400，亮色文字才在石墨底上看得清）。 */
   --fc-red-text: 248 113 113;      /* red-400 */
   --fc-red-strong: 254 202 202;    /* red-200 */
   --fc-red-base: 239 68 68;        /* red-500 */
@@ -63,23 +66,29 @@
   --fc-emerald-text: 52 211 153;   /* emerald-400 */
   --fc-emerald-base: 16 185 129;   /* emerald-500 */
 
-  /* ---- 整页背景与光晕 ---- */
-  /* 双中心柔光：左上暖金、右上淡青、中下再补一团极淡的金。
-     旧版是单点 radial + alpha 0.03~0.05，肉眼几乎看不出，整页像一块死黑塑料。
-     实测采样（1280×820）：改前主区右下角是 rgb(7,7,11)，纯黑无信息。
-     现在把三团光分散到三个角，让整页有「墨在光下」的纵深。 */
+  /* ---- 整页背景与光晕 ----
+     旧版三团金光让整页发黄褐。现在：中性石墨竖向渐变 + 一团极淡的冷光（左上）
+     + 一丝琥珀（右下），只提供「玻璃后面有东西」的纵深，不再给画面染色。 */
   --fc-app-bg:
-    radial-gradient(120% 85% at 22% -12%, #211b12 0%, #131318 42%, #0a0a0e 76%, #07070a 100%);
+    linear-gradient(180deg, #18181b 0%, #131316 55%, #101012 100%);
   --fc-ambient-bg:
-    radial-gradient(closest-side, rgba(201, 162, 39, 0.13), transparent 70%) 6% -4% / 54vmax 54vmax no-repeat,
-    radial-gradient(closest-side, rgba(63, 158, 110, 0.07), transparent 70%) 104% 6% / 42vmax 42vmax no-repeat,
-    radial-gradient(closest-side, rgba(214, 178, 92, 0.075), transparent 72%) 46% 116% / 62vmax 62vmax no-repeat;
-  --fc-veil: 10 10 13;          /* 正文区薄暗纱 */
+    radial-gradient(closest-side, rgba(150, 160, 190, 0.055), transparent 72%) 4% -6% / 56vmax 56vmax no-repeat,
+    radial-gradient(closest-side, rgba(214, 168, 92, 0.035), transparent 72%) 100% 104% / 52vmax 52vmax no-repeat;
+  --fc-veil: 17 17 19;          /* 正文区薄暗纱 */
 
-  --glass-tint: rgba(20, 20, 24, 0.55);
-  --glass-hi: rgba(255, 255, 255, 0.10);
-  --glass-line: rgba(255, 255, 255, 0.075);
-  --glass-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+  --glass-tint: rgba(25, 25, 28, 0.6);
+  --glass-hi: rgba(255, 255, 255, 0.08);
+  --glass-line: rgba(255, 255, 255, 0.07);
+  --glass-shadow: 0 18px 50px rgba(0, 0, 0, 0.4);
+
+  /* ---- 字体 ----
+     旧版正文是宋体、标题是楷体：中文长文用衬线在屏幕上发虚，楷体标题和代码混排像两个产品。
+     现在 UI 与正文统一无衬线（Windows 用 Segoe UI Variable + 微软雅黑 UI），
+     标题靠字重与字号区分；楷体只留在品牌字上。 */
+  --ui-font-body: 'Inter', 'Segoe UI Variable Text', 'Segoe UI', 'PingFang SC', 'Microsoft YaHei UI', 'Microsoft YaHei', 'Noto Sans SC', system-ui, sans-serif;
+  --ui-font-heading: var(--ui-font-body);
+  --ui-heading-spacing: -0.005em;
+  --ui-font-mono: 'Cascadia Mono', 'Cascadia Code', 'JetBrains Mono', 'SF Mono', Consolas, 'Courier New', monospace;
 
   --fc-ease: cubic-bezier(.22, 1, .36, 1);
 }
@@ -135,6 +144,11 @@
   --glass-hi: rgba(255, 255, 255, 0.90);
   --glass-line: rgba(0, 0, 0, 0.07);
   --glass-shadow: 0 18px 50px rgba(90, 78, 52, 0.14);
+
+  /* 浅色保留「宣纸」排版：宋体正文 + 楷体标题（0.32.8 只重做深色） */
+  --ui-font-body: 'Noto Serif SC', 'STSong', 'SimSun', 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', serif;
+  --ui-font-heading: 'KaiTi', 'STKaiti', 楷体, 'Noto Serif SC', serif;
+  --ui-heading-spacing: 0.05em;
 }
 
 html, body, #root {
@@ -143,14 +157,22 @@ html, body, #root {
 
 body {
   @apply bg-base text-ink antialiased;
-  font-family: 'Noto Serif SC', 'STSong', 'SimSun', 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', serif;
+  font-family: var(--ui-font-body);
+  font-feature-settings: 'cv11', 'ss01';
 }
 
-/* 书法感标题与品牌字 */
-h1, h2, .brand, .font-kai {
+/* 标题：深色下无衬线 + 字重；浅色下仍是楷体 */
+h1, h2 {
+  font-family: var(--ui-font-heading);
+  letter-spacing: var(--ui-heading-spacing);
+}
+/* 品牌字永远是楷体（产品识别） */
+.brand, .font-kai {
   font-family: 'KaiTi', 'STKaiti', 楷体, 'Noto Serif SC', serif;
   letter-spacing: 0.08em;
 }
+code, kbd, samp, pre { font-family: var(--ui-font-mono); font-variant-ligatures: none; }
+/* 代码里不许连字：>= 被画成 ≥ 会让人误读源码 */
 
 ::selection {
   background: rgb(var(--fc-gold) / 0.28);
@@ -224,10 +246,10 @@ h1, h2, .brand, .font-kai {
    否则「液态玻璃」就退化成一块不透明深灰板，和主区的层次也拉不开。 */
 .glass-side {
   background-color: rgb(var(--fc-panel) / 0.86);
-  background-image: linear-gradient(180deg, rgb(var(--fc-lift) / 0.055), rgb(var(--fc-lift) / 0.012) 45%, rgb(var(--fc-lift) / 0.026));
-  backdrop-filter: blur(14px) saturate(170%);
-  box-shadow: inset -1px 0 0 rgb(var(--fc-lift) / 0.075), 14px 0 44px rgb(0 0 0 / 0.42);
-  border-right: 1px solid rgb(var(--fc-lift) / 0.045);
+  background-image: linear-gradient(180deg, rgb(var(--fc-lift) / 0.03), rgb(var(--fc-lift) / 0.01) 45%, rgb(var(--fc-lift) / 0.015));
+  backdrop-filter: blur(14px) saturate(140%);
+  box-shadow: inset -1px 0 0 rgb(var(--fc-lift) / 0.06), 10px 0 36px rgb(0 0 0 / 0.28);
+  border-right: 1px solid rgb(var(--fc-lift) / 0.04);
 }
 [data-theme="light"] .glass-side {
   background-color: rgb(var(--fc-panel) / 0.88);
@@ -245,7 +267,7 @@ h1, h2, .brand, .font-kai {
 }
 .glass-row:hover {
   background-color: rgb(var(--fc-lift) / 0.078);
-  box-shadow: inset 0 1px 0 rgb(var(--fc-lift) / 0.16), inset 0 0 0 1px rgb(var(--fc-gold-soft) / 0.14), 0 8px 22px rgb(0 0 0 / 0.3);
+  box-shadow: inset 0 1px 0 rgb(var(--fc-lift) / 0.14), inset 0 0 0 1px rgb(var(--fc-lift) / 0.10), 0 8px 22px rgb(0 0 0 / 0.26);
 }
 .glass-row:active:not(:disabled) { transform: scale(0.985); }
 [data-theme="light"] .glass-row {
@@ -271,7 +293,7 @@ h1, h2, .brand, .font-kai {
 }
 .glass-composer:focus-within {
   background-color: rgb(var(--fc-composer) / 0.88);
-  box-shadow: inset 0 1px 0 rgb(var(--fc-lift) / 0.14), inset 0 0 0 1px rgb(var(--fc-gold-soft) / 0.18), 0 20px 64px rgb(0 0 0 / 0.5);
+  box-shadow: inset 0 1px 0 rgb(var(--fc-lift) / 0.12), inset 0 0 0 1px rgb(var(--fc-lift) / 0.14), 0 20px 60px rgb(0 0 0 / 0.42);
 }
 [data-theme="light"] .glass-composer {
   background-color: rgb(255 255 255 / 0.86);
@@ -318,13 +340,13 @@ h1, h2, .brand, .font-kai {
   box-shadow: 0 1px 3px rgb(90 78 52 / 0.08), 0 8px 24px rgb(90 78 52 / 0.06);
 }
 
-/* 用户消息气泡：暖灰褐玻璃 + 金色细边。
-   旧版是 rgb(gold / .22) 直接叠在纯黑上 —— 算出来 rgb(51,42,16)，是一块发灰的橄榄褐，
-   在金主题里显得脏。改成「低饱和暖灰底 + 金边描金」，既保留金色识别度，底色又干净。 */
+/* 用户消息气泡（0.32.8）：中性石墨抬升面，不再描金。
+   旧版暖褐底 + 金边，和满屏金字叠在一起像「一整块金色」；现在气泡只靠明度差和一道
+   顶部高光区分，人眼先看到的是文字本身。 */
 .glass-bubble {
-  background-color: rgb(58 50 34 / 0.55);
-  background-image: linear-gradient(180deg, rgb(var(--fc-lift) / 0.055), rgb(var(--fc-lift) / 0) 60%);
-  box-shadow: inset 0 1px 0 rgb(var(--fc-lift) / 0.10), inset 0 0 0 1px rgb(var(--fc-gold) / 0.26), 0 8px 24px rgb(0 0 0 / 0.38);
+  background-color: rgb(var(--fc-lift) / 0.075);
+  background-image: linear-gradient(180deg, rgb(var(--fc-lift) / 0.03), rgb(var(--fc-lift) / 0) 60%);
+  box-shadow: inset 0 1px 0 rgb(var(--fc-lift) / 0.08), inset 0 0 0 1px rgb(var(--fc-lift) / 0.06), 0 6px 18px rgb(0 0 0 / 0.22);
 }
 [data-theme="light"] .glass-bubble {
   background-color: rgb(var(--fc-gold) / 0.13);
@@ -341,7 +363,7 @@ h1, h2, .brand, .font-kai {
   .btn-primary {
     @apply btn text-base bg-gold hover:bg-goldSoft;
     color: rgb(var(--fc-on-gold));
-    box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.35), inset 0 -1px 0 rgb(0 0 0 / 0.25), 0 6px 18px rgb(143 116 29 / 0.35);
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.35), inset 0 -1px 0 rgb(0 0 0 / 0.25), 0 6px 18px rgb(var(--fc-gold-deep) / 0.30);
   }
   .btn-ghost {
     @apply btn text-ink rounded-xl;
@@ -378,65 +400,74 @@ h1, h2, .brand, .font-kai {
   }
 }
 
-/* ---- markdown 文档式排版（assistant 消息专用，墨黑鎏金） ---- */
+/* ---- markdown 文档式排版（assistant 消息专用）----
+   0.32.8：颜色全部回到中性——标题/加粗/表头用「更亮的正文色」靠字重区分，
+   行内代码是中性灰底，只有链接和列表符号保留一点琥珀。金色只在「可以点」的地方出现。
+   字体走主题变量：深色无衬线，浅色仍是宋体正文 + 楷体标题。 */
 .md {
-  line-height: 1.8;
-  color: rgb(var(--fc-ink));
+  line-height: 1.75;
+  color: rgb(var(--fc-ink) / 0.92);
   word-break: break-word;
   overflow-wrap: anywhere;
 }
 .md > :first-child { margin-top: 0; }
 .md > :last-child { margin-bottom: 0; }
 
-/* 标题：金色楷书 */
 .md h1, .md h2, .md h3, .md h4, .md h5, .md h6 {
-  font-family: 'KaiTi', 'STKaiti', 楷体, 'Noto Serif SC', serif;
-  color: rgb(var(--fc-gold-soft));
-  font-weight: 700;
+  font-family: var(--ui-font-heading);
+  color: rgb(var(--fc-ink));
+  font-weight: 650;
   line-height: 1.4;
-  margin: 1.1em 0 0.5em;
-  letter-spacing: 0.05em;
+  margin: 1.3em 0 0.5em;
+  letter-spacing: var(--ui-heading-spacing);
 }
-.md h1 { font-size: 1.35em; border-bottom: 1px solid rgb(var(--fc-gold) / 0.3); padding-bottom: 0.3em; }
-.md h2 { font-size: 1.2em; border-bottom: 1px solid rgb(var(--fc-gold) / 0.25); padding-bottom: 0.3em; }
-.md h3 { font-size: 1.08em; }
-.md h4, .md h5, .md h6 { font-size: 1em; }
+.md h1 { font-size: 1.32em; padding-bottom: 0.3em; border-bottom: 1px solid rgb(var(--fc-edge)); }
+.md h2 { font-size: 1.18em; padding-bottom: 0.25em; border-bottom: 1px solid rgb(var(--fc-edge) / 0.7); }
+.md h3 { font-size: 1.06em; }
+.md h4, .md h5, .md h6 { font-size: 1em; color: rgb(var(--fc-ink) / 0.9); }
 
 .md p { margin: 0.6em 0; }
-.md ul, .md ol { margin: 0.6em 0; padding-left: 1.6em; }
-.md li { margin: 0.25em 0; }
-.md li::marker { color: rgb(var(--fc-gold)); }
-.md strong { color: rgb(var(--fc-gold-soft)); font-weight: 600; }
-.md hr { border: 0; border-top: 1px solid rgb(var(--fc-gold) / 0.3); margin: 1.1em 0; }
+.md ul, .md ol { margin: 0.6em 0; padding-left: 1.5em; }
+/* Tailwind preflight 把 list-style 清成 none，文档里的列表必须把符号要回来 */
+.md ul { list-style: disc; }
+.md ul ul { list-style: circle; }
+.md ol { list-style: decimal; }
+.md li { margin: 0.3em 0; }
+.md li::marker { color: rgb(var(--fc-mute)); }
+.md ol > li::marker { font-variant-numeric: tabular-nums; }
+.md strong { color: rgb(var(--fc-ink)); font-weight: 650; }
+.md em { color: rgb(var(--fc-ink) / 0.95); }
+.md hr { border: 0; border-top: 1px solid rgb(var(--fc-edge)); margin: 1.4em 0; }
 .md img { max-width: 100%; border-radius: 8px; }
 
-/* 链接：金色 */
+/* 链接：唯一保留琥珀的正文元素（可点 = 有颜色） */
 .md a {
   color: rgb(var(--fc-gold-soft));
   text-decoration: underline;
-  text-decoration-color: rgb(var(--fc-gold) / 0.45);
+  text-decoration-color: rgb(var(--fc-gold) / 0.35);
+  text-decoration-thickness: 1px;
   text-underline-offset: 3px;
 }
 .md a:hover { color: rgb(var(--fc-gold)); text-decoration-color: rgb(var(--fc-gold)); }
 
-/* 行内 code：金字墨底 */
+/* 行内 code：中性灰底，不描边、不上色 */
 .md code {
-  font-family: Consolas, 'JetBrains Mono', 'Courier New', monospace;
+  font-family: var(--ui-font-mono);
   font-size: 0.86em;
-  color: rgb(var(--fc-gold-soft));
-  background: rgb(var(--fc-sunken));
-  border: 1px solid rgb(var(--fc-edge));
-  border-radius: 4px;
-  padding: 0.1em 0.4em;
+  color: rgb(var(--fc-ink) / 0.95);
+  background: rgb(var(--fc-lift) / 0.075);
+  border: 0;
+  border-radius: 5px;
+  padding: 0.12em 0.42em;
 }
 
-/* 代码块：墨底金边，横向滚动 */
+/* 代码块：下沉面 + 细边，横向滚动 */
 .md pre {
   background: rgb(var(--fc-sunken));
-  border: 1px solid rgb(var(--fc-gold) / 0.3);
+  border: 1px solid rgb(var(--fc-edge) / 0.8);
   border-radius: 10px;
-  padding: 0.8em 1em;
-  margin: 0.7em 0;
+  padding: 0.85em 1.05em;
+  margin: 0.8em 0;
   overflow-x: auto;
 }
 .md pre code {
@@ -444,18 +475,18 @@ h1, h2, .brand, .font-kai {
   background: none;
   border: 0;
   padding: 0;
-  color: rgb(var(--fc-ink));
+  color: rgb(var(--fc-ink) / 0.9);
   font-size: 0.82em;
   line-height: 1.65;
   white-space: pre;
 }
 
-/* 表格：金色细线边框 */
+/* 表格：中性细线 + 浅表头，只画横线（竖线太密像 Excel） */
 .md table {
   border-collapse: collapse;
   width: 100%;
-  margin: 0.7em 0;
-  font-size: 0.86em;
+  margin: 0.8em 0;
+  font-size: 0.88em;
   display: block;
   overflow-x: auto;
   /* 0.30.2：表格自身可横滑，但绝不能把父容器撑宽——否则整个消息区底部出现横条。
@@ -464,24 +495,32 @@ h1, h2, .brand, .font-kai {
   box-sizing: border-box;
 }
 .md th, .md td {
-  border: 1px solid rgb(var(--fc-gold) / 0.35);
-  padding: 0.4em 0.75em;
+  border-bottom: 1px solid rgb(var(--fc-edge) / 0.75);
+  padding: 0.5em 0.85em;
   text-align: left;
+  vertical-align: top;
 }
 .md th {
-  background: rgb(var(--fc-gold) / 0.1);
-  color: rgb(var(--fc-gold-soft));
+  background: rgb(var(--fc-lift) / 0.04);
+  color: rgb(var(--fc-ink));
   font-weight: 600;
   white-space: nowrap;
+  border-bottom: 1px solid rgb(var(--fc-edge));
 }
-.md tr:nth-child(2n) td { background: rgb(var(--fc-lift) / 0.025); }
+.md tr:hover td { background: rgb(var(--fc-lift) / 0.025); }
 
 .md blockquote {
-  border-left: 3px solid rgb(var(--fc-gold) / 0.5);
-  margin: 0.7em 0;
+  border-left: 3px solid rgb(var(--fc-edge));
+  margin: 0.8em 0;
   padding: 0.15em 0 0.15em 1em;
   color: rgb(var(--fc-mute));
 }
+
+/* 浅色「宣纸」保留金色楷书标题（0.32.8 只重做深色，浅色观感不变） */
+[data-theme="light"] .md h1, [data-theme="light"] .md h2, [data-theme="light"] .md h3,
+[data-theme="light"] .md h4, [data-theme="light"] .md h5, [data-theme="light"] .md h6 { color: rgb(var(--fc-gold-soft)); font-weight: 700; }
+[data-theme="light"] .md h1 { border-bottom-color: rgb(var(--fc-gold) / 0.3); }
+[data-theme="light"] .md h2 { border-bottom-color: rgb(var(--fc-gold) / 0.25); }
 
 /* 思考强度滑杆（仿 ZCode：青→蓝渐变 + 白色圆点） */
 .effort-slider {

@@ -54,6 +54,8 @@ export default {
         }
       },
       fontFamily: {
+        // 0.32.8：等宽字统一走 CSS 变量（Cascadia Code 优先），各处 font-mono 自动跟随
+        mono: ['var(--ui-font-mono)'],
         kai: ['KaiTi', 'STKaiti', '楷体', 'Noto Serif SC', 'serif'],
         song: ['Noto Serif SC', 'STSong', 'SimSun', 'serif']
       }

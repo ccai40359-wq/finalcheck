@@ -6,6 +6,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.32.8] - 2026-11-24
+
+### Improved
+
+- **Dark theme redesigned (graphite + amber).** The problem before: body text, bold, headings, table headers and inline code were all gold, on a near-black base — the whole screen was just gold and black, with no sense of depth. Now:
+  - The base moves from pure black to a **neutral graphite**, with sidebar, cards, popovers and the input box each one step apart in brightness, so you can tell which layer is on top.
+  - Body text is **neutral grey-white** instead of yellow-tinted; bold, headings and table headers use a brighter body colour and rely on weight rather than hue.
+  - **Gold stays only where you can click or where something is running**: links, the send button, active states. The gold itself is a calmer amber; the old "bright everywhere" gold is gone.
+- **Monospace text is unified on Cascadia Mono with ligatures off**, so `>=` is no longer drawn as `≥`. Code and paths read like code.
+- Thought and tool-call lines are **larger and brighter**, so they are readable.
+- **A long-standing bug is fixed**: markdown lists show their bullets and numbers again.
+
+### Fixed
+
+- The light theme keeps its original paper look (serif body, gold KaiTi headings); only two things follow the new system: the top session title and the selected sidebar row go from gold KaiTi to plain body colour. Inline code, table headers and list styling are shared by both themes, so they change in light mode too.
+
 ## [0.32.7] - 2026-11-24
 
 ### Added

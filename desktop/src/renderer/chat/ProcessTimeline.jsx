@@ -94,15 +94,15 @@ function ThoughtEntry({ e }) {
   return (
     <div className="min-w-0">
       <button onClick={() => text && setOpen(!open)}
-        className={`group w-full flex items-center gap-1.5 min-w-0 text-[11px] transition-colors duration-150 ${text ? 'cursor-pointer hover:text-ink/80' : 'cursor-default'} ${e.live ? 'text-goldSoft/80' : 'text-mute/55'}`}>
-        <IconBrain className={`shrink-0 ${e.live ? 'animate-pulse text-goldSoft' : 'text-mute/45'}`} />
+        className={`group w-full flex items-center gap-1.5 min-w-0 text-[12px] transition-colors duration-150 ${text ? 'cursor-pointer hover:text-ink/85' : 'cursor-default'} ${e.live ? 'text-goldSoft/85' : 'text-mute/80'}`}>
+        <IconBrain className={`shrink-0 ${e.live ? 'animate-pulse text-goldSoft' : 'text-mute/65'}`} />
         <span className="shrink-0 tracking-wide">Thought</span>
-        {ms != null ? <span className="shrink-0 font-mono tabular-nums text-mute/40">· {fmtThought(ms)}</span> : null}
-        {text && !open ? <span className="truncate min-w-0 text-[10px] italic text-mute/35">{oneLine(text, 90)}</span> : null}
-        {text ? <span className={`ml-auto shrink-0 text-[10px] text-mute/35 transition-transform duration-200 ${open ? 'rotate-180' : ''}`}>▾</span> : null}
+        {ms != null ? <span className="shrink-0 font-mono tabular-nums text-mute/60">· {fmtThought(ms)}</span> : null}
+        {text && !open ? <span className="truncate min-w-0 text-[11px] text-mute/55">{oneLine(text, 90)}</span> : null}
+        {text ? <span className={`ml-auto shrink-0 text-[10px] text-mute/50 transition-transform duration-200 ${open ? 'rotate-180' : ''}`}>▾</span> : null}
       </button>
       {text && open && (
-        <div className="mt-1 ml-[5px] border-l border-edge/70 pl-3 py-0.5 text-[11px] leading-relaxed text-mute/50 italic whitespace-pre-wrap break-words max-h-40 overflow-y-auto animate-[fadeIn_.18s_ease]">
+        <div className="mt-1 ml-[5px] border-l border-edge/70 pl-3 py-0.5 text-[12px] leading-relaxed text-mute/80 whitespace-pre-wrap break-words max-h-40 overflow-y-auto animate-[fadeIn_.18s_ease]">
           {text}
         </div>
       )}
@@ -266,7 +266,7 @@ function ToolEntry({ e, cardInBody }) {
   const isCompact = isPlaybook || e.name === 'run_workflow';
   const showCardHint = cardInBody && !running && BODY_CARD_TOOLS.has(e.name);
   const failed = e.status === 'fail' || !!e.result?.error;
-  const iconCls = running ? 'text-goldSoft animate-pulse' : failed ? 'text-red-400' : 'text-goldDeep/90';
+  const iconCls = running ? 'text-goldSoft animate-pulse' : failed ? 'text-red-400' : 'text-mute/70';
   // 运行中用动名词（Reading），完成后回到名词；Skill/Workflow 紧凑壳始终只露名称，状态放右侧
   const label = running && e.name === 'read_file' ? 'Reading' : meta.label;
 
@@ -276,17 +276,17 @@ function ToolEntry({ e, cardInBody }) {
         className={`group w-full flex items-center gap-2 text-left text-xs text-mute/70 min-w-0 font-mono transition-colors duration-150
           ${running ? 'animate-pulse' : ''} ${expandable ? 'hover:text-goldSoft cursor-pointer' : 'cursor-default'}`}>
         <Icon className={`shrink-0 ${iconCls}`} />
-        <span className="shrink-0 text-[11px] tracking-wide text-mute/60 group-hover:text-goldSoft/90">{label}</span>
+        <span className="shrink-0 text-[12px] tracking-wide text-mute/85 group-hover:text-goldSoft/90">{label}</span>
         {isCompact ? (
           <span className="shrink-0 select-none text-[11px] leading-none text-mute/25">|</span>
         ) : (
-          <span className="truncate min-w-0 text-ink/70">{detailText}</span>
+          <span className="truncate min-w-0 text-ink/75">{detailText}</span>
         )}
         {meta.extra ? <span className="shrink-0 text-[10px] text-mute/40">{meta.extra}</span> : null}
         {meta.added != null ? <span className="shrink-0 text-[11px] text-jade">+{meta.added}</span> : null}
         {meta.removed != null ? <span className="shrink-0 text-[11px] text-red-400">-{meta.removed}</span> : null}
         {running ? <span className="ml-auto shrink-0 tabular-nums text-[10px] text-goldSoft/70" data-testid="tool-elapsed">{t('已耗时 {n}s', { n: Math.floor(elapsedMs / 1000) })}</span>
-          : e.ms > 0 ? <span className="ml-auto shrink-0 text-[10px] tabular-nums text-mute/40">· {fmtToolMs(e.ms)}</span> : null}
+          : e.ms > 0 ? <span className="ml-auto shrink-0 text-[10px] tabular-nums text-mute/60">· {fmtToolMs(e.ms)}</span> : null}
         {expandable ? <Chevron open={open} /> : null}
       </button>
       {expandable && open && (
@@ -417,7 +417,7 @@ export const ProcessTimeline = React.memo(function ProcessTimeline({ msg }) {
   return (
     <div className="mb-2.5">
       <button onClick={() => { if (!expandable) return; const v = !open; setOpen(v); writeTimelineOpen(msg, v); }} disabled={!expandable}
-        className={`flex items-center gap-1.5 text-xs text-mute/70 transition-colors duration-150 ${expandable ? 'hover:text-goldSoft cursor-pointer' : 'cursor-default'}`}>
+        className={`flex items-center gap-1.5 text-xs text-mute/85 transition-colors duration-150 ${expandable ? 'hover:text-goldSoft cursor-pointer' : 'cursor-default'}`}>
         <span className="font-mono tabular-nums">{label}</span>
         {expandable ? <Chevron open={open} /> : null}
       </button>

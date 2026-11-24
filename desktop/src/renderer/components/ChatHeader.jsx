@@ -14,7 +14,7 @@ export default function ChatHeader({
     <>
       {/* 顶栏：当前会话标题（CU 迷你形态下由 body.fc-cu-mini 整体隐藏） */}
       <div className="fc-chat-header shrink-0 h-10 flex items-center px-5 border-b border-edge/60">
-        <span className="font-kai text-sm text-goldSoft truncate">{activeTitle || 'FinalCheck'}</span>
+        <span className="text-[13px] font-medium tracking-[0.01em] text-ink/90 truncate">{activeTitle || 'FinalCheck'}</span>
         {(() => { const cur = sessions.find((x) => x.id === activeId); return cur?.archived ? (
           <button onClick={() => onArchiveSession(cur, activeProjectId)} title={t('这条会话已归档（历史和记忆都还在），点一下恢复')}
             className="ml-2 shrink-0 rounded-full border border-lift/10 px-2 py-0.5 text-[10px] text-mute/70 hover:text-goldSoft hover:border-gold/40 transition-colors">{t('归档')}</button>
