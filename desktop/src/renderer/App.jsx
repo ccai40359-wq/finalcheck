@@ -193,6 +193,10 @@ export default function App() {
   const pumpingRef = useRef(false);   // 正在消费队首 → 防止 effect 在 runningIds 落定前重复派发
   const turnOutcomeRef = useRef(new Map()); // sid → 上一轮收尾类型（ok/stopped/error）：stopped/error 不自动发队列
   const inflightRef = useRef(new Set()); // 仍在 send 里的会话：回合收尾前不自动发下一条（防旧 finally 清掉新一轮状态）
+  // 0.32.7：当前这一轮是不是"无人值守回合"（定时唤醒触发）。
+  // 存 sessionId 而非布尔：只有"这一轮确实属于这个会话"才传 unattended，
+  // 避免时序混乱把普通回合也当成无人值守（那会让手打消息也突然要审批）。
+  const unattendedRoundRef = useRef(null);
   // 0.32.7：定时唤醒到点就是模拟用户发一条消息，不需要特殊模式（审批闸本身即护栏）。
   const jumpingRef = useRef(false);   // 平滑回到底部动画中：滚动事件不要重新弹出箭头
   const [queueBySession, setQueueBySession] = useState({}); // 会话 id → 待发消息 FIFO：[{id,text,pasted,previews}]（必须先于 queueItems 声明）
@@ -1403,13 +1407,17 @@ export default function App() {
       pumpingRef.current = false; // 任何分支都要释放队列泵，否则排队消息永远不发出
     }
   };
-  const sendOnce = async (override = null) => {
+  const sendOnce = async (override = null, { unattended = false } = {}) => {
     const sendProjectId = activeProjectIdRef.current; // 本轮新建会话的归属：之后切项目也不串桶
     const queued = !!override;
     const typedRaw = String(queued ? (override.text || '') : input).trim();
     const pastedTexts = queued ? (override.pasted || []) : pastedBlocks.map((b) => b.text);
     const raw = [typedRaw, ...pastedTexts].filter((x) => String(x || '').trim()).join('\n\n').trim();
     if (!raw || !y) { pumpingRef.current = false; return; }
+    // 0.32.7：标记"这一轮是无人值守回合"（定时唤醒触发），供 agentChat 透传给主进程。
+    // 用 ref 而不是 state：只在这一轮内有效，不该触发重渲染。
+    if (unattended && activeId) unattendedRoundRef.current = activeId;
+    else if (!unattended) unattendedRoundRef.current = null;
     // 忙时不再丢弃：入队（FIFO），当前回合照常跑，回合结束由 effect 自动发队首
     if (runningIds[activeId] || stoppingIds[activeId]) {
       if (!queued) enqueueCurrent();
@@ -1563,7 +1571,8 @@ export default function App() {
     }
 
     try {
-      const r = await y.agentChat(wireHistory, [], sid);
+      // unattended=true → 主进程把这一轮强制成 ask 模式（Full access 下也不许自动写文件）
+      const r = await y.agentChat(wireHistory, [], sid, { unattended: unattendedRoundRef.current === sid });
       turnOutcomeRef.current.set(sid, turnOutcomeOf(r)); // 停止/报错收尾：队列泵不再自动发下一条
       if (isActive()) {
         setMessages((prev) => {

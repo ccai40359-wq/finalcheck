@@ -18,6 +18,19 @@ export function resolvePartition(persistent) {
   return persistent === true ? PARTITION_PERSISTENT : PARTITION_ONESHOT;
 }
 
+// 0.32.7：一次性（无痕）存储按会话分开。以前所有对话共用 'fc-browser-use'，
+// 在对话 A 登录的网站，对话 B 也是登录状态，直到重启 FC——和「无痕」「会话隔离」的说法不符。
+// 现在每个会话派生自己的内存 partition；「长期保留」（persist:）按用户的选择仍是全局共享。
+// 幂等：已经派生过的名字原样返回。
+import { createHash } from 'node:crypto';
+
+export function sessionPartition(partition, sessionId) {
+  const base = String(partition || PARTITION_ONESHOT);
+  if (base !== PARTITION_ONESHOT || sessionId == null || sessionId === '') return base;
+  const tag = createHash('sha256').update(String(sessionId)).digest('hex').slice(0, 16);
+  return `${PARTITION_ONESHOT}-${tag}`;
+}
+
 // 配置归一：只认 oneshot / persistent；未选过（缺省、旧配置、脏值）一律 '' 表示「还没选择」。
 export function normalizeSessionMode(value) {
   return value === 'persistent' ? 'persistent' : value === 'oneshot' ? 'oneshot' : '';

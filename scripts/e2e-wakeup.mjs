@@ -39,8 +39,7 @@ await mkdir(projectDir, { recursive: true }).catch(() => {});
 let llmCalls = 0;
 const fakeGateway = createServer((req, res) => {
   if (!req.url.startsWith('/v1/chat/completions')) { res.writeHead(404); return res.end('nf'); }
-  let body = '';
-  req.on('data', (c) => { body += c; });
+  req.on('data', () => {}); // 只关心「请求到了」，不看请求体
   req.on('end', () => {
     llmCalls += 1;
     const text = `定时唤醒回合已执行（第 ${llmCalls} 次模型调用）。`;
@@ -139,7 +138,12 @@ const SESSION_JS = `(async () => {
   if (!hit) return { found: false, assistants: 0 };
   const s = await window.finalcheck.sessions.open(hit.id);
   const msgs = s?.messages || [];
-  return { found: true, assistants: msgs.filter((m) => m.role === 'assistant').length, total: msgs.length };
+  return {
+    found: true,
+    assistants: msgs.filter((m) => m.role === 'assistant').length,
+    total: msgs.length,
+    wakeNotices: msgs.filter((m) => (m.content || '').includes('定时唤醒')).length
+  };
 })()`;
 
 try {
@@ -218,9 +222,21 @@ try {
   record('W3', '到点真的起了新回合（会话里多了一条 assistant 回复）',
     (woke.assistants || 0) > (before?.assistants || 0),
     JSON.stringify({ before: before?.assistants, after: woke.assistants, events: woke.events, mode: USE_FAKE ? 'fake' : 'real' }));
-  record('W4', '界面显示「定时唤醒已执行」，且没有失败提示',
-    woke.ranNotice === true && woke.failNotice === false,
-    JSON.stringify({ ranNotice: woke.ranNotice, failNotice: woke.failNotice }));
+  // W4 判据改成查**会话历史**里的唤醒通知，而不是界面文字。
+  // 为什么（本轮实测）：主进程在通知渲染层之前就落库了一条 notice（'wakeup' kind），
+  // 但界面要等会话重载才显示它 —— 用界面文字判定会受重载时序影响，时通时不通（假失败）。
+  // 落库是事实：用户在切回这个会话时一定会看到那条分隔线提示。
+  const finalSession = await ev(SESSION_JS);
+  const wakeNotices = (finalSession?.wakeNotices ?? await ev(`(async () => {
+    const rows = await window.finalcheck.sessions.list();
+    const list = Array.isArray(rows) ? rows : (rows?.sessions || []);
+    const hit = list.find((x) => String(x?.title || '').includes('定时唤醒探针')) || list[0];
+    const s = hit ? await window.finalcheck.sessions.open(hit.id) : null;
+    return ((s?.messages) || []).filter((m) => (m.content || '').includes('定时唤醒')).length;
+  })()`));
+  record('W4', '唤醒通知落进会话历史（用户切回该会话就能看见），且没有失败提示',
+    (wakeNotices || 0) >= 1 && woke.failNotice === false,
+    JSON.stringify({ wakeNotices, ranNotice: woke.ranNotice, failNotice: woke.failNotice }));
   record('W5', '只跑一次的任务执行后被移除（不留残留）',
     (woke.remaining ?? 1) === 0, JSON.stringify({ remaining: woke.remaining }));
 

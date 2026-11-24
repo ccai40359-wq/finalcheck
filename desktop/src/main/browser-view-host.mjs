@@ -14,6 +14,7 @@
 //   ④ setWindowOpenHandler 能抓到 url ⑤ 摘下来 webContents 仍存活、重挂不丢状态
 //   ⑥ 窗口缩放**不会**自动跟随 → 必须由渲染层上报 rect（这就是 railRect 通道的由来）
 import { WebContentsView } from 'electron';
+import { hardenSession } from './browser-hardening.mjs';
 import { emptyState, openTab, switchTab, closeTab, patchTab, tabById, classifyWindowOpen, MAX_TABS } from './browser-tabs.mjs';
 
 let windowOwner = null;
@@ -218,6 +219,8 @@ function createBrowserHost(win, { onChange, isManaged }) {
         }
       });
       // 0.32.6：zoom 初值必须是 null（不是 1/undefined）——否则首帧会白设一次 zoomFactor
+      // 0.32.7：权限默认拒绝（Electron 不设处理函数就自动批准摄像头/麦克风/定位等一切请求）
+      hardenSession(view.webContents.session);
       entry = { id, view, wc: view.webContents, url: '', title: '', showing: false, navigation: 0, zoom: null };
       view.setVisible(false);
       win.contentView.addChildView(view);

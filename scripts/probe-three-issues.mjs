@@ -9,7 +9,7 @@
 //
 // 用法：node scripts/probe-codex-three-issues.mjs   （在 fc-browser-desktop-codex 目录下）
 import { spawn } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync } from 'node:fs';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import path from 'node:path';

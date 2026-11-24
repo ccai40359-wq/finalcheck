@@ -73,6 +73,8 @@ export async function captureUrl(target, { width = 1280, height = 800, waitMs = 
     show: false, width, height, useContentSize: true, paintWhenInitiallyHidden: true,
     webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, partition: 'fc-capture', backgroundThrottling: false },
   });
+  // 0.32.7：截图窗口同样会加载任意网页，权限也要默认拒绝
+  (await import('./browser-hardening.mjs')).hardenSession(win.webContents.session);
   try {
     const isUrl = /^https?:\/\//i.test(target);
     await (isUrl ? win.loadURL(target) : win.loadURL(pathToFileURL(target).href));

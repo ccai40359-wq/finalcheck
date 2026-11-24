@@ -406,10 +406,15 @@ export function registerAgentIpc({
   });
 
   // 0.32.7：定时唤醒到点时就是**模拟用户发一条消息**（和 CC/Codex 一致）。
-  // 不需要"无人值守"特殊模式：产品本来就有审批闸——edit_file/write_file/run_command
-  // 都要用户点批准，人不在场 120 秒后自动拒绝。自造的白名单已删（它才是
-  // UNATTENDED_ALLOW / UNATTENDED_SCHEMA 两个作用域 bug 的来源）。
-  ipcMain.handle('finalcheck:agent-chat', async (_e, messages, _legacyConfirmedHosts = [], sessionId = null) => {
+  //
+  // ⚠️ 但「审批闸本身就是护栏」这个论证在 permissionMode='full' 下**不成立**。
+  // 审查指出、我已核实：permissions.mjs 第 74 行在 full 模式下直接返回 'allowed-once'，
+  // 根本不弹卡 —— 用户开着 Full access 时，定时回合到点写文件/跑命令会**直接执行**。
+  // 所以第 4 参 opts.unattended 回来了，但这次做得极简（不恢复那套工具白名单）：
+  //   · 定时回合强制按 ask 模式跑（ask 且没有 UI 可问时 → requestApproval 得到 rejected）
+  //   · 回合结束由外层 finally 恢复用户原本的模式（绝不影响手打消息）
+  ipcMain.handle('finalcheck:agent-chat', async (_e, messages, _legacyConfirmedHosts = [], sessionId = null, opts = null) => {
+    const unattended = opts?.unattended === true;
     const chatAbort = new AbortController();
     chatAbort.snapshot = {
       runId: randomUUID(), seq: 0, startedAt: Date.now(), events: [], content: '',
@@ -420,7 +425,7 @@ export function registerAgentIpc({
     if (sessionId) state.activeChats.set(sessionId, chatAbort);
     let outcome = 'error';
     try {
-      const result = await runAgentChat({ messages, sessionId, chatAbort });
+      const result = await runAgentChat({ messages, sessionId, chatAbort, unattended });
       // 0.29.2：到点收尾单独标 'deadline'，不在界面上冒充「用户已停止」
       outcome = result?.deadlineHit ? 'deadline' : result?.cancelled || result?.interrupted ? 'stopped' : result?.error ? 'error' : 'ok';
       return result;
@@ -435,6 +440,16 @@ export function registerAgentIpc({
     } finally {
       if (sessionId && state.activeChats.get(sessionId) === chatAbort) state.activeChats.delete(sessionId);
       if (sessionId && liveRuns.get(sessionId) === chatAbort) liveRuns.delete(sessionId);
+      // 0.32.7：无人值守回合强制过 'ask'，这里**必须恢复**成用户配置的模式，
+      // 否则这一次定时唤醒会把手打消息的权限模式也改掉（用户会突然发现什么都要审批）。
+      if (unattended) {
+        void (async () => {
+          try {
+            const { setMode } = await import(engineUrl('desktop/src/main/permissions.mjs'));
+            setMode((await store.loadConfig()).permissionMode);
+          } catch { /* 恢复失败不阻塞回合收尾 */ }
+        })();
+      }
       // runAgentChat returns after its assistant has been persisted. The old invoke Promise
       // disappears on renderer reload; this independent notification closes reattached runs.
       try { getWin()?.webContents.send('finalcheck:agent-event', { sessionId, runId: chatAbort.snapshot.runId, seq: ++chatAbort.snapshot.seq, ev: { kind: 'run-settled', outcome } }); } catch { /* renderer may be reloading */ }
@@ -452,7 +467,7 @@ export function registerAgentIpc({
 
 
   // agent-chat 的实现：注册在上面（异常清理包在外层），这里只负责一个回合的正文
-  const runAgentChat = async ({ messages, sessionId, chatAbort }) => {
+  const runAgentChat = async ({ messages, sessionId, chatAbort, unattended = false }) => {
     const sendToken = (text) => {
       chatAbort.snapshot.content += text;
       const seq = ++chatAbort.snapshot.seq;
@@ -492,7 +507,11 @@ export function registerAgentIpc({
 
     // 本回合的项目上下文快照：按「会话所属项目」，之后无论 UI 切到哪个项目都不再重读全局
     const turnProjectPath = sessionProjectPathOf(sessionId);
-    permissions.setMode((await store.loadConfig()).permissionMode); // 每轮按当前配置应用权限模式（全局审批模式，非项目策略）
+    // 每轮按当前配置应用权限模式（全局审批模式，非项目策略）。
+    // 0.32.7：无人值守回合强制 ask —— 否则用户开着 Full access（permissions.mjs 第 74 行直接
+    // 返回 allowed-once）时，到点的定时任务会在没人看着的情况下自动写文件/跑命令。
+    // ask 且没有 UI 可问（emitApproval 为 null）→ resolve(rejected) → 写操作被拒；只读不受影响。
+    permissions.setMode(unattended ? 'ask' : (await store.loadConfig()).permissionMode);
     const userMsg = [...messages].reverse().find((m) => m.role === 'user')?.content || '';
     const cfg = await store.loadConfig();
     // 每个会话有自己的模型配置（模型/供应商/思考强度）；没有就回退全局默认

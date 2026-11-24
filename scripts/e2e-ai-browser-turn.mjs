@@ -102,7 +102,6 @@ async function resolveRealGateway() {
 
 // 页面站：/one 里嵌 SECRET（模拟"课程页/登录后页面"里才有的信息）
 const site = createServer((req, res) => {
-  const u = new URL(req.url, 'http://127.0.0.1');
   res.writeHead(200, { 'content-type': 'text/html;charset=utf-8', 'cache-control': 'no-store' });
   res.end(`<!doctype html><html><head><title>${PAGE_ONE}</title></head>
     <body style="margin:0;padding:24px;background:#fff7e6;font:18px/1.6 sans-serif">

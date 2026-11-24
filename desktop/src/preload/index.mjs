@@ -21,7 +21,9 @@ contextBridge.exposeInMainWorld('finalcheck', {
   scanDownload: (dir) => ipcRenderer.invoke('finalcheck:scan-download', dir),
   probe: (url, opts) => ipcRenderer.invoke('finalcheck:probe', url, opts),
   stress: (url, opts) => ipcRenderer.invoke('finalcheck:stress', url, opts),
-  agentChat: (messages, confirmedHosts, sessionId) => ipcRenderer.invoke('finalcheck:agent-chat', messages, confirmedHosts, sessionId),
+  // ⚠️ 必须透传第 4 参 opts（0.32.7 真机踩到）：只写 3 个参数时，渲染层传的
+  // { unattended: true } 会被 contextBridge 静默丢弃 → 主进程收不到"这是定时回合"。
+  agentChat: (messages, confirmedHosts, sessionId, opts) => ipcRenderer.invoke('finalcheck:agent-chat', messages, confirmedHosts, sessionId, opts ?? null),
   agentRunState: (sessionId) => ipcRenderer.invoke('finalcheck:agent-run-state', sessionId),
   agentSteer: (sessionId, text) => ipcRenderer.invoke('finalcheck:agent-steer', sessionId, text),
   cancelChat: (sessionId) => ipcRenderer.invoke('finalcheck:agent-cancel', sessionId),

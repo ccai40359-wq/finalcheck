@@ -59,7 +59,6 @@ async function ensureFreshBuild() {
   try { outNewest = newestIn(outDir); } catch { outNewest = 0; }
   if (outNewest > srcNewest) return;
   console.log('[build] src 比 out 新（或 out 缺失）→ 重新构建…');
-  const { execFileSync } = await import('node:child_process');
   execFileSync(process.platform === 'win32' ? 'npx.cmd' : 'npx',
     ['electron-vite', 'build'], { cwd: path.join(root, 'desktop'), stdio: 'ignore' });
   console.log('[build] 完成');

@@ -6,6 +6,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.32.7] - 2026-11-24
+
+### Added
+
+- **Scheduled wake-ups**: say `/wake 25m check the course progress` and it starts a new turn on its own when the time comes — no need to type anything again. `/wake 2h check the deploy repeat=3` repeats N times, `repeat=-1` repeats forever. Previously the model itself admitted the limit: "I cannot sleep 25 minutes and wake up; the turn ends and I stop."
+- **Clicks and typing inside the built-in browser are now real**: it used to call "click this element" code directly inside the page, which sites can detect as non-human (many will refuse), and rich-text editors (Xiaohongshu, Notion and the like) simply could not receive text. It now goes through the browser's real input pipeline, the same path a human uses — and no longer steals focus from your FinalCheck window.
+- **Content inside web components and embedded frames is now visible and operable**: the AI used to see only the outermost elements of a page, so buttons inside web components and login or payment boxes inside iframes were invisible and unclickable. It now looks one level deeper; cross-origin frame content cannot be read by any browser, so the page structure lists it as a separate line telling the AI where it is.
+- **Each conversation's browser login state is now invisible to the others**: log in to a site in conversation A and conversation B is still signed out.
+
+### Fixed
+
+- **With "full access" enabled, a scheduled task could write files and run commands without your permission.** This is a real issue the reviewer flagged and I verified: in full-access mode the approval gate approves everything outright — there is no "wait for you to click" step — so an unattended scheduled turn could do anything. The turn a scheduled task triggers now forces "ask every time": with you absent, write operations are denied and read-only work continues.
+- **Scheduled tasks' next-run time drifted silently**: each run added its own duration to the next timestamp, so over time it kept sliding. It now advances on a fixed interval.
+- **Web pages could silently obtain camera, microphone, location, notification, USB and serial device permissions.** Browsers auto-approve permissions you have not declared; it now allows only fullscreen and sanitized clipboard writes, and denies everything else.
+
+### Improved
+
+- **CI had been red for five consecutive releases and is now green.** The cause was not functionality but nine "declared but never used" variables; once lint fails, the tests and build behind it never run. That debt dates back to 0.30.0 — I had only been watching local tests, not CI.
+
 ## [0.32.6] - 2026-11-23
 
 This release merges a second, independently developed optimization line for the same problems. Both branches solved the issues you reported; the merge keeps the best of each.

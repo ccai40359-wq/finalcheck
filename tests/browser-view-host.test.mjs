@@ -309,7 +309,10 @@ test('浏览器: 用户打开、切换、导航、刷新或弹窗都保留独立
   const bHost = host.hostForSession('b');
   assert.equal(a.tabFocusInfo().aiTab, initial.tabId);
   assert.equal(a.tabFocusInfo().viewing, userTab.id);
-  assert.equal(aHost.contentsOf(initial.tabId).opts.webPreferences.partition, 'fc-browser-use');
+  // 0.32.7：无痕存储按会话派生，a 和 b 的登录态互不可见
+  const { sessionPartition } = await import('../desktop/src/main/browser-session.mjs');
+  assert.equal(aHost.contentsOf(initial.tabId).opts.webPreferences.partition, sessionPartition('fc-browser-use', 'a'));
+  assert.notEqual(bHost.contentsOf(other.tabId).opts.webPreferences.partition, aHost.contentsOf(initial.tabId).opts.webPreferences.partition);
   assert.equal(aHost.contentsOf(userTab.id).opts.webPreferences.partition, 'persist:fixture');
   assert.equal(a.listTabs().tabs.at(-1).url, '');
   a.viewTab(initial.tabId);

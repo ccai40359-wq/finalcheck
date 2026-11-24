@@ -11,7 +11,7 @@
 //   ③ 调度器（到点触发一次、先推进再通知、不重复狂刷）
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync, readdirSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -134,7 +134,7 @@ test('人类可读的倒计时', () => {
 /* ---------------- ⑧ 存储：原子写 + 坏档不留死档 ---------------- */
 
 test('存储：写读回环，原子替换不留 .tmp 残渣', async () => {
-  const { loadWakeups, saveWakeups, wakeupFile } = await import('../desktop/src/main/wakeup-store.mjs');
+  const { loadWakeups, saveWakeups } = await import('../desktop/src/main/wakeup-store.mjs');
   const dir = mkdtempSync(path.join(tmpdir(), 'fc-wakeup-'));
   try {
     const items = [{ id: 'a', sessionId: 's1', prompt: 'p', nextAt: 1000, intervalMs: 1000, repeat: 0, enabled: true }];
