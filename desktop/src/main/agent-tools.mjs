@@ -283,7 +283,13 @@ export function runCommandWithSignal(command, {
       } catch { hooks = null; }
       if (!hooks) return null;
       detached = hooks;
-      try { proc.unref?.(); } catch { /* 忽略 */ }
+      // 这里**故意不 unref 子进程**：onDetach 承诺「退出时回调 onExit」，
+      // 而 onExit 挂在 proc 的 'close' 事件上。proc.unref() 会让子进程不撑事件循环——
+      // 调用方此时若恰好也没别的事做（CLI 跑完一轮等结果、测试里 await exited），
+      // 事件循环空掉 → 'close' 永不派发 → promise 永久悬空。
+      // Node 22 的 node:test 把这判成 cancelledByParent（node 24 放宽了检查，
+      // 于是表现为「本地全绿、CI 后台任务那 4 条全红」）。
+      // 后台任务的语义本来就是「进程还在跑、账本负责收尾」，让它撑着循环才是对的。
       return hooks;
     };
     const onIdle = () => {
