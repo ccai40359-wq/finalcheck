@@ -6,6 +6,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.33.6] - 2026-11-25
+
+This release lets the AI send several subagents to test a website in the browser at the same time, each in its own tab.
+
+### Added
+
+- **Parallel browser-test subagents**: ask the AI to "test login, cart and search on this site in parallel" and it sends out several browser-test subagents at once; each opens its own tab in the side panel, tests its own feature, and reports pass / fail / not tested with the evidence it saw, which is much faster than clicking through one by one. By default they share the session's login state; for logged-out or multi-account tests each can use its own private storage.
+
+### Fixed
+
+- **Clicking works on background tabs**: when the side panel was collapsed, or the AI was working in a tab that wasn't the one on screen, clicks used to fail with "element is covered"; they now click and type normally.
+- **Screenshots of background tabs no longer hang**: taking a screenshot of a tab that isn't on screen used to hang; the AI is now told right away to read the page text instead.
+
 ## [0.33.5] - 2026-11-25
 
 This release lets the AI hand work off and keep going: long commands and subagents can run in the background, and their results come back on their own. The built-in browser also looks more like a real Edge to websites, and there is a new Google-results search backend.
