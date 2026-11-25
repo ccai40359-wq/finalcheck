@@ -1250,6 +1250,8 @@ export default function App() {
         question: String(p.question || ''),
         options: Array.isArray(p.options) ? p.options : [],
         multiSelect: p.multiSelect === true,
+        // 0.33.4：计划审批卡（kind=plan）要带上，否则实时卡按普通提问显示 → 计划 Markdown 原样露符号
+        ...(p.kind ? { kind: String(p.kind) } : {}),
         askedAt: p.askedAt || Date.now(),
         status: 'pending',
         selected: [],

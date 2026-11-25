@@ -252,5 +252,7 @@ export const EN_APP = {
   '未命名': 'Untitled',
   '未命名会话': 'Untitled session',
   '仍在后台运行（记录没丢）：': 'Still running in the background (records kept):',
-  'Markdown 渲染（原文本可外部打开查看）': 'Rendered as Markdown (open externally for the raw text)'
+  'Markdown 渲染（原文本可外部打开查看）': 'Rendered as Markdown (open externally for the raw text)',
+  // 0.33.4 桌面操控停止
+  '已停止操控电脑；任务继续进行（不再使用桌面操控）': 'Stopped controlling the computer; the task continues without desktop control',
 };

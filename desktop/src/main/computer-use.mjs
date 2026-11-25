@@ -57,6 +57,8 @@ function setCuMode(active) {
   cuModeActive = active;
   try { cuModeListener?.(active); } catch { /* UI 故障不影响桌面操作 */ }
 }
+/** 0.33.4：桌面操控会话是否在进行（含 paused 让位等「继续」）——用户说「继续」时 computer_* 照常可用 */
+export function isComputerUseActive() { return cuModeActive || pauseHold; }
 export function resumeCuMode() {
   // 0.30.0：显式恢复入口（ipc-agent 在用户「继续」且上一轮 paused 时可调用）。
   // 当前实现采用「paused 保留遮罩」方案，正常路径不需要它；保留导出用于外部恢复/自检。

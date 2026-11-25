@@ -631,7 +631,7 @@ export function collectInjectedScriptBodies(cmd, cwd = null) {
   return { files, bodies };
 }
 
-export function createAgentTools({ repoRoot, permissions, recordAudit = async () => {}, playbookRoot, runWorkflow = null, projectPath = null, policy = null, hooksConfig = null, hooksRunner = null, sessionId = null, cwd = null, signal = null, commandIdleMs = DEFAULT_COMMAND_IDLE_MS, askUser = null, todoWrite = null, spawnAgent = null, onActivity = null, requireAuditIntent = null, shellAppRoot = null, aclSandbox = undefined, userStatedTier = null, getDesktopToolsAsync = null, browserSessionPolicy = null, onBrowserFirstUse = null, getBrowserRealAsync = null, browserUserDataDir = null, browserChoice = null, ensureViewHostAsync = null, mcp = null, permissionRules = null, webSearchConfig = null, webFetchImpl = null, planMode = null } = {}) {
+export function createAgentTools({ repoRoot, permissions, recordAudit = async () => {}, playbookRoot, runWorkflow = null, projectPath = null, policy = null, hooksConfig = null, hooksRunner = null, sessionId = null, cwd = null, signal = null, commandIdleMs = DEFAULT_COMMAND_IDLE_MS, askUser = null, todoWrite = null, spawnAgent = null, onActivity = null, requireAuditIntent = null, shellAppRoot = null, aclSandbox = undefined, userStatedTier = null, getDesktopToolsAsync = null, browserSessionPolicy = null, onBrowserFirstUse = null, getBrowserRealAsync = null, browserUserDataDir = null, browserChoice = null, ensureViewHostAsync = null, mcp = null, permissionRules = null, webSearchConfig = null, webFetchImpl = null, planMode = null, desktopGate = null } = {}) {
   let askedThisTurn = false; // 本回合已经通过 ask_user 问过用户（验收前置闸据此放行）
   // 0.31.1：本会话内用户已经选过的浏览器模式（主进程按 sessionId 存，跨回合有效）。
   // createAgentTools 每个回合重建一次——把记忆放在这里会让「同一任务里连续导航」每轮都弹卡。
@@ -1410,6 +1410,11 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
   //   所以：工具表里有 = 一定能调，加载失败时 handler 返回可读原因。
   if (getDesktopToolsAsync) {
     const withDesktopTool = (key, handler) => async (args, ctx) => {
+      // 0.33.4：桌面操控闸——用户没要求操控电脑 / 用户按了停止，computer_* 一律拒绝（不碰前台、不进 CU 模式）
+      if (key === 'computerUse' && typeof desktopGate === 'function') {
+        const deny = desktopGate();
+        if (deny) return deny;
+      }
       let dt;
       try { dt = await getDesktopToolsAsync(); } catch { /* 模块加载失败 */ }
       const engine = dt?.[key];

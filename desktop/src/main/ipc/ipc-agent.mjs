@@ -18,6 +18,7 @@ import { writeStepTranscript, readStepTranscript, pruneRuns, trimTranscriptMessa
 import { createAskUserRegistry } from '../ask-user.mjs';
 import { createTodoRegistry } from '../todo-list.mjs';
 import { expandMentions, appendMentionBlocks } from '../mentions.mjs';
+import { desktopIntent, isDesktopTool, CU_NOT_REQUESTED, CU_STOPPED_BY_USER } from '../desktop-intent.mjs';
 import { t } from '../../renderer/i18n/core.mjs';
 
 // 附件里的图片 → OpenAI 多模态 content parts（本机网关已验证支持 image_url data:）
@@ -462,9 +463,14 @@ export function registerAgentIpc({
   });
 
   // 0.29.2：CU 模式停止按钮（迷你窗横幅）→ 中止本会话所有活跃回合 + 撤销应用授权（遮罩/迷你窗随模式退出恢复）
+  // 0.33.4 用户反馈：ESC 本意是「别再操控电脑」，以前却把所有会话的回合一起中止了。
+  // 现在只停桌面操控：撤授权 + 退出 CU 模式（遮罩/迷你窗恢复），记下停止时刻——
+  // 这之前开始的回合里再调 computer_* 一律拒绝（模型收到「用户叫停」改用别的办法），回合本身照常跑完。
+  // 要停整个任务用对话里的停止按钮（只停那一个会话）。
   ipcMain.handle('finalcheck:cu-stop', async () => {
-    for (const ab of state.activeChats.values()) { try { ab.abort(); } catch { /* ignore */ } }
+    state.cuStoppedAt = Date.now();
     try { (await loadDesktopTools())?.computerUse?.revokeApps?.(); } catch { /* ignore */ }
+    try { getWin()?.webContents.send('finalcheck:agent-event', { sessionId: null, ev: { kind: 'notice', message: t('已停止操控电脑；任务继续进行（不再使用桌面操控）') } }); } catch { /* ignore */ }
     return true;
   });
 
@@ -1117,11 +1123,22 @@ export function registerAgentIpc({
     let turnTools = null; // 回合工具集（turn-context 快照列清单用；创建于下方 runAgentTurn 参数处）
     // 0.33.1 计划模式：schema 是一个可变数组（引擎每次请求都重新读它）——
     // 计划阶段只有只读工具 + exit_plan_mode；用户批准的那一刻原地换成完整工具表，同一回合接着执行。
-    const fullSchema = () => [...(AGENT_TOOLS_SCHEMA || []), ...mcpSchemas];
+    // 0.33.4 桌面操控只在用户要求时给（见 desktop-intent.mjs）：schema 里拿掉 + 工具层拒绝（desktopGate）
+    const turnStartedAt = Date.now();
+    let cuActiveNow = false;
+    try { cuActiveNow = !!(await loadDesktopTools())?.computerUse?.isComputerUseActive?.(); } catch { /* 纯 Node 环境 */ }
+    const cuIntent = desktopIntent(messages, { cuActive: cuActiveNow });
+    const desktopGate = () => {
+      if (!cuIntent.allowed) return CU_NOT_REQUESTED;
+      if ((state.cuStoppedAt || 0) >= turnStartedAt) return CU_STOPPED_BY_USER;
+      return null;
+    };
+    const dropCu = (list) => (cuIntent.allowed ? list : list.filter((s) => !isDesktopTool(s?.function?.name)));
+    const fullSchema = () => dropCu([...(AGENT_TOOLS_SCHEMA || []), ...mcpSchemas]);
     const planState = { active: planMode };
     const turnSchema = planMode
       ? [...(AGENT_TOOLS_SCHEMA || []).filter((s) => PLAN_MODE_TOOLS.has(s?.function?.name)), EXIT_PLAN_MODE_SCHEMA]
-      : (mcpSchemas.length ? fullSchema() : null);
+      : (mcpSchemas.length || !cuIntent.allowed ? fullSchema() : null);
     const planGate = planMode ? {
       isActive: () => planState.active,
       exit: async (plan, ctx) => {
@@ -1253,6 +1270,7 @@ export function registerAgentIpc({
         permissionRules,
         webSearchConfig: cfg.webSearch || null,
         planMode: planGate,
+        desktopGate,
         // MCP：schema 与函数用同一份回合快照；调用时再按名字找活的客户端（断了就明确报错）
         mcp: mcpSchemas.length ? { schemas: () => mcpSchemas, resolve: (n) => state.mcp?.resolve(n) } : null,
         recordAudit,
