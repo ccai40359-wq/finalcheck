@@ -45,7 +45,11 @@ export async function runToolSuite(suite, { logDir = null, approvals = 'approve'
   const policy = createPolicy({ projectPath: projDir, mode: 'workspace', allowPaths: [] });
   const tools = createAgentTools({
     repoRoot: REPO_ROOT, permissions, recordAudit, projectPath: projDir, policy, sessionId: 'tools-sim',
-    askUser: async (a) => ({ answer: a?.options?.[0]?.label || '好的' }),
+    // 0.33.9 起越界是「问用户」：无头模拟里一律答「不允许」，以测拒绝路径；其它提问照旧选第一个
+    askUser: async (a) => {
+      const labels = (a?.options || []).map((o) => o?.label);
+      return { answer: labels.includes('不允许') ? '不允许' : (labels[0] || '好的') };
+    },
     todoWrite: (a) => ({ ok: true, items: a?.items || [] }),
     runWorkflow: null
   });

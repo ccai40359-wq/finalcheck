@@ -11,6 +11,26 @@ import { timelineEntries } from '../lib/process-events.mjs';
 import { planTimelineWindow } from '../lib/timeline-window.mjs';
 import { useLanguage } from '../i18n/index.jsx';
 import { spawnAgentStepId, requestOpenStep } from '../lib/spawn-agent.mjs';
+import { toolImagePaths, fileNameOf, requestOpenArtifact } from '../lib/tool-images.mjs';
+
+/** 0.33.9 工具行里的图片文件名：点一下在右栏打开（悬停显示完整路径），不触发整行展开 */
+function ToolImageLinks({ paths }) {
+  return (
+    <span className="flex min-w-0 items-center gap-2.5">
+      {paths.map((p) => (
+        <span key={p} role="link" tabIndex={0} data-testid="tool-image-link" title={p}
+          onClick={(ev) => { ev.stopPropagation(); requestOpenArtifact(p); }}
+          onKeyDown={(ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); ev.stopPropagation(); requestOpenArtifact(p); } }}
+          className="inline-flex min-w-0 cursor-pointer items-center gap-1 text-ink/80 underline decoration-mute/30 underline-offset-[3px] transition-colors hover:text-goldSoft hover:decoration-goldSoft/60 focus-visible:outline-none focus-visible:text-goldSoft">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="shrink-0 text-jade/80">
+            <rect x="3" y="4" width="18" height="16" rx="2.5" /><circle cx="9" cy="10" r="1.8" /><path d="m21 16-5-5-9 9" />
+          </svg>
+          <span className="truncate">{fileNameOf(p)}</span>
+        </span>
+      ))}
+    </span>
+  );
+}
 
 // 时长进位：60s → 1m，60m → 1h（不再出现 Working 152s / 3900s）
 const fmtDur = (ms) => {
@@ -274,6 +294,7 @@ function ToolEntry({ e, cardInBody }) {
   const iconCls = running ? 'text-goldSoft animate-pulse' : failed ? 'text-red-400' : 'text-mute/70';
   // 运行中用动名词（Reading），完成后回到名词；Skill/Workflow 紧凑壳始终只露名称，状态放右侧
   const label = running && e.name === 'read_file' ? 'Reading' : meta.label;
+  const images = running ? [] : toolImagePaths(e);
 
   return (
     <div className="min-w-0 fc-tool-entry">
@@ -284,6 +305,12 @@ function ToolEntry({ e, cardInBody }) {
         <span className="shrink-0 text-[12px] tracking-wide text-mute/85 group-hover:text-goldSoft/90">{label}</span>
         {isCompact ? (
           <span className="shrink-0 select-none text-[11px] leading-none text-mute/25">|</span>
+        ) : images.length ? (
+          <>
+            <ToolImageLinks paths={images} />
+            {/(screenshot)$/.test(e.name) && detailText && e.name !== 'browser_screenshot' && e.name !== 'computer_screenshot'
+              ? <span className="truncate min-w-0 text-mute/45">{detailText}</span> : null}
+          </>
         ) : (
           <span className="truncate min-w-0 text-ink/75">{detailText}</span>
         )}

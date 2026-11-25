@@ -103,7 +103,7 @@ function TerminalView({ task, output, running }) {
   );
 }
 
-function TaskRow({ task, y, onOpenStep, defaultOpen = false }) {
+export function TaskRow({ task, y, onOpenStep, defaultOpen = false }) {
   const [open, setOpen] = useState(defaultOpen);
   const [detail, setDetail] = useState(null);
   const running = task.status === 'running';

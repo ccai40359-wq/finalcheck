@@ -6,6 +6,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.33.9] - 2026-11-25
+
+Three things in this release: web pages open in the side panel no longer burn CPU while hidden; touching private keys or folders outside the project now asks you instead of being refused; and images and the side panel can be opened by you directly.
+
+### Added
+
+- **Out-of-bounds actions ask you instead of failing**: when the AI wants to read a private key or credential, read or write files outside the project, or delete something outside the project, you get a card: "Allow once / Allow for this session / Don't allow". Deploying to your server with your own key now works; catastrophic commands such as formatting a disk are still refused outright.
+- **Open the side panel yourself**: a new button at the right of the chat header, plus a "+" new tab in the side panel, lets you open the browser, search and preview project files, or watch background tasks without waiting for the AI.
+- **Click images to view full size**: images pasted into the composer and images in your sent messages open full size on click (Esc closes, arrows switch between several), with a one-click "Open in side panel".
+- **See what the AI looked at, step by step**: when the AI takes a page or screen screenshot or views an image, that tool row shows the file name (hover for the full path); click it to open the image in the side panel.
+
+### Fixed
+
+- **Hidden pages in the side panel no longer run at full speed**: after collapsing the side panel or switching tabs, invisible pages kept rendering animations (one animated site cost over 10% CPU). They now freeze after 20 seconds without AI use and CPU drops to near zero; switching back or any AI action resumes them instantly with the page intact.
+- **Screenshots no longer pile up under the answer**: check screenshots stay in the step that took them; the bottom of the answer only lists files the AI delivered or changed.
+- **Browser screenshots work while the window is covered**: with FinalCheck behind other windows, page screenshots used to fail with "tab not shown"; they now succeed.
+- **Terminal color codes are no longer treated as paths**: codes like `\x1b[32m` in a command used to be flagged as "outside the project" and blocked.
+
+### Improved
+
+- **Side panel file list hides FinalCheck's own data**: the .finalcheck session database and logs are not listed, and other hidden folders sort last.
+
 ## [0.33.8] - 2026-11-25
 
 This release fixes "I never get update prompts": update checks now query the project website in addition to GitHub, and whichever source has the newer version wins; a failure on one source no longer reports an error as long as the other one answers.

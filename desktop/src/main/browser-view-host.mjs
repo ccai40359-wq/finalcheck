@@ -14,6 +14,7 @@
 //   ④ setWindowOpenHandler 能抓到 url ⑤ 摘下来 webContents 仍存活、重挂不丢状态
 //   ⑥ 窗口缩放**不会**自动跟随 → 必须由渲染层上报 rect（这就是 railRect 通道的由来）
 import { WebContentsView } from 'electron';
+import { appendFileSync } from 'node:fs';
 import { hardenSession } from './browser-hardening.mjs';
 import { applyEdgeIdentityToSession, applyEdgeIdentityToContents } from './browser-fingerprint.mjs';
 import { emptyState, openTab, switchTab, closeTab, patchTab, tabById, classifyWindowOpen, MAX_TABS } from './browser-tabs.mjs';
@@ -238,7 +239,9 @@ function createBrowserHost(win, { onChange, isManaged }) {
       applyEdgeIdentityToSession(view.webContents.session);
       entry = { id, view, wc: view.webContents, url: '', title: '', showing: false, navigation: 0, zoom: null,
         // 0.33.4：partition 记下来（界面显示「长期保留 / 无痕」）；requested = 最近一次要打开的网址（加载失败时刷新用它重试）
-        partition: String(partition || ''), requested: String(url || ''), loading: false };
+        partition: String(partition || ''), requested: String(url || ''), loading: false,
+        // 0.33.9：新标签先给一段「正在用」的宽限，页面加载完、AI 拿到快照之前不冻结
+        aiUntil: Date.now() + AI_ACTIVE_MS, frozen: false };
       view.setVisible(false);
       win.contentView.addChildView(view);
     } catch (error) {
@@ -469,7 +472,9 @@ function createBrowserHost(win, { onChange, isManaged }) {
     if (disposed) return null;
     const targetId = id == null ? host.state.activeId : String(id);
     if (!targetId) return null;
-    return host.views.get(targetId)?.wc || null;
+    const entry = host.views.get(targetId);
+    if (entry) touchTab(targetId); // 0.33.9：借出 wc = AI 要用它，先解冻
+    return entry?.wc || null;
   }
 
   /** AI 要操作时把对应标签摆到可见位置（右栏没展开时也强制可见——否则又是"看不到"）。 */
@@ -506,6 +511,9 @@ function createBrowserHost(win, { onChange, isManaged }) {
     for (const entry of host.views.values()) {
       try { entry.view.setVisible(false); } catch { /* 已销毁 */ }
       entry.showing = false;
+      // 0.33.9：右栏收起 / 切到别的右栏标签走的是这里——也要进「藏着」的节奏（AI 不用就冻结），
+      // 否则藏起来的网页还按「正在显示」全速跑（用户实测的 CPU 占用就是这条路）
+      syncHiddenViewport(entry, false);
     }
   }
 
@@ -544,22 +552,71 @@ function createBrowserHost(win, { onChange, isManaged }) {
    * 就有了真实布局，Input.dispatchMouseEvent 的真实点击也能落到按钮上；显示出来时清掉覆盖，回到跟随视图尺寸。
    */
   const HIDDEN_VIEWPORT = { width: 1280, height: 800 };
+  /**
+   * 0.33.9 资源占用（用户实测：右栏两个标签开着动画官网，FinalCheck 占 17% CPU，关掉标签降到 8%）：
+   *   原因是「看不见的标签照样全速渲染」——backgroundThrottling:false + 上面那个 1280×800 视口覆盖，
+   *   后台标签被当成一个完整窗口一直重画动画。改成和 Edge 一样的规矩：
+   *     · 正在显示的标签：正常渲染
+   *     · 藏着、但 AI 最近 AI_ACTIVE_MS 内还在操作它：给视口、照常跑（AI 才能在后台标签上点按钮）
+   *     · 藏着、也没人在用：撤掉视口覆盖（回到 0×0，不画任何东西）+ Page.setWebLifecycleState frozen
+   *       （定时器、requestAnimationFrame、动画全停，CPU 接近 0）；AI 或用户一碰就解冻，无感
+   */
+  const AI_ACTIVE_MS = 20000;
+  // 排查用：FINALCHECK_DEBUG_FREEZE=<文件路径> 时把冻结 / 解冻结果追加进去（默认不写）
+  const freezeLog = (msg) => { const f = process.env.FINALCHECK_DEBUG_FREEZE; if (f) { try { appendFileSync(f, new Date().toISOString() + ' ' + msg + '\n'); } catch { /* 忽略 */ } } };
+  function aiActive(entry) { return Date.now() < (entry.aiUntil || 0); }
   function syncHiddenViewport(entry, showing) {
     const dbg = entry.wc?.debugger;
     if (!dbg || !entry.docReady || entry.wc.isDestroyed?.()) return;
     const size = host.rect?.width > 0 && host.rect?.height > 0
       ? { width: Math.round(host.rect.width), height: Math.round(host.rect.height) }
       : HIDDEN_VIEWPORT;
-    const key = showing ? 'shown' : `${size.width}x${size.height}`;
+    const key = showing ? 'shown' : aiActive(entry) ? `${size.width}x${size.height}` : 'idle';
     if (entry.viewportKey === key) return;
     entry.viewportKey = key;
+    freezeLog(`tab ${entry.id ?? '?'} → ${key}`);
     try {
       if (!dbg.isAttached()) dbg.attach('1.3');
-      const sent = showing
+      const sent = key === 'shown' || key === 'idle'
         ? dbg.sendCommand('Emulation.clearDeviceMetricsOverride')
         : dbg.sendCommand('Emulation.setDeviceMetricsOverride', { ...size, deviceScaleFactor: 0, mobile: false });
       sent.catch(() => { if (entry.viewportKey === key) entry.viewportKey = null; });
+      const wantFrozen = key === 'idle';
+      if (wantFrozen !== !!entry.frozen) {
+        entry.frozen = wantFrozen;
+        // 实测：Electron 里光发 frozen，页面 setInterval 照跑（rAF / 绘制停了）；
+        // 再打开 Chromium 自己的后台节流（和 Edge 后台标签同一套：定时器压到 ≤1 次/秒）
+        try { entry.wc.setBackgroundThrottling?.(wantFrozen); } catch { /* 旧版本没有 */ }
+        dbg.sendCommand('Page.setWebLifecycleState', { state: wantFrozen ? 'frozen' : 'active' })
+          .then(() => { freezeLog(wantFrozen ? 'frozen ok' : 'active ok'); })
+          .catch((e) => { entry.frozen = false; freezeLog('fail ' + (e?.message || e)); });
+      }
     } catch { entry.viewportKey = null; }
+    scheduleIdleSweep();
+  }
+  /** AI 要操作这个标签：标记「正在用」并立刻解冻 + 给视口（同步调用，后续 CDP / 脚本排在解冻之后） */
+  function touchTab(id = null) {
+    const targetId = id == null ? host.state.activeId : String(id);
+    const entry = targetId ? host.views.get(targetId) : null;
+    if (!entry) return false;
+    entry.aiUntil = Date.now() + AI_ACTIVE_MS;
+    syncHiddenViewport(entry, entry.showing);
+    return true;
+  }
+  // 到点把没人用的后台标签冻上：只在有「藏着且还没冻」的标签时挂一个定时器，没有就不跑
+  let idleTimer = null;
+  function scheduleIdleSweep() {
+    if (idleTimer || disposed) return;
+    const pending = [...host.views.values()].some((e) => !e.showing && e.docReady && !e.frozen);
+    if (!pending) return;
+    idleTimer = setTimeout(() => {
+      idleTimer = null;
+      for (const entry of host.views.values()) {
+        if (!entry.showing && entry.docReady && !entry.frozen && !aiActive(entry)) syncHiddenViewport(entry, false);
+      }
+      scheduleIdleSweep();
+    }, 5000);
+    idleTimer.unref?.();
   }
 
   function applyAllBounds() {
@@ -583,8 +640,8 @@ function createBrowserHost(win, { onChange, isManaged }) {
 
   return {
     hostInfo, getState, setRect, setVisible, newTab, activateTab, closeTabById, clearTabs,
-    navigateTab, reloadTab, navHistory, contentsOf, revealTab, resize: applyAllBounds,
+    navigateTab, reloadTab, navHistory, contentsOf, revealTab, touchTab, resize: applyAllBounds,
     suspend() { if (!isManaged()) setVisible(false); },
-    dispose() { disposed = true; clearTabs(); }
+    dispose() { disposed = true; if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; } clearTabs(); }
   };
 }

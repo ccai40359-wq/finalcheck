@@ -8,6 +8,7 @@ import {
   splitAttachmentBlock, parseWorkflowPrompt, parseSkillSegments, baseName, IMG_EXT_RE, previewFromPath, modelDisplayLabel
 } from '../lib/app-helpers.mjs';
 import { latestTodoFromMessages } from '../lib/todo.mjs';
+import { openLightbox } from '../lib/lightbox.mjs';
 import { withModelDividers } from '../lib/model-switch.mjs';
 import { ProcessTimeline, WorkingStatus } from '../chat/ProcessTimeline.jsx';
 import { TraceBlock, WorkflowLiveCard } from '../chat/TraceCards.jsx';
@@ -60,11 +61,14 @@ function UserAttachments({ files, onOpen }) {
     previewFromPath(y, p).then((url) => { if (url) setLoaded((s) => ({ ...s, [p]: url })); }).catch(() => {});
   };
   if (!files?.length) return null;
+  // 0.33.9：图片点开是大图（同一条消息里的几张可以左右切），不再直接塞进右栏
+  const images = files.filter((p) => loaded[p]);
+  const zoom = (p) => openLightbox({ items: images.map((x) => ({ src: loaded[x], name: baseName(x), path: x })), index: images.indexOf(p) });
   return (
     <div className="mt-1.5 flex flex-wrap justify-end gap-1.5">
       {files.map((p) => loaded[p] ? (
-        <button key={p} onClick={() => onOpen?.(p)} title={p}
-          className="w-28 h-20 rounded-lg overflow-hidden border border-gold/30 hover:border-gold/70 bg-sunken transition-colors">
+        <button key={p} data-testid="message-image" onClick={() => zoom(p)} title={`${baseName(p)} · ${t('点击查看大图')}`}
+          className="w-28 h-20 rounded-lg overflow-hidden border border-gold/30 hover:border-gold/70 bg-sunken transition-colors cursor-zoom-in">
           <img src={loaded[p]} alt={baseName(p)} className="w-full h-full object-cover" onError={() => handleImgError(p)} />
         </button>
       ) : (

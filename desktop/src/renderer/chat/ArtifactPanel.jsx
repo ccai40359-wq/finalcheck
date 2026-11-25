@@ -34,7 +34,9 @@ export function collectArtifacts(trace) {
   const out = [];
   const seen = new Set();
   for (const entry of trace || []) {
-    if (!['edit_file', 'write_file', 'present_artifact', 'capture_screenshot'].includes(entry?.tool)) continue;
+    // 0.33.9：capture_screenshot 不再收进消息底部（用户：「下面我希望是 AI 主动展示的，而不是截图堆积的」）；
+    //   AI 自查截图留在那一步的工具记录里，文件名可点开（见 lib/tool-images.mjs）
+    if (!['edit_file', 'write_file', 'present_artifact'].includes(entry?.tool)) continue;
     const r = entry.result;
     if (!r || typeof r !== 'object' || r.error || !r.path) continue;
     if (!PREVIEW_EXTS.has(extOf(r.path)) || seen.has(r.path)) continue;

@@ -8,6 +8,7 @@ import {
   nextPasteId, baseName, readBase64, fileToDataUrl, shrinkImageDataUrl, skillDescription, modelDisplayLabel, buildSlashItems, SKILL_GROUPS
 } from '../lib/app-helpers.mjs';
 import { IconPlus, IconPaste, IconTrash, IconEdit, IconShield, IconSend, IconCube, ContextRing } from './Icons.jsx';
+import { openLightbox } from '../lib/lightbox.mjs';
 
 // 输入框里的附件 chip：图片直接显示缩略图（无 preview 时按路径读），文件名 + 移除
 function AttachmentChip({ item, onRemove }) {
@@ -39,7 +40,13 @@ function AttachmentChip({ item, onRemove }) {
     return (
       <div className="group relative shrink-0">
         {src
-          ? <img src={src} alt={item.name || ''} title={item.name || ''} className="h-9 w-9 rounded-lg object-cover border border-edge/60 hover:border-gold/50 transition-colors" onError={handleImgError} />
+          ? (
+            // 0.33.9：点缩略图看大图
+            <button type="button" data-testid="composer-image" onClick={() => openLightbox({ items: [{ src, name: item.name || baseName(item.path || ''), path: item.path || '' }] })}
+              title={item.name ? `${item.name} · ${t('点击查看大图')}` : t('点击查看大图')} className="block cursor-zoom-in rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold/60">
+              <img src={src} alt={item.name || ''} className="h-9 w-9 rounded-lg object-cover border border-edge/60 hover:border-gold/50 transition-colors" onError={handleImgError} />
+            </button>
+          )
           : <span title={item.name || ''} className="h-9 w-9 rounded-lg bg-lift/[0.04] border border-edge/60 flex items-center justify-center text-goldDeep">▤</span>}
         <button onClick={onRemove} title={t('移除附件')}
           className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-black/80 border border-edge text-[9px] leading-none text-mute/80 opacity-0 group-hover:opacity-100 hover:text-red-400 transition-opacity">✕</button>

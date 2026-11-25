@@ -129,8 +129,9 @@ function makeRecord(tool, target, reason) {
   };
 }
 
-function deny(tool, target, reason) {
-  return { ok: false, reason, record: makeRecord(tool, target, reason) };
+// 0.33.9：matchedRule 让工具层分得清「可以问用户」（敏感 / 项目外）和「不能问」（只读、路径无效）
+function deny(tool, target, reason, matchedRule = undefined) {
+  return { ok: false, reason, record: makeRecord(tool, target, reason), ...(matchedRule ? { matchedRule, target } : {}) };
 }
 
 /**
@@ -342,7 +343,7 @@ export function assertPathAllowed(policy, absPath, { write = false, tool = DEFAU
   }
 
   const sensitive = detectSensitive(policy, normalized);
-  if (sensitive) return deny(tool, normalized, t('敏感路径禁止访问（{item}）', { item: sensitive }));
+  if (sensitive) return deny(tool, normalized, t('敏感路径禁止访问（{item}）', { item: sensitive }), 'sensitive');
 
   if (write && policy.mode === 'readonly') {
     return deny(tool, normalized, t('只读模式禁止写入'));
@@ -356,18 +357,18 @@ export function assertPathAllowed(policy, absPath, { write = false, tool = DEFAU
     const inside = roots.some(
       (root) => typeof root === 'string' && isInside(pathApi, root, normalized, caseInsensitive)
     );
-    if (!inside) return deny(tool, normalized, t('路径不在项目边界内'));
+    if (!inside) return deny(tool, normalized, t('路径不在项目边界内'), 'outside');
   }
   let canonical;
   try { canonical = canonicalPath(normalized, policy.platform); }
   catch { return deny(tool, normalized, t('路径无法安全解析')); }
   const realSensitive = detectSensitive(policy, canonical);
-  if (realSensitive) return deny(tool, canonical, t('敏感路径禁止访问（{item}）', { item: realSensitive }));
+  if (realSensitive) return deny(tool, canonical, t('敏感路径禁止访问（{item}）', { item: realSensitive }), 'sensitive');
   if (policy.mode !== 'off') {
     const api = pathApiFor(policy.platform);
     try {
       if (!policy.roots.some((root) => isInside(api, canonicalPath(root, policy.platform), canonical, isWinPlatform(policy.platform)))) {
-        return deny(tool, canonical, t('路径不在项目边界内'));
+        return deny(tool, canonical, t('路径不在项目边界内'), 'outside');
       }
     } catch { return deny(tool, normalized, t('路径无法安全解析')); }
   }
@@ -577,6 +578,9 @@ function literalPathsIn(text) {
     // 当成「当前盘根目录下的路径」→ 误判项目外而拒绝（2026-11-17 桌面实测：python 脚本里
     // 写 "\r\n" 换行被拦，模型只好改写成 chr(13)+chr(10)）。
     if (/^(?:\\(?:[nrtvfab0e'"\\]|x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}))+$/.test(value)) continue;
+    // 0.33.9：以 \x1b / \u001b 这类转义开头的字符串（终端颜色码 `'\x1b[32mVITE\x1b[0m ready'`）也不是路径
+    //   ——0.33.7 实测 node -e 打彩色输出被当成「项目外路径」整条拒绝
+    if (/^\\(?:x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4})/.test(value) || /\\(?:x1b|u001b|033)\[/i.test(value)) continue;
     // 含 %VAR% / 通配符 / 管道符号的不猜，交给黑名单与审批
     if (value && !value.includes('%') && !value.includes('*') && !value.includes('?')) found.push(value);
   }

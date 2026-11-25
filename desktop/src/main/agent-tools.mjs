@@ -3,7 +3,7 @@
 import path from 'node:path';
 import os from 'node:os';
 import { stat } from 'node:fs/promises';
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, statSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
@@ -53,6 +53,38 @@ function policyDenyResult(check) {
   };
 }
 
+// ---- 0.33.9 越界改成「问用户」而不是直接拒绝 ----
+// 用户：「不要直接拒绝 llm，比如他要读你的私钥，这个时候应该经过用户同意就行；我想让他直接部署到服务器，这也限制就会很麻烦」。
+// 能问的：敏感路径（私钥、.ssh、凭据）、项目外路径、删除/改名项目外或敏感文件。
+// 不能问、照旧拒绝的：只读模式、路径无效、文件名非法、灾难命令黑名单（格式化磁盘 / 关机 / 改防火墙这类）。
+// 没有提问通道（子代理、工作流 gate）时照旧拒绝，但告诉模型要回到主对话请用户同意。
+export const ESCALATABLE_RULES = new Set(['sensitive', 'outside', 'sensitive-path', 'path-outside', 'destructive-outside', 'destructive-sensitive']);
+export function isEscalatable(check) {
+  return !!check && check.ok === false && ESCALATABLE_RULES.has(check.matchedRule);
+}
+// 「这个会话都允许」的记忆：createAgentTools 每回合重建，所以放在模块级，按会话分
+const POLICY_SESSION_GRANTS = new Map(); // sessionId -> Set<key>
+export function policyGrantKey(rule, target) {
+  const kind = /sensitive/.test(String(rule)) ? 'sensitive' : /destructive/.test(String(rule)) ? 'destructive' : 'outside';
+  return `${kind}|${String(target || '').replace(/\\/g, '/').toLowerCase()}`;
+}
+export function resetPolicyGrants(sessionId = null) {
+  if (sessionId == null) POLICY_SESSION_GRANTS.clear(); else POLICY_SESSION_GRANTS.delete(String(sessionId));
+}
+/** 给用户看的问题：说清楚 AI 要碰什么、为什么危险，让用户能判断 */
+export function policyAskQuestion({ rule, target, reason, tool, command = '' }) {
+  const what = command ? `运行命令：\n${String(command).slice(0, 400)}` : `${tool === 'read_file' || tool === 'list_dir' || tool === 'grep_code' || tool === 'glob_files' ? '读取' : '写入'}：${String(target || '').slice(0, 200)}`;
+  const why = /sensitive/.test(rule)
+    ? '这是敏感文件（私钥 / 凭据 / 登录信息之类）。只在你清楚 AI 要拿它做什么时才允许，比如用你的密钥部署到你自己的服务器。'
+    : /destructive/.test(rule)
+      ? '这会删除或改名项目外面的文件，删了可能找不回来。'
+      : '这在当前项目外面。';
+  // 原拦截理由里的「禁止访问」在问卡里自相矛盾，只留命中的规则名
+  const hit = String(reason || '').replace(/禁止访问|已拒绝/g, '').trim().slice(0, 200);
+  return `AI 想${what}\n\n${why}${hit ? `\n（触发规则：${hit}）` : ''}`;
+}
+const POLICY_ASK_OPTIONS = [{ label: '允许这一次' }, { label: '这个会话都允许' }, { label: '不允许' }];
+
 // ---- run_command 可中断执行：signal 触发 → Windows 杀整棵进程树并立即 resolve cancelled ----
 // 与 shell.mjs 的护栏保持一致（灾难命令 / 超时 clamp / 输出截断 / System32 PATH），
 // 额外把 pid 留在手里，用于中断时 taskkill /PID <pid> /T /F。
@@ -97,6 +129,24 @@ export function sandboxEnabled(opts = {}) {
 export const DEFAULT_COMMAND_IDLE_MS = 120000;
 // 0.33.5：主 agent 的命令跑过这么久还没结束，就转成后台任务（几秒内跑完的照常等结果）
 export const DEFAULT_COMMAND_YIELD_MS = 30000;
+/**
+ * 0.33.9 浏览器 / 桌面截图落一份文件（系统临时目录，不进项目）：工具记录那一行的文件名就能点开在右栏看——
+ * 用户：「调用工具时候他看图片，我可以点开看，这样我就知道他在哪一步做到什么情况」。
+ * 以前这些截图只在内存里给模型看，用户看不到 AI 当时看到了什么。写失败不影响截图本身。
+ */
+export function saveToolShot(buf, mime = 'image/png', prefix = 'shot') {
+  try {
+    if (!buf || !buf.length) return '';
+    const dir = path.join(os.tmpdir(), 'finalcheck-shots');
+    mkdirSync(dir, { recursive: true });
+    const ext = /jpe?g/i.test(String(mime)) ? '.jpg' : /webp/i.test(String(mime)) ? '.webp' : '.png';
+    const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+    const file = path.join(dir, `${prefix}-${stamp}-${Math.random().toString(36).slice(2, 6)}${ext}`);
+    writeFileSync(file, buf);
+    return file;
+  } catch { return ''; }
+}
+
 /** 0.33.7 常驻服务的日志文件（系统临时目录下；子进程直接写，FC 只读） */
 function openBackgroundLog() {
   try {
@@ -771,6 +821,39 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
   // 子代理与工作流 gate 走同一份 createAgentTools 但不传 askUser（见 ipc-agent.mjs），
   // 它们的 audit_project 必须保持原行为（gate 里没有交互通道，兜底成 L2 继续跑）。
   const askBeforeAudit = requireAuditIntent === null ? typeof askUser === 'function' : !!requireAuditIntent;
+  // 0.33.9：越界（敏感 / 项目外 / 删项目外）先问用户；同意就放行，不同意或没法问才拒绝
+  const grantsFor = () => {
+    const k = String(sessionId || '_');
+    if (!POLICY_SESSION_GRANTS.has(k)) POLICY_SESSION_GRANTS.set(k, new Set());
+    return POLICY_SESSION_GRANTS.get(k);
+  };
+  /** @returns {Promise<{ok:true}|{ok:false, result:object}>} */
+  const askPolicyOverride = async (check, { tool, target, command = '', ctx = {} } = {}) => {
+    if (!isEscalatable(check)) return { ok: false, result: policyDenyResult(check) };
+    const tgt = target || check.target || '';
+    const key = policyGrantKey(check.matchedRule, command || tgt);
+    if (grantsFor().has(key)) return { ok: true };
+    if (typeof askUser !== 'function') {
+      return { ok: false, result: { ...policyDenyResult(check), hint: '这一步需要用户同意，但子代理没法直接问用户：在报告里说明需要访问什么、为什么，由主对话去问用户。' } };
+    }
+    const r = await askUser({ question: policyAskQuestion({ rule: check.matchedRule, target: tgt, reason: check.reason, tool, command }), options: POLICY_ASK_OPTIONS }, ctx || {});
+    if (r?.error) return { ok: false, result: { ...policyDenyResult(check), error: r.error } };
+    const answer = String(r?.answer || '').trim();
+    if (/^(这个会话都允许|本会话都允许|always)/i.test(answer)) { grantsFor().add(key); return { ok: true }; }
+    if (/^(允许这一次|允许|同意|yes|ok|可以)/i.test(answer)) return { ok: true };
+    return {
+      ok: false,
+      result: { error: `用户不同意（${tool}：${String(command || tgt).slice(0, 120)}）。回答：${answer.slice(0, 120) || '空'}。原本拦下的原因：${check.reason || ''}。不要换个写法绕过，按用户的意思调整做法。`, deniedBy: 'user-declined', matchedRule: check.matchedRule }
+    };
+  };
+  /** 文件类工具的路径闸：越界先问；同意后用解析后的绝对路径继续 */
+  const gatePath = async (raw, { write, tool }, ctx) => {
+    const check = assertPathAllowed(policy, raw, { write, tool });
+    if (check.ok) return check;
+    const abs = check.target || path.resolve(projectPath || cwd || repoRoot, String(raw || ''));
+    const r = await askPolicyOverride(check, { tool, target: abs, ctx });
+    return r.ok ? { ok: true, path: abs, escalated: true } : { ok: false, result: r.result };
+  };
   const note = (url) => permissions?.noteTarget?.(url);
   const hooksOn = !!(hooksConfig && hooksConfig.enabled === true);
   const hookCwd = cwd || projectPath || undefined;
@@ -1062,11 +1145,11 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
       return rollbackFile(a.path, a.snapshotId || null);
     },
 
-    read_file: async (args) => {
+    read_file: async (args, ctx) => {
       let a = args || {};
       if (policy) {
-        const check = assertPathAllowed(policy, a.path, { write: false, tool: 'read_file' });
-        if (!check.ok) return policyDenyResult(check);
+        const check = await gatePath(a.path, { write: false, tool: 'read_file' }, ctx);
+        if (!check.ok) return check.result;
         a = { ...a, path: check.path };
       }
       return readFileTool({ path: a?.path, offset: a?.offset, limit: a?.limit });
@@ -1075,15 +1158,15 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
     // 专用代码搜索：只读工具，与 read_file 同级（不进 APPROVAL_TOOLS、不弹审批）。
     // ripgrep 优先（捆绑路径 → PATH），找不到 rg 自动回退 findstr 字面量，不报错。
     // 路径闸与 read_file 同一道 assertPathAllowed；默认 repoRoot（搜本应用源码），搜用户项目显式传 path。
-    grep_code: async (args) => {
+    grep_code: async (args, ctx) => {
       const pattern = args?.pattern == null ? '' : String(args.pattern);
       if (!pattern.trim()) return { error: 'pattern 必填：要搜的关键词/函数名/报错文本' };
       const max = Math.max(1, Math.min(500, Math.floor(Number(args?.maxResults) || GREP_DEFAULT_MAX_RESULTS)));
       const glob = String(args?.glob || '').trim();
       let target = path.resolve(String(args?.path || '').trim() || repoRoot);
       if (policy) {
-        const check = assertPathAllowed(policy, target, { write: false, tool: 'grep_code' });
-        if (!check.ok) return policyDenyResult(check);
+        const check = await gatePath(target, { write: false, tool: 'grep_code' }, ctx);
+        if (!check.ok) return check.result;
         target = check.path;
       }
       const rg = resolveRipgrepPath({ repoRoot });
@@ -1112,20 +1195,20 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
     },
 
     // 0.33.1 文件查找：只读，路径闸与 read_file 同一道；默认在当前项目根（不是应用源码目录）
-    glob_files: async (args) => {
+    glob_files: async (args, ctx) => {
       let root = path.resolve(String(args?.path || '').trim() || projectPath || cwd || repoRoot);
       if (policy) {
-        const check = assertPathAllowed(policy, root, { write: false, tool: 'glob_files' });
-        if (!check.ok) return policyDenyResult(check);
+        const check = await gatePath(root, { write: false, tool: 'glob_files' }, ctx);
+        if (!check.ok) return check.result;
         root = check.path;
       }
       return globFiles({ root, pattern: args?.pattern, max: args?.maxResults, rgPath: resolveRipgrepPath({ repoRoot }) });
     },
-    list_dir: async (args) => {
+    list_dir: async (args, ctx) => {
       let dir = path.resolve(String(args?.path || '').trim() || projectPath || cwd || repoRoot);
       if (policy) {
-        const check = assertPathAllowed(policy, dir, { write: false, tool: 'list_dir' });
-        if (!check.ok) return policyDenyResult(check);
+        const check = await gatePath(dir, { write: false, tool: 'list_dir' }, ctx);
+        if (!check.ok) return check.result;
         dir = check.path;
       }
       return listDir({ dir, showHidden: args?.show_hidden === true });
@@ -1150,11 +1233,11 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
       signal: ctx?.signal || signal
     }),
 
-    edit_file: async (args) => {
+    edit_file: async (args, ctx) => {
       let a = args || {};
       if (policy) {
-        const check = assertPathAllowed(policy, a.path, { write: true, tool: 'edit_file' });
-        if (!check.ok) return policyDenyResult(check);
+        const check = await gatePath(a.path, { write: true, tool: 'edit_file' }, ctx);
+        if (!check.ok) return check.result;
         a = { ...a, path: check.path };
         // 2026-11-17（规格 §3.3）：文件名合法性。D:inalcheck 里出现过名叫
         // `ids.indexOf(v)!` 的 0 字节文件——模型把代码片段当 path 传进来的结果。
@@ -1169,11 +1252,11 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
       return editFileTool(a);
     },
 
-    write_file: async (args) => {
+    write_file: async (args, ctx) => {
       let a = args || {};
       if (policy) {
-        const check = assertPathAllowed(policy, a.path, { write: true, tool: 'write_file' });
-        if (!check.ok) return policyDenyResult(check);
+        const check = await gatePath(a.path, { write: true, tool: 'write_file' }, ctx);
+        if (!check.ok) return check.result;
         a = { ...a, path: check.path };
         const nameCheck = checkFileName(a.path);
         if (!nameCheck.ok) return policyDenyResult(nameCheck);
@@ -1388,21 +1471,39 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
       const cmd = String(args?.command ?? '');
       if (toolSignal?.aborted) return CANCELLED_RESULT();
       let runCwd = args?.cwd;
+      let policyApproved = false; // 0.33.9：用户已经在越界提问里同意了这条命令 → 后面的普通审批不再重复问
       if (policy) {
-        // 第 1+2 层（决策 3，2026-11-16）：命令正文里的字面路径——敏感路径无条件拒绝，
-        // 项目外路径整条拒绝。必须在最前：早先只验 cwd，命令里写 `type C:\Users\x\.ssh\key`
-        // 或 `cd /d D:\other && type config.json` 都能过。
-        const pathsCheck = checkCommandPaths(policy, cmd, runCwd);
-        if (!pathsCheck.ok) return policyDenyResult(pathsCheck);
-        // 第 3 层：cwd 走路径边界检查（未传时默认落到项目根）
-        const cwdCheck = assertCwd(policy, runCwd);
-        if (!cwdCheck.ok) return policyDenyResult(cwdCheck);
-        if (cwdCheck.path) runCwd = cwdCheck.path;
+        // 第 1+2 层（决策 3，2026-11-16）：命令正文里的字面路径——敏感路径 / 项目外路径。
+        // 0.33.9 起这几类不再直接拒绝，而是**问用户**（一条命令只问一次）；灾难黑名单、只读模式照旧拒绝。
         const cmdCheck = checkCommand(policy, cmd);
         if (!cmdCheck.ok) return policyDenyResult(cmdCheck);
+        const escalate = async (check) => {
+          if (check.ok || policyApproved) return null;
+          const r = await askPolicyOverride(check, { tool: 'run_command', command: cmd, ctx });
+          if (toolSignal?.aborted) return CANCELLED_RESULT();
+          if (!r.ok) return r.result;
+          policyApproved = true;
+          return null;
+        };
+        const pathsCheck = checkCommandPaths(policy, cmd, runCwd);
+        const blockedPaths = await escalate(pathsCheck);
+        if (blockedPaths) return blockedPaths;
+        // 第 3 层：cwd 走路径边界检查（未传时默认落到项目根）
+        const cwdCheck = assertCwd(policy, runCwd);
+        if (!cwdCheck.ok) {
+          const blockedCwd = await escalate(cwdCheck);
+          if (blockedCwd) return blockedCwd;
+          if (!isEscalatable(cwdCheck)) return policyDenyResult(cwdCheck);
+          runCwd = cwdCheck.target || path.resolve(String(runCwd));
+        } else if (cwdCheck.path) runCwd = cwdCheck.path;
         // 沙箱的 WRITE_RESTRICTED 令牌不过滤 DELETE（实测 del 能删项目外文件），这条在应用层兜。
         const deleteCheck = checkDestructiveTargets(policy, cmd, runCwd);
-        if (!deleteCheck.ok) return policyDenyResult(deleteCheck);
+        if (!deleteCheck.ok) {
+          // 删项目外：就算前面已经同意过「访问」，删除也要单独再确认一次
+          if (policyApproved && isEscalatable(deleteCheck)) policyApproved = false;
+          const blockedDelete = await escalate(deleteCheck);
+          if (blockedDelete) return blockedDelete;
+        }
       }
       // 读源码 / 搜代码改道到 read_file / grep_code（工具描述早就写了「违反会被应用层拒绝」，这里才真正落实）。
       // 放在路径闸之后：越界/敏感路径必须先按安全原因拒绝，而不是被说成「换个工具就行」
@@ -1413,7 +1514,7 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
       const pattern = typeof permissions?.approvalPatternFor === 'function'
         ? permissions.approvalPatternFor(cmd)
         : (typeof permissions?.commandPrefix === 'function' ? permissions.commandPrefix(cmd) : cmd);
-      if (!preApproved('run_command', pattern) && !permissions?.sessionAllowed?.('run_command', pattern, approvalScope)) {
+      if (!policyApproved && !preApproved('run_command', pattern) && !permissions?.sessionAllowed?.('run_command', pattern, approvalScope)) {
         if (toolSignal?.aborted) return CANCELLED_RESULT();
         const decision = await permissions?.requestApproval?.({ tool: 'run_command', summary: cmd.slice(0, 300), target: pattern, ...approvalScope });
         if (toolSignal?.aborted) return CANCELLED_RESULT(); // 审批期间被停止：命令不执行
@@ -1652,6 +1753,7 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
         observationOnlyReason: r.observationOnlyReason,
         foreground: r.foreground,
         note: notes,
+        path: saveToolShot(r.buf, r.mime, 'desktop') || undefined,
         __images: [{ mime: r.mime, base64: r.buf.toString('base64'), label: `桌面截图 ${r.source?.name || ''}`.trim() }]
       };
     };
@@ -2033,7 +2135,7 @@ ${expr.slice(0, 400)}`, ...approvalScope });
           const r = await real.screenshotReal();
           if (!r.ok) return r;
           return {
-            ok: true, width: r.width, height: r.height,
+            ok: true, width: r.width, height: r.height, path: saveToolShot(r.buf, r.mime, 'edge') || undefined,
             note: '这是真 Edge 的页面截图。（不抢前台；不影响用户窗口）',
             __images: [{ mime: r.mime, base64: r.buf.toString('base64'), label: '真 Edge 截图' }]
           };
@@ -2043,7 +2145,7 @@ ${expr.slice(0, 400)}`, ...approvalScope });
         const r = await browserUse.screenshot();
         if (!r.ok) return r;
         return {
-          ok: true, width: r.width, height: r.height,
+          ok: true, width: r.width, height: r.height, path: saveToolShot(r.buf, r.mime, 'browser') || undefined,
           note: '这是浏览器页面截图。判断结构对不对优先用 browser_snapshot。',
           __images: [{ mime: r.mime, base64: r.buf.toString('base64'), label: '浏览器截图' }]
         };

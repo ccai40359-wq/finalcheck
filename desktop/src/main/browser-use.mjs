@@ -97,7 +97,12 @@ export function setViewHostProvider(fn) {
 // 所有页面操作（截图/快照/执行 JS/加载）都走这里，两种宿主因此共用同一套语义。
 function contentsOf(state) {
   if (!state) return null;
-  if (state.contents) return state.contents.isDestroyed?.() ? null : state.contents;
+  if (state.contents) {
+    if (state.contents.isDestroyed?.()) return null;
+    // 0.33.9：右栏的标签闲着会被冻结省 CPU；AI 每次要用它之前先叫醒（宿主是同一个单例，调用很便宜）
+    if (state.tabId) { try { ensureViewHost()?.touchTab?.(state.tabId); } catch { /* 宿主不在：照旧 */ } }
+    return state.contents;
+  }
   return state.window && !state.window.isDestroyed?.() ? state.window.webContents : null;
 }
 
@@ -1109,6 +1114,17 @@ export async function screenshot() {
   let img;
   try { img = await withTimeout(contents.capturePage(), 5000, '截图'); } catch { img = null; }
   if (!img || img.isEmpty()) {
+    // 0.33.9：窗口被别的窗口挡住 / 在后台时 Chromium 不绘制，capturePage 是空图；
+    // 走 CDP 让渲染器专门出一帧（挂着调试器的内嵌标签都有）
+    try {
+      const dbg = contents.debugger;
+      if (dbg?.isAttached?.()) {
+        const r = await withTimeout(dbg.sendCommand('Page.captureScreenshot', { format: 'png' }), 5000, '截图');
+        const buf = r?.data ? Buffer.from(r.data, 'base64') : null;
+        // PNG 头：IHDR 宽高在第 16–23 字节
+        if (buf && buf.length > 24) return { ok: true, buf, mime: 'image/png', width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
+      }
+    } catch { /* 退回下面的提示 */ }
     return { ok: false, error: '截图失败：这个标签现在没显示在右栏（并行的后台标签不绘制）。用 browser_snapshot / browser_evaluate 读页面文字取证。' };
   }
   return { ok: true, buf: img.toPNG(), mime: 'image/png', ...img.getSize() };
