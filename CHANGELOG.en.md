@@ -6,6 +6,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.33.8] - 2026-11-25
+
+This release fixes "I never get update prompts": update checks now query the project website in addition to GitHub, and whichever source has the newer version wins; a failure on one source no longer reports an error as long as the other one answers.
+
+### Added
+
+- **The website as a second update source**: update checks now ask both the website and GitHub and take the higher version. The website's installer links are reachable from mainland China, so users who cannot reach GitHub still get update prompts.
+- **One failing source is not an error**: if the website is down it falls back to GitHub, and if GitHub is down it uses the website; an error is only reported when both are unreachable.
+
 ## [0.33.7] - 2026-11-25
 
 This release is mostly UI polish: a cleaner chat, a settings page that shows only what you use, and background commands you can watch like a real terminal.
