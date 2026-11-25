@@ -6,6 +6,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.33.5] - 2026-11-25
+
+This release lets the AI hand work off and keep going: long commands and subagents can run in the background, and their results come back on their own. The built-in browser also looks more like a real Edge to websites, and there is a new Google-results search backend.
+
+### Added
+
+- **Background subagents**: the AI can send a subagent off to research or do work while it carries on or replies to you; when the subagent finishes, its result goes back to the AI automatically and the conversation continues by itself once the UI is idle.
+- **Long commands move to the background**: commands that finish within a few seconds are waited for as before; ones still running after 30 seconds are moved to the background, the AI moves on, and it gets the output automatically when the command ends (it can also list, wait for or stop background tasks).
+- **Background task panel (top right)**: sits with the to-do list and shows "Background N"; expand it to see each task's status and live output, stop tasks individually, and open a subagent's steps.
+- **serper search backend (Google results)**: pick serper under Settings → Web search and add your own API key to get Google results; without a key it falls back to Bing.
+
+### Improved
+
+- **The built-in browser presents as Edge**: the user agent, Client Hints headers and navigator.userAgentData all report Microsoft Edge, with no Electron / FinalCheck markers, and the PDF plugin is present like in real Edge, so sites flag it as a bot less often.
+
 ## [0.33.4] - 2026-11-25
 
 This release fixes feedback on 0.33.3: the AI should not take over the desktop unasked, pressing ESC should not stop every task, and plans showed raw Markdown. The built-in browser is also more complete: refresh works, back/forward are there, and logins no longer go missing.
