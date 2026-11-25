@@ -21,6 +21,7 @@ import { pathToFileURL } from 'node:url';
 import path from 'node:path';
 import { resolvePartition, sessionPartition, PARTITION_ONESHOT } from './browser-session.mjs';
 import { hardenSession } from './browser-hardening.mjs';
+import { applyEdgeIdentityToSession } from './browser-fingerprint.mjs';
 
 const WORLD_ID = 1742;
 const CONSOLE_LEVELS = ['verbose', 'info', 'warning', 'error'];
@@ -123,10 +124,12 @@ function ensureWindow({ width, height }, policy = null) {
       contextIsolation: true,
       nodeIntegration: false,
       backgroundThrottling: false,
+      plugins: true,
       partition
     }
   });
   hardenSession(window.webContents.session);
+  applyEdgeIdentityToSession(window.webContents.session); // 0.33.5：离屏窗口同样报 Edge UA
   scope.activePolicy = { ...want, partition };
   const state = createState({ window, contents: window.webContents, host: null, partition, messages: [], request: 0, generation: 0, action: 0, navigating: false, policy: { ...scope.activePolicy } });
   return state;

@@ -337,4 +337,6 @@ export const EN_SETTINGS = {
   '工具名正则': 'Tool name regex',
   '工具名正则，如 edit_file|write_file': 'Tool name regex, e.g. edit_file|write_file',
   '按回复文本匹配的正则': 'Regex on the reply text',
+  // 0.33.5 serper
+  'Serper（谷歌搜索结果，API）': 'Serper (Google results, API)',
 };

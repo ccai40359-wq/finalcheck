@@ -11,6 +11,7 @@ const PROVIDERS = [
   { v: 'duckduckgo', label: 'DuckDuckGo', key: false, url: false },
   { v: 'tavily', label: 'Tavily（API）', key: true, url: false },
   { v: 'brave', label: 'Brave Search（API）', key: true, url: false },
+  { v: 'serper', label: 'Serper（谷歌搜索结果，API）', key: true, url: false },
   { v: 'searxng', label: 'SearXNG（自建实例）', key: false, url: true }
 ];
 

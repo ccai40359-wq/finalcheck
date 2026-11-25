@@ -15,6 +15,7 @@
 //   ⑥ 窗口缩放**不会**自动跟随 → 必须由渲染层上报 rect（这就是 railRect 通道的由来）
 import { WebContentsView } from 'electron';
 import { hardenSession } from './browser-hardening.mjs';
+import { applyEdgeIdentityToSession, applyEdgeIdentityToContents } from './browser-fingerprint.mjs';
 import { emptyState, openTab, switchTab, closeTab, patchTab, tabById, classifyWindowOpen, MAX_TABS } from './browser-tabs.mjs';
 
 let windowOwner = null;
@@ -225,12 +226,16 @@ function createBrowserHost(win, { onChange, isManaged }) {
           nodeIntegration: false,
           sandbox: true,
           backgroundThrottling: false,
+          // 0.33.5：启用内置 PDF 查看器 → navigator.plugins 和真 Edge 一样有 PDF 条目（空列表是典型的机器人特征）
+          plugins: true,
           ...(partition ? { partition } : {})
         }
       });
       // 0.32.6：zoom 初值必须是 null（不是 1/undefined）——否则首帧会白设一次 zoomFactor
       // 0.32.7：权限默认拒绝（Electron 不设处理函数就自动批准摄像头/麦克风/定位等一切请求）
       hardenSession(view.webContents.session);
+      // 0.33.5：UA / Accept-Language 对齐 Edge（会话级，去掉 Electron / FinalCheck 字样）
+      applyEdgeIdentityToSession(view.webContents.session);
       entry = { id, view, wc: view.webContents, url: '', title: '', showing: false, navigation: 0, zoom: null,
         // 0.33.4：partition 记下来（界面显示「长期保留 / 无痕」）；requested = 最近一次要打开的网址（加载失败时刷新用它重试）
         partition: String(partition || ''), requested: String(url || ''), loading: false };
@@ -319,6 +324,9 @@ function createBrowserHost(win, { onChange, isManaged }) {
 
     updateState(background && previous.activeId ? { ...res.state, activeId: previous.activeId } : res.state);
     applyAllBounds();
+    // 0.33.5：Client Hints（Sec-CH-UA / navigator.userAgentData）也报 Microsoft Edge——必须在首个请求之前
+    // （只有真 webContents 才有 debugger；测试替身上不多等一拍，保持原有的同步时序）
+    if (wc.debugger) await applyEdgeIdentityToContents(wc);
     if (url) {
       const initialNavigation = ++entry.navigation;
       try {
