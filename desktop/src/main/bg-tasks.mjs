@@ -188,7 +188,12 @@ export function createBgTaskManager({ now = () => Date.now(), onChange = () => {
       };
       task.waiters.push(settle);
       timer = setTimeout(settle, limit);
-      timer.unref?.();
+      // 不能 unref：Node 22 的 node:test 把「事件循环空了但 promise 还 pending」判成
+      // cancelledByParent（'Promise resolution is still pending but the event loop has already resolved'），
+      // Node 24 放宽了这个检查 —— 于是本地（node 24）全绿、CI（node 22）这 5 条全红。
+      // 生产上同理：unref 过的定时器留不住进程，但 wait() 的 promise 还在等；
+      // 调用方如果恰好也没别的事做，就永远拿不到「已超时」这个结果。
+      // 上限是 BG_WAIT_MAX_MS，留着不会把进程拖太久。
       if (signal) {
         if (signal.aborted) settle();
         else signal.addEventListener('abort', settle, { once: true });
