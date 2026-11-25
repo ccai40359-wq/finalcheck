@@ -3,7 +3,7 @@
 import path from 'node:path';
 import os from 'node:os';
 import { stat } from 'node:fs/promises';
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
@@ -97,6 +97,43 @@ export function sandboxEnabled(opts = {}) {
 export const DEFAULT_COMMAND_IDLE_MS = 120000;
 // 0.33.5：主 agent 的命令跑过这么久还没结束，就转成后台任务（几秒内跑完的照常等结果）
 export const DEFAULT_COMMAND_YIELD_MS = 30000;
+/** 0.33.7 常驻服务的日志文件（系统临时目录下；子进程直接写，FC 只读） */
+function openBackgroundLog() {
+  try {
+    const dir = path.join(os.tmpdir(), 'finalcheck-bg-logs');
+    mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.log`);
+    const fd = openSync(file, 'a');
+    let closed = false;
+    return { path: file, fd, close: () => { if (closed) return; closed = true; try { closeSync(fd); } catch { /* 已关 */ } } };
+  } catch {
+    return null; // 临时目录不可写：退回旧行为（ignore）
+  }
+}
+
+/** 每秒读日志文件新增的部分交给 onChunk；stop() 时再读最后一次。 */
+export function tailLogFile(file, onChunk, { intervalMs = 1000, maxChunk = 256 * 1024 } = {}) {
+  let offset = 0;
+  const readNew = () => {
+    let fd = null;
+    try {
+      const size = statSync(file).size;
+      if (size <= offset) return;
+      const len = Math.min(size - offset, maxChunk);
+      const buf = Buffer.alloc(len);
+      fd = openSync(file, 'r');
+      const n = readSync(fd, buf, 0, len, offset);
+      offset += n;
+      if (n > 0) onChunk(buf.subarray(0, n).toString('utf8'));
+    } catch { /* 文件还没建 / 被删：下次再试 */ } finally {
+      if (fd !== null) { try { closeSync(fd); } catch { /* 忽略 */ } }
+    }
+  };
+  const timer = setInterval(readNew, intervalMs);
+  timer.unref?.();
+  return { stop: () => { clearInterval(timer); readNew(); readNew(); }, readNow: readNew };
+}
+
 export const RUN_COMMAND_BACKGROUND_HINT = '启动常驻服务请直接用 background:true，不要在命令里用 Start-Process / start /b 然后等它返回。';
 
 function idleLabel(ms) {
@@ -316,6 +353,11 @@ export function runCommandWithSignal(command, {
       idleTimer.unref?.(); // 看门狗不自己撑住事件循环
     };
     if (signal) signal.addEventListener('abort', onAbort, { once: true });
+    // 0.33.7：常驻服务（background:true）交给后台任务账本时，输出写进一个日志文件——
+    // 以前 stdio 是 ignore，面板里永远「(没有输出)」，服务起不来（退出码 1）也看不到报错。
+    // 用文件而不是管道：FC 退出后服务照样活着（管道断了子进程会 EPIPE 退出）。
+    let bgLog = null;
+    if (wantsBackground && typeof onDetach === 'function') bgLog = openBackgroundLog();
     try {
       const spawnOptions = {
         cwd: (sandbox ? sandbox.cwd : cwd) && existsSync(String(sandbox ? sandbox.cwd : cwd)) ? String(sandbox ? sandbox.cwd : cwd) : undefined,
@@ -326,7 +368,7 @@ export function runCommandWithSignal(command, {
         env,
         // Background commands inherit the same hidden-console setup. Ignore
         // stdio and unref the child instead of changing process creation modes.
-        ...(wantsBackground ? { stdio: 'ignore' } : {})
+        ...(wantsBackground ? { stdio: bgLog ? ['ignore', bgLog.fd, bgLog.fd] : 'ignore' } : {})
       };
       // 决策 1（2026-11-16）：非沙箱路径统一走 Git Bash（用户已装 → 内置 → cmd 回落）。
       // shell:true 会让 Node 用 cmd.exe 套壳，模型写 bash 语法（cat/2>/dev/null/&& $?）就全错。
@@ -339,8 +381,10 @@ export function runCommandWithSignal(command, {
             shell: false
           });
     } catch (e) {
+      bgLog?.close();
       return finish({ blocked: false, code: 1, stdout: '', stderr: e?.message || String(e) });
     }
+    bgLog?.close(); // 子进程已经拿到自己的句柄；父进程这份关掉，只按路径读
     if (signal?.aborted) return onAbort(); // spawn 与监听之间被中断
     if (timeout > 0) {
       timer = setTimeout(() => {
@@ -375,14 +419,19 @@ export function runCommandWithSignal(command, {
     });
     if (wantsBackground) {
       const pid = proc.pid;
-      // 常驻服务：stdio 是 ignore（FC 退出后服务照样活着），拿不到输出，只记它什么时候退出
+      // 常驻服务：输出进日志文件（FC 退出后服务照样活着），每秒把新内容交给后台任务账本
       let hooks = null;
       if (typeof onDetach === 'function') {
-        try { hooks = onDetach({ pid, reason: 'background', stdout: '', stderr: '', kill: () => terminateTree(proc) }); } catch { hooks = null; }
+        try { hooks = onDetach({ pid, reason: 'background', stdout: '', stderr: '', kill: () => terminateTree(proc), logFile: bgLog?.path || '' }); } catch { hooks = null; }
       }
       releaseProcess();
       if (hooks) {
-        proc.once('exit', (c) => { try { hooks.onExit?.(c ?? 0); } catch { /* 忽略 */ } });
+        const tail = bgLog ? tailLogFile(bgLog.path, (s) => { try { hooks.onData?.(s, 'stdout'); } catch { /* 忽略 */ } }) : null;
+        proc.once('exit', (c) => {
+          // 退出时再读最后一次，确保报错那几行也进面板 / 通知
+          try { tail?.stop(); } catch { /* 忽略 */ }
+          try { hooks.onExit?.(c ?? 0); } catch { /* 忽略 */ }
+        });
         return finish({ blocked: false, background: true, detached: true, taskId: hooks.taskId, code: null, pid, note: hooks.note, stdout: out, stderr: err });
       }
       return finish({ blocked: false, background: true, code: null, pid, note: backgroundNote(pid), stdout: out, stderr: err });
@@ -1441,7 +1490,7 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
       const yieldRaw = args?.yield_ms ?? args?.yieldMs;
       const yieldMs = bgTasks ? (yieldRaw === undefined || yieldRaw === null ? Number(commandYieldMs) || 0 : Math.max(0, Number(yieldRaw) || 0)) : 0;
       const onDetach = bgTasks ? ({ pid, reason, stdout, stderr, kill }) => {
-        const r = bgTasks.start({ sessionId, kind: 'command', title: cmd.replace(/\s+/g, ' ').slice(0, 160), detail: String(runCwd || ''), pid, stop: kill });
+        const r = bgTasks.start({ sessionId, kind: 'command', title: cmd.replace(/\s+/g, ' ').slice(0, 160), command: cmd, detail: String(runCwd || ''), pid, stop: kill });
         if (r?.error) return null;
         const id = r.id;
         if (stdout) bgTasks.append(id, stdout);

@@ -408,4 +408,15 @@ export const EN_CHAT = {
   '（后台任务已结束，请查看结果并继续）': '(Background task finished; review the result and continue)',
   // 0.33.6 browser subagent
   '浏览器测试': 'Browser test',
+  // 0.33.7 后台任务终端窗口
+  '已中断（你）': 'Interrupted (by you)',
+  '已中断（AI）': 'Interrupted (by the AI)',
+  '失败 · 退出码 {n}': 'Failed · exit code {n}',
+  '已完成 · 退出码 {n} · {d}': 'Done · exit code {n} · {d}',
+  '失败 · 退出码 {n} · {d}': 'Failed · exit code {n} · {d}',
+  '终端': 'Terminal',
+  '（等待输出…）': '(waiting for output…)',
+  '（这条命令没有打印任何内容）': '(this command printed nothing)',
+  '子代理还在干活，做完会把报告放在这里。': 'The subagent is still working; its report will show up here.',
+  '（没有报告）': '(no report)',
 };

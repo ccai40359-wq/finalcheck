@@ -39,11 +39,16 @@ const gw = await startGateway({
     mainSeen.push(users.slice(-3));
     const notice = users.filter((u) => u.startsWith('【后台任务完成】'));
     if (notice.length && last.role === 'user') return { content: `后台结果到了（${notice.length} 条）：脚本输出 BG-UI-OK，子代理确认 foo 只定义在 src/foo.js。` };
+    if (last.role === 'tool') { writeFileSync(path.join(out, 'tool-results.json'), JSON.stringify(msgs.filter((m) => m.role === 'tool').map((m) => String(m.content).slice(0, 400)), null, 2)); }
     if (last.role === 'tool') return { content: '脚本和调研都放到后台了，你可以先问别的；有结果我会自动接着说。' };
     if (users.at(-1)?.includes('后台')) {
       return { toolCalls: [
         { name: 'run_command', args: { command: 'node -e "setTimeout(()=>console.log(\'BG-UI-OK\'),6000)"', yield_ms: 800 } },
-        { name: 'spawn_agent', args: { description: '查 foo 的调用', prompt: '找出 foo 在哪里定义、哪里调用', background: true } }
+        { name: 'spawn_agent', args: { description: '查 foo 的调用', prompt: '找出 foo 在哪里定义、哪里调用', background: true } },
+        // 0.33.7：常驻服务（background:true）——以前展开是 (no output)，现在要看到真实输出（带颜色码、持续打印）
+        { name: 'run_command', args: { command: 'node -e "let i=0;const e=String.fromCharCode(27);console.log(e+\'[32mVITE\'+e+\'[0m ready in 312 ms\');console.log(\'  Local: http://localhost:5173/\');setInterval(()=>console.log(\'hmr update /src/App.jsx #\'+(++i)),700)"', background: true } },
+        // 0.33.7：秒退报错的服务——失败 + 退出码 + 报错原文
+        { name: 'run_command', args: { command: 'node -e "console.error(\'Error: listen EADDRINUSE: address already in use :::3000\');process.exit(1)"', background: true } }
       ] };
     }
     return { content: '好的。' };
@@ -113,16 +118,27 @@ try {
   record('U1 主回合不等后台任务，立刻答复', turn1 && Date.now() - t0 < 6000, `${Date.now() - t0}ms`);
   const chip = await waitFor(`!!document.querySelector('[data-testid="bg-tasks-chip"]')`, 5000);
   const chipText = await ev(`document.querySelector('[data-testid="bg-tasks-chip"]')?.textContent || ''`);
-  record('U2 右上角出现后台任务胶囊（运行中）', chip && /后台\s*2/.test(chipText), chipText);
+  record('U2 右上角出现后台任务胶囊（运行中）', chip && /后台\s*[234]/.test(chipText), chipText);
   await shot('1-chip-running.png');
   await ev(`document.querySelector('[data-testid="bg-tasks-chip"]').click()`);
   await sleep(500);
   const rows = await ev(`[...document.querySelectorAll('[data-testid="bg-task-row"]')].map((r) => r.dataset.kind + ':' + r.dataset.status)`);
-  record('U3 展开后两条任务：命令 + 子代理', Array.isArray(rows) && rows.includes('command:running') && rows.includes('agent:running'), JSON.stringify(rows));
-  // 点开命令那一条看输出
-  await ev(`[...document.querySelectorAll('[data-testid="bg-task-row"]')].find((r) => r.dataset.kind === 'command')?.querySelector('button')?.click()`);
-  await sleep(700);
+  record('U3 展开后：命令 + 子代理都在', Array.isArray(rows) && rows.includes('command:running') && rows.includes('agent:running'), JSON.stringify(rows));
+  // 0.33.7：每条命令都点开（第一条默认就开着），看终端小窗口
+  await ev(`[...document.querySelectorAll('[data-testid="bg-task-row"]')].filter((r) => r.dataset.kind === 'command').forEach((r) => { const b = r.querySelector('button[aria-expanded]'); if (b && b.getAttribute('aria-expanded') !== 'true') b.click(); })`);
+  // 等常驻服务打出几行
+  const served = await waitFor(`[...document.querySelectorAll('[data-testid="bg-task-terminal"]')].some((x) => /hmr update \\/src\\/App\\.jsx #3/.test(x.innerText))`, 15000);
+  const termInfo = await ev(`[...document.querySelectorAll('[data-testid="bg-task-terminal"]')].map((x) => x.innerText.slice(0, 400))`);
+  record('V1 常驻服务展开是真实终端输出（$ 命令 + VITE ready + 持续 hmr 行，颜色码已去掉），不是 (no output)',
+    served && termInfo.some((x) => /\$ node -e/.test(x) && /\nVITE ready in 312 ms\n/.test(x)) && !termInfo.some((x) => /no output/i.test(x)), JSON.stringify(termInfo).slice(0, 400));
+  const failRow = await waitFor(`[...document.querySelectorAll('[data-testid="bg-task-row"]')].some((r) => r.dataset.status === 'failed' && /失败 · 退出码 1/.test(r.innerText) && /EADDRINUSE/.test(r.innerText))`, 10000);
+  record('V2 秒退的服务：失败 · 退出码 1，终端里看得到报错原文', failRow, '');
   await shot('2-panel-expanded.png');
+  // 用户在面板上停掉常驻服务 → 「已中断（你）」，和「已完成」分开
+  await ev(`(() => { const r = [...document.querySelectorAll('[data-testid="bg-task-row"]')].find((x) => /VITE/.test(x.innerText) && x.dataset.status === 'running'); r?.querySelector('[data-testid="bg-task-stop"]')?.click(); })()`);
+  const stopped = await waitFor(`[...document.querySelectorAll('[data-testid="bg-task-row"]')].some((r) => r.dataset.status === 'stopped' && /已中断（你）/.test(r.innerText) && /── 已中断（你）/.test(r.innerText))`, 10000);
+  record('V3 停掉的显示「已中断（你）」，终端末行也写着中断，不再是 stopped', stopped, '');
+  await shot('2b-stopped.png');
 
   // 等两条都结束 → 界面自动起一轮（不需要用户再发消息）
   // 子代理（约 3s）和脚本（约 6s）先后结束：每结束一个，界面空闲时就自动续跑一轮

@@ -3,12 +3,14 @@
 //           但如果这个脚本几秒钟跑完了，那就没必要停」「派出一个子 agent，主 agent 自己干自己的活」。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { createBgTaskManager, BG_MAX_RUNNING } from '../desktop/src/main/bg-tasks.mjs';
-import { runCommandWithSignal, createAgentTools } from '../desktop/src/main/agent-tools.mjs';
+import { runCommandWithSignal, createAgentTools, tailLogFile } from '../desktop/src/main/agent-tools.mjs';
 import { AGENT_TOOLS_SCHEMA, SUBAGENT_TOOLS_SCHEMA } from '../desktop/src/main/agent-service.mjs';
 import * as permsMod from '../desktop/src/main/permissions.mjs';
-import { bgChipSummary } from '../desktop/src/renderer/lib/bg-tasks-view.mjs';
+import { bgChipSummary, cleanTerminalText } from '../desktop/src/renderer/lib/bg-tasks-view.mjs';
 import { startGateway } from '../scripts/sim/gateway.mjs';
 import { createSimClient } from '../scripts/sim/client.mjs';
 
@@ -213,4 +215,68 @@ test('界面：胶囊统计 + 面板挂在验收单浮层同一列 + 完成后�
   assert.match(app, /onBgTaskDone\(/);
   assert.match(app, /bgAuto: true/);
   assert.match(app, /override\?\.bgAuto/);
+});
+
+
+// 0.33.7：「完成就是完成，中断是中断」——停掉的任务记下是谁停的；面板终端窗口要显示真实命令
+test('0.33.7 账本：stopped 记录是谁中断的（你 / AI），命令原文保留给终端窗口', () => {
+  const m = createBgTaskManager();
+  const a = m.start({ sessionId: 's', title: 'npm run dev', command: 'npm run dev -- --port 5173', stop() {} });
+  assert.equal(m.get(a.id).command, 'npm run dev -- --port 5173');
+  assert.ok(!m.get(a.id).stoppedBy);
+  m.stop(a.id);
+  assert.equal(m.get(a.id).stoppedBy, 'user');
+  assert.match(m.takeUndelivered('s')[0].notice, /已中断/);
+  const b = m.start({ sessionId: 's', title: 'x', stop() {} });
+  m.stop(b.id, { by: 'model' });
+  assert.equal(m.get(b.id).stoppedBy, 'model');
+  const c = m.start({ sessionId: 's', title: 'y', command: 'z'.repeat(9000) });
+  assert.ok(m.get(c.id).command.length <= 4000, '命令原文有上限');
+});
+
+test('0.33.7 tailLogFile：按偏移读新增内容，stop 时补读最后一段', async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'fc-tail-'));
+  const f = path.join(dir, 'a.log');
+  writeFileSync(f, 'one\n');
+  let got = '';
+  const tail = tailLogFile(f, (s) => { got += s; }, { intervalMs: 50 });
+  await new Promise((r) => setTimeout(r, 150));
+  assert.equal(got, 'one\n');
+  appendFileSync(f, 'two\n');
+  appendFileSync(f, 'three-final\n');
+  tail.stop();
+  assert.equal(got, 'one\ntwo\nthree-final\n', '不重复、不漏');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('0.33.7 background:true 的常驻服务：输出写进日志并送到面板（以前是 no output），很快报错退出也能看到错误和退出码', async () => {
+  let data = '';
+  let logFile = '';
+  const exited = new Promise((resolve) => {
+    void runCommandWithSignal(`${NODE} -e "console.log('server listening on 5173');console.error('boom: port in use');process.exit(3)"`, {
+      background: true,
+      onDetach: (info) => {
+        logFile = info.logFile;
+        return { taskId: 'bg-s', note: 'n', onData: (s) => { data += s; }, onExit: (c) => resolve(c) };
+      }
+    });
+  });
+  const code = await exited;
+  assert.equal(code, 3);
+  assert.ok(logFile.includes('finalcheck-bg-logs'), logFile);
+  assert.match(data, /server listening on 5173/);
+  assert.match(data, /boom: port in use/);
+});
+
+test('0.33.7 终端窗口文本：去掉 ANSI 颜色码；回车覆盖的进度行只留最后一版', () => {
+  assert.equal(cleanTerminalText('\x1b[32m✓ built\x1b[0m in 2s'), '✓ built in 2s');
+  assert.equal(cleanTerminalText('a\r\nb'), 'a\nb');
+  assert.equal(cleanTerminalText('10%\r55%\r100%\ndone'), '100%\ndone');
+  assert.equal(cleanTerminalText('\x1b]0;title\x07hi'), 'hi');
+  assert.equal(cleanTerminalText(null), '');
+  const panel = readFileSync(new URL('../desktop/src/renderer/components/BgTasksPanel.jsx', import.meta.url), 'utf8');
+  assert.match(panel, /data-testid="bg-task-terminal"/);
+  assert.match(panel, /已中断（你）/);
+  assert.match(panel, /已中断（AI）/);
+  assert.ok(!panel.includes("'(no output)'"), '不再显示空洞的 (no output)');
 });

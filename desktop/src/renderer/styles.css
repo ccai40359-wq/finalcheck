@@ -412,9 +412,17 @@ textarea:focus-visible, input:focus-visible { outline: none; }
       disabled:opacity-40 disabled:cursor-not-allowed active:scale-[0.98];
   }
   .btn-primary {
-    @apply btn text-base bg-gold hover:bg-goldSoft;
+    @apply btn bg-gold hover:bg-goldSoft;
     color: rgb(var(--fc-on-gold));
     box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.28), inset 0 -1px 0 rgb(0 0 0 / 0.18), 0 1px 2px rgb(0 0 0 / 0.3);
+  }
+  /* 0.33.7：不能点的主按钮以前是「金色 × 40% 透明」= 一团暗棕，看着像坏了；改成中性灰底、灰字，一眼就知道是「还不能点」。
+     字号也和旁边的次要按钮一致（以前 text-base 比旁边大一号）。 */
+  .btn-primary:disabled {
+    opacity: 1;
+    background-color: rgb(var(--fc-lift) / 0.06);
+    color: rgb(var(--fc-mute) / 0.7);
+    box-shadow: inset 0 0 0 1px rgb(var(--fc-lift) / 0.06);
   }
   .btn-ghost {
     @apply btn text-ink rounded-xl;

@@ -2204,7 +2204,7 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
         longThinkNudges += 1;
         const nudge = '你这一轮思考过长（已超过长度上限被截断），但没有任何代码或工具产出。立即给出下一步动作：直接调用工具推进（写文件/跑命令/贴出已有结论都行），不要再做长段推演或方案取舍。';
         convo.push({ role: 'user', content: `[系统] ${nudge}` });
-        onEvent?.({ kind: 'warning', message: t('模型思考过长（不是复读），已截断并催收推进（{n}/{max}）', { n: longThinkNudges, max: MAX_LONG_THINK_NUDGES }) });
+        onEvent?.({ kind: 'warning', internal: true, message: t('模型思考过长（不是复读），已截断并催收推进（{n}/{max}）', { n: longThinkNudges, max: MAX_LONG_THINK_NUDGES }) });
         onEvent?.({ kind: 'activity', label: t('思考过长，催收推进（{n}/{max}）…', { n: longThinkNudges, max: MAX_LONG_THINK_NUDGES }) });
         continue;
       }
@@ -2219,7 +2219,7 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
         repetitiveNudges += 1;
         const nudge = '你上一轮输出陷入重复循环，已被自动截断。不要复述已完成的状态、计划或检查清单；直接继续：要么调用下一个工具推进任务，要么给出最终结论（带证据）。';
         convo.push({ role: 'user', content: `[系统] ${nudge}` });
-        onEvent?.({ kind: 'warning', message: t('检测到重复输出循环，已截断并催收（{n}/{max}）', { n: repetitiveNudges, max: MAX_REPETITION_NUDGES }) });
+        onEvent?.({ kind: 'warning', internal: true, message: t('检测到重复输出循环，已截断并催收（{n}/{max}）', { n: repetitiveNudges, max: MAX_REPETITION_NUDGES }) });
         onEvent?.({ kind: 'activity', label: t('复读截断，催收推进（{n}/{max}）…', { n: repetitiveNudges, max: MAX_REPETITION_NUDGES }) });
         continue;
       }
@@ -2291,7 +2291,7 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
       if (toolLoopRounds >= TOOL_LOOP_WARN_ROUNDS) {
         const nudge = `你已经连续 ${toolLoopRounds} 轮发起完全相同的工具调用（参数逐字节相同）。相同输入必然得到相同输出——停止重复：换参数、换工具、改用计划拆步，或直接给出基于已有证据的最终结论。`;
         convo.push({ role: 'user', content: `[系统] ${nudge}` });
-        onEvent?.({ kind: 'warning', message: t('检测到连续 {n} 轮相同的工具调用，已提醒换思路（第 {stop} 轮判停）', { n: toolLoopRounds, stop: TOOL_LOOP_STOP_ROUNDS }) });
+        onEvent?.({ kind: 'warning', internal: true, message: t('检测到连续 {n} 轮相同的工具调用，已提醒换思路（第 {stop} 轮判停）', { n: toolLoopRounds, stop: TOOL_LOOP_STOP_ROUNDS }) });
         onEvent?.({ kind: 'activity', label: t('动作复读，已提醒换思路（第 {stop} 轮判停）', { stop: TOOL_LOOP_STOP_ROUNDS }) });
       }
     }
@@ -2426,7 +2426,7 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
           '如果确认这个错误无法在本回合解决，直接把现状（已做了什么、卡在哪、用户需要做什么）写进最终回答，如实交付。'
         ].join('\n');
         convo.push({ role: 'user', content: `[系统] ${nudge}` });
-        onEvent?.({ kind: 'warning', message: t('连续 {n} 轮卡在同一个错误，已提示跳出当前思路（{k}/{max}）', { n: stuckRounds, k: stuckNudges, max: STUCK_MAX_NUDGES }) });
+        onEvent?.({ kind: 'warning', internal: true, message: t('连续 {n} 轮卡在同一个错误，已提示跳出当前思路（{k}/{max}）', { n: stuckRounds, k: stuckNudges, max: STUCK_MAX_NUDGES }) });
         onEvent?.({ kind: 'activity', label: t('检测到死磕同一个错误，已提示换思路…') });
       }
     }
@@ -2443,8 +2443,7 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
         singleToolStreak = 0;
         const nudge = `你已经连续 ${SINGLE_TOOL_STREAK_NUDGE} 轮每次只调用一个工具，且没有桌面操作成功。直接给下一步动作，不要只思考：互不依赖的调用合并到同一次回复里一起发（读/查/命令会并发执行），或直接报告已有结论。`;
         convo.push({ role: 'user', content: `[系统] ${nudge}` });
-        onEvent?.({ kind: 'warning', message: t('连续 {n} 轮单工具调用且无桌面操作成功，已提醒直接行动', { n: SINGLE_TOOL_STREAK_NUDGE }) });
-        onEvent?.({ kind: 'activity', label: t('已提醒：合并调用、减少单步往返…') });
+        onEvent?.({ kind: 'warning', internal: true, message: t('连续 {n} 轮单工具调用且无桌面操作成功，已提醒直接行动', { n: SINGLE_TOOL_STREAK_NUDGE }) });
       }
     }
     // ---- 轻闸②（0.29.7）：run_command/computer_action 同一错误签名累计失败 ≥3 次 → 提醒换路径 ----
@@ -2465,7 +2464,7 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
         if (n >= ACTION_FAIL_NUDGE_AT && (n - ACTION_FAIL_NUDGE_AT) % ACTION_FAIL_NUDGE_AT === 0) {
           const nudge = `${toolName} 已经 ${n} 次失败在同一个错误上：「${sig}」。停止重试同类操作，改用其它路径达成目标，或用 ask_user 向用户说明情况。`;
           convo.push({ role: 'user', content: `[系统] ${nudge}` });
-          onEvent?.({ kind: 'warning', message: t('{tool} 同类失败已到 {n} 次，已提醒换路径或 ask_user', { tool: toolName, n }) });
+          onEvent?.({ kind: 'warning', internal: true, message: t('{tool} 同类失败已到 {n} 次，已提醒换路径或 ask_user', { tool: toolName, n }) });
           onEvent?.({ kind: 'activity', label: t('检测到同类操作反复失败，已提示换路径…') });
         }
       }

@@ -124,7 +124,7 @@ test('ask-user i18n: AskUserCard 显示走 translateAskText，提交仍用原始
   assert.match(src, /\{displayAskText\(data\.question, lang, EN_QUESTION_FALLBACK\)\}/);
   assert.match(src, /\{translateAskText\(label, lang\)\}/);
   assert.match(src, /\{displayAskText\(opt\.description, lang, '', \{ keepOriginal: true \}\)\}/);
-  assert.match(src, /translateAskText\(payload\.answer, lang\)/);
+  assert.match(src, /translateAskText\(data\.answer, lang\)/); // 0.33.7：回答后收成一行（DoneRow 用 data = payload）
 
   // 交互与提交必须仍用原始 label（主进程按原文匹配）
   assert.match(src, /const label = String\(opt\?\.label \?\? ''\)/);

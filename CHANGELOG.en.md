@@ -6,6 +6,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.33.7] - 2026-11-25
+
+This release is mostly UI polish: a cleaner chat, a settings page that shows only what you use, and background commands you can watch like a real terminal.
+
+### Added
+
+- **Terminal window for background commands**: Expanding a command in the background tasks panel now shows a real terminal view: the command on the first line, live scrolling output below, and a closing line such as "Done · exit code 0 · time" or "Failed · exit code 1".
+
+### Fixed
+
+- **Long-running services no longer show an empty box**: Dev servers the AI starts in the background (for example npm run dev) used to show only "no output"; you now see what they actually print, including the error when one exits right away.
+- **Interrupted is no longer confused with done**: Background tasks that were stopped used to say "stopped"; they now say "Interrupted (by you)" or "Interrupted (by the AI)" with a pause icon.
+
+### Improved
+
+- **Working indicator**: The glowing gold square is replaced by three softly pulsing dots.
+- **Lighter question cards**: When the AI asks you something it shows a quiet card with short options as a row of buttons; once you answer, it collapses to one line ("You answered: …") that expands on click.
+- **Simpler settings**: Everyday sections (model, appearance, language, usage, about) are on top; MCP, permission rules, Hooks, runtime and browser data are tucked into a collapsed "Advanced" group, and the browser data page is down to one sign-in choice and a clear button.
+- **Fewer interruptions**: The AI's internal self-reminders no longer appear in the chat, missing Hooks config no longer shows a yellow warning, and disabled save buttons are a neutral gray.
+
 ## [0.33.6] - 2026-11-25
 
 This release lets the AI send several subagents to test a website in the browser at the same time, each in its own tab.

@@ -39,6 +39,7 @@ export const LANGUAGE_MODES = [
 const SECTIONS = ['models', 'appearance', 'language', 'runtime', 'browser', 'mcp', 'permissions', 'hooks', 'usage', 'about'];
 // 浏览器会话模式（0.31.0）：默认（''）＝还没选过，按无痕运行；选过之后按值运行。
 // value 与配置字段同名（browserSessionMode），便于直接写回。
+export const ADVANCED_SECTIONS = new Set(['runtime', 'mcp', 'permissions', 'hooks', 'browser']);
 export const BROWSER_SESSION_MODES = [
   { value: 'oneshot', label: '一次性（无痕）', desc: '每次关闭浏览器就清空登录态与 Cookie，不写磁盘。共享电脑请选这一项。' },
   { value: 'persistent', label: '长期保留', desc: '登录态与 Cookie 写进本机磁盘，重启 FinalCheck 后仍保留。只在自己的电脑上使用。' }
@@ -210,7 +211,10 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
   const [toolConc, setToolConc] = useState(DEFAULT_TOOL_CONCURRENCY);
   const [language, setLanguageChoice] = useState(() => resolveLanguage(undefined, navigator.language)); // 界面语言：zh / en（旧配置 auto 读取时落成实际值）
   const [theme, setThemeChoice] = useState(() => readCachedTheme(typeof localStorage !== 'undefined' ? localStorage : null)); // 界面主题：dark / light
-  const [section, setSection] = useState(() => (SECTIONS.includes(initialSection) ? initialSection : 'models')); // 设置页内分节：models / runtime / usage / about（仿 ZCode 左侧分组导航）
+  const [section, setSection] = useState(() => (SECTIONS.includes(initialSection) ? initialSection : 'models'));
+  // 0.33.7「高级」分组：默认收起；从外面直接跳到高级里的某一节（比如审批卡上的「管理规则」）时自动展开
+  const [advOpen, setAdvOpen] = useState(() => ADVANCED_SECTIONS.has(initialSection));
+  useEffect(() => { if (ADVANCED_SECTIONS.has(section)) setAdvOpen(true); }, [section]); // 设置页内分节：models / runtime / usage / about（仿 ZCode 左侧分组导航）
   const [update, setUpdate] = useState(initialUpdateState); // 更新状态机（纯函数见 lib/updater-state.mjs）
   const [appVersion, setAppVersion] = useState('');
   // 更新详情：null = 还没加载过；{ version, entries, entriesEn } 由 IPC finalcheck:update:changelog 读取随包 CHANGELOG.md / CHANGELOG.en.md
@@ -579,47 +583,37 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
       setBrowserClear({ ok: false, error: e?.message || String(e) });
     } finally { setBrowserClearing(false); }
   };
+  // 0.33.7：AI 第一次开网页时会在对话里问「一次性 / 长期保留 / 接我自己的 Edge」，这里只留一行切换 + 清空。
+  const browserChoices = [
+    { value: '', label: t('每次问我') },
+    ...BROWSER_SESSION_MODES.map((m) => ({ value: m.value, label: t(m.label) }))
+  ];
   const browserCard = (
-    <Card className="p-5 space-y-4">
-      <div>
-        <div className="text-sm text-ink font-medium">{t('浏览器会话')}</div>
-        <div className="text-xs text-mute mt-0.5">{t('AI 操作网页时用哪种会话：一次性（无痕）不写盘；长期保留会记住登录。')}</div>
-      </div>
-
-      <Field label={t('会话模式')} hint={t('默认一次性（无痕）；切换后下一次导航生效')}>
-        <div className="flex flex-col gap-2">
-          {/* 还没选过（''）在界面上按「一次性」显示，但会标注「尚未选择」，避免用户以为自己已经选过 */}
-          {BROWSER_SESSION_MODES.map((m) => {
-            const effective = browserMode === m.value || (browserMode === '' && m.value === 'oneshot');
+    <Card className="p-5 space-y-5">
+      <Field label={t('记不记登录')} hint={t('切换后下一次打开网页生效')}>
+        <div role="group" aria-label={t('记不记登录')} className="inline-flex rounded-lg border border-edge/70 bg-well p-0.5 gap-0.5">
+          {browserChoices.map((c) => {
+            const on = browserMode === c.value;
             return (
-              <button key={m.value} type="button" onClick={() => { setBrowserMode(m.value); touch(); }} disabled={!y}
-                className={`rounded-lg border px-3 py-2.5 text-left transition-colors disabled:opacity-50 ${effective ? 'border-gold/40 bg-gold/[0.06]' : 'border-edge/80 bg-well hover:bg-cardHover'}`}>
-                <div className={`text-xs font-mono ${effective ? 'text-goldSoft' : 'text-ink/85'}`}>
-                  {t(m.label)}{browserMode === '' && m.value === 'oneshot' ? ` · ${t('尚未选择')}` : ''}
-                </div>
-                <div className="text-[11px] text-mute/80 mt-1 leading-relaxed">{t(m.desc)}</div>
+              <button key={c.value || 'ask'} type="button" onClick={() => { setBrowserMode(c.value); touch(); }} disabled={!y}
+                aria-pressed={on}
+                className={`rounded-md px-3 py-1.5 text-xs transition-colors duration-150 disabled:opacity-50 ${on ? 'bg-lift/[0.10] text-ink' : 'text-mute hover:text-ink'}`}>
+                {c.label}
               </button>
             );
           })}
         </div>
-
-        {/* 持久模式的可见标识：让用户随时知道「现在正在记住登录」（红框提示，不靠记忆） */}
-        {browserPolicy?.persistent === true && (
-          <div className="mt-2.5 rounded-lg border border-red-500/35 bg-red-500/[0.07] px-3 py-2 text-[10px] leading-relaxed text-red-200/90">
-            {t('当前正在记住登录：Cookie 与会话写在本机磁盘（userData/Partitions/persist:fc-browser-use）。共享电脑请改回一次性并点「清空浏览器数据」。')}
-          </div>
-        )}
-        {browserPolicy && browserPolicy.persistent !== true && (
-          <div className="mt-2.5 rounded-lg border border-jade/25 bg-jade/[0.05] px-3 py-2 text-[10px] leading-relaxed text-jade/85">
-            {t('当前为一次性（无痕）：会话保存在内存，关闭浏览器即清空，不写磁盘。')}
-          </div>
-        )}
+        <div className="mt-2 text-[11px] leading-relaxed text-mute/75">
+          {browserPolicy?.persistent === true
+            ? t('现在会记住登录（存在本机）。共享电脑请改成一次性，再清空数据。')
+            : browserMode === '' ? t('AI 第一次开网页时会问你。') : t('关闭浏览器就清空，不写磁盘。')}
+        </div>
       </Field>
 
-      <Field label={t('清空浏览器数据')} hint={t('删除持久会话的 Cookie / 登录态')}>
+      <Field label={t('清空浏览器数据')} hint={t('只清 FinalCheck 自己的内置浏览器，不碰你的 Edge')}>
         <div className="flex items-center gap-2">
           <button type="button" onClick={clearBrowserData} disabled={!y?.browserClearData || browserClearing}
-            className="rounded-lg border border-red-500/35 bg-red-500/[0.08] px-3 py-1.5 text-xs text-red-300 hover:bg-red-500/[0.14] disabled:opacity-40">
+            className="btn-ghost text-xs px-3 py-1.5 disabled:opacity-40">
             {browserClearing ? t('清空中…') : t('清空浏览器数据')}
           </button>
           {browserClear && browserClear.ok === true && (
@@ -632,9 +626,6 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
           {browserClear && browserClear.ok !== true && (
             <span className="text-[11px] text-red-400">{browserClear.error || t('清空失败')}</span>
           )}
-        </div>
-        <div className="mt-1.5 text-[10px] text-mute/70 leading-relaxed">
-          {t('只清 FinalCheck 自己的浏览器数据，不碰你日常用的 Edge 或其它程序。清空前会先关闭浏览器窗口，避免文件被占用删不干净。')}
         </div>
       </Field>
 
@@ -866,26 +857,33 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
           </button>
         </div>
         <div className="flex-1 min-h-0 overflow-y-auto px-2.5 pb-4 space-y-5">
+          {/* 0.33.7：常用的放上面；运行时 / MCP / 权限 / 钩子 / 浏览器数据收进默认折叠的「高级」——
+              这些大多可以直接在对话里让 AI 配（「以后跑测试别问我」「帮我接上 GitHub」），平时不挡路 */}
           <NavGroup label={t('基础')}>
             <NavRow label={t('模型设置')} active={section === 'models'} onClick={() => setSection('models')} icon={<IconLayers />} />
             <NavRow label={t('外观')} active={section === 'appearance'} onClick={() => setSection('appearance')} icon={<IconPalette />} />
-          </NavGroup>
-          <NavGroup label="Agent">
             <NavRow label={t('语言')} active={section === 'language'} onClick={() => setSection('language')} icon={<IconGlobe />} />
-            <NavRow label={t('运行时')} active={section === 'runtime'} onClick={() => setSection('runtime')} icon={<IconSliders />} />
-            <NavRow label={t('浏览器会话')} active={section === 'browser'} onClick={() => { setSection('browser'); refreshBrowserPolicy(); }} icon={<IconGlobe />}
-              trailing={browserPolicy?.persistent === true ? <span className="text-red-400">{t('记住登录')}</span> : ''} />
-            <NavRow label={t('MCP 服务器')} active={section === 'mcp'} onClick={() => setSection('mcp')} icon={<IconPlug />} />
-            <NavRow label={t('权限规则')} active={section === 'permissions'} onClick={() => setSection('permissions')} icon={<IconShieldRule />} />
-            <NavRow label="Hooks" active={section === 'hooks'} onClick={() => setSection('hooks')} icon={<IconHook />} />
-          </NavGroup>
-          <NavGroup label={t('数据与统计')}>
-            <NavRow label={t('用量统计')} active={section === 'usage'} onClick={() => setSection('usage')} icon={<IconChart />} trailing="Tokens" />
-          </NavGroup>
-          <NavGroup label={t('关于')}>
+            <NavRow label={t('用量统计')} active={section === 'usage'} onClick={() => setSection('usage')} icon={<IconChart />} />
             <NavRow label={t('关于与更新')} active={section === 'about'} onClick={() => setSection('about')} icon={<IconRefresh />}
-              trailing={updateView.hasUpdate ? <span className="text-red-400">{t('有新版本')}</span> : ''} />
+              trailing={updateView.hasUpdate ? <span className="rounded-full bg-goldSoft/15 px-1.5 py-px text-goldSoft">{t('有新版本')}</span> : ''} />
           </NavGroup>
+          <div data-testid="settings-advanced">
+            <button type="button" onClick={() => setAdvOpen((v) => !v)} aria-expanded={advOpen}
+              className="w-full flex items-center gap-1.5 px-3 py-1 text-[10.5px] font-medium uppercase tracking-[0.09em] text-mute/55 hover:text-mute transition-colors duration-150">
+              {t('高级')}
+              <svg aria-hidden="true" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"
+                className={`transition-transform duration-200 ${advOpen ? 'rotate-180' : ''}`}><path d="m6 9 6 6 6-6" /></svg>
+            </button>
+            {advOpen ? (
+              <div className="mt-1 space-y-0.5 animate-[fadeIn_.18s_ease]">
+                <NavRow label={t('运行时')} active={section === 'runtime'} onClick={() => setSection('runtime')} icon={<IconSliders />} />
+                <NavRow label={t('MCP 服务器')} active={section === 'mcp'} onClick={() => setSection('mcp')} icon={<IconPlug />} />
+                <NavRow label={t('权限规则')} active={section === 'permissions'} onClick={() => setSection('permissions')} icon={<IconShieldRule />} />
+                <NavRow label="Hooks" active={section === 'hooks'} onClick={() => setSection('hooks')} icon={<IconHook />} />
+                <NavRow label={t('浏览器数据')} active={section === 'browser'} onClick={() => { setSection('browser'); refreshBrowserPolicy(); }} icon={<IconGlobe />} />
+              </div>
+            ) : null}
+          </div>
         </div>
       </nav>
 
@@ -899,7 +897,7 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
         <div className="shrink-0 px-8 pt-6 pb-5 flex items-start justify-between gap-4">
           <div className="min-w-0">
             <h1 className="fc-title text-[22px] leading-tight">
-              {section === 'models' ? t('模型设置') : section === 'appearance' ? t('外观') : section === 'language' ? t('语言') : section === 'runtime' ? t('运行时') : section === 'browser' ? t('浏览器会话') : section === 'mcp' ? t('MCP 服务器') : section === 'permissions' ? t('权限规则') : section === 'hooks' ? 'Hooks' : t('关于')}
+              {section === 'models' ? t('模型设置') : section === 'appearance' ? t('外观') : section === 'language' ? t('语言') : section === 'runtime' ? t('运行时') : section === 'browser' ? t('浏览器数据') : section === 'mcp' ? t('MCP 服务器') : section === 'permissions' ? t('权限规则') : section === 'hooks' ? 'Hooks' : t('关于')}
             </h1>
             <p className="text-[12px] text-mute mt-1.5 leading-relaxed">
               {section === 'models'
@@ -911,7 +909,7 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
                   : section === 'runtime'
                     ? t('沙箱与工具并发：对所有供应商生效，与权限模式（Full access）独立。')
                     : section === 'browser'
-                      ? t('AI 操作网页时的会话模式：默认一次性（无痕），可切换为长期保留登录。')
+                      ? t('内置浏览器记不记登录、清空它的数据。平时不用来这里：AI 第一次开网页时会在对话里问你。')
                       : section === 'mcp'
                         ? t('接入外部 MCP 服务器（GitHub、数据库、设计工具……），它们的工具会出现在 AI 的工具箱里。')
                         : section === 'permissions'

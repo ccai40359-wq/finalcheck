@@ -99,7 +99,7 @@ test('hooks: 未启用时不执行任何 hook（缺文件也按默认关闭）',
   const missing = loadHooksConfig(path.join(hookDir, 'definitely-missing.json'));
   assert.equal(missing.enabled, false);
   assert.deepEqual(Object.keys(missing.events), HOOK_EVENTS);
-  assert.ok(missing.warnings.length >= 1);
+  assert.deepEqual(missing.warnings, [], '0.33.7：没有配置文件 = 没配钩子，不算警告');
 });
 
 test('hooks: 正常 hook 返回 deny + message', async () => {

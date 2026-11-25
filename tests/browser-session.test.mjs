@@ -179,7 +179,8 @@ test('源码钉: 设置页有「清空浏览器数据」按钮与持久模式可
   assert.match(settingsSrc, /t\('清空浏览器数据'\)/);
   assert.match(settingsSrc, /BROWSER_SESSION_MODES/, '两种模式在界面上可切换');
   assert.match(settingsSrc, /browserPolicy\?\.persistent === true/, '持久模式必须有可见标识');
-  assert.match(settingsSrc, /t\('记住登录'\)/);
+  // 0.33.7：去掉红色「记住登录」大徽标，改成一行安静的状态说明（持久模式仍要写清楚）
+  assert.match(settingsSrc, /t\('现在会记住登录（存在本机）。共享电脑请改成一次性，再清空数据。'\)/);
   assert.match(settingsSrc, /browserSessionMode: browserMode === 'persistent'/, '保存时写回配置字段');
 });
 

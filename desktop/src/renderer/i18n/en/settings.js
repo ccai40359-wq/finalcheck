@@ -339,4 +339,15 @@ export const EN_SETTINGS = {
   '按回复文本匹配的正则': 'Regex on the reply text',
   // 0.33.5 serper
   'Serper（谷歌搜索结果，API）': 'Serper (Google results, API)',
+  // 0.33.7 设置页精简
+  '高级': 'Advanced',
+  '浏览器数据': 'Browser data',
+  '内置浏览器记不记登录、清空它的数据。平时不用来这里：AI 第一次开网页时会在对话里问你。': 'Whether the built-in browser keeps you signed in, and clearing its data. You rarely need this page: the AI asks in the chat the first time it opens a web page.',
+  '每次问我': 'Ask me',
+  '记不记登录': 'Keep sign-ins',
+  '切换后下一次打开网页生效': 'Takes effect the next time a page opens',
+  '现在会记住登录（存在本机）。共享电脑请改成一次性，再清空数据。': 'Sign-ins are currently kept on this computer. On a shared computer, switch to one-shot and clear the data.',
+  'AI 第一次开网页时会问你。': 'The AI asks you the first time it opens a web page.',
+  '关闭浏览器就清空，不写磁盘。': 'Cleared when the browser closes, never written to disk.',
+  '只清 FinalCheck 自己的内置浏览器，不碰你的 Edge': 'Only the FinalCheck built-in browser; your Edge is untouched',
 };

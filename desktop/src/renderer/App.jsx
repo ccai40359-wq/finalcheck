@@ -1038,7 +1038,8 @@ export default function App() {
       }
       if (ev.kind === 'notice' || ev.kind === 'warning') {
         const message = String(ev.message || (ev.kind === 'warning' ? ev.text : '') || '').trim();
-        if (message) pushNotice(sid && activeIdRef.current !== sid ? t('（后台会话）{msg}', { msg: message }) : message);
+        // 0.33.7：给模型的内部催促（「连续 N 轮单工具调用…已提醒直接行动」这类）不再给用户看
+        if (message && !ev.internal) pushNotice(sid && activeIdRef.current !== sid ? t('（后台会话）{msg}', { msg: message }) : message);
         if (!sid) return;
       }
       // 运行中切换模型真正生效的那一刻（主进程在下一次模型请求前重解析后发出）。

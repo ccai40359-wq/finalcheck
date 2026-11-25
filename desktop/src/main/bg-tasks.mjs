@@ -56,6 +56,8 @@ export function createBgTaskManager({ now = () => Date.now(), onChange = () => {
       ...(task.exitCode !== undefined && task.exitCode !== null ? { exitCode: task.exitCode } : {}),
       ...(task.error ? { error: task.error } : {}),
       ...(task.agentId ? { agentId: task.agentId } : {}),
+      ...(task.command ? { command: task.command } : {}),
+      ...(task.stoppedBy ? { stoppedBy: task.stoppedBy } : {}),
       delivered: !!task.delivered,
       outputChars: task.out.length
     };
@@ -79,7 +81,7 @@ export function createBgTaskManager({ now = () => Date.now(), onChange = () => {
   }
 
   /** 登记一个后台任务。超过并发上限返回 { error }（调用方据此退回前台执行或告诉模型）。 */
-  function start({ sessionId, kind = 'command', title = '', detail = '', pid = null, stop: stopFn = null, agentId = null } = {}) {
+  function start({ sessionId, kind = 'command', title = '', detail = '', command = '', pid = null, stop: stopFn = null, agentId = null } = {}) {
     const sid = String(sessionId ?? '');
     if (running(sid) >= maxRunning) {
       return { error: `后台任务已达上限（同时最多 ${maxRunning} 个）。先用 background_task 等其中一个结束，或 stop 掉不需要的。` };
@@ -91,6 +93,8 @@ export function createBgTaskManager({ now = () => Date.now(), onChange = () => {
       kind: kind === 'agent' ? 'agent' : 'command',
       title: String(title || '').slice(0, 200),
       detail: String(detail || '').slice(0, 2000),
+      command: String(command || '').slice(0, 4000), // 0.33.7 终端小窗口第一行显示完整命令
+      stoppedBy: '',
       status: 'running',
       startedAt: now(),
       endedAt: 0,
@@ -159,6 +163,7 @@ export function createBgTaskManager({ now = () => Date.now(), onChange = () => {
     try { task.stopFn?.(); } catch { /* 进程可能已退出 */ }
     // 模型自己停的不用再通知它（它知道）；用户在面板上停的要告诉模型
     if (by === 'model') task.delivered = true;
+    task.stoppedBy = by === 'model' ? 'model' : 'user'; // 0.33.7：面板写清是谁中断的
     finish(id, { status: 'stopped', error: by === 'model' ? '已按你的要求停止' : '用户在任务面板里停止了它' });
     return { ok: true, status: 'stopped' };
   }
@@ -256,5 +261,5 @@ export function createBgTaskManager({ now = () => Date.now(), onChange = () => {
 }
 
 function statusZh(status) {
-  return status === 'done' ? '已完成' : status === 'failed' ? '失败' : status === 'stopped' ? '已停止' : '运行中';
+  return status === 'done' ? '已完成' : status === 'failed' ? '失败' : status === 'stopped' ? '已中断' : '运行中';
 }

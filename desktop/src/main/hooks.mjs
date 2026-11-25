@@ -160,9 +160,10 @@ export function loadHooksConfig(file) {
   try {
     text = readFileSync(target, 'utf8');
   } catch (e) {
-    warnings.push(e && e.code === 'ENOENT'
-      ? t('hooks 配置不存在（{path}），已按默认关闭', { path: target })
-      : t('hooks 配置读取失败（{path}）：{error}', { path: target, error: (e && e.message) || e }));
+    // 0.33.7：没有配置文件 = 没配钩子，是正常状态，不再在设置页挂一条黄色警告
+    if (!(e && e.code === 'ENOENT')) {
+      warnings.push(t('hooks 配置读取失败（{path}）：{error}', { path: target, error: (e && e.message) || e }));
+    }
     return defaultConfig(warnings);
   }
   let raw;

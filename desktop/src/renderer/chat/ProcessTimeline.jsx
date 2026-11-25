@@ -71,10 +71,15 @@ export function WorkingStatus({ startedAt, label = null, tone = 'activity', clas
   const text = typeof label === 'string' && label.trim() ? label.trim() : DEFAULT_WORKING_LABEL;
   const retry = tone === 'retry';
   return (
-    <div className={`flex items-center gap-2 text-xs min-w-0 ${className}`}>
-      <span className={`w-1.5 h-1.5 shrink-0 animate-pulse ${retry ? 'bg-amber-400 shadow-[0_0_6px_rgba(251,191,36,0.9)]' : 'bg-goldSoft shadow-[0_0_6px_rgba(227,197,107,0.9)]'}`} />
-      <span className={`font-medium tracking-wide truncate min-w-0 ${retry ? 'text-amber-400' : 'text-goldSoft'}`}>{text}</span>
-      <span className="shrink-0 font-mono tabular-nums text-gold/90">{fmtDur(elapsed)}</span>
+    // 0.33.7：用户不喜欢发光的金色方块 → 三个错峰呼吸的小圆点；文字不再整行金色，计时降成次要灰
+    <div data-testid="working-status" className={`flex items-center gap-2.5 text-xs min-w-0 ${className}`}>
+      <span aria-hidden="true" className="fc-compact-dots inline-flex shrink-0 items-center gap-[3px]">
+        <span className={`fc-compact-dot h-[5px] w-[5px] rounded-full ${retry ? 'bg-amber-400' : 'bg-goldSoft'}`} />
+        <span className={`fc-compact-dot h-[5px] w-[5px] rounded-full ${retry ? 'bg-amber-400' : 'bg-goldSoft'}`} />
+        <span className={`fc-compact-dot h-[5px] w-[5px] rounded-full ${retry ? 'bg-amber-400' : 'bg-goldSoft'}`} />
+      </span>
+      <span className={`truncate min-w-0 ${retry ? 'text-amber-300/90' : 'text-ink/70'}`}>{text}</span>
+      <span className="shrink-0 font-mono tabular-nums text-mute/60">{fmtDur(elapsed)}</span>
     </div>
   );
 }

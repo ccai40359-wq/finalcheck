@@ -291,10 +291,12 @@ export default function MessageList({
                 onOpenStep={(s) => onOpenStep(s)} /> : null}
               {m.interrupted && !m.error && (
                 <div className="mb-1.5 inline-flex items-center gap-1.5 text-[11px] text-mute/80">
-                  <span className="inline-block w-2.5 h-2.5 rounded-[2px] bg-gold/70" />
-                  {t('已停止 · 输出已保留')}
+                  <svg aria-hidden="true" width="11" height="11" viewBox="0 0 24 24" fill="currentColor" className="text-mute/70"><rect x="6" y="5" width="4" height="14" rx="1.2" /><rect x="14" y="5" width="4" height="14" rx="1.2" /></svg>
+                  {t('已中断 · 输出已保留')}
                 </div>
               )}
+              {/* 0.33.7：回答过的提问收成一行，放在正文上面（它发生在回复之前） */}
+              {!m.streaming && m.trace?.length > 0 && <TraceBlock trace={m.trace} only="ask" />}
               {m.content && <div className="md text-sm" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.content) }} />}
               {m.streaming && (
                 m.startedAt
@@ -315,7 +317,7 @@ export default function MessageList({
                 </div>
               )}
               {/* 出错的回合也可能是「工作流跑完了、总结被打断」：trace 照样要渲染（否则卡片/证据全看不到） */}
-              {!m.streaming && m.trace?.length > 0 && <TraceBlock trace={m.trace} onRecover={(text) => onSendRecover(text)} onOpenStep={(s) => onOpenStep(s)} />}
+              {!m.streaming && m.trace?.length > 0 && <TraceBlock trace={m.trace} only="cards" onRecover={(text) => onSendRecover(text)} onOpenStep={(s) => onOpenStep(s)} />}
               <ArtifactChips artifacts={collectArtifacts(m.trace)} activePath={artifactPath} onOpen={onOpenArtifact} />
             </div>
           ));

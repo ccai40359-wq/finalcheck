@@ -31,7 +31,7 @@ export const EN_APP = {
   '收起原始指令': 'Hide raw prompt',
   '查看原始指令': 'Show raw prompt',
   '编辑并从这条重开': 'Edit and restart from here',
-  '已停止 · 输出已保留': 'Stopped · output kept',
+  '已中断 · 输出已保留': 'Interrupted · output kept',
   '出错了': 'Something went wrong',
   '回到底部': 'Back to bottom',
   '刚刚': 'Just now',
@@ -255,4 +255,7 @@ export const EN_APP = {
   'Markdown 渲染（原文本可外部打开查看）': 'Rendered as Markdown (open externally for the raw text)',
   // 0.33.4 桌面操控停止
   '已停止操控电脑；任务继续进行（不再使用桌面操控）': 'Stopped controlling the computer; the task continues without desktop control',
+  // 0.33.7 提问卡收成一行
+  '你回答了：': 'You answered:',
+  '计划已回复：': 'Plan reply:',
 };

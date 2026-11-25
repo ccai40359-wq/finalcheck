@@ -1049,10 +1049,12 @@ export function GenericToolDetail({ name = '', args, result, running }) {
 /** trace 数组 → 正文交付物卡序列：只渲染白名单工具的结果卡（报告/探测表/压测统计），
  *  run_command 等过程类工具一律不出正文卡——其过程细节只在消息顶部 ProcessTimeline 时间线里。
  *  同一工具 + 同一参数只出一张卡（重复次数标在卡头），见 lib/trace-cards.mjs。 */
-export function TraceBlock({ trace, onOpenStep = null, onRecover = null }) {
+export function TraceBlock({ trace, onOpenStep = null, onRecover = null, only = 'all' }) {
   if (!trace?.length) return null;
   // ask_user 的问答卡也放在这里：历史加载后从 tool part 还原（answered/cancelled/expired 只读态）
-  const cards = trace.filter((entry) => BODY_CARD_TOOLS.has(entry.tool) || entry.tool === 'ask_user' || entry.tool === 'exit_plan_mode');
+  // 0.33.7：问答收成一行后放在正文**上面**（only='ask'），交付物卡片仍在正文下面（only='cards'）
+  const isAsk = (entry) => entry.tool === 'ask_user' || entry.tool === 'exit_plan_mode';
+  const cards = trace.filter((entry) => (only !== 'cards' && isAsk(entry)) || (only !== 'ask' && BODY_CARD_TOOLS.has(entry.tool)));
   if (!cards.length) return null;
   const slots = collapseResultCards(cards);
   return (
