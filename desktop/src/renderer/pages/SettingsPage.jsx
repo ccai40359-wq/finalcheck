@@ -283,9 +283,20 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
         setUpdate((prev) => (prev.phase === 'error' ? prev : reduceUpdateEvent(prev, { type: 'error', message: r.error || '检查更新失败' })));
         return;
       }
-      // 正常路径由主进程事件驱动；这里只做事件丢失时的兜底
+      // 正常路径由主进程事件驱动；这里只做事件丢失时的兜底。
+      //
+      // 0.33.8（官网优先源）：兜底不能只看 phase === 'checking'。
+      //   GitHub 那条路可能先推一个 not-available（把 phase 改成 not-available），
+      //   而官网随后才报出更高版本；旧写法会把官网的结果直接丢掉 —— 表现是
+      //   「明明有新版本，界面却显示已是最新」。所以：只要 check 的返回值说
+      //   有比当前更高的版本，就无条件按 available 渲染（这个值本身就是主进程
+      //   比对过两个源得出的结论，比事件时序可靠）。
       if (r?.latestVersion) {
-        setUpdate((prev) => (prev.phase === 'checking' ? reduceUpdateEvent(prev, { type: 'available', version: r.latestVersion }) : prev));
+        setUpdate((prev) => {
+          const already = String(prev.latestVersion || '') === String(r.latestVersion);
+          if (already && prev.phase === 'available') return prev; // 幂等：同一个版本不重复迁移状态
+          return reduceUpdateEvent(prev, { type: 'available', version: r.latestVersion });
+        });
       } else if (r?.ok) {
         setUpdate((prev) => (prev.phase === 'checking' ? reduceUpdateEvent(prev, { type: 'not-available', version: r.currentVersion }) : prev));
       }
