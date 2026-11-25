@@ -426,7 +426,7 @@ test('todo: 消息流不再内联最新卡，浮层挂在消息列内，历史�
   // 消息列是 relative 容器；TodoPanel 挂在它里面、排在滚动容器之后，作为 absolute overlay 覆盖
   assert.match(messageList, /<div className="relative min-w-0 flex-1">/);
   const scrollAt = messageList.indexOf('data-testid="message-scroll"');
-  const panelAt = messageList.indexOf('<TodoPanel items={latestTodo.items}');
+  const panelAt = messageList.indexOf('<TodoPanel items={latestTodo?.items || []}'); // 0.33.5：没有验收单时也挂（后台任务胶囊在同一列）
   assert.ok(panelAt > scrollAt, '浮层要排在滚动容器之后（覆盖在消息列内，不随滚动走）');
   assert.equal(messageList.indexOf('data-testid="todo-panel-dock"'), -1, '旧的 flex 兄弟面板必须移除');
   assert.match(messageList, /sessionId=\{activeId\}/);

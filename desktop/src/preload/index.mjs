@@ -26,6 +26,12 @@ contextBridge.exposeInMainWorld('finalcheck', {
   agentChat: (messages, confirmedHosts, sessionId, opts) => ipcRenderer.invoke('finalcheck:agent-chat', messages, confirmedHosts, sessionId, opts ?? null),
   agentRunState: (sessionId) => ipcRenderer.invoke('finalcheck:agent-run-state', sessionId),
   agentSteer: (sessionId, text) => ipcRenderer.invoke('finalcheck:agent-steer', sessionId, text),
+  // 0.33.5 后台任务（命令转后台 / 后台子代理）
+  bgTasksList: (sessionId) => ipcRenderer.invoke('finalcheck:bg-tasks-list', sessionId),
+  bgTaskStop: (id) => ipcRenderer.invoke('finalcheck:bg-task-stop', id),
+  bgTaskOutput: (id) => ipcRenderer.invoke('finalcheck:bg-task-output', id),
+  onBgTasks: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('finalcheck:bg-tasks', h); return () => ipcRenderer.removeListener('finalcheck:bg-tasks', h); },
+  onBgTaskDone: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('finalcheck:bg-task-done', h); return () => ipcRenderer.removeListener('finalcheck:bg-task-done', h); },
   cancelChat: (sessionId) => ipcRenderer.invoke('finalcheck:agent-cancel', sessionId),
   workflowControl: (sessionId, payload) => ipcRenderer.invoke('finalcheck:workflow-control', sessionId, payload),
   workflowStepContext: (sessionId, stepId) => ipcRenderer.invoke('finalcheck:workflow-step', sessionId, stepId),

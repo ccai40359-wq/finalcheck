@@ -269,6 +269,8 @@ export async function createSimClient({
 
   return {
     env, projectDir: projDir, project: proj, log, invoke, handlers: () => handlers,
+    // 0.33.5：订阅主进程推给窗口的消息（测试断言后台任务通知等）
+    onWin: (fn) => { listeners.add(fn); return () => listeners.delete(fn); },
     newSession, open, send, restart, close,
     loadSession: (sid) => sessions.loadSession(sid),
     ui: (sid) => ui.get(sid) || [],

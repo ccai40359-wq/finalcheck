@@ -95,6 +95,8 @@ export function sandboxEnabled(opts = {}) {
 // 空闲输出看门狗：不设「工作时长上限」（长任务可以跑 1 小时），只在「连续 N 毫秒没有任何输出
 // 且进程还活着」时认为命令卡住（常驻服务 / 静默网络请求），结束本轮等待、转入后台，但绝不杀进程。
 export const DEFAULT_COMMAND_IDLE_MS = 120000;
+// 0.33.5：主 agent 的命令跑过这么久还没结束，就转成后台任务（几秒内跑完的照常等结果）
+export const DEFAULT_COMMAND_YIELD_MS = 30000;
 export const RUN_COMMAND_BACKGROUND_HINT = '启动常驻服务请直接用 background:true，不要在命令里用 Start-Process / start /b 然后等它返回。';
 
 function idleLabel(ms) {
@@ -163,7 +165,11 @@ export function markOmitted(text, dropped, cap) {
 export function runCommandWithSignal(command, {
   cwd, timeoutMs, idleMs = DEFAULT_COMMAND_IDLE_MS, background = false, env: envInput, signal = null,
   sandbox = null, shellAppRoot = null,
-  onActivity = null, pingStartMs = RUNNING_PING_START_MS, pingEveryMs = RUNNING_PING_EVERY_MS
+  onActivity = null, pingStartMs = RUNNING_PING_START_MS, pingEveryMs = RUNNING_PING_EVERY_MS,
+  // 0.33.5 后台任务：detachMs 到点命令还没结束 → 交给 onDetach 登记成后台任务（继续收输出、退出时回调），
+  // 本次工具调用立刻返回，模型可以去干别的。几秒内跑完的命令照常等结果，不受影响。
+  // onDetach({ pid, reason, stdout, stderr, kill }) → { note, taskId, onData(chunk, stream), onExit(code) } | null
+  detachMs = 0, onDetach = null
 } = {}) {
   return new Promise((resolve) => {
     const cmd = String(command || '').trim();
@@ -196,14 +202,16 @@ export function runCommandWithSignal(command, {
       }
     }
     if (sandbox?.env && typeof sandbox.env === 'object') Object.assign(env, sandbox.env);
-    let out = '', err = '', settled = false, proc = null, timer = null, idleTimer = null, pingTimer = null;
+    let out = '', err = '', settled = false, proc = null, timer = null, idleTimer = null, pingTimer = null, yieldTimer = null;
     let outDropped = 0, errDropped = 0;
+    let detached = null; // 转成后台任务后的回调（onData / onExit）
     const t0 = Date.now();
     let nextPingAt = Math.max(0, Number(pingStartMs) || 0); // 下一次活动提示的「已运行毫秒」
     const cleanup = () => {
       if (timer) clearTimeout(timer);
       if (idleTimer) clearTimeout(idleTimer);
       if (pingTimer) clearTimeout(pingTimer);
+      if (yieldTimer) clearTimeout(yieldTimer);
       if (signal && onAbort) signal.removeEventListener('abort', onAbort);
     };
     const finish = (value) => {
@@ -266,13 +274,34 @@ export function runCommandWithSignal(command, {
         proc.unref?.();
       } catch { /* 忽略 */ }
     };
+    // 0.33.5：交给后台任务账本（不解绑输出监听：继续收输出，退出时 onExit 回调）
+    const detachTo = (reason) => {
+      if (typeof onDetach !== 'function' || !proc) return null;
+      let hooks = null;
+      try {
+        hooks = onDetach({ pid: proc.pid, reason, stdout: out, stderr: err, kill: () => terminateTree(proc) });
+      } catch { hooks = null; }
+      if (!hooks) return null;
+      detached = hooks;
+      try { proc.unref?.(); } catch { /* 忽略 */ }
+      return hooks;
+    };
     const onIdle = () => {
       if (settled) return;
       // 已退出（close 事件尚未派发）就不算「活着」：交给 close 正常收尾
       if (!proc || proc.exitCode !== null || proc.killed) return;
       const pid = proc.pid;
+      const hooks = detachTo('idle');
+      if (hooks) return finish({ blocked: false, background: true, detached: true, taskId: hooks.taskId, code: null, pid, note: hooks.note, stdout: out, stderr: err });
       releaseProcess();
       finish({ blocked: false, background: true, code: null, pid, note: idleNote(pid, idle), stdout: out, stderr: err });
+    };
+    const onYield = () => {
+      if (settled) return;
+      if (!proc || proc.exitCode !== null || proc.killed) return;
+      const hooks = detachTo('yield');
+      if (!hooks) return; // 账本满了等情况：照常前台等
+      finish({ blocked: false, background: true, detached: true, taskId: hooks.taskId, code: null, pid: proc.pid, note: hooks.note, stdout: out, stderr: err });
     };
     const armIdle = () => {
       if (!idle || settled) return;
@@ -315,19 +344,47 @@ export function runCommandWithSignal(command, {
       }, timeout);
     }
     proc.stdout?.on('data', (d) => {
-      ({ text: out, dropped: outDropped } = appendKeepEnds(out, d.toString(), COMMAND_STDOUT_CAP, outDropped));
+      const s = d.toString();
+      if (detached) { try { detached.onData?.(s, 'stdout'); } catch { /* 忽略 */ } return; }
+      ({ text: out, dropped: outDropped } = appendKeepEnds(out, s, COMMAND_STDOUT_CAP, outDropped));
       armIdle(); // 有输出就重新计时：只要 stdout/stderr 还在滚，就永远不因空闲转后台
     });
     proc.stderr?.on('data', (d) => {
-      ({ text: err, dropped: errDropped } = appendKeepEnds(err, d.toString(), COMMAND_STDERR_CAP, errDropped));
+      const s = d.toString();
+      if (detached) { try { detached.onData?.(s, 'stderr'); } catch { /* 忽略 */ } return; }
+      ({ text: err, dropped: errDropped } = appendKeepEnds(err, s, COMMAND_STDERR_CAP, errDropped));
       armIdle();
     });
-    proc.on('close', (c) => finish({ blocked: false, code: c ?? 0, stdout: out, stderr: err }));
-    proc.on('error', (e) => finish({ blocked: false, code: 1, stdout: out, stderr: err + e.message }));
+    proc.on('close', (c) => {
+      if (detached) {
+        if (sandbox) { try { sandbox.cleanup?.(); } catch { /* 忽略 */ } }
+        try { detached.onExit?.(c ?? 0); } catch { /* 忽略 */ }
+        return;
+      }
+      finish({ blocked: false, code: c ?? 0, stdout: out, stderr: err });
+    });
+    proc.on('error', (e) => {
+      if (detached) { try { detached.onData?.(String(e?.message || e), 'stderr'); detached.onExit?.(1); } catch { /* 忽略 */ } return; }
+      finish({ blocked: false, code: 1, stdout: out, stderr: err + e.message });
+    });
     if (wantsBackground) {
       const pid = proc.pid;
+      // 常驻服务：stdio 是 ignore（FC 退出后服务照样活着），拿不到输出，只记它什么时候退出
+      let hooks = null;
+      if (typeof onDetach === 'function') {
+        try { hooks = onDetach({ pid, reason: 'background', stdout: '', stderr: '', kill: () => terminateTree(proc) }); } catch { hooks = null; }
+      }
       releaseProcess();
+      if (hooks) {
+        proc.once('exit', (c) => { try { hooks.onExit?.(c ?? 0); } catch { /* 忽略 */ } });
+        return finish({ blocked: false, background: true, detached: true, taskId: hooks.taskId, code: null, pid, note: hooks.note, stdout: out, stderr: err });
+      }
       return finish({ blocked: false, background: true, code: null, pid, note: backgroundNote(pid), stdout: out, stderr: err });
+    }
+    const yieldAfter = Number(detachMs) || 0;
+    if (yieldAfter > 0 && typeof onDetach === 'function' && !timeout) {
+      yieldTimer = setTimeout(onYield, yieldAfter);
+      yieldTimer.unref?.();
     }
     armIdle();
     armPing(); // 前 60s 静默；之后每 30s 一条「仍在运行 Ns」（不含输出内容）
@@ -631,7 +688,7 @@ export function collectInjectedScriptBodies(cmd, cwd = null) {
   return { files, bodies };
 }
 
-export function createAgentTools({ repoRoot, permissions, recordAudit = async () => {}, playbookRoot, runWorkflow = null, projectPath = null, policy = null, hooksConfig = null, hooksRunner = null, sessionId = null, cwd = null, signal = null, commandIdleMs = DEFAULT_COMMAND_IDLE_MS, askUser = null, todoWrite = null, spawnAgent = null, onActivity = null, requireAuditIntent = null, shellAppRoot = null, aclSandbox = undefined, userStatedTier = null, getDesktopToolsAsync = null, browserSessionPolicy = null, onBrowserFirstUse = null, getBrowserRealAsync = null, browserUserDataDir = null, browserChoice = null, ensureViewHostAsync = null, mcp = null, permissionRules = null, webSearchConfig = null, webFetchImpl = null, planMode = null, desktopGate = null } = {}) {
+export function createAgentTools({ repoRoot, permissions, recordAudit = async () => {}, playbookRoot, runWorkflow = null, projectPath = null, policy = null, hooksConfig = null, hooksRunner = null, sessionId = null, cwd = null, signal = null, commandIdleMs = DEFAULT_COMMAND_IDLE_MS, askUser = null, todoWrite = null, spawnAgent = null, onActivity = null, requireAuditIntent = null, shellAppRoot = null, aclSandbox = undefined, userStatedTier = null, getDesktopToolsAsync = null, browserSessionPolicy = null, onBrowserFirstUse = null, getBrowserRealAsync = null, browserUserDataDir = null, browserChoice = null, ensureViewHostAsync = null, mcp = null, permissionRules = null, webSearchConfig = null, webFetchImpl = null, planMode = null, desktopGate = null, bgTasks = null, commandYieldMs = DEFAULT_COMMAND_YIELD_MS } = {}) {
   let askedThisTurn = false; // 本回合已经通过 ask_user 问过用户（验收前置闸据此放行）
   // 0.31.1：本会话内用户已经选过的浏览器模式（主进程按 sessionId 存，跨回合有效）。
   // createAgentTools 每个回合重建一次——把记忆放在这里会让「同一任务里连续导航」每轮都弹卡。
@@ -1373,6 +1430,29 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
           deniedBy: 'policy'
         };
       }
+      // 0.33.5 后台任务：只有主 agent 有 bgTasks（子代理 / 工作流的命令照旧前台等）。
+      // yield_ms：模型可以调大（明确要原地等结果）或传 0（这条必须等完）。
+      const yieldRaw = args?.yield_ms ?? args?.yieldMs;
+      const yieldMs = bgTasks ? (yieldRaw === undefined || yieldRaw === null ? Number(commandYieldMs) || 0 : Math.max(0, Number(yieldRaw) || 0)) : 0;
+      const onDetach = bgTasks ? ({ pid, reason, stdout, stderr, kill }) => {
+        const r = bgTasks.start({ sessionId, kind: 'command', title: cmd.replace(/\s+/g, ' ').slice(0, 160), detail: String(runCwd || ''), pid, stop: kill });
+        if (r?.error) return null;
+        const id = r.id;
+        if (stdout) bgTasks.append(id, stdout);
+        if (stderr) bgTasks.append(id, stderr);
+        const secs = Math.max(1, Math.round((reason === 'idle' ? idleMs : yieldMs) / 1000));
+        const bgNote = reason === 'background'
+          ? `已在后台启动（PID=${pid}），登记为后台任务 ${id}。它退出时系统会自动通知你；要停止用 background_task(action:"stop", id:"${id}")。`
+          : `命令${reason === 'idle' ? `已 ${secs}s 没有输出` : `跑了 ${secs}s`} 还没结束，已转为后台任务 ${id}（PID=${pid}，进程没停，输出继续收集）。`
+            + '不要轮询：它结束时系统会自动把退出码和输出发给你。现在可以先做别的事；如果接下来必须等它的结果、又没有别的可做，就直接结束本轮回复，告诉用户你在等什么（用户可以继续和你聊别的）。'
+            + `想看进度用 background_task(action:"output", id:"${id}")；确实要原地等就用 action:"wait"。`;
+        return {
+          taskId: id,
+          note: bgNote,
+          onData: (s) => bgTasks.append(id, s),
+          onExit: (code) => bgTasks.finish(id, { status: code === 0 ? 'done' : 'failed', exitCode: code })
+        };
+      } : null;
       const result = await runCommandWithSignal(cmd, {
         cwd: runCwd,
         timeoutMs: args?.timeout_ms,
@@ -1382,7 +1462,9 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
         signal: toolSignal,
         sandbox,
         shellAppRoot,
-        onActivity
+        onActivity,
+        detachMs: yieldMs,
+        onDetach
       });
       // Do not retry with DETACHED_PROCESS or a visible console. A failed
       // restricted child stays a failure instead of opening a window or rerunning
@@ -2003,7 +2085,38 @@ ${expr.slice(0, 400)}`, ...approvalScope });
       const description = String(a.description ?? '').trim().slice(0, 40) || prompt.replace(/\s+/g, ' ').slice(0, 16);
       // 0.33.1 worktree 隔离：只对可改文件的 general 有意义（explore / verify 本来就只读）
       const isolation = a.isolation === 'worktree' && type === 'general' ? 'worktree' : null;
-      return spawnAgent({ description, prompt, type, ...(isolation ? { isolation } : {}) }, ctx || {});
+      // 0.33.5：background:true = 派出去就不等，主 agent 接着干活；子代理做完系统自动送回报告
+      const background = a.background === true && !!bgTasks;
+      return spawnAgent({ description, prompt, type, ...(isolation ? { isolation } : {}), ...(background ? { background: true } : {}) }, ctx || {});
+    };
+  }
+
+  // 0.33.5 后台任务查询 / 等待 / 停止（只给主 agent）
+  if (bgTasks) {
+    tools.background_task = async (args, ctx) => {
+      const a = args || {};
+      const action = String(a.action || 'list');
+      const id = String(a.id || a.task_id || '').trim();
+      if (action === 'list') {
+        const items = bgTasks.list(sessionId).map(({ id: tid, kind, title, status, ms, exitCode, pid }) => ({ id: tid, kind, title, status, secs: Math.round(ms / 1000), ...(exitCode !== undefined ? { exitCode } : {}), ...(pid ? { pid } : {}) }));
+        return { tasks: items, note: items.length ? '' : '当前会话没有后台任务' };
+      }
+      if (!id) return { error: 'background_task 缺少 id（先用 action:"list" 看有哪些）' };
+      const info = bgTasks.get(id);
+      if (!info || info.sessionId !== String(sessionId ?? '')) return { error: `没有这个后台任务：${id}` };
+      if (action === 'output') {
+        return { id, status: info.status, secs: Math.round(info.ms / 1000), output: bgTasks.output(id, { tail: Number(a.tail_chars) || 8000 }), ...(info.result ? { report: info.result } : {}) };
+      }
+      if (action === 'stop') return { id, ...bgTasks.stop(id, { by: 'model' }) };
+      if (action === 'wait') {
+        const ms = Math.max(1000, Math.min(600000, Number(a.timeout_ms) || 120000));
+        const r = await bgTasks.wait(id, ms, ctx?.signal || signal || null);
+        if (!r.done) return { id, status: 'running', note: `等了 ${Math.round(ms / 1000)}s 还没结束。它结束时系统会自动通知你，不必一直等。` };
+        // 已经原地等到了：结果直接给，不再另发通知
+        const notice = bgTasks.takeUndelivered(sessionId).find((x) => x.id === id);
+        return { id, status: r.task.status, ...(r.task.exitCode !== undefined ? { exitCode: r.task.exitCode } : {}), result: notice?.notice || bgTasks.noticeText(id) };
+      }
+      return { error: `未知 action：${action}（可用 list / output / wait / stop）` };
     };
   }
 

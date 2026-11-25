@@ -236,7 +236,7 @@ export default function TodoCard({
  *   收起后焦点还给 chip；展开时焦点落到卡片折叠按钮。
  * - 不再按会话列宽度自动折叠：浮层不占宽，窄屏/右面板打开时用户仍能自己开合。
  */
-export function TodoPanel({ items = [], error = null, sessionId = null, live = true }) {
+export function TodoPanel({ items = [], error = null, sessionId = null, live = true, top = null }) {
   const list = Array.isArray(items) ? items : [];
   const summary = todoCardSummary(list);
   const bodyId = useId();
@@ -256,7 +256,16 @@ export function TodoPanel({ items = [], error = null, sessionId = null, live = t
     }
   }, [collapsed]);
 
-  if (!list.length && !error) return null;
+  // 0.33.5：top = 后台任务面板（和验收单同一列，放在它上面）；没有验收单时也要能单独显示
+  if (!list.length && !error) {
+    if (!top) return null;
+    return (
+      <aside data-testid="todo-panel-overlay" aria-label={t('后台任务')}
+        className="pointer-events-none absolute inset-y-0 right-0 z-30 flex w-full max-w-full flex-col items-end gap-2 p-4">
+        {top}
+      </aside>
+    );
+  }
 
   const handleToggle = () => {
     focusTargetRef.current = collapsed ? 'card' : 'chip';
@@ -276,7 +285,8 @@ export function TodoPanel({ items = [], error = null, sessionId = null, live = t
   return (
     <aside data-testid="todo-panel-overlay" data-collapsed={collapsed ? 'true' : 'false'}
       aria-label={t('验收单面板')} onKeyDown={handleKeyDown}
-      className="pointer-events-none absolute inset-y-0 right-0 z-30 flex w-full max-w-full flex-col items-end p-4">
+      className="pointer-events-none absolute inset-y-0 right-0 z-30 flex w-full max-w-full flex-col items-end gap-2 p-4">
+      {top}
       {collapsed ? (
         <button type="button" data-testid="todo-chip" ref={chipRef} onClick={handleToggle}
           data-done={summary.done} data-total={summary.total}

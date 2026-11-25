@@ -1071,6 +1071,18 @@ export default function App() {
         if (activeIdRef.current !== sid) return;
         // Steer：用户中途注入当前回合。插在流式助手消息之前，画一条带徽标的用户气泡；
         // 它不属于会话历史（主进程只把它并进本轮上下文），所以不参与编辑/回退。
+        // 0.33.5：后台任务的结果送进了本轮上下文 → 画一条通知（结果本身给模型看，不铺在对话里）
+        if (ev.kind === 'bg-task-notice') {
+          const what = ev.taskKind === 'agent' ? t('后台子代理「{title}」', { title: String(ev.title || '') }) : t('后台命令 {id}', { id: String(ev.id || '') });
+          const status = ev.status === 'done' ? t('已完成') : ev.status === 'failed' ? t('失败') : t('已停止');
+          const bubble = { role: 'notice', content: t('⚙ {what} {status}，结果已交给 AI', { what, status }) };
+          setMessages((prev) => {
+            const i = prev.length - 1;
+            if (i >= 0 && prev[i]?.role === 'assistant' && prev[i]?.streaming) return [...prev.slice(0, i), bubble, prev[i]];
+            return [...prev, bubble];
+          });
+          return;
+        }
         if (ev.kind === 'steer') {
           const bubble = { role: 'user', content: String(ev.text || ''), steer: true };
           setMessages((prev) => {
@@ -1477,6 +1489,13 @@ export default function App() {
     const pastedTexts = queued ? (override.pasted || []) : pastedBlocks.map((b) => b.text);
     const raw = [typedRaw, ...pastedTexts].filter((x) => String(x || '').trim()).join('\n\n').trim();
     if (!raw || !y) { pumpingRef.current = false; return; }
+    // 0.33.5：后台任务完成自动起的一轮——结果可能已经被别的回合（用户先发了消息）取走了，那就不必再起
+    if (queued && override?.bgAuto) {
+      try {
+        const st = await y.bgTasksList?.(activeId);
+        if (!st?.pending) { pumpingRef.current = false; return; }
+      } catch { /* 查不到就照常发 */ }
+    }
     // 0.32.7：标记"这一轮是无人值守回合"（定时唤醒触发），供 agentChat 透传给主进程。
     // 用 ref 而不是 state：只在这一轮内有效，不该触发重渲染。
     if (unattended && activeId) unattendedRoundRef.current = activeId;
@@ -1714,6 +1733,22 @@ export default function App() {
   };
   const sendRef = useRef(null);
   sendRef.current = send;
+
+  // 0.33.5 后台任务完成、会话空闲 → 往该会话队列放一条自动续跑消息。
+  // 复用队列泵：只在用户正看着这个会话、且它空闲时才发；切到别的会话不抢视图，回来时再发；
+  // 用户刚停止过 / 上轮报错时不自动发（和排队消息同一规则），用户点发送即可。
+  useEffect(() => {
+    if (!y?.onBgTaskDone) return undefined;
+    return y.onBgTaskDone((p) => {
+      const sid = String(p?.sessionId || '');
+      if (!sid) return;
+      setQueueBySession((prev) => {
+        const cur = prev[sid] || [];
+        if (cur.some((m) => m?.bgAuto)) return prev; // 已经有一条在等：一条就能把所有结果一起送达
+        return { ...prev, [sid]: enqueue(cur, { id: nextQueueId(), text: t('（后台任务已结束，请查看结果并继续）'), pasted: [], previews: [], bgAuto: true }) };
+      });
+    });
+  }, []);
 
   // 队列自动发送：当前会话空闲（且不在停止中、上一轮不是停止/报错收尾）时消费队首一条；
   // 切到别的会话不消费它的队列。停止/报错后必须由用户手动点「发送」，否则「停止」等于没停。

@@ -19,6 +19,7 @@ import { createAskUserRegistry } from '../ask-user.mjs';
 import { createTodoRegistry } from '../todo-list.mjs';
 import { expandMentions, appendMentionBlocks } from '../mentions.mjs';
 import { desktopIntent, isDesktopTool, CU_NOT_REQUESTED, CU_STOPPED_BY_USER } from '../desktop-intent.mjs';
+import { createBgTaskManager } from '../bg-tasks.mjs';
 import { t } from '../../renderer/i18n/core.mjs';
 
 // 附件里的图片 → OpenAI 多模态 content parts（本机网关已验证支持 image_url data:）
@@ -112,6 +113,26 @@ export function registerAgentIpc({
   // 验收单（todo_write）：台账只在内存（按会话存最新一份）；卡片由 tool part 还原，
   // 回合结束时用同一份台账跑报告闸（lintTodoReport），不改会话 schema。
   const todos = createTodoRegistry();
+
+  // 0.33.5 后台任务（命令转后台 / 后台子代理）：账本只在内存，跨回合存活。
+  //   完成时：会话正在跑回合 → 下一次模型请求前随 Steer 注入（drainSteer）；
+  //           会话空闲 → 通知界面（finalcheck:bg-task-done），界面在该会话空闲时自动起一轮。
+  const sendToWin = (channel, payload) => {
+    try { const w = getWin(); if (w && !w.isDestroyed()) w.webContents.send(channel, payload); } catch { /* 窗口重载中 */ }
+  };
+  const bgTasks = createBgTaskManager({
+    onChange: (sessionId, tasks) => sendToWin('finalcheck:bg-tasks', { sessionId, tasks }),
+    onFinish: (task) => {
+      if (!state.activeChats.has(task.sessionId)) sendToWin('finalcheck:bg-task-done', { sessionId: task.sessionId, id: task.id, title: task.title, status: task.status });
+    }
+  });
+  state.bgTasks = bgTasks;
+  ipcMain.handle('finalcheck:bg-tasks-list', (_e, sessionId = null) => ({ tasks: bgTasks.list(sessionId), pending: bgTasks.hasUndelivered(sessionId) }));
+  ipcMain.handle('finalcheck:bg-task-stop', (_e, id = '') => bgTasks.stop(String(id), { by: 'user' }));
+  ipcMain.handle('finalcheck:bg-task-output', (_e, id = '') => {
+    const info = bgTasks.get(String(id));
+    return info ? { ...info, output: bgTasks.output(String(id), { tail: 20000 }) } : null;
+  });
 
   // 桌面操作 / 浏览器操作（2026-11-21）：只有真 Electron 主进程里才是可用的。
   // 两个模块都要 electron API（desktopCapturer / BrowserWindow），纯 Node（sim 测试台）里
@@ -470,6 +491,8 @@ export function registerAgentIpc({
           } catch { /* 恢复失败不阻塞回合收尾 */ }
         })();
       }
+      // 0.33.5：回合期间完成、但没赶上注入的后台任务 → 让界面在空闲时自动起一轮
+      if (sessionId && bgTasks.hasUndelivered(sessionId)) sendToWin('finalcheck:bg-task-done', { sessionId, pending: true });
       // runAgentChat returns after its assistant has been persisted. The old invoke Promise
       // disappears on renderer reload; this independent notification closes reattached runs.
       try { getWin()?.webContents.send('finalcheck:agent-event', { sessionId, runId: chatAbort.snapshot.runId, seq: ++chatAbort.snapshot.seq, ev: { kind: 'run-settled', outcome } }); } catch { /* renderer may be reloading */ }
@@ -823,7 +846,7 @@ export function registerAgentIpc({
     // SSE 流式 / 两级压缩 / 默认 40 轮 / usage）；这里只做工具装配、transcript 落盘与按请求记账。
     // override：工作流面板里改过「子代理模型」时传入（baseUrl/apiKey/model），否则用会话模型
     // spawn（0.26 轻量子代理）：{ systemPrompt, toolNames, requireTools } 覆盖工作流子代理的默认提示词 / 工具集 / 取证要求
-    const callSubagent = async ({ id, name, role, prompt, kind, originalName = null, runId = null, signal: stepSignal = null, spawn = null } = {}, override = null) => {
+    const callSubagent = async ({ id, name, role, prompt, kind, originalName = null, runId = null, signal: stepSignal = null, spawn = null, detached = false } = {}, override = null) => {
       const P = override?.baseUrl ? override : { baseUrl: prov.baseUrl, apiKey: prov.apiKey, model, providerId: prov.id };
       let transcript = [];
       let salvage = null; // subagent-salvage 的确定性拼接函数（catch 分支兜底用）
@@ -881,7 +904,8 @@ export function registerAgentIpc({
       };
       const ctl = new AbortController();
       const onAbort = () => ctl.abort();
-      chatAbort.signal.addEventListener('abort', onAbort, { once: true });
+      // 0.33.5：后台子代理不跟着回合停（回合结束 / 用户点停止都不影响它；要停用任务面板）
+      if (!detached) chatAbort.signal.addEventListener('abort', onAbort, { once: true });
       // 工作流引擎的中断信号（用户停止 / 显式 budget.maxStepMs 到点）：立即 abort，不搞本地墙钟
       const onStepAbort = () => ctl.abort();
       if (stepSignal) {
@@ -1068,10 +1092,45 @@ export function registerAgentIpc({
       return `你是 FinalCheck 子代理（只读调查）。${common}用工具取证（read_file / grep_code / 只读命令），不要修改任何文件。\n\n${report}`;
     };
     let spawnSeq = 0;
-    const spawnAgent = async ({ description, prompt, type, isolation = null }, ctx = {}) => {
+    const spawnAgent = async ({ description, prompt, type, isolation = null, background = false }, ctx = {}) => {
+      if (!background || !sessionId) return runSpawn({ description, prompt, type, isolation }, ctx);
+      // 0.33.5 后台子代理：登记 → 脱离本回合跑（自己的 AbortController，回合结束 / 用户停止回合都不影响它）
+      const ac = new AbortController();
+      const reg = bgTasks.start({ sessionId, kind: 'agent', title: description, detail: String(prompt).slice(0, 400), stop: () => ac.abort() });
+      if (reg.error) return { description, type, error: reg.error };
+      let agentIdOut = '';
+      const started = new Promise((resolve) => {
+        void runSpawn({ description, prompt, type, isolation }, { ...ctx, signal: ac.signal }, {
+          detached: true,
+          onStart: (agentId) => { agentIdOut = agentId; bgTasks.patch(reg.id, { agentId }); resolve(); }
+        }).then((out) => {
+          resolve();
+          const wtLine = out?.worktree?.summary ? `\n\n${out.worktree.summary}` : '';
+          bgTasks.finish(reg.id, {
+            status: ac.signal.aborted ? 'stopped' : out?.error ? 'failed' : 'done',
+            result: `${String(out?.report || '')}${wtLine}`,
+            error: out?.error ? String(out.error) : ''
+          });
+        }).catch((e) => { resolve(); bgTasks.finish(reg.id, { status: 'failed', error: String(e?.message || e) }); });
+      });
+      await started; // 等子代理真正起跑（拿到 agentId，界面卡片能对上），不等它做完
+      return {
+        agentId: agentIdOut,
+        taskId: reg.id,
+        description,
+        type,
+        background: true,
+        status: 'running',
+        note: `子代理已在后台运行（任务 ${reg.id}）。不要等它、不要轮询：它做完系统会自动把报告送给你。现在继续你手头的事；没有别的要做就直接结束本轮，简短告诉用户后台在跑什么（用户可以接着和你聊别的）。`
+      };
+    };
+    const runSpawn = async ({ description, prompt, type, isolation = null }, ctx = {}, { detached = false, onStart = null } = {}) => {
       spawnSeq++;
       const id = spawnAgentStepId(ctx.callId, spawnSeq); // 界面按同一规则推出 id，点「打开子代理过程」直接对上
       const t0 = Date.now();
+      try { onStart?.(id); } catch { /* 忽略 */ }
+      // 后台子代理在回合结束后才收尾：那时回合事件流已经关了，不再往里推事件
+      const turnAlive = () => !detached || state.activeChats.get(sessionId) === chatAbort;
       // 0.33.1 worktree 隔离：先建好 worktree，失败就直接告诉模型（不悄悄退回主工作区去改）
       let wt = null;
       if (isolation === 'worktree') {
@@ -1090,6 +1149,7 @@ export function registerAgentIpc({
         prompt,
         runId: `spawn-${chatAbort.snapshot.runId}`,
         signal: ctx.signal || null,
+        detached,
         spawn: { systemPrompt: spawnSystemPrompt(type) + wtNote, toolNames: type === 'general' ? null : SPAWN_READONLY_TOOLS, requireTools: true, ...(wt ? { projectPath: wt.projectDir } : {}) }
       });
       let worktree = null;
@@ -1117,7 +1177,7 @@ export function registerAgentIpc({
         ...(r?.salvaged ? { salvaged: true } : {}),
         ...(worktree ? { worktree } : {})
       };
-      sendEvent({ kind: 'subagent-end', id, name: description, ok: !r?.error, toolCount: out.toolCount, ms: out.ms });
+      if (turnAlive()) sendEvent({ kind: 'subagent-end', id, name: description, ok: !r?.error, toolCount: out.toolCount, ms: out.ms });
       return out;
     };
     // 发送即落盘：用户消息先写进会话（AI 回答失败/中断/关窗都不丢），回答结束再补 assistant
@@ -1235,9 +1295,10 @@ export function registerAgentIpc({
       drainSteer: () => {
         if (!sessionId) return [];
         const list = state.steerBuffers.get(sessionId) || [];
-        if (!list.length) return [];
         state.steerBuffers.delete(sessionId);
-        return list.slice();
+        // 0.33.5：后台任务完成通知跟着 Steer 一起进上下文（每次模型请求前取一次）
+        const bg = bgTasks.takeUndelivered(sessionId).map((n) => ({ kind: 'bg-task', id: n.id, title: n.title, status: n.status, taskKind: n.kind, text: n.notice }));
+        return [...list, ...bg];
       },
       cwd: turnProjectPath,
       onToken: sendToken,
@@ -1306,6 +1367,8 @@ export function registerAgentIpc({
         todoWrite: (args) => todos.write(sessionId, args),
         // 轻量子代理（spawn_agent）：只给主 agent；子代理工具表不含它（不会套娃）
         spawnAgent,
+        // 0.33.5 后台任务：命令跑久了转后台 / 后台子代理 / background_task 工具（只给主 agent）
+        ...(sessionId ? { bgTasks, commandYieldMs: cfg.commandYieldMs ?? undefined } : {}),
         // 桌面操作 + 浏览器操作（2026-11-21）：只给主 agent。懒加载，未就绪时返回 null，
         // 工具表里就不出现这两个工具（纯 Node / 测试台里本来也用不了）。
         getDesktopToolsAsync: async () => {

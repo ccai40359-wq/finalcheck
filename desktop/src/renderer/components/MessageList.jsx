@@ -17,6 +17,7 @@ import { IconChevron, IconCopy, IconEdit, IconRewind } from './Icons.jsx';
 import AskUserCard from './AskUserCard.jsx';
 import CompactionStatus from './CompactionStatus.jsx';
 import { TodoPanel, TodoHistoryRow } from './TodoCard.jsx';
+import BgTasksPanel from './BgTasksPanel.jsx';
 
 // 技能 chip：金色符号 + 名称，细底无边框（不是药丸）；title 只在 hover 时暴露 playbook id
 function SkillChips({ skills }) {
@@ -340,10 +341,10 @@ export default function MessageList({
       )}
       {/* 验收单浮层：absolute 覆盖在消息列右上角，不占宽、不随消息滚动；
           透明区域 pointer-events-none（可穿透滚动），只有卡片/chip 可交互。 */}
-      {latestTodo ? (
-        <TodoPanel items={latestTodo.items} error={latestTodo.error} sessionId={activeId}
-          live={latestTodo.live} />
-      ) : null}
+      {/* 0.33.5：后台任务胶囊放在验收单上面（同一个右上角浮层列） */}
+      <TodoPanel items={latestTodo?.items || []} error={latestTodo?.error || null} sessionId={activeId}
+        live={latestTodo ? latestTodo.live : true}
+        top={activeId ? <BgTasksPanel y={y} sessionId={activeId} onOpenStep={onOpenStep} /> : null} />
       </div>
     </div>
   );
