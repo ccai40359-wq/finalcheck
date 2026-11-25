@@ -95,7 +95,9 @@ test('没有提问通道（子代理）：照旧拒绝，但告诉模型交给�
   const { project, key } = setup(t);
   const { ts } = tools(project, { answers: null });
   const r = await ts.read_file({ path: key });
-  assert.equal(r.deniedBy, 'policy');
+  // 0.34.0：这里以前是 deniedBy:'policy'，会把「没有提问通道」说成「被策略闸拒绝」，
+  // 模型据此编过「这一轮累计拒绝次数到上限」的解释。现在如实标成 ask-unavailable。
+  assert.equal(r.deniedBy, 'ask-unavailable');
   assert.match(r.hint, /主对话去问用户/);
 });
 

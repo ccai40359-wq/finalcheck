@@ -515,8 +515,9 @@ export default function Composer({
                   </span>
                   {/* 窄态：只剩立方体 */}
                   <span className="fc-model-icon items-center justify-center" aria-hidden="true"><IconCube /></span>
-                  {/* 压缩中用极小的绿点提示（两种形态共用） */}
-                  {compacting && <span aria-hidden="true" className="absolute -top-0.5 -right-0.5 h-1.5 w-1.5 rounded-full bg-jade fc-compact-dot" />}
+                  {/* 0.34.0：删掉压缩中的绿点（用户：「把压缩上下文时候的这个对话框中绿色的点也去掉」）。
+                      压缩状态已经在消息流里有一条带扫光的分隔线，输入框再挂一个点属于重复提示，
+                      而且在窄态下会贴在立方体图标的右上角，看着像图标坏了。 */}
                 </button>
                 {menu === 'model' && (
                   <div className="glass-pop absolute bottom-full mb-2 right-0 w-[300px] rounded-2xl z-50 pop-in">

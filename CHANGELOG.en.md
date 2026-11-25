@@ -6,6 +6,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.34.0] - 2026-11-26
+
+Three things in this release: closing the window leaves FinalCheck running in the system tray; questions no longer have a per-turn cap; and three real holes in the "out-of-bounds access asks you" machinery are fixed.
+
+### Added
+
+- **Closing the window sends FinalCheck to the system tray**: ✕ no longer quits. The app keeps running behind the small tray icon, so scheduled wake-ups and background commands keep going. Clicking the icon brings back the same window — sessions, the running turn and browser tabs are all still there, it does not open a fresh one. Right-click the icon for "Open FinalCheck / Quit FinalCheck"; only that Quit really ends the process.
+
+### Fixed
+
+- **Allowing a read is not allowing a write**: after choosing "Allow for this session" to read a key, the AI could previously overwrite that same key **without asking you again** — the file was replaced outright (reproduced: the private key was replaced with model-supplied content). Reads and writes are now tracked separately, so a write still asks; if you decline, not a single byte of the file changes.
+- **Deploying no longer means one card per command**: "Allow for this session" used to be keyed on the **exact command text**, so `ssh … 'ls /opt'` and `ssh … 'df -h'` counted as two different approvals, and a deployment with ten ssh/scp calls asked ten times. It is now keyed on "which program, touching which key" — allow once and later ssh / scp / rsync / sftp calls with the same key go through; a different key asks again.
+- **`scp` / `rsync` to a server are no longer blocked**: a remote form such as `rsync -av ./out/ box:/opt/x/` was read as a `T:` drive path and rejected as "references a path outside the project". The remote path lives on the other machine; the local gate cannot and should not judge it.
+- **Errors now say what actually happened**: when you clicked "Don't allow" on a key access, the result used to read "rejected by the policy gate", which led the model to invent explanations like "this turn hit its rejection limit". It now distinguishes `user-declined`, `user-cancelled` (you pressed stop) and `ask-unavailable` (sub-agents, which have no way to ask).
+
+### Improved
+
+- **No more per-turn cap on questions**: a turn used to allow at most 3 questions and refused the 4th. That conflicts with "out-of-bounds access asks you first" — a few commands during a deployment used up the budget, so the 4th key confirmation could not be asked at all. Questions are now unlimited.
+- **The green compaction dot in the composer is gone**: compaction already shows a sweeping "Compressing context…" divider in the message stream; the extra green dot on the model button was redundant, and in narrow windows it sat against the cube icon and looked like a rendering glitch.
+
 ## [0.33.9] - 2026-11-25
 
 Three things in this release: web pages open in the side panel no longer burn CPU while hidden; touching private keys or folders outside the project now asks you instead of being refused; and images and the side panel can be opened by you directly.

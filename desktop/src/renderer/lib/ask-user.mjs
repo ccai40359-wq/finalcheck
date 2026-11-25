@@ -5,7 +5,12 @@
 import { t } from '../i18n/core.mjs';
 
 export const ASK_USER_MAX_OPTIONS = 6;
-export const ASK_USER_MAX_PER_TURN = 3;
+// 0.34.0：不再限制每回合提问次数（用户定案）。
+// 旧值 3 的副作用是「安全确认被饿死」：0.33.9 的越界授权与普通提问共用这份额度，
+// 而越界授权按整条命令原文记账——部署时连着十条 ssh/scp 就把额度吃光，
+// 第 4 条拿到的是「提问次数已达上限」，本该问的私钥确认反而问不出来。
+// 常量名保留（主进程与测试都 import 它）；maxPerTurn 仍可显式传数字做限流。
+export const ASK_USER_MAX_PER_TURN = Number.POSITIVE_INFINITY;
 export const ASK_USER_TOOL = 'ask_user';
 
 function asObject(value) {

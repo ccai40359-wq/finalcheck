@@ -50,7 +50,9 @@ test('junction cannot read or create a file outside the actual project root', as
   const tools = createAgentTools({ repoRoot, projectPath: project, policy, permissions });
   assert.equal(assertPathAllowed(policy, path.join(project, 'bridge/marker.txt')).ok, false);
   assert.equal(assertPathAllowed(policy, path.join(project, 'bridge/new.txt'), { write: true }).ok, false);
-  assert.equal((await tools.read_file({ path: path.join(project, 'bridge/marker.txt') })).deniedBy, 'policy');
+  // 0.34.0：这套工具没传 askUser 通道。旧实现把「问不了」报成 deniedBy:'policy'
+  // （把「没有提问通道」说成「策略拒绝」，模型据此编过错误解释），现在如实报 ask-unavailable。
+  assert.equal((await tools.read_file({ path: path.join(project, 'bridge/marker.txt') })).deniedBy, 'ask-unavailable');
 });
 
 test('quality commands cannot select a directory outside the project', async (t) => {

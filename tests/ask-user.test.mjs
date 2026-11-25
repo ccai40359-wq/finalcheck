@@ -9,7 +9,7 @@ import { createRequire } from 'node:module';
 import { createAskUserRegistry } from '../desktop/src/main/ask-user.mjs';
 import { createAgentTools } from '../desktop/src/main/agent-tools.mjs';
 import { AGENT_TOOLS_SCHEMA, SUBAGENT_TOOLS_SCHEMA } from '../desktop/src/main/agent-service.mjs';
-import { askUserCardFromTrace } from '../desktop/src/renderer/lib/ask-user.mjs';
+import { askUserCardFromTrace, ASK_USER_MAX_PER_TURN, ASK_USER_MAX_OPTIONS } from '../desktop/src/renderer/lib/ask-user.mjs';
 
 const require = createRequire(new URL('../desktop/package.json', import.meta.url));
 const Database = require('better-sqlite3');
@@ -174,27 +174,32 @@ test('ask-user: 子代理 schema 不含 ask_user；只有主 agent 的 createAge
   assert.deepEqual(await withAsk.ask_user({ question: '在吗' }, {}), { answer: 'echo:在吗' });
 });
 
-/* ---------- ⑥ 一回合第 4 次提问被拒 ---------- */
-test('ask-user: 一回合最多 3 次，第 4 次返回上限错误', async () => {
+/* ---------- ⑥ 0.34.0：每回合提问次数不再设上限 ---------- */
+test('ask-user: 0.34.0 起一回合可以连问多次，不再有第 4 次就被拒的上限', async () => {
   const seen = [];
   const reg = createAskUserRegistry({ emit: (p) => seen.push(p) });
   reg.beginTurn('s-limit');
-  const p1 = reg.ask({ question: 'q1', sessionId: 's-limit' });
-  const p2 = reg.ask({ question: 'q2', sessionId: 's-limit' });
-  const p3 = reg.ask({ question: 'q3', sessionId: 's-limit' });
-  assert.equal(seen.length, 3);
-  const p4 = await reg.ask({ question: 'q4', sessionId: 's-limit' });
-  assert.match(p4.error, /本次回合提问次数已达上限/);
-  assert.equal(seen.length, 3, '第 4 次不弹卡');
-  reg.cancelAll();
-  await Promise.all([p1, p2, p3]);
+  const pend = [];
+  for (let i = 1; i <= 8; i += 1) pend.push(reg.ask({ question: `q${i}`, sessionId: 's-limit' }));
+  assert.equal(seen.length, 8, '8 次提问全部弹卡（旧实现第 4 次起会被拒）');
+  assert.equal(reg.pendingCount(), 8);
+  // 全部回答，确认每个都能正常收尾（不是挂着不动的假通过）
+  for (const p of seen) reg.answer({ callId: p.callId, answer: `a-${p.question}` });
+  const results = await Promise.all(pend);
+  assert.deepEqual(results.map((r) => r.answer), ['a-q1', 'a-q2', 'a-q3', 'a-q4', 'a-q5', 'a-q6', 'a-q7', 'a-q8']);
+  assert.equal(reg.pendingCount(), 0);
 
-  // 新回合重置计数
-  reg.beginTurn('s-limit');
-  const next = reg.ask({ question: 'again', sessionId: 's-limit' });
-  assert.equal(seen.length, 4);
-  reg.cancelAll();
-  await next;
+  // 显式传 maxPerTurn 仍然生效（保留限流能力，只是默认不再限）
+  const capped = createAskUserRegistry({ emit: (p) => seen.push(p), maxPerTurn: 2 });
+  capped.beginTurn('s-cap');
+  const c1 = capped.ask({ question: 'c1', sessionId: 's-cap' });
+  const c2 = capped.ask({ question: 'c2', sessionId: 's-cap' });
+  const c3 = await capped.ask({ question: 'c3', sessionId: 's-cap' });
+  assert.match(c3.error, /本次回合提问次数已达上限/);
+  capped.cancelAll();
+  await Promise.all([c1, c2]);
+  assert.equal(ASK_USER_MAX_PER_TURN, Number.POSITIVE_INFINITY, '默认上限是 Infinity');
+  assert.equal(ASK_USER_MAX_OPTIONS, 6, '选项数量上限保持 6 个不变');
 });
 
 /* ---------- 历史卡状态还原 ---------- */

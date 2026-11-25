@@ -202,7 +202,10 @@ test('agent-tools: policy——项目外读取/只读写入/黑名单命令被�
 
   const out = await tools.read_file({ path: outside });
   assert.match(out.error, /被策略闸拒绝/);
-  assert.equal(out.deniedBy, 'policy');
+  // 0.34.0：这套工具没有 askUser 通道 → 越界如实报 ask-unavailable。
+  // 旧实现统一报 'policy'，把「问不了」说成「策略拒绝」，模型据此编过「拒绝次数到上限」的解释。
+  // 被拒绝这件事本身没变。
+  assert.equal(out.deniedBy, 'ask-unavailable');
   assert.match(out.reason, /项目边界/);
 
   const insideRead = await tools.read_file({ path: inside });
@@ -225,7 +228,8 @@ test('agent-tools: policy——项目外读取/只读写入/黑名单命令被�
   assert.equal(deniedCmd.matchedRule, 'shutdown');
 
   const deniedCwd = await tools.run_command({ command: 'echo nope', cwd: outsideDir });
-  assert.equal(deniedCwd.deniedBy, 'policy');
+  // 0.34.0：cwd 越界也走「先问用户」；这套工具没有提问通道，所以报 ask-unavailable
+  assert.equal(deniedCwd.deniedBy, 'ask-unavailable');
   assert.match(deniedCwd.reason, /项目边界/);
 
   const okCmd = await tools.run_command({ command: 'echo sandbox-ok' });
@@ -399,7 +403,8 @@ test('agent-tools: 工具失败时触发 PostToolUseFailure（失败事件也 fa
     }
   });
   const r = await tools.read_file({ path: outside });
-  assert.equal(r.deniedBy, 'policy', '策略拒绝结果保持不变');
+  // 0.34.0：无提问通道 → ask-unavailable（标签更准，拒绝本身不变）
+  assert.equal(r.deniedBy, 'ask-unavailable', '越界仍被拒（来源标签更准确）');
   assert.ok(events.includes('PostToolUseFailure'), '失败事件应被触发');
   assert.ok(!events.includes('PostToolUse'), '失败时不应触发成功事件');
 });
@@ -586,7 +591,7 @@ test('agent-tools: grep_code 与 read_file 同一道路径闸（项目外拒绝�
     projectPath: inside
   });
   const denied = await tools.grep_code({ pattern: 'needle', path: outside });
-  assert.equal(denied.deniedBy, 'policy');
+  assert.equal(denied.deniedBy, 'ask-unavailable'); // 0.34.0：无提问通道时如实标注
   assert.match(denied.reason, /项目边界/);
 
   const ok = await tools.grep_code({ pattern: 'needle', path: inside });

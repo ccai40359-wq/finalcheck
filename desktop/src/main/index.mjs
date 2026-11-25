@@ -21,6 +21,7 @@ import { createBackend, IMAGE_MIME } from './backend.mjs';
 import { registerDiagnosticsIpc } from './ipc/ipc-diagnostics.mjs';
 import { registerUpdaterIpc } from './ipc/ipc-updater.mjs';
 import { appendLogLine, installProcessGuards, installSafeIpc } from './error-guard.mjs';
+import { installTray, attachHideOnClose, markQuitting, destroyTray, trayReady } from './tray.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..'); // desktop/src/main → 仓库根
@@ -124,7 +125,13 @@ app.setAppUserModelId('com.finalcheck.terminal');
 if (!gotLock) {
   app.quit();
 } else {
-  app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); win.focus(); } });
+  // 0.34.0：第二次启动时窗口可能已被收到托盘（隐藏），要 show 回来再聚焦
+  app.on('second-instance', () => {
+    if (!win || win.isDestroyed()) return;
+    if (win.isMinimized()) win.restore();
+    if (!win.isVisible()) win.show();
+    win.focus();
+  });
 }
 
 let win = null;
@@ -341,14 +348,34 @@ function createWindow() {
   // 自绘窗口按钮通道（removeHandler 保证重复建窗不冲突）
   ipcMain.removeHandler('finalcheck:window-ctl');
   ipcMain.handle('finalcheck:window-ctl', (_e, action) => {
-    if (!win) return false;
+    if (!win) return { ok: false };
     if (action === 'minimize') win.minimize();
     else if (action === 'maximize') { win.isMaximized() ? win.unmaximize() : win.maximize(); }
     else if (action === 'close') win.close();
-    return true;
+    // 0.34.0：从托盘唤回（托盘 click 回调用的也是这条路径的语义）
+    else if (action === 'show') {
+      if (win.isMinimized()) win.restore();
+      win.show();
+      win.focus();
+    }
+    // 0.34.0：回一份真实窗口状态。
+    //  • 渲染层据此在「关到托盘」后提示一次「还在后台运行」（见 App 的 tray 提示）
+    //  • 验收脚本用它判断「窗口真的藏起来了」——不能靠 document.visibilityState：
+    //    index.mjs 顶部关掉了 CalculateNativeWinOcclusion / WidgetInitVisibilityDispatch，
+    //    页面永远看不到自己 hidden（那是为了后台不节流，代价就是 visibilityState 不可信）。
+    return {
+      ok: true,
+      visible: win.isVisible(),
+      minimized: win.isMinimized(),
+      maximized: win.isMaximized()
+    };
   });
   if (process.env.ELECTRON_RENDERER_URL) win.loadURL(process.env.ELECTRON_RENDERER_URL);
   else win.loadFile(path.join(__dirname, '../renderer/index.html'));
+  // 0.34.0：关窗口 = 收到系统托盘，进程继续跑（定时唤醒 / 后台任务不再因为关窗而全没）。
+  // 只在**托盘真的建起来了**才挂：图标缺失之类的极端情况退回「关窗即退出」，
+  // 否则窗口一藏就再也叫不回来了（用户会以为程序卡死）。
+  if (trayReady()) attachHideOnClose(win);
   // 0.29.2：CU 模式激活期间渲染层重载后重注入停止横幅（唯一停止入口不能丢）
   win.webContents.on('did-finish-load', () => { if (cuModeOn) injectCuBanner(); });
   if (process.env.FINALCHECK_WINDOW_BG === '1') {
@@ -430,6 +457,39 @@ app.whenReady().then(async () => {
   registerConfigIpc({ ipcMain, store: configStore });
   const updater = registerUpdaterIpc({ ipcMain, app, getWin: () => win });
 
+  // 0.34.0 系统托盘：必须在 createWindow 之前建好——createWindow 里要靠 trayReady() 判断
+  // 要不要把「关窗口」改成「收托盘」。
+  // 无从托盘唤回的场景（后台驱动模式 FINALCHECK_WINDOW_BG=1、UI 自检）不建托盘：
+  // 那些场景本来就不该有可见图标，建了反而会在 CI/无人值守机器上留下幽灵进程。
+  const trayWanted = process.env.FINALCHECK_WINDOW_BG !== '1' && process.env.FINALCHECK_UI_SELFCHECK !== '1';
+  if (trayWanted) {
+    try {
+      let labelLang = 'zh';
+      try { labelLang = (await configStore.load()).language === 'en' ? 'en' : 'zh'; } catch { /* 读不到按中文 */ }
+      installTray({
+        getWin: () => win,
+        iconPath: APP_ICON,
+        tooltip: 'FinalCheck',
+        labels: labelLang === 'en'
+          ? { open: 'Open FinalCheck', quit: 'Quit FinalCheck' }
+          : { open: '打开 FinalCheck', quit: '退出 FinalCheck' },
+        showWindow: () => {
+          if (!win || win.isDestroyed()) { createWindow(); return; }
+          if (win.isMinimized()) win.restore();
+          win.show();
+          win.focus();
+        },
+        onQuit: () => {
+          markQuitting();
+          app.quit();
+        }
+      });
+    } catch (e) {
+      // 托盘建不起来不能让程序起不来：记一条日志，退回「关窗即退出」
+      writeLog('[tray] 创建托盘失败，退回关窗即退出：' + (e?.message || e));
+    }
+  }
+
   createWindow();
   installExternalLinkGuards(); // 点消息里的链接要开系统浏览器，不能把主窗口导航走
   // 0.29.2：CU 模式开关 → 全屏遮罩 + 主窗右上角迷你化（computer-use 模块在首次可操作截图/动作时进入，
@@ -488,6 +548,7 @@ app.whenReady().then(async () => {
 // 0.32.7：退出时停掉定时调度器（不停的话进程退出时定时器还挂在那儿，日志会很难看，
 // 而且 before-quit 里停掉能保证不会在退出瞬间触发一次没必要的唤醒）
 app.on('before-quit', () => {
+  markQuitting(); // 0.34.0：放行 close —— 否则「退出」会被收托盘逻辑又拦回去，程序退不掉
   void (async () => {
     try {
       const { stopScheduler } = await import(engineUrl('desktop/src/main/wakeup-scheduler.mjs'));
@@ -498,4 +559,14 @@ app.on('before-quit', () => {
   void backend.shutdown?.().catch?.(() => {});
 });
 
-app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
+// 0.34.0：有托盘时窗口全关不退出（那是「收到托盘」），进程留着跑定时唤醒与后台任务。
+// 退出只有两条路：托盘菜单的「退出 FinalCheck」、或 app.quit()（before-quit 会 markQuitting 放行）。
+app.on('window-all-closed', () => {
+  if (process.platform === 'darwin') return;   // macOS 本来就不退出
+  if (trayReady()) return;                      // 托盘在：留在后台
+  app.quit();
+});
+
+// 退出时销毁托盘图标（不销毁的话 Windows 托盘区会留一个点不动的僵尸图标，
+// 直到鼠标划过才消失）
+app.on('will-quit', () => { destroyTray(); });

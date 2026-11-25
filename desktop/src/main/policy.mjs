@@ -570,7 +570,12 @@ function literalPathsIn(text) {
     const value = (hm[1] || '').trim();
     if (value) found.push(value);
   }
-  const re = /"([^"]+)"|'([^']+)'|([A-Za-z]:[\\/][^\s"'|;&<>)]*)/g;
+  // 0.34.0：盘符路径必须出现在「词首」——前面不能是字母/数字/@/点/$/-。
+  // 旧正则会把远端写法 host:/opt/x 里的「t:/opt/x」当成 T: 盘路径，
+  // 于是 `rsync -av ./out/ box:/opt/x/`、`scp a.txt myserver:/opt/app/` 被判成
+  // 「命令引用了项目外的路径」整条拒绝（实测复现）。部署到服务器正是这类命令。
+  // 远端路径在另一端，本地策略闸无从也没必要判定它。
+  const re = /"([^"]+)"|'([^']+)'|(?<![\w@.$%/-])([A-Za-z]:[\\/][^\s"'|;&<>)]*)/g;
   let m;
   while ((m = re.exec(text)) !== null) {
     const value = (m[1] || m[2] || m[3] || '').trim();
@@ -640,7 +645,8 @@ export function checkDestructiveTargets(policy, command, cwd) {
         return {
           ok: false,
           reason: t('删除/改名目标是敏感路径，已拒绝（{item}）：{path}', { item: sens, path: raw.slice(0, 100) }),
-          matchedRule: 'destructive-sensitive'
+          matchedRule: 'destructive-sensitive',
+          target: abs
         };
       }
       // ② 项目边界：无条件检查（不看 mode）
@@ -650,7 +656,8 @@ export function checkDestructiveTargets(policy, command, cwd) {
           return {
             ok: false,
             reason: t('删除/改名目标在项目外，已拒绝：{path}', { path: raw.slice(0, 120) }),
-            matchedRule: 'destructive-outside'
+            matchedRule: 'destructive-outside',
+            target: abs
           };
         }
       }
@@ -660,7 +667,8 @@ export function checkDestructiveTargets(policy, command, cwd) {
         return {
           ok: false,
           reason: t('删除/改名目标在项目外，已拒绝：{path}', { path: raw.slice(0, 120) }),
-          matchedRule: 'destructive-outside'
+          matchedRule: 'destructive-outside',
+          target: abs
         };
       }
     }
@@ -729,7 +737,10 @@ export function checkCommandPaths(policy, command, cwd) {
         return {
           ok: false,
           reason: t('敏感路径禁止访问（{item}）：{path}', { item: sens, path: raw.slice(0, 100) }),
-          matchedRule: 'sensitive-path'
+          matchedRule: 'sensitive-path',
+          // 0.34.0：带上命中的规范化绝对路径。会话级授权按「程序 + 这个路径」记账，
+          // 不按整条命令原文——否则部署时十条写法各异的 ssh 会各问一遍。
+          target: abs
         };
       }
 
@@ -740,7 +751,8 @@ export function checkCommandPaths(policy, command, cwd) {
           return {
             ok: false,
             reason: t('命令引用了项目外的路径，已拒绝：{path}', { path: raw.slice(0, 120) }),
-            matchedRule: 'path-outside'
+            matchedRule: 'path-outside',
+            target: abs
           };
         }
       }

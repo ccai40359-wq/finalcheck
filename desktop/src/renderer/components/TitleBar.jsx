@@ -96,7 +96,7 @@ export default function TitleBar({
         )}
         <button onClick={() => y?.windowCtl('minimize')} className="h-full w-11 flex items-center justify-center text-mute hover:text-ink hover:bg-lift/[0.07] transition-colors" title={t('最小化')} aria-label={t('最小化')}><WinIcon><path d="M0 5.5h10" /></WinIcon></button>
         <button onClick={() => y?.windowCtl('maximize')} className="h-full w-11 flex items-center justify-center text-mute hover:text-ink hover:bg-lift/[0.07] transition-colors" title={t('最大化')} aria-label={t('最大化')}><WinIcon><rect x="0.5" y="0.5" width="9" height="9" rx="1.5" /></WinIcon></button>
-        <button onClick={() => y?.windowCtl('close')} className="h-full w-11 flex items-center justify-center text-mute hover:text-white hover:bg-[#c42b1c] transition-colors" title={t('关闭')} aria-label={t('关闭')}><WinIcon><path d="M0.5 0.5l9 9M9.5 0.5l-9 9" /></WinIcon></button>
+        <button onClick={() => y?.windowCtl('close')} className="h-full w-11 flex items-center justify-center text-mute hover:text-white hover:bg-[#c42b1c] transition-colors" title={t('关闭到托盘')} aria-label={t('关闭到托盘')}><WinIcon><path d="M0.5 0.5l9 9M9.5 0.5l-9 9" /></WinIcon></button>
       </div>
     </div>
   );

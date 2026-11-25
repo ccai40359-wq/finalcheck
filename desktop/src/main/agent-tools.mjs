@@ -64,9 +64,47 @@ export function isEscalatable(check) {
 }
 // 「这个会话都允许」的记忆：createAgentTools 每回合重建，所以放在模块级，按会话分
 const POLICY_SESSION_GRANTS = new Map(); // sessionId -> Set<key>
-export function policyGrantKey(rule, target) {
+/**
+ * 会话级授权的记账键。
+ *
+ * 0.34.0 修两个真缺陷（都有实测复现）：
+ *  ① **读权限会顺带放开写**：旧实现把 rule 归成 sensitive / destructive / outside 三类，
+ *     但 `sensitive` 与 `destructive-sensitive` 都落进 sensitive 桶 → 「允许读这把私钥」
+ *     之后 `write_file` 覆盖同一个私钥**不再问、直接写进去**（实测：文件被改成模型内容）。
+ *     现在按动作分成 read / write / exec 三个互不相通的桶：
+ *       - read  = read_file / grep_code / glob_files / list_dir
+ *       - write = edit_file / write_file / 删除改名
+ *       - exec  = run_command 里引用到敏感路径（授权「某个程序可以用这把 key」，不授权写它）
+ *  ② **命令类授权按整条命令原文记账**：部署时十条 ssh/scp 写法各异，等于每条都要问一次，
+ *     还会把提问额度吃光。现在命令类只按「程序名 + 命中的那个路径」记账，
+ *     一条 `ssh -i <这把key> host ...` 授权覆盖后续所有 ssh 用同一把 key 的命令。
+ *
+ * 键的形态：`<kind>|<mode>|<路径>`，命令类再加程序名：`<kind>|exec|<程序名>|<路径>`。
+ * 路径统一小写、反斜杠归一成正斜杠（Windows 大小写不敏感）。
+ */
+export function policyGrantKey(rule, target, { mode = null, program = '' } = {}) {
   const kind = /sensitive/.test(String(rule)) ? 'sensitive' : /destructive/.test(String(rule)) ? 'destructive' : 'outside';
-  return `${kind}|${String(target || '').replace(/\\/g, '/').toLowerCase()}`;
+  // 没显式给 mode 时按规则推断：destructive* 一定算写；sensitive / outside 默认只读（调用方都会传准确值）
+  const act = mode || (/destructive/.test(String(rule)) ? 'write' : 'read');
+  const norm = String(target || '').replace(/\\/g, '/').toLowerCase();
+  const prog = String(program || '').replace(/\\/g, '/').toLowerCase();
+  return prog ? `${kind}|${act}|${prog}|${norm}` : `${kind}|${act}|${norm}`;
+}
+/**
+ * 命令类授权用的「程序名」：命令段里的第一个词（去掉引号、转成小写、剥掉 .exe）。
+ * 复合命令（`a && b`）取第一段的程序名——语义上「我允许你用 ssh 拿这把 key」就够了，
+ * 具体对哪台机器做什么由用户自己在对话里把关。
+ *
+ * 0.34.0：ssh 家族归成一个桶。部署一次要交替用 ssh / scp / rsync / sftp，
+ * 逐个程序记账等于每次部署都多问三遍——而用户的授权意图本来就是「这个会话可以用这把钥匙连服务器」。
+ */
+const REMOTE_PROGRAMS = new Set(['ssh', 'scp', 'sftp', 'rsync', 'ssh-add', 'ssh-keygen', 'ssh-copy-id', 'plink', 'pscp']);
+export function commandProgramKey(command) {
+  const first = String(command || '').split(/&&|\|\||[;|&\n]/)[0].trim();
+  const quoted = /^"([^"]+)"/.exec(first) || /^'([^']+)'/.exec(first);
+  const head = quoted ? quoted[1] : (first.split(/\s+/)[0] || '');
+  const prog = head.replace(/^.*[\\/]/, '').replace(/\.exe$/i, '').toLowerCase();
+  return REMOTE_PROGRAMS.has(prog) ? 'remote-shell' : prog;
 }
 export function resetPolicyGrants(sessionId = null) {
   if (sessionId == null) POLICY_SESSION_GRANTS.clear(); else POLICY_SESSION_GRANTS.delete(String(sessionId));
@@ -827,17 +865,29 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
     if (!POLICY_SESSION_GRANTS.has(k)) POLICY_SESSION_GRANTS.set(k, new Set());
     return POLICY_SESSION_GRANTS.get(k);
   };
-  /** @returns {Promise<{ok:true}|{ok:false, result:object}>} */
-  const askPolicyOverride = async (check, { tool, target, command = '', ctx = {} } = {}) => {
+  /**
+   * 越界/敏感路径改成问用户（0.33.9 引入，0.34.0 修了三个真缺陷）：
+   *  - deniedBy 不再一律冒充 'policy'：用户拒绝 = user-declined，提问通道挂了 = ask-unavailable，
+   *    这样模型读到的字段和真实原因一致（旧实现会把「用户点不允许」显示成「被策略闸拒绝」，
+   *    截图里模型据此编出了「这一轮累计拒绝次数到上限」的解释）。
+   *  - 授权键区分读/写，命令类按「程序名 + 命中路径」记账（见 policyGrantKey）。
+   * @returns {Promise<{ok:true}|{ok:false, result:object}>}
+   */
+  const askPolicyOverride = async (check, { tool, target, command = '', mode = null, ctx = {} } = {}) => {
     if (!isEscalatable(check)) return { ok: false, result: policyDenyResult(check) };
     const tgt = target || check.target || '';
-    const key = policyGrantKey(check.matchedRule, command || tgt);
+    const program = command ? commandProgramKey(command) : '';
+    // 命令类按「程序名 + 命中的路径」记账；文件类按「路径」记账（read/write 分桶，见 policyGrantKey）
+    const key = policyGrantKey(check.matchedRule, tgt, { mode: command ? 'exec' : mode, program });
     if (grantsFor().has(key)) return { ok: true };
     if (typeof askUser !== 'function') {
-      return { ok: false, result: { ...policyDenyResult(check), hint: '这一步需要用户同意，但子代理没法直接问用户：在报告里说明需要访问什么、为什么，由主对话去问用户。' } };
+      return { ok: false, result: { ...policyDenyResult(check), deniedBy: 'ask-unavailable', hint: '这一步需要用户同意，但子代理没法直接问用户：在报告里说明需要访问什么、为什么，由主对话去问用户。' } };
     }
     const r = await askUser({ question: policyAskQuestion({ rule: check.matchedRule, target: tgt, reason: check.reason, tool, command }), options: POLICY_ASK_OPTIONS }, ctx || {});
-    if (r?.error) return { ok: false, result: { ...policyDenyResult(check), error: r.error } };
+    if (r?.error) {
+      // 提问通道不可用 / 用户取消：不要把原因说成「被策略闸拒绝」
+      return { ok: false, result: { ...policyDenyResult(check), deniedBy: r.cancelled ? 'user-cancelled' : 'ask-unavailable', error: r.error } };
+    }
     const answer = String(r?.answer || '').trim();
     if (/^(这个会话都允许|本会话都允许|always)/i.test(answer)) { grantsFor().add(key); return { ok: true }; }
     if (/^(允许这一次|允许|同意|yes|ok|可以)/i.test(answer)) return { ok: true };
@@ -851,7 +901,7 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
     const check = assertPathAllowed(policy, raw, { write, tool });
     if (check.ok) return check;
     const abs = check.target || path.resolve(projectPath || cwd || repoRoot, String(raw || ''));
-    const r = await askPolicyOverride(check, { tool, target: abs, ctx });
+    const r = await askPolicyOverride(check, { tool, target: abs, mode: write ? 'write' : 'read', ctx });
     return r.ok ? { ok: true, path: abs, escalated: true } : { ok: false, result: r.result };
   };
   const note = (url) => permissions?.noteTarget?.(url);
@@ -1477,9 +1527,11 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
         // 0.33.9 起这几类不再直接拒绝，而是**问用户**（一条命令只问一次）；灾难黑名单、只读模式照旧拒绝。
         const cmdCheck = checkCommand(policy, cmd);
         if (!cmdCheck.ok) return policyDenyResult(cmdCheck);
-        const escalate = async (check) => {
+        const escalate = async (check, extra = {}) => {
           if (check.ok || policyApproved) return null;
-          const r = await askPolicyOverride(check, { tool: 'run_command', command: cmd, ctx });
+          // 0.34.0：命令类授权记在「程序 + 命中的那个路径」上（check.target 由 policy.mjs 带上），
+          // 不再按整条命令原文——否则部署时十条写法各异的 ssh/scp 会各问一遍。
+          const r = await askPolicyOverride(check, { tool: 'run_command', command: cmd, target: check.target, ...extra, ctx });
           if (toolSignal?.aborted) return CANCELLED_RESULT();
           if (!r.ok) return r.result;
           policyApproved = true;

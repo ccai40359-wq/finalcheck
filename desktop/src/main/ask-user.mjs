@@ -2,7 +2,7 @@
 // 语义（与 permissions 审批不同）：
 // - 没有超时自动选择：用户不回答就永远等待（停止回合是唯一出口）；
 // - 用户点停止 → cancelSession/cancelAll 立即 resolve 为「用户取消」；
-// - 主 agent 每个回合最多问 3 次；第 4 次直接拒绝（不挂 pending、不弹卡）；
+// - 0.34.0 起不再限制每回合提问次数（默认 maxPerTurn = Infinity）；显式传数字仍生效；
 // - pending 只在内存里：App 重启后历史卡由 tool part（running/无结果）还原成「未回答（已失效）」。
 import { randomUUID } from 'node:crypto';
 import { t } from '../renderer/i18n/core.mjs';

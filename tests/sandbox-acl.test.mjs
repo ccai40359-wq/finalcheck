@@ -110,14 +110,17 @@ test('sandbox: 删除/改名项目外一律被拒（应用层兜 DELETE）', { s
   const inside = path.join(root, 'inside.txt');
   for (const f of [v1, v2, v3, inside]) fs.writeFileSync(f, 'keep', 'utf8');
   const cases = [
-    { name: 'cmd del', command: `del "${v1}"`, file: v1 },
-    { name: 'cmd del /f /q', command: `del /f /q "${v2}"`, file: v2 },
-    { name: 'powershell Remove-Item', command: `powershell -NoProfile -Command "Remove-Item -LiteralPath '${v3}' -Force"`, file: v3 }
+    // 0.34.0：`del /f /q` 命中安全黑名单（del-force），黑名单**不可提问**，所以仍是 deniedBy:'policy'
+    { name: 'cmd del', command: `del "${v1}"`, file: v1, expect: 'ask-unavailable' },
+    { name: 'cmd del /f /q', command: `del /f /q "${v2}"`, file: v2, expect: 'policy' },
+    { name: 'powershell Remove-Item', command: `powershell -NoProfile -Command "Remove-Item -LiteralPath '${v3}' -Force"`, file: v3, expect: 'ask-unavailable' }
   ];
   for (const c of cases) {
     const r = await tools.run_command({ command: c.command });
     assert.match(String(r.error || ''), /项目外|拒绝/, `${c.name} 应在应用层被拒：${JSON.stringify(r)}`);
-    assert.equal(r.deniedBy, 'policy', `${c.name} 拒绝来源应为 policy`);
+    // 拒绝来源：黑名单类永远不可提问（policy）；越界类在本测试里没有 askUser 通道 → ask-unavailable。
+    // 0.34.0 之前一律报 'policy'，把「问不了」和「黑名单」混成一个标签。
+    assert.equal(r.deniedBy, c.expect, `${c.name} 拒绝来源应为 ${c.expect}`);
     assert.equal(fs.existsSync(c.file), true, `${c.name} 不应删掉项目外文件`);
   }
   const r4 = await tools.run_command({ command: `del "${inside}"` });

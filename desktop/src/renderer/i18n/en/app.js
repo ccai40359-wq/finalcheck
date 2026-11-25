@@ -6,6 +6,7 @@ export const EN_APP = {
   '最小化': 'Minimize',
   '最大化': 'Maximize',
   '关闭': 'Close',
+  '关闭到托盘': 'Close to tray',
   '去添加': 'Add one',
   '模型设置': 'Model settings',
 

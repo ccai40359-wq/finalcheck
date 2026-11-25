@@ -351,7 +351,7 @@ export const AGENT_ONLY_TOOLS_SCHEMA = [
   { type: 'function', function: { name: 'review_diff', description: '只读审查 git 改动（默认对比 HEAD，也可 HEAD~1 / 分支名）：返回改动文件与 +/- 行数，并标出新增 SQL 拼接 / 命令执行 / 密钥字面量、删除的鉴权中间件、被改的 .env/.gitignore。不执行被审项目代码，不做 add/commit/checkout', parameters: { type: 'object', properties: { dir: { type: 'string', description: '项目绝对路径。' + PATH_JSON_HINT }, base: { type: 'string', description: '可选：对比基线，默认 HEAD（也可 HEAD~1 或分支名）' } }, required: ['dir'] } } },
   // 回合中途向用户提问：只在主 agent 的工具表；子代理不注册（避免并行子代理同时弹多个问题）。
   // 卡片 UI 用 callId 关联；回答经 finalcheck:ask-user-answer 回填，工具返回 { answer }。
-  { type: 'function', function: { name: 'ask_user', description: '回合中途向用户提问并等待回答（同一回合最多 3 次）。只在真有分叉且影响结论时使用（例如「按 L2 还是 L3」「动态探测要不要授权」「两个方向只能选一个」），信息足够时不要打扰用户。最多给 6 个选项；纯开放式提问可以不给 options，由用户自己输入。调用后本回合暂停，直到用户回答或点击停止', parameters: { type: 'object', properties: { question: { type: 'string', description: '要问用户的问题，一句话说清分叉点与影响' }, options: { type: 'array', maxItems: 6, description: '可选：2-6 个候选答案；不给则纯开放式提问', items: { type: 'object', properties: { label: { type: 'string', description: '选项短标签' }, description: { type: 'string', description: '可选的补充说明（影响/代价）' } }, required: ['label'] } }, multiSelect: { type: 'boolean', description: '可选：是否允许多选，默认 false' } }, required: ['question'] } } },
+  { type: 'function', function: { name: 'ask_user', description: '回合中途向用户提问并等待回答。只在真有分叉且影响结论时使用（例如「按 L2 还是 L3」「动态探测要不要授权」「两个方向只能选一个」），信息足够时不要打扰用户。最多给 6 个选项；纯开放式提问可以不给 options，由用户自己输入。调用后本回合暂停，直到用户回答或点击停止', parameters: { type: 'object', properties: { question: { type: 'string', description: '要问用户的问题，一句话说清分叉点与影响' }, options: { type: 'array', maxItems: 6, description: '可选：2-6 个候选答案；不给则纯开放式提问', items: { type: 'object', properties: { label: { type: 'string', description: '选项短标签' }, description: { type: 'string', description: '可选的补充说明（影响/代价）' } }, required: ['label'] } }, multiSelect: { type: 'boolean', description: '可选：是否允许多选，默认 false' } }, required: ['question'] } } },
   // 验收单（ZCode todo 式）：用户可见的勾选清单，2-8 条，每条必须写清验收标准。
   // （2026-11-20 下限从 3 放宽到 2：模型对单一目标的任务写 2 条很合理，以前被拒后还得改写重发一轮）
   // 可多次调用更新状态；done 必须带 evidence，failed/skipped 会被报告闸要求写进 ## Not covered。
@@ -422,7 +422,7 @@ const SYSTEM_BASE = [
   '质量命令闸：项目根若有 finalcheck.quality.json，调用 quality_gate 会跑里面声明的 lint / typecheck / test / bench 并给出 exit、耗时、是否超阈值、覆盖率（执行前会要用户授权）。用户问「可读性 / 性能 / 稳定性 / 能不能转接」时：先看有没有这份配置；有就跑它拿可测量证据，没有就明说「没有量化闸，只能代码审查」，再用 read_file 逐文件给结论+文件:行，不要编造分数（没有 profiler，就没有 p95）。',
   'audit_project 返回的 nextSteps 是针对本项目的具体下一步（该读哪个方法论、要不要开工作流、哪些关要列进 Not covered），逐条执行或在回答里说明为什么跳过。',
   '验收档位纪律：用户说「按 L1 / L2 / L3 验收」时必须把 tier 显式传给 audit_project，不许自行降档；L2 会跑交接(H1)与可维护性(Q3)，L3 再加许可证(C1)与运维(O1)。返回的 gates.gaps 必须原样列给用户（「这关没跑，原因是…」），不许把没跑的关说成通过，也不许用「AI 看过了」替代没跑的闸。',
-  '向用户提问：只在不问就无法继续、且答案会改变结论时调用 ask_user（例如「按 L2 还是 L3」「动态探测要不要授权」「两个方向只能选一个」）；信息足够时不要打扰用户。一次只问一件事，选项最多 6 个；纯开放式问题可以不给选项。一次回合最多问 3 次，第 4 次会被拒绝。',
+  '向用户提问：只在不问就无法继续、且答案会改变结论时调用 ask_user（例如「按 L2 还是 L3」「动态探测要不要授权」「两个方向只能选一个」）；信息足够时不要打扰用户。一次只问一件事，选项最多 6 个；纯开放式问题可以不给选项。同一回合可以问多次，不被次数上限挡住。',
   '验收单：任务要分几步做时，开工前先用 todo_write 写 2-8 条，每条 acceptance（怎么算完成）必填；做完一条立刻再调一次 todo_write 把 status 改成 done 并补 evidence（文件:行 / 命令输出 / HTTP 复现）。做不了或跳过的条目写 failed/skipped，最终回答的 ## Not covered 必须逐条点名它们——done 无证据、failed/skipped 没点名，报告闸会判不合格。',
   // 不再绑定界面语言：模型用与用户提问相同的语言作答（界面中英文只影响 UI 文案）
   '回答简洁，先结论后证据；用与用户提问相同的语言作答（用户写中文就用中文，写英文就用英文）。用 markdown 排版（结论加粗、证据用列表、长输出用代码块）。'
@@ -444,7 +444,7 @@ const SYSTEM_DEV_BASE = [
   '看图与截图：做 PPT / 网页 / 视频 / 海报 / 图表这类视觉产物时，生成后必须用 capture_screenshot 逐页（或关键帧）看实际效果，文字溢出、重叠、错位、配色不对就改，改完再截一次确认；不要只看代码就说「应该没问题」。用户或项目里的图片用 view_image 直接看。写完页面一定要先 capture_screenshot 看一遍再交，不要凭代码猜。 **自检有止损线**：先把产物做完、服务起好，再集中看一轮；同一产物最多 3 轮自检，之后交付并列出已知未修的细节。只有严重问题（内容截断、元素重叠、白屏、错位）才改；像素级微调（字重、轴线粗细、1px 圆角）改一次就过，不要反复截图复查。',
   AUTOMATION_GUIDANCE,
   UNTRUSTED_CONTENT_RULE,
-  '需要用户拍板的事（砍功能/动线上数据/花钱的 API）用 ask_user 问一次就动手；其余决策自己定。一次回合最多问 3 次。',
+  '需要用户拍板的事（砍功能/动线上数据/花钱的 API）用 ask_user 问一次就动手；其余决策自己定。',
   'ask_user 语言规则（dev 模式同样适用）：question、option 的 label 与 description 一律用**用户界面语言**写——界面是英文就写英文，界面是中文就写中文。不要因为用户消息是中文就在英文界面里写中文问题：界面语言优先级高于用户消息语言。另外，问题本身必须自包含（不要写「这个」「上面那个」），用户只看得到这一张卡。',
   '路径参数转义（硬规则）：JSON 参数里的 Windows 路径一律优先写正斜杠（D:/Projects/demo）；必须用反斜杠时一律双写（D:\\\\Projects\\\\demo）；写成单反斜杠会让参数不是合法 JSON，工具不会执行。',
   '工具结果超长时会被截断为「头+尾」并完整落盘，按提示的 spill 路径用 run_command 检索，不要猜中间内容。',
