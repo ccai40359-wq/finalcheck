@@ -295,8 +295,16 @@ export function runCommandWithSignal(command, {
       terminateTree(proc);
       finish({ error: '已中断', cancelled: true, code: null, stdout: out, stderr: err });
     };
-    // 转入后台：解绑本轮监听器、继续排空管道（否则子进程写满缓冲区会卡住）、进程 unref，不杀进程。
-    const releaseProcess = () => {
+    // 转入后台：解绑本轮监听器、继续排空管道（否则子进程写满缓冲区会卡住）、不杀进程。
+    //
+    // 关于 unref（0.33.7 修）：这里**不能无条件 unref**。
+    //   · 老路径「放开手不管」：确实要 unref——进程自己跑，FC 退出也不等它。
+    //   · 新路径 background / detachTo：调用方紧接着挂了 proc.once('exit', ...) 等退出回调，
+    //     unref 之后事件循环一旦空掉，'exit' 就永远不派发、那个 promise 永久悬空。
+    //     实测（node 22）：node:test 把「循环空了但 promise 还 pending」判成
+    //     cancelledByParent，于是 CI 红而本地（node 24 放宽了该检查）全绿。
+    // 所以 unref 交给调用方按语义决定：真正放手的才调。
+    const releaseProcess = ({ unref = true } = {}) => {
       if (!proc) return;
       try {
         proc.stdout?.removeAllListeners('data');
@@ -308,7 +316,7 @@ export function runCommandWithSignal(command, {
         proc.removeAllListeners('error');
         proc.on('error', () => {}); // 保留吞错监听，避免后台进程的迟到 error 冒成未捕获事件
         if (sandbox) proc.once('close', () => sandbox.cleanup?.());
-        proc.unref?.();
+        if (unref) proc.unref?.();
       } catch { /* 忽略 */ }
     };
     // 0.33.5：交给后台任务账本（不解绑输出监听：继续收输出，退出时 onExit 回调）
@@ -424,7 +432,9 @@ export function runCommandWithSignal(command, {
       if (typeof onDetach === 'function') {
         try { hooks = onDetach({ pid, reason: 'background', stdout: '', stderr: '', kill: () => terminateTree(proc), logFile: bgLog?.path || '' }); } catch { hooks = null; }
       }
-      releaseProcess();
+      // 不 unref：下面挂了 proc.once('exit', ...) 等退出回调；
+      // unref 会让事件循环空掉、'exit' 不派发（见 releaseProcess 上方那段注释）。
+      releaseProcess({ unref: false });
       if (hooks) {
         const tail = bgLog ? tailLogFile(bgLog.path, (s) => { try { hooks.onData?.(s, 'stdout'); } catch { /* 忽略 */ } }) : null;
         proc.once('exit', (c) => {
