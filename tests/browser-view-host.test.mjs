@@ -11,6 +11,7 @@ import { setTimeout } from 'node:timers/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { register } from 'node:module';
+import { readFileSync } from 'node:fs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -616,4 +617,96 @@ test('0.33.4 宿主: 前进后退 / 停止 / 加载状态 / 存储模式 / 页�
   } finally {
     host.disposeHost();
   }
+});
+
+test('0.33.6 浏览器子代理：同一会话里并行各开自己的标签（右栏同一个宿主）；默认共用会话登录态，isolated 用自己的无痕分区', async () => {
+  created.length = 0;
+  CHILD_VIEWS.clear();
+  const host = await load();
+  host.ensureHost(fakeWindow, () => {});
+  const use = await import('../desktop/src/main/browser-use.mjs');
+  use.setViewHostProvider(host.hostForSession);
+  try {
+    const main = use.forSession('s');
+    const ag1 = use.forAgent('s', 'agent-1');
+    const ag2 = use.forAgent('s', 'agent-2');
+    const ag3 = use.forAgent('s', 'agent-3', { isolate: true });
+    const [r0, r1, r2, r3] = await Promise.all([
+      main.navigate('https://app.test/'),
+      ag1.navigate('https://app.test/login'),
+      ag2.navigate('https://app.test/cart'),
+      ag3.navigate('https://app.test/signup')
+    ]);
+    for (const r of [r0, r1, r2, r3]) assert.equal(r.ok, true, JSON.stringify(r));
+    const ids = [r0.tabId, r1.tabId, r2.tabId, r3.tabId];
+    assert.equal(new Set(ids).size, 4, '每个子代理一个自己的标签，不抢主 agent 的');
+    const sHost = host.hostForSession('s');
+    assert.deepEqual(main.listTabs().tabs.map((tb) => tb.url).sort(), ['https://app.test/', 'https://app.test/cart', 'https://app.test/login', 'https://app.test/signup'], '全挂在会话的右栏宿主里（用户看得见）');
+    // 各自后续操作只落在自己的标签上
+    assert.equal((await ag1.navigate('https://app.test/login?step=2')).tabId, r1.tabId);
+    assert.deepEqual(sHost.contentsOf(r2.tabId).loads, ['https://app.test/cart']);
+    assert.equal(ag1.activeTabId(), r1.tabId);
+    assert.equal(ag2.activeTabId(), r2.tabId);
+    assert.equal(main.tabFocusInfo().aiTab, r0.tabId, '主 agent 的当前标签不被子代理改掉');
+    // 存储：共用 = 会话的分区；isolated = 自己的
+    const { sessionPartition } = await import('../desktop/src/main/browser-session.mjs');
+    const part = (id) => sHost.contentsOf(id).opts.webPreferences.partition;
+    assert.equal(part(r1.tabId), sessionPartition('fc-browser-use', 's'));
+    assert.equal(part(r2.tabId), part(r0.tabId));
+    assert.notEqual(part(r3.tabId), part(r0.tabId));
+    assert.match(part(r3.tabId), /^fc-browser-use-/);
+    // 子代理结束：作用域释放，标签留给用户看
+    use.releaseAgent('s', 'agent-1');
+    assert.equal(main.listTabs().tabs.length, 4);
+    assert.equal(sHost.contentsOf(r1.tabId).isDestroyed(), false);
+  } finally {
+    use.closeAll();
+    host.disposeHost();
+  }
+});
+
+test('0.33.6 后台标签有真实视口：藏着的标签在 dom-ready 后发视口覆盖（之前一律不发——首载前发会崩），显示时清掉', async () => {
+  created.length = 0;
+  CHILD_VIEWS.clear();
+  const host = await load();
+  host.ensureHost(fakeWindow, () => {});
+  try {
+    const a = await host.newTab({ url: 'https://a.test/' });
+    const b = await host.newTab({ url: 'https://b.test/' });
+    host.setRect({ x: 700, y: 50, width: 500, height: 700 });
+    host.setVisible(true);
+    const sent = new Map();
+    const fakeDbg = (key) => ({
+      attached: false,
+      isAttached() { return this.attached; },
+      attach() { this.attached = true; },
+      sendCommand(method, params) { (sent.get(key) || sent.set(key, []).get(key)).push([method, params]); return Promise.resolve({}); }
+    });
+    const wcA = host.contentsOf(a.id || a.tabId);
+    const wcB = host.contentsOf(b.id || b.tabId);
+    wcA.debugger = fakeDbg('a');
+    wcB.debugger = fakeDbg('b');
+    // 还没 dom-ready：切来切去都不发任何 CDP
+    host.activateTab(a.id || a.tabId);
+    host.activateTab(b.id || b.tabId);
+    assert.equal(sent.size, 0, '首次加载前不能发视口覆盖');
+    wcA.emit('dom-ready');
+    wcB.emit('dom-ready');
+    assert.deepEqual(sent.get('a'), [['Emulation.setDeviceMetricsOverride', { width: 500, height: 700, deviceScaleFactor: 0, mobile: false }]], '藏着的 A 按右栏尺寸给视口');
+    assert.deepEqual(sent.get('b'), [['Emulation.clearDeviceMetricsOverride', undefined]], '显示中的 B 清掉覆盖');
+    host.activateTab(a.id || a.tabId);
+    assert.equal(sent.get('a').at(-1)[0], 'Emulation.clearDeviceMetricsOverride');
+    assert.equal(sent.get('b').at(-1)[0], 'Emulation.setDeviceMetricsOverride');
+    const before = sent.get('a').length + sent.get('b').length;
+    host.setRect({ x: 700, y: 50, width: 500, height: 700 });
+    assert.equal(sent.get('a').length + sent.get('b').length, before, '没变化不重复发');
+  } finally {
+    host.disposeHost();
+  }
+});
+
+test('0.33.6 后台标签截图：capturePage 限时，失败时告诉 AI 改用快照取证（不挂住回合）', () => {
+  const use = readFileSync(path.join(repoRoot, 'desktop/src/main/browser-use.mjs'), 'utf8');
+  assert.match(use, /withTimeout\(contents\.capturePage\(\), 5000, '截图'\)/);
+  assert.match(use, /这个标签现在没显示在右栏/);
 });

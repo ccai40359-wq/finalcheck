@@ -913,7 +913,7 @@ export function registerAgentIpc({
         else stepSignal.addEventListener('abort', onStepAbort, { once: true });
       }
       try {
-        const { runSubagentTurn, SUBAGENT_TOOLS_SCHEMA } = await import(engineUrl('desktop/src/main/agent-service.mjs'));
+        const { runSubagentTurn, SUBAGENT_TOOLS_SCHEMA, AGENT_TOOLS_SCHEMA: AGENT_TOOLS_SCHEMA_ALL } = await import(engineUrl('desktop/src/main/agent-service.mjs'));
         const { createAgentTools } = await import(engineUrl('desktop/src/main/agent-tools.mjs'));
         const { needsEvidence } = await import(engineUrl('desktop/src/main/workflow.mjs'));
         // 中断/空回复的确定性 salvage（纯函数、不调模型）：catch 分支也要用，提到 try 顶部导入
@@ -936,7 +936,19 @@ export function registerAgentIpc({
           hooksConfig: hooksCfg,
           sessionId,
           commandIdleMs: cfg.commandIdleMs,
-          shellAppRoot
+          shellAppRoot,
+          // 0.33.6 浏览器子代理：自己的「当前标签」（forAgent），挂在会话的右栏宿主里；默认和会话共用登录态
+          ...(spawn?.browserAgent ? {
+            getDesktopToolsAsync: async () => {
+              const dt = await loadDesktopTools();
+              const bu = dt?.browserUse;
+              return bu?.forAgent ? { browserUse: bu.forAgent(sessionId, spawn.browserAgent.agent, { isolate: spawn.browserAgent.isolate }) } : null;
+            },
+            browserSessionPolicy,
+            ensureViewHostAsync: () => loadViewHost(),
+            // 会话选过「长期保留 / 无痕」就跟着走；选的是真 Edge 时子代理不跟（多个子代理不能共用一条 CDP 连接），用内置浏览器
+            browserChoice: { get: () => { const m = state.browserChoices.get(String(sessionId ?? '')) || ''; return m === 'real' ? '' : m; }, set: () => {} }
+          } : {})
         });
         // 只读子代理：工具实现层也拿掉写工具（不只是不给 schema），模型硬调也调不到
         if (spawn?.toolNames) for (const k of Object.keys(tools)) if (!spawn.toolNames.includes(k)) delete tools[k];
@@ -968,7 +980,7 @@ export function registerAgentIpc({
           role: role || '',
           tools,
           // 14 个：排除 run_workflow（禁止嵌套）/ remember_project（记忆只由主 agent 写）
-          toolsSchema: spawn?.toolNames ? SUBAGENT_TOOLS_SCHEMA.filter((x) => spawn.toolNames.includes(x?.function?.name)) : SUBAGENT_TOOLS_SCHEMA,
+          toolsSchema: spawn?.toolNames ? (spawn.schemaPool === 'agent' ? AGENT_TOOLS_SCHEMA_ALL : SUBAGENT_TOOLS_SCHEMA).filter((x) => spawn.toolNames.includes(x?.function?.name)) : SUBAGENT_TOOLS_SCHEMA,
           requiresTools: requiresEvidence,
           forceFirstToolChoice: requiresEvidence,
           signal: ctl.signal,
@@ -1083,24 +1095,27 @@ export function registerAgentIpc({
     // 轻量子代理（0.26，对齐 Claude Code 的 Agent 工具）：主 agent 随手派一个空白上下文的子代理，只拿最终报告。
     // 复用 callSubagent（同一套流式引擎 / transcript 面板 / 落库 / 记账），只换提示词与工具集。
     const SPAWN_REPORT_MAX = 12000; // 报告进主 agent 上下文后会一直留着（0.25 起跨轮完整保留），必须有上限
+    // 0.33.6 浏览器测试子代理：自己的标签 + 只读取证工具（不改文件、不接真 Edge、不碰桌面）
+    const SPAWN_BROWSER_TOOLS = ['browser_navigate', 'browser_snapshot', 'browser_click', 'browser_type', 'browser_evaluate', 'browser_console', 'browser_screenshot', 'read_file', 'grep_code', 'glob_files', 'list_dir', 'web_fetch', 'view_image'];
     const SPAWN_READONLY_TOOLS = ['read_file', 'grep_code', 'glob_files', 'list_dir', 'web_fetch', 'web_search', 'run_command', 'read_playbook', 'list_playbooks', 'view_image', 'capture_screenshot', 'review_diff', 'audit_project', 'download_gate', 'get_report'];
     const spawnSystemPrompt = (type) => {
       const common = '主 agent 派你去做一件事；你从空白上下文开始，看不到之前的对话，任务里写的就是全部信息。第一条回复必须是工具调用（不要先说「我将…」）。';
       const report = '做完只交回一份简洁报告：结论在前，然后是证据（文件:行 / 命令输出摘要），最后写没查到或没把握的部分。报告控制在 1500 字以内；不要复述任务、不要寒暄，主 agent 只看得到这份报告。';
       if (type === 'verify') return `你是 FinalCheck 子代理（独立复核）。${common}任务里给的是别人得出的结论和证据：不要相信它的推理，自己重新取证核实。逐条给出 confirmed / rejected / uncertain，并附你自己的证据（文件:行 / 命令输出）。不要修改任何文件。\n\n${report}`;
+      if (type === 'browser') return `你是 FinalCheck 子代理（浏览器测试）。${common}你有自己独立的浏览器标签页（和其他子代理并行、互不干扰；标签显示在用户右栏里）。浏览器模式已经定好，不用问用户、不要传 mode。用 browser_navigate 打开页面（默认就返回页面结构和 ref），按 ref 用 browser_click / browser_type 操作，browser_console 查报错，需要看像素时 browser_screenshot。只测分给你的那部分；每个结论都要有证据（页面上实际看到的文字 / 控制台报错 / 截图），没测到的明确写没测到。不要修改项目文件，不要调用 browser_close（标签留给用户检查）。\n\n${report}报告按「功能点：通过 / 失败 / 没测到」逐条列，失败的写复现步骤和看到的现象。`;
       if (type === 'general') return `你是 FinalCheck 子代理（可改文件）。${common}需要证据就自己去跑；改文件前先 read_file，改完自己验证（跑测试 / 语法检查）。\n\n${report}报告里写清改了哪些文件、怎么验证的。`;
       return `你是 FinalCheck 子代理（只读调查）。${common}用工具取证（read_file / grep_code / 只读命令），不要修改任何文件。\n\n${report}`;
     };
     let spawnSeq = 0;
-    const spawnAgent = async ({ description, prompt, type, isolation = null, background = false }, ctx = {}) => {
-      if (!background || !sessionId) return runSpawn({ description, prompt, type, isolation }, ctx);
+    const spawnAgent = async ({ description, prompt, type, isolation = null, background = false, browserIsolation = 'shared' }, ctx = {}) => {
+      if (!background || !sessionId) return runSpawn({ description, prompt, type, isolation, browserIsolation }, ctx);
       // 0.33.5 后台子代理：登记 → 脱离本回合跑（自己的 AbortController，回合结束 / 用户停止回合都不影响它）
       const ac = new AbortController();
       const reg = bgTasks.start({ sessionId, kind: 'agent', title: description, detail: String(prompt).slice(0, 400), stop: () => ac.abort() });
       if (reg.error) return { description, type, error: reg.error };
       let agentIdOut = '';
       const started = new Promise((resolve) => {
-        void runSpawn({ description, prompt, type, isolation }, { ...ctx, signal: ac.signal }, {
+        void runSpawn({ description, prompt, type, isolation, browserIsolation }, { ...ctx, signal: ac.signal }, {
           detached: true,
           onStart: (agentId) => { agentIdOut = agentId; bgTasks.patch(reg.id, { agentId }); resolve(); }
         }).then((out) => {
@@ -1124,7 +1139,7 @@ export function registerAgentIpc({
         note: `子代理已在后台运行（任务 ${reg.id}）。不要等它、不要轮询：它做完系统会自动把报告送给你。现在继续你手头的事；没有别的要做就直接结束本轮，简短告诉用户后台在跑什么（用户可以接着和你聊别的）。`
       };
     };
-    const runSpawn = async ({ description, prompt, type, isolation = null }, ctx = {}, { detached = false, onStart = null } = {}) => {
+    const runSpawn = async ({ description, prompt, type, isolation = null, browserIsolation = 'shared' }, ctx = {}, { detached = false, onStart = null } = {}) => {
       spawnSeq++;
       const id = spawnAgentStepId(ctx.callId, spawnSeq); // 界面按同一规则推出 id，点「打开子代理过程」直接对上
       const t0 = Date.now();
@@ -1145,13 +1160,22 @@ export function registerAgentIpc({
       const r = await callSubagent({
         id,
         name: description,
-        role: type === 'verify' ? t('独立复核') : type === 'general' ? t('子代理') : t('只读调查'),
+        role: type === 'verify' ? t('独立复核') : type === 'general' ? t('子代理') : type === 'browser' ? t('浏览器测试') : t('只读调查'),
         prompt,
         runId: `spawn-${chatAbort.snapshot.runId}`,
         signal: ctx.signal || null,
         detached,
-        spawn: { systemPrompt: spawnSystemPrompt(type) + wtNote, toolNames: type === 'general' ? null : SPAWN_READONLY_TOOLS, requireTools: true, ...(wt ? { projectPath: wt.projectDir } : {}) }
+        spawn: {
+          systemPrompt: spawnSystemPrompt(type) + wtNote,
+          toolNames: type === 'general' ? null : type === 'browser' ? SPAWN_BROWSER_TOOLS : SPAWN_READONLY_TOOLS,
+          requireTools: true,
+          ...(type === 'browser' ? { browserAgent: { agent: id, isolate: browserIsolation === 'isolated' }, schemaPool: 'agent' } : {}),
+          ...(wt ? { projectPath: wt.projectDir } : {})
+        }
       });
+      if (type === 'browser') {
+        try { (await loadDesktopTools())?.browserUse?.releaseAgent?.(sessionId, id); } catch { /* 纯 Node */ }
+      }
       let worktree = null;
       if (wt) {
         try {

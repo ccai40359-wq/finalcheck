@@ -301,7 +301,8 @@ export const SPAWN_AGENT_SCHEMA = {
       + '适合：① 大范围搜索 / 通读很多文件只为得到一个结论（例如「找出所有调用 X 的地方并说明用法」「这个仓库的鉴权是怎么做的」）；② 和你手头的事互不依赖、可以同时进行的调查——同一次回复里调用多次 = 多个子代理并行。'
       + '不适合：一两次 read_file / grep_code 就能搞定的事（自己做更快）；需要和用户来回确认的事；要多路分工 + 依赖 + 复核的大任务（用 run_workflow）。'
       + '子代理看不到对话历史：prompt 要自包含，写清目标、范围（目录 / 文件）、要交回什么（结论 + 证据 文件:行）。'
-      + 'type：explore 只读调查（默认）；general 可以改文件；verify 独立复核——把要核实的结论和证据写进 prompt，它不看你的推理、自己重新取证，给出 confirmed / rejected / uncertain。'
+      + 'type：explore 只读调查（默认）；general 可以改文件；verify 独立复核——把要核实的结论和证据写进 prompt，它不看你的推理、自己重新取证，给出 confirmed / rejected / uncertain；'
+      + 'browser 浏览器测试——每个 browser 子代理有自己独立的标签页（用户在右栏看得见），能打开网页、点、输入、看控制台、截图。测一个网站 / 网页应用的多个功能时，在同一次回复里派多个 browser 子代理（每个负责一块功能，prompt 里写清网址、要测的功能点、怎么算通过），它们并行跑，比你自己一个个点快得多；默认和本会话共用登录态，要测未登录或多账号互不干扰传 browser_isolation:"isolated"。'
       + 'background:true（后台子代理）：派出去立刻返回、不等它——你接着干自己的活，或直接结束本轮让用户继续和你聊；子代理做完系统会自动把报告送回给你（不用轮询）。'
       + '下面这些情况主动用后台子代理，不必等用户开口：调研 / 搜集资料要跑很久、测试一个网站或一大块功能、和用户当前问题无关的长任务、用户说「后台」「你先去查着」。结果要立刻拿来回答的就别用后台。',
     parameters: {
@@ -309,7 +310,8 @@ export const SPAWN_AGENT_SCHEMA = {
       properties: {
         description: { type: 'string', description: '3-12 字的任务标题（界面显示），如「查鉴权实现」' },
         prompt: { type: 'string', description: '交给子代理的完整任务（自包含：目标、范围、交付物）' },
-        type: { type: 'string', enum: ['explore', 'general', 'verify'], description: 'explore=只读调查（默认）；general=可改文件；verify=独立复核结论' },
+        type: { type: 'string', enum: ['explore', 'general', 'verify', 'browser'], description: 'explore=只读调查（默认）；general=可改文件；verify=独立复核结论；browser=浏览器测试（自己的标签页，可并行）' },
+        browser_isolation: { type: 'string', enum: ['shared', 'isolated'], description: '仅 type=browser：shared（默认）=和本会话共用登录态；isolated=自己的无痕存储（测未登录 / 多账号互不干扰）' },
         background: { type: 'boolean', description: '默认 false。true=后台运行：立即返回任务 id，子代理做完自动把报告送回给你；期间你可以继续工作或结束本轮。进度在界面右上角的后台任务面板' },
         isolation: { type: 'string', enum: ['worktree'], description: '仅 type=general：让子代理在独立的 git worktree（新分支 fc-agent/…，从当前 HEAD 拉出）里改文件，主工作区不受影响。适合试验性改动、并行改同一批文件、或想先看 diff 再决定要不要。没改动自动清理；有改动会提交到该分支，报告里给分支名和合并方法。注意：主工作区未提交的改动不在 worktree 里。' }
       },

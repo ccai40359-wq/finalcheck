@@ -406,4 +406,6 @@ export const EN_CHAT = {
   '后台命令 {id}': 'Background command {id}',
   '⚙ {what} {status}，结果已交给 AI': '⚙ {what}: {status}; the result was handed to the AI',
   '（后台任务已结束，请查看结果并继续）': '(Background task finished; review the result and continue)',
+  // 0.33.6 browser subagent
+  '浏览器测试': 'Browser test',
 };

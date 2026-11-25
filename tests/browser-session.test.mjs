@@ -165,7 +165,9 @@ test('源码钉: browser-use.mjs 不再硬编码 partition 字面量，而是按
   assert.doesNotMatch(engineSrc, /partition:\s*'fc-browser-use'/, 'partition 不能写死在窗口配置里');
   assert.match(engineSrc, /\n\s+partition\n/, '窗口的 partition 必须来自 resolvePartition 的结果（短写 partition 字段）');
   // 0.32.7：无痕存储按会话派生（sessionPartition 包在策略解析结果外面）
-  assert.match(engineSrc, /const partition = sessionPartition\(want\.partition \|\| resolvePartition\(want\.persistent === true\), scope\.sessionId\)/);
+  // 0.33.6：外面再包一层 partitionFor（浏览器子代理 isolated 时用自己的无痕分区，否则仍是 sessionPartition(…, sessionId)）
+  assert.match(engineSrc, /const partition = partitionFor\(scope, want\.partition \|\| resolvePartition\(want\.persistent === true\)\)/);
+  assert.match(engineSrc, /function partitionFor\(scope, partition\) \{[\s\S]{0,300}sessionPartition\(partition, scope\.sessionId\)/);
   assert.match(engineSrc, /import \{[^}]*resolvePartition[^}]*\} from '\.\/browser-session\.mjs'/);
   // 策略变了必须 close 再重建（else 就会有两套 cookie）
   assert.match(engineSrc, /if \(partition === activePolicy\.partition\) return active;/);

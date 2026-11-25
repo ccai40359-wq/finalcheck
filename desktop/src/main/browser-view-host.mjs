@@ -293,6 +293,9 @@ function createBrowserHost(win, { onChange, isManaged }) {
     };
     // 0.33.4：加载状态 / 前进后退可用性要实时推给右栏（刷新按钮变「停止」、← → 置灰）
     const pushNav = () => { if (host.views.has(id)) { try { onChange(); } catch { /* 窗口已关 */ } } };
+    // 0.33.6：页面有了文档才能发视口覆盖（实测：首次加载前发 Emulation.setDeviceMetricsOverride 会把整个进程搞崩）；
+    // 每次 dom-ready 重新对一次（跨导航保险）
+    wc.on('dom-ready', () => { entry.docReady = true; entry.viewportKey = null; syncHiddenViewport(entry, entry.showing); });
     wc.on('did-start-loading', () => { entry.loading = true; pushNav(); });
     wc.on('did-stop-loading', () => { entry.loading = false; pushNav(); });
     wc.on('did-fail-load', (_e, code, _desc, failedUrl, isMainFrame) => {
@@ -534,6 +537,31 @@ function createBrowserHost(win, { onChange, isManaged }) {
    * 每次 rect / 可见性 / 活动标签 / 窗口尺寸变化都调它——幂等。
    * 0.32.6：setVisible 本身也做幂等（已经显示就不再重复置真、已经藏着就不再重复置假）。
    */
+  /**
+   * 0.33.6：藏着的标签（setVisible(false)）在 Chromium 里视口是 0×0 —— elementFromPoint 全落空，
+   * AI 在后台标签上点按钮会报「被遮挡」（并行浏览器子代理各占一个标签，同一时间只有一个显示在右栏；
+   * 右栏收起时 AI 自己的标签也一样）。实测：给藏着的视图发 CDP Emulation.setDeviceMetricsOverride
+   * 就有了真实布局，Input.dispatchMouseEvent 的真实点击也能落到按钮上；显示出来时清掉覆盖，回到跟随视图尺寸。
+   */
+  const HIDDEN_VIEWPORT = { width: 1280, height: 800 };
+  function syncHiddenViewport(entry, showing) {
+    const dbg = entry.wc?.debugger;
+    if (!dbg || !entry.docReady || entry.wc.isDestroyed?.()) return;
+    const size = host.rect?.width > 0 && host.rect?.height > 0
+      ? { width: Math.round(host.rect.width), height: Math.round(host.rect.height) }
+      : HIDDEN_VIEWPORT;
+    const key = showing ? 'shown' : `${size.width}x${size.height}`;
+    if (entry.viewportKey === key) return;
+    entry.viewportKey = key;
+    try {
+      if (!dbg.isAttached()) dbg.attach('1.3');
+      const sent = showing
+        ? dbg.sendCommand('Emulation.clearDeviceMetricsOverride')
+        : dbg.sendCommand('Emulation.setDeviceMetricsOverride', { ...size, deviceScaleFactor: 0, mobile: false });
+      sent.catch(() => { if (entry.viewportKey === key) entry.viewportKey = null; });
+    } catch { entry.viewportKey = null; }
+  }
+
   function applyAllBounds() {
     const active = host.state.activeId;
     for (const [id, entry] of host.views) {
@@ -548,6 +576,7 @@ function createBrowserHost(win, { onChange, isManaged }) {
           entry.view.setVisible(false);
           entry.showing = false;
         }
+        syncHiddenViewport(entry, shouldShow);
       } catch { /* 已销毁 */ }
     }
   }

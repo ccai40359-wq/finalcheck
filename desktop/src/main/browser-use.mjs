@@ -33,10 +33,24 @@ const scopeContext = new AsyncLocalStorage();
 const scopes = new Map();
 const initialPolicy = { mode: 'oneshot', chosen: false, persistent: false, partition: PARTITION_ONESHOT };
 
+// 作用域：一个会话一个（AI 在这个会话里「当前操作的标签」）；0.33.6 起浏览器子代理各有一个
+// （store 是 { key, sessionId, agent, isolate }）——标签仍挂在会话的右栏宿主里（用户看得见），
+// 但每个子代理有自己的「当前标签」，并行测试时互不抢。
 function currentScope() {
-  const sessionId = scopeContext.getStore() ?? null;
-  if (!scopes.has(sessionId)) scopes.set(sessionId, { sessionId, active: null, activePolicy: initialPolicy });
-  return scopes.get(sessionId);
+  const raw = scopeContext.getStore() ?? null;
+  const key = raw && typeof raw === 'object' ? raw.key : raw;
+  if (!scopes.has(key)) {
+    scopes.set(key, raw && typeof raw === 'object'
+      ? { sessionId: raw.sessionId ?? null, agent: raw.agent, isolate: raw.isolate === true, scopeKey: key, active: null, activePolicy: initialPolicy }
+      : { sessionId: raw, scopeKey: key, active: null, activePolicy: initialPolicy });
+  }
+  return scopes.get(key);
+}
+
+/** 存储分区：默认按会话（子代理和主 agent 共用登录态）；isolate 的子代理用自己的一次性无痕分区 */
+function partitionFor(scope, partition) {
+  if (scope.isolate) return sessionPartition(PARTITION_ONESHOT, scope.scopeKey);
+  return sessionPartition(partition, scope.sessionId);
 }
 
 export function forSession(sessionId) {
@@ -47,6 +61,26 @@ export function forSession(sessionId) {
   return Object.fromEntries(Object.entries(methods).map(([key, method]) => [
     key, (...args) => scopeContext.run(sessionId ?? null, () => method(...args))
   ]));
+}
+
+/**
+ * 0.33.6 浏览器子代理：同一会话里开自己的标签（右栏可见），并行测试互不干扰。
+ * isolate=false（默认）：和会话共用登录态（主 agent 登录过的站，子代理直接是登录状态）；
+ * isolate=true：自己的无痕分区（测「未登录用户」或多账号互不串）。
+ */
+export function forAgent(sessionId, agent, { isolate = false } = {}) {
+  const store = { key: `${sessionId ?? ''}::agent::${agent}${isolate ? '::iso' : ''}`, sessionId: sessionId ?? null, agent: String(agent), isolate: isolate === true };
+  const methods = { isOpen, navigate, snapshot, click, typeInto, evaluate, consoleMessages, screenshot, close, sessionInfo, activeTabId };
+  return Object.fromEntries(Object.entries(methods).map(([key, method]) => [
+    key, (...args) => scopeContext.run(store, () => method(...args))
+  ]));
+}
+
+/** 子代理结束：忘掉它的作用域（标签留在右栏给用户看；用户自己关） */
+export function releaseAgent(sessionId, agent) {
+  for (const key of [...scopes.keys()]) {
+    if (typeof key === 'string' && key.startsWith(`${sessionId ?? ''}::agent::${agent}`)) scopes.delete(key);
+  }
 }
 
 // 0.32.0：右栏内嵌宿主的提供者（由主进程注入；没注入就是旧的隐藏窗口路径）
@@ -100,7 +134,7 @@ function ensureWindow({ width, height }, policy = null) {
   const { active, activePolicy } = scope;
   const want = policy && typeof policy === 'object' ? policy : activePolicy;
   // 0.32.7：一次性（无痕）存储按会话派生，不同对话之间的登录态互不可见
-  const partition = sessionPartition(want.partition || resolvePartition(want.persistent === true), scope.sessionId);
+  const partition = partitionFor(scope, want.partition || resolvePartition(want.persistent === true));
   if (isOpen() || active?.opening) {
     // 策略没变就复用现有窗口（含用户显式切换后再调 navigate 的情形）
     if (partition === activePolicy.partition) return active;
@@ -1071,8 +1105,12 @@ export async function screenshot() {
   const contents = contentsOf(currentScope().active);
   if (!contents) return { ok: false, error: NO_BROWSER };
   // PoC 实测：WebContentsView 的 wc 照样能 capturePage（内嵌宿主下 AI 截图不受影响）
-  const img = await contents.capturePage();
-  if (img.isEmpty()) return { ok: false, error: '截图为空' };
+  // 0.33.6：后台标签（藏着的视图不绘制）capturePage 会一直挂住 —— 限时，并告诉 AI 用快照/读文字取证
+  let img;
+  try { img = await withTimeout(contents.capturePage(), 5000, '截图'); } catch { img = null; }
+  if (!img || img.isEmpty()) {
+    return { ok: false, error: '截图失败：这个标签现在没显示在右栏（并行的后台标签不绘制）。用 browser_snapshot / browser_evaluate 读页面文字取证。' };
+  }
   return { ok: true, buf: img.toPNG(), mime: 'image/png', ...img.getSize() };
 }
 
@@ -1100,10 +1138,11 @@ export async function openTab(url, policy = null) {
     try { target = assertNavigableUrl(raw); }
     catch (e) { return { ok: false, error: String(e?.message || e) }; }
   }
-  const { active, activePolicy, sessionId } = currentScope();
+  const scope = currentScope();
+  const { active, activePolicy } = scope;
   // 0.33.4 用户反馈：选了「长期保留」，自己点 ＋ 开的标签却是无痕（全局默认），登录记录像是没了。
   // 修在调用方：ipc 传进来的 policy 现在是「本会话选过的模式」（没选过才是全局默认），这里照它来。
-  const partition = sessionPartition(policy?.partition || active?.policy?.partition || activePolicy.partition, sessionId);
+  const partition = partitionFor(scope, policy?.partition || active?.policy?.partition || activePolicy.partition);
   const r = await host.newTab({ url: target, partition });
   if (!r.ok) return r;
   return { ok: true, id: r.id, tab: r.tab, blank: !target };
@@ -1202,7 +1241,9 @@ export function releaseSession(sessionId) {
 }
 
 export function closeAll() {
-  for (const sessionId of scopes.keys()) scopeContext.run(sessionId, close);
+  for (const [key, scope] of scopes) {
+    scopeContext.run(scope.agent ? { key, sessionId: scope.sessionId, agent: scope.agent, isolate: scope.isolate } : key, close);
+  }
   scopes.clear();
 }
 

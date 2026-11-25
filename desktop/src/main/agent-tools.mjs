@@ -2081,13 +2081,14 @@ ${expr.slice(0, 400)}`, ...approvalScope });
       const a = args || {};
       const prompt = String(a.prompt ?? '').trim();
       if (!prompt) return { error: t('spawn_agent 缺少 prompt：写清子代理要做什么、范围、交回什么') };
-      const type = ['explore', 'general', 'verify'].includes(a.type) ? a.type : 'explore';
+      const type = ['explore', 'general', 'verify', 'browser'].includes(a.type) ? a.type : 'explore';
       const description = String(a.description ?? '').trim().slice(0, 40) || prompt.replace(/\s+/g, ' ').slice(0, 16);
       // 0.33.1 worktree 隔离：只对可改文件的 general 有意义（explore / verify 本来就只读）
       const isolation = a.isolation === 'worktree' && type === 'general' ? 'worktree' : null;
       // 0.33.5：background:true = 派出去就不等，主 agent 接着干活；子代理做完系统自动送回报告
       const background = a.background === true && !!bgTasks;
-      return spawnAgent({ description, prompt, type, ...(isolation ? { isolation } : {}), ...(background ? { background: true } : {}) }, ctx || {});
+      const browserIsolation = type === 'browser' && a.browser_isolation === 'isolated' ? 'isolated' : 'shared';
+      return spawnAgent({ description, prompt, type, ...(isolation ? { isolation } : {}), ...(background ? { background: true } : {}), ...(type === 'browser' ? { browserIsolation } : {}) }, ctx || {});
     };
   }
 
