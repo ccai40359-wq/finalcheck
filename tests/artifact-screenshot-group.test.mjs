@@ -73,11 +73,11 @@ test('isScreenshotArtifact 只认显式 shot===true（不误伤普通产物/畸�
   assert.equal(isScreenshotArtifact('shot'), false);
 });
 
-test('collectArtifacts 给 capture_screenshot 打 shot 标记；四类工具与扁平数组签名保持兼容', () => {
-  assert.match(artifactPanel, /out\.push\(\{[\s\S]*?shot: entry\.tool === 'capture_screenshot'[\s\S]*?\}\);/,
-    '截图产物必须带 shot:true 标记（分组不猜名字前缀）');
-  assert.match(artifactPanel, /\['edit_file', 'write_file', 'present_artifact', 'capture_screenshot'\]\.includes\(entry\?\.tool\)/,
-    '四类工具白名单不变（跨组件导出签名兼容）');
+test('collectArtifacts：0.33.9 起 capture_screenshot 不再堆到消息底部（留在那一步的工具记录里可点开）', () => {
+  // 用户：「下面我希望是 AI 主动展示的，而不是截图堆积的」
+  assert.match(artifactPanel, /\['edit_file', 'write_file', 'present_artifact'\]\.includes\(entry\?\.tool\)/,
+    '底部只收 AI 交付 / 改动的文件');
+  assert.doesNotMatch(artifactPanel, /\['edit_file', 'write_file', 'present_artifact', 'capture_screenshot'\]/);
   assert.match(artifactPanel, /return out;/, 'collectArtifacts 仍返回扁平数组');
 });
 

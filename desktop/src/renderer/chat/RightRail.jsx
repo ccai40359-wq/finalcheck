@@ -17,8 +17,9 @@ import { baseName } from '../lib/app-helpers.mjs';
 import { ArtifactPanel } from './ArtifactPanel.jsx';
 import { SubagentPanel } from './SubagentPanel.jsx';
 import { BrowserPane } from './BrowserPane.jsx';
+import { RailLauncher, RailFiles, RailTasks } from './RailLauncher.jsx';
 
-const KIND_ICON = { artifact: '▤', browser: '🌐', subagent: '◈' };
+const KIND_ICON = { artifact: '▤', browser: '🌐', subagent: '◈', launcher: '＋', files: '▭', tasks: '›_' };
 
 /** 右栏折叠图标：竖线 + 面板 + 左右箭头（与 TitleBar 的侧栏图标同一套语言） */
 function IconRailToggle({ collapsed }) {
@@ -70,7 +71,9 @@ function RailArtifactPreview({ y, path, sidebarWidth }) {
 
 export function RightRail({
   rail, onActivate, onCloseTab, onClose, collapsed = false, onToggleCollapsed, sidebarWidth = 212,
-  y, sessionId, onBrowserTitle, subagentTarget
+  y, sessionId, onBrowserTitle, subagentTarget,
+  // 0.33.9：用户自己开的标签（+ / 新标签页 / 文件 / 后台任务）
+  onNewTab = null, onChooseLaunch = null, onOpenFile = null, onOpenStep = null, bgCount = 0
 }) {
   const [width, setWidth] = useState(() => {
     const v = Number(localStorage.getItem('fc.railWidth'));
@@ -203,12 +206,19 @@ export function RightRail({
             className={`group inline-flex items-center gap-1 max-w-[190px] shrink-0 cursor-pointer rounded-t px-2 text-[11px] ${
               tab.key === rail.activeKey ? 'bg-lift/[0.10] text-goldSoft' : 'text-mute/70 hover:bg-lift/[0.05]'}`}>
             <span className="shrink-0 text-[10px] opacity-80">{KIND_ICON[tab.kind] || '▫'}</span>
-            <span className="truncate">{railTabLabel(tab)}</span>
+            <span className="truncate">{t(railTabLabel(tab))}</span>
             <button onClick={(e) => { e.stopPropagation(); onCloseTab?.(tab.key); }}
               title={t('关闭这个标签')}
               className="opacity-0 group-hover:opacity-100 text-mute/60 hover:text-red-400">✕</button>
           </div>
         ))}
+        {onNewTab ? (
+          <button type="button" data-testid="rail-new-tab" onClick={() => onNewTab()} title={t('新标签（浏览器 / 文件 / 后台任务）')}
+            aria-label={t('新标签')}
+            className="shrink-0 self-center ml-0.5 flex h-6 w-6 items-center justify-center rounded text-[15px] leading-none text-mute/55 hover:bg-lift/[0.08] hover:text-goldSoft">
+            +
+          </button>
+        ) : null}
         {(!rail || rail.tabs.length === 0) && (
           <span className="self-center px-2 text-[11px] text-mute/40">{t('没有打开的面板')}</span>
         )}
@@ -246,6 +256,9 @@ export function RightRail({
             onClose={() => onCloseTab?.(active.key)}
             sidebarWidth={sidebarWidth} />
         )}
+        {active?.kind === 'launcher' && <RailLauncher onChoose={onChooseLaunch} bgCount={bgCount} />}
+        {active?.kind === 'files' && <RailFiles key={sessionId} y={y} sessionId={sessionId} onOpenFile={onOpenFile} />}
+        {active?.kind === 'tasks' && <RailTasks key={sessionId} y={y} sessionId={sessionId} onOpenStep={onOpenStep} />}
       </div>
       </div>
     </aside>

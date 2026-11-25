@@ -10,11 +10,15 @@
 // 现在要并存，归约规则（开/切/关/同键复用/回落）必须能被单测钉住，
 // 否则很容易出现「关了浏览器 tab 却把产物也关了」这类回归。
 
-export const RAIL_KINDS = Object.freeze(['artifact', 'browser', 'subagent']);
+// 0.33.9：用户可以自己打开右栏（顶栏按钮 / 标签条上的 +）——
+//   launcher = 「新标签」页（选浏览器 / 文件 / 后台任务）；files = 项目文件搜索 + 预览；tasks = 后台任务终端
+export const RAIL_KINDS = Object.freeze(['artifact', 'browser', 'subagent', 'launcher', 'files', 'tasks']);
+const SINGLETON_KINDS = new Set(['launcher', 'files', 'tasks']);
 
 /** tab 的唯一键：同一类 + 同一目标 = 同一个 tab（重复打开只是切过去，不堆重复 tab） */
 export function railTabKey({ kind, artifactPath = '', stepId = '', payload = null } = {}) {
   if (kind === 'browser') return 'browser';
+  if (SINGLETON_KINDS.has(kind)) return kind;
   if (kind === 'artifact') {
     // 产物路径既可能在顶层（调用方便利写法），也可能在 payload（渲染层统一存放）
     const p = String(artifactPath || payload?.path || '').trim();
@@ -200,5 +204,26 @@ export function railTabLabel(tab) {
   if (kind === 'browser') return String(tab?.payload?.pageTitle || '').trim() || '浏览器';
   if (kind === 'artifact') return String(tab?.title || '').trim() || '产物';
   if (kind === 'subagent') return String(tab?.title || '').trim() || '子代理';
+  if (kind === 'launcher') return '新标签';
+  if (kind === 'files') return '文件';
+  if (kind === 'tasks') return '后台任务';
   return String(tab?.title || '').trim() || '面板';
+}
+
+/**
+ * 0.33.9 打开「新标签」页（已经开着就切过去）。
+ */
+export function openLauncherTab(rail) {
+  return openRailTab(rail, { kind: 'launcher' }).rail;
+}
+
+/**
+ * 0.33.9 在「新标签」页里选了一项：新标签页让位给选中的那一项（和浏览器的新标签页一样，不留空白页）。
+ * 选中的已经开着 → 关掉新标签页、切过去。
+ */
+export function chooseFromLauncher(rail, tab) {
+  const cur = rail || emptyRail();
+  const withoutLauncher = railTabByKey(cur, 'launcher') ? closeRailTab(cur, 'launcher').rail : cur;
+  const opened = openRailTab(withoutLauncher, tab);
+  return opened.ok ? opened.rail : cur;
 }

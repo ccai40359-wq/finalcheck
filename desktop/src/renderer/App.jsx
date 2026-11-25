@@ -10,7 +10,7 @@ import { filterAskCardsByTrace, hideAskTracesForCards } from './lib/ask-cards.mj
 import { applyAgentEvent, mergeTraceIntoEvents } from './lib/process-events.mjs';
 import { RightRail } from './chat/RightRail.jsx';
 // 0.32.0 右栏多标签归约（产物 / 内嵌浏览器 / 子代理并存）
-import { emptyRail, openRailTab, activateRailTab, closeRailTab, shouldShowRail, activeRailTab, patchRailTab, railForSession, snapshotRail, ensureBrowserRailTab } from './lib/rail-tabs.mjs';
+import { emptyRail, openRailTab, activateRailTab, closeRailTab, shouldShowRail, activeRailTab, patchRailTab, railForSession, snapshotRail, ensureBrowserRailTab, openLauncherTab, chooseFromLauncher } from './lib/rail-tabs.mjs';
 import { shouldShowStepPanel } from './lib/panel-visibility.mjs';
 import { buildSendHistory } from './lib/interrupted-digest.mjs';
 // 双语：t() 在英文模式查词典、中文模式原样返回；useLanguage() 只负责切换语言时触发重渲染
@@ -34,6 +34,8 @@ import RewindFilesDialog from './components/RewindFilesDialog.jsx';
 import { IDLE as COMPACTION_IDLE, reduce as reduceCompaction } from './lib/compaction.mjs';
 import { SIDEBAR_UPDATE_INITIAL, reduceSidebarUpdateEvent } from './lib/sidebar-update.mjs';
 import { OPEN_STEP_EVENT } from './lib/spawn-agent.mjs';
+import { OPEN_ARTIFACT_EVENT } from './lib/tool-images.mjs';
+import ImageLightbox from './components/ImageLightbox.jsx';
 // 兼容原来的模块出口（外部若按旧路径取这两个函数/组件仍可用）
 export { needsFirstRunSetup, formatDemoAuditSummary } from './lib/app-helpers.mjs';
 export { default as FirstRunCard } from './components/FirstRunCard.jsx';
@@ -2032,6 +2034,20 @@ export default function App() {
     window.addEventListener(OPEN_STEP_EVENT, onOpen);
     return () => window.removeEventListener(OPEN_STEP_EVENT, onOpen);
   }, []);
+  // 0.33.9：工具记录里点图片文件名 / 大图里点「在右栏打开」→ 右栏产物预览（右栏折叠着就展开）
+  const openArtifactRef = useRef(null);
+  openArtifactRef.current = openArtifact;
+  // 0.33.9：顶栏「打开右栏」——右栏没东西时直接给新标签页（右栏属于当前会话，切会话时照常存档 / 恢复）
+  const openRailLauncher = () => {
+    railSessionRef.current = activeId ?? null;
+    setRailCollapsed(false);
+    setRail((cur) => openLauncherTab(cur));
+  };
+  useEffect(() => {
+    const onOpen = (ev) => { const p = ev?.detail?.path; if (p) { setRailCollapsed(false); openArtifactRef.current?.(p); } };
+    window.addEventListener(OPEN_ARTIFACT_EVENT, onOpen);
+    return () => window.removeEventListener(OPEN_ARTIFACT_EVENT, onOpen);
+  }, []);
 
   const hasMsgs = messages.length > 0;
   // 草稿页横幅：New Session 清屏后，还在跑的会话要「看得见、点得回」——记录没丢，别让用户以为清屏=丢失
@@ -2109,6 +2125,7 @@ export default function App() {
               sessions={sessions} activeId={activeId} activeProjectId={activeProjectId} projects={projects}
               busy={busy} showSetup={showSetup} y={y} cfg={cfg}
               onArchiveSession={archiveSession} onSaved={finishSetup} onSkip={skipSetup}
+              onOpenRail={railBelongsToSession && shouldShowRail(rail) ? null : openRailLauncher}
             />
 
             {/* 草稿页运行横幅：New Session 只是清屏开草稿，后台回合没停、记录没丢——一键跳回 */}
@@ -2208,12 +2225,18 @@ export default function App() {
           onBrowserTitle={updateBrowserTitle}
           onCloseTab={closeRailPanel}
           onClose={() => closeRailPanel()}
+          onNewTab={() => setRail((cur) => openLauncherTab(cur))}
+          onChooseLaunch={(kind) => setRail((cur) => chooseFromLauncher(cur, { kind }))}
+          onOpenFile={openArtifact}
+          onOpenStep={openStep}
         />
       )}
       </div>
       </div>
       {/* 会话右键菜单 / 重命名 / 确认框（顺序与拆分前一致） */}
       <RewindFilesDialog state={rewindBox} onConfirm={confirmRewindFiles} onClose={() => setRewindBox(null)} />
+      {/* 0.33.9：图片大图（输入框附件 / 你发出去的图片点开） */}
+      <ImageLightbox onOpenInRail={(p) => { setRailCollapsed(false); openArtifact(p); }} />
       <Dialogs
         y={y} rowMenu={rowMenu} moveOpen={moveOpen} renameBox={renameBox} confirmBox={confirmBox}
         projects={projects} activeModel={activeModel} ctxStats={ctxStats} rowMenuRef={rowMenuRef}

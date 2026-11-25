@@ -22,7 +22,8 @@ test('rail-tabs: 三类内容都能开，按打开顺序排列', () => {
 
   assert.deepEqual(rail.tabs.map((t) => t.kind), ['artifact', 'browser', 'subagent']);
   assert.equal(rail.activeKey, 'subagent:s1', '最后打开的是活动的');
-  assert.deepEqual(RAIL_KINDS, ['artifact', 'browser', 'subagent']);
+  // 0.33.9：用户自己开的三类（新标签页 / 文件 / 后台任务）
+  assert.deepEqual(RAIL_KINDS, ['artifact', 'browser', 'subagent', 'launcher', 'files', 'tasks']);
 });
 
 test('rail-tabs: 浏览器只占一个 tab（重复触发只切过去，不堆重复）', () => {

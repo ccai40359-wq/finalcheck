@@ -157,6 +157,18 @@ export function createBackend({ ipcMain, getWin, getDataRoot, engineUrl, repoRoo
     ipcMain.handle('finalcheck:project-files', async (_e, sessionId, query) => {
       try { return await fileSuggestions(sessionProjectPathOf(sessionId) || activeProjectPath, String(query || '').slice(0, 200), 30); } catch { return []; }
     });
+    // 0.33.9 右栏「文件」：和 @ 提及同一套搜索，但带上项目根（右栏要拼绝对路径去预览）
+    ipcMain.handle('finalcheck:project-browse', async (_e, sessionId, query) => {
+      const root = sessionProjectPathOf(sessionId) || activeProjectPath || '';
+      if (!root) return { root: '', files: [] };
+      try {
+        const files = await fileSuggestions(root, String(query || '').slice(0, 200), 200);
+        // 右栏「文件」给人看：FinalCheck 自己的 .finalcheck（会话库 / 日志）不列；其它隐藏目录排到最后
+        const hidden = (f) => f.split('/').some((seg) => seg.startsWith('.'));
+        const list = files.filter((f) => !f.endsWith('/') && !/(^|\/)\.finalcheck(\/|$)/.test(f));
+        return { root, files: [...list.filter((f) => !hidden(f)), ...list.filter(hidden)] };
+      } catch { return { root, files: [] }; }
+    });
     ipcMain.handle('finalcheck:hooks-get', async () => {
       const file = hooksFilePath();
       let raw = null;
