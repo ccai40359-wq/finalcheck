@@ -184,6 +184,16 @@ export function registerAgentIpc({
     try { cfg = await store.loadConfig(); } catch { /* 配置读失败按未选择处理 */ }
     return sessionPolicyOf(cfg);
   };
+  // 0.33.4：用户自己开的标签用哪种存储——本会话在三选一卡片里选过「长期保留 / 无痕」就跟它走（sessionChoice），
+  // 没选过（或选的是真 Edge）才用全局默认。否则同一个会话里 AI 的标签是长期保留、用户的标签是无痕，登录态对不上。
+  const userTabPolicy = async (owner) => {
+    const choice = state.browserChoices.get(String(owner ?? '')) || '';
+    if (choice === 'persistent' || choice === 'oneshot') {
+      const { resolvePartition } = await import(engineUrl('desktop/src/main/browser-session.mjs'));
+      return { mode: choice, chosen: true, persistent: choice === 'persistent', partition: resolvePartition(choice === 'persistent'), sessionChoice: true };
+    }
+    return browserSessionPolicy();
+  };
   // 真 Edge 的隔离 profile 放在 userData 下（app.getPath('userData') 就是 DATA_ROOT）
   const browserUserDataDir = () => getDataRoot();
   // 首次使用提示：只在「还没选过」时推一次给 UI（进程内只推一次；选过之后 chosen=true 自然不再触发）
@@ -270,7 +280,7 @@ export function registerAgentIpc({
   ipcMain.handle('finalcheck:browser-tab-open', async (_e, url = '', sessionId) => {
     const owner = resolvePanelSession(sessionId);
     try {
-      return await (await scopedBrowser(owner))?.openTab(String(url), await browserSessionPolicy()) || browserUnavailable;
+      return await (await scopedBrowser(owner))?.openTab(String(url), await userTabPolicy(owner)) || browserUnavailable;
     } catch (e) { return { ok: false, error: String(e?.message || e) }; }
   });
 
@@ -316,9 +326,15 @@ export function registerAgentIpc({
     } catch (e) { return { ok: false, error: String(e?.message || e) }; }
   });
 
-  ipcMain.handle('finalcheck:browser-tab-reload', async (_e, id = '', sessionId) => {
+  ipcMain.handle('finalcheck:browser-tab-reload', async (_e, id = '', sessionId, opts = {}) => {
     const owner = resolvePanelSession(sessionId);
-    try { return (await scopedBrowser(owner))?.reloadTab(String(id)) || browserUnavailable; }
+    try { return (await scopedBrowser(owner))?.reloadTab(String(id), { hard: opts?.hard === true }) || browserUnavailable; }
+    catch (e) { return { ok: false, error: String(e?.message || e) }; }
+  });
+  // 0.33.4：右栏工具条 ← → 停止
+  ipcMain.handle('finalcheck:browser-tab-nav', async (_e, id = '', dir = '', sessionId) => {
+    const owner = resolvePanelSession(sessionId);
+    try { return (await scopedBrowser(owner))?.navTab(String(id), String(dir)) || browserUnavailable; }
     catch (e) { return { ok: false, error: String(e?.message || e) }; }
   });
 
@@ -328,7 +344,7 @@ export function registerAgentIpc({
       const browserUse = await scopedBrowser(owner);
       if (!browserUse) return browserUnavailable;
       if (tabId) return await browserUse.gotoTab(String(tabId), String(url));
-      if (tabId === null) return await browserUse.openTab(String(url), await browserSessionPolicy());
+      if (tabId === null) return await browserUse.openTab(String(url), await userTabPolicy(owner));
 
       // 兼容独立打开浏览器的调用。地址栏导航无需重新激活外层右栏。
       const r = await browserUse.navigate(String(url), { observe: false });
@@ -1308,7 +1324,19 @@ export function registerAgentIpc({
         // 0.31.1：本会话已选过的浏览器模式（三选一卡片答过一次就记住，不再每轮弹）
         browserChoice: {
           get: () => state.browserChoices.get(String(sessionId ?? '')) || '',
-          set: (mode) => { state.browserChoices.set(String(sessionId ?? ''), String(mode || '')); }
+          set: (mode) => {
+            state.browserChoices.set(String(sessionId ?? ''), String(mode || ''));
+            // 0.33.4：设置里还没定默认（从没选过）时，把这次选的「长期保留 / 无痕」记成默认——
+            // 重启后用户自己开的标签、新会话都跟着它走，不会又回到无痕把登录态「丢了」。
+            if (mode === 'persistent' || mode === 'oneshot') {
+              void (async () => {
+                try {
+                  const now = await store.loadConfig();
+                  if (!now?.browserSessionMode) await store.saveConfig({ ...now, browserSessionMode: mode });
+                } catch { /* 写默认失败不影响本次导航 */ }
+              })();
+            }
+          }
         },
         runWorkflow: async (args) => {
           const { runWorkflow } = await import(engineUrl('desktop/src/main/workflow.mjs'));

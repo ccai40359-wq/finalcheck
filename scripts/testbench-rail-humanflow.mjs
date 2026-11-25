@@ -20,7 +20,7 @@ const root = fileURLToPath(new URL('..', import.meta.url));
 const evidenceRoot = path.join(root, '.tmp', 'rail-humanflow');
 const background = process.env.FINALCHECK_WINDOW_BG === '1';
 const refreshMs = 3400; // BrowserPane polls every 3s; the hold spans a full cycle.
-const address = '[data-browser-reload] + input';
+const address = 'input[data-browser-address]';
 const browserRail = '[data-rail-tab][data-rail-kind="browser"]';
 const closeRail = '[data-rail] button[aria-label="关闭右栏"], [data-rail] button[aria-label="Close rail"]';
 

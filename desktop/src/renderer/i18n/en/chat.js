@@ -379,4 +379,14 @@ export const EN_CHAT = {
   // 0.33.1 @文件引用
   '@ 引用项目文件：发送时附上文件内容 · ↑↓ 选择 · Enter/Tab 确认 · Esc 关闭': '@ mention project files: their contents are attached on send · ↑↓ select · Enter/Tab confirm · Esc close',
   '有 {n} 个 @ 引用没附上：{list}': '{n} @ mention(s) not attached: {list}',
+  // 0.33.4 右栏浏览器工具条
+  '后退（Alt+←）': 'Back (Alt+←)',
+  '后退': 'Back',
+  '前进（Alt+→）': 'Forward (Alt+→)',
+  '前进': 'Forward',
+  '停止加载': 'Stop loading',
+  '刷新（F5；Shift+点击强制刷新）': 'Reload (F5; Shift+click for a hard reload)',
+  '长期保留：登录状态会保存，重启 FinalCheck 后仍在': 'Persistent: sign-ins are saved and survive restarting FinalCheck',
+  '无痕：登录状态只在本次会话有效，关掉就没了': 'Private: sign-ins only last for this session and are gone once closed',
+  '无痕': 'Private',
 };

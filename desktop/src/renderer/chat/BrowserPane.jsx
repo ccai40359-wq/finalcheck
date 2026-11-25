@@ -154,13 +154,25 @@ export function BrowserPane({ y, sessionId, visible, onPageTitle }) {
     } catch (e) { setNote(String(e?.message || e)); }
   };
 
-  const reloadPage = async () => {
-    if (!current?.url) return;
+  // 0.33.4：刷新不再要求 tab.url 非空（加载失败的页面 url 是空的，以前点了没反应）——主进程按
+  // 当前网址 / 最近要打开的网址重试；Shift+点击 = 强制刷新（忽略缓存）
+  const reloadPage = async (e) => {
+    if (!current) return;
     setNote('');
     try {
-      const r = await y?.browserTabReload?.(current.id, sessionId);
+      const r = await y?.browserTabReload?.(current.id, sessionId, { hard: e?.shiftKey === true });
       if (!r || r.ok === false) setNote(String(r?.error || t('重新加载失败')));
-    } catch (e) { setNote(String(e?.message || e)); }
+      await refreshTabs();
+    } catch (err) { setNote(String(err?.message || err)); }
+  };
+  const navPage = async (dir) => {
+    if (!current) return;
+    setNote('');
+    try {
+      const r = await y?.browserTabNav?.(current.id, dir, sessionId);
+      if (r && r.ok === false && dir !== 'stop') setNote(String(r.error || ''));
+      await refreshTabs();
+    } catch (err) { setNote(String(err?.message || err)); }
   };
 
   const openExternal = async () => {
@@ -202,11 +214,33 @@ export function BrowserPane({ y, sessionId, visible, onPageTitle }) {
           0.32.4：右边换成「在默认浏览器打开」（用户点名的 ZCode 同款）——
           扫码登录时如果站点非要跳外部浏览器，用户可以主动在这里打开，而不是页面自己跑出去。 */}
       <div className="shrink-0 flex items-center gap-1.5 px-2 h-9 border-b border-edge/60">
-        <button onClick={() => { void reloadPage(); }} title={t('重新加载当前网页')}
-          data-browser-reload
-          className="shrink-0 rounded px-1.5 py-0.5 text-[13px] leading-none text-mute/60 hover:bg-lift/[0.06] hover:text-goldSoft">↻</button>
+        {/* 0.33.4：和 Edge 一样的 ← → ↻（加载中变 ✕ 停止）；页面里 Alt+← / Alt+→ / F5 也能用 */}
+        <button onClick={() => { void navPage('back'); }} disabled={!current?.canGoBack} title={t('后退（Alt+←）')}
+          data-browser-back aria-label={t('后退')}
+          className="shrink-0 h-6 w-6 inline-flex items-center justify-center rounded text-mute/70 hover:bg-lift/[0.06] hover:text-goldSoft disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-mute/70">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M19 12H5M11 18l-6-6 6-6" /></svg>
+        </button>
+        <button onClick={() => { void navPage('forward'); }} disabled={!current?.canGoForward} title={t('前进（Alt+→）')}
+          data-browser-forward aria-label={t('前进')}
+          className="shrink-0 h-6 w-6 inline-flex items-center justify-center rounded text-mute/70 hover:bg-lift/[0.06] hover:text-goldSoft disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-mute/70">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
+        </button>
+        {current?.loading ? (
+          <button onClick={() => { void navPage('stop'); }} title={t('停止加载')}
+            data-browser-stop aria-label={t('停止加载')}
+            className="shrink-0 h-6 w-6 inline-flex items-center justify-center rounded text-mute/70 hover:bg-lift/[0.06] hover:text-goldSoft">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+          </button>
+        ) : (
+          <button onClick={(e) => { void reloadPage(e); }} disabled={!current} title={t('刷新（F5；Shift+点击强制刷新）')}
+            data-browser-reload aria-label={t('刷新')}
+            className="shrink-0 h-6 w-6 inline-flex items-center justify-center rounded text-mute/70 hover:bg-lift/[0.06] hover:text-goldSoft disabled:opacity-30">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7" /><path d="M20 4v7h-7" /></svg>
+          </button>
+        )}
         <input
           ref={addrRef}
+          data-browser-address
           value={addr}
           onChange={(e) => setDraft({ tabId: activeId, text: e.target.value })}
           onKeyDown={(e) => {
@@ -219,6 +253,14 @@ export function BrowserPane({ y, sessionId, visible, onPageTitle }) {
           className="flex-1 min-w-0 rounded bg-lift/[0.06] px-2 py-1 text-[12px] text-ink/90 outline-none focus:ring-1 focus:ring-gold/40" />
         {/* 只在输入了东西时给一个极简的"去"提示（回车即可，不需要按钮） */}
         {addrBusy && <span className="shrink-0 text-[11px] text-mute/60">{t('打开中…')}</span>}
+        {/* 0.33.4：这个标签用的存储——长期保留（登录态写盘，重启还在）还是无痕（关掉就没） */}
+        {current && (
+          <span data-browser-mode={current.persistent ? 'persistent' : 'oneshot'}
+            title={current.persistent ? t('长期保留：登录状态会保存，重启 FinalCheck 后仍在') : t('无痕：登录状态只在本次会话有效，关掉就没了')}
+            className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] leading-none ${current.persistent ? 'bg-jade/10 text-jade/90' : 'bg-lift/[0.06] text-mute/70'}`}>
+            {current.persistent ? t('长期保留') : t('无痕')}
+          </span>
+        )}
         <button onClick={() => { void openExternal(); }} title={t('在默认浏览器打开（当前网页）')}
           data-browser-external
           className="shrink-0 rounded px-1.5 py-0.5 text-[13px] leading-none text-mute/60 hover:bg-lift/[0.06] hover:text-goldSoft">⧉</button>

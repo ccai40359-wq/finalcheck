@@ -265,7 +265,10 @@ test('宿主: 首次加载被用户导航或刷新取代后保留标签，已关
     assert.equal(browser.reloadTab(reloadId).ok, true);
     byReload.reject(new Error('ERR_ABORTED'));
     assert.equal((await openingReload).ok, true);
-    assert.equal(reloading.reloads, 1);
+    // 0.33.4：首个页面还没加载成功（没有已提交的网址）时，wc.reload() 在 Chromium 里什么都不做——
+    // 用户看到的就是「点刷新没反应」。现在改为按要打开的网址重新 loadURL。
+    assert.equal(reloading.reloads, 0);
+    assert.deepEqual(reloading.loads, ['https://reload.test/', 'https://reload.test/']);
     assert.equal(reloading.isDestroyed(), false);
 
     const byClose = Promise.withResolvers();
@@ -558,4 +561,59 @@ test('宿主幂等: 宽度真的变了才下发 zoom（同档位不重复）', a
   assert.ok(wc.zoomSets.every((z) => Number.isFinite(z)), 'zoom 值必须是有限数');
   assert.equal(wc.zoomSets[wc.zoomSets.length - 1], 1, '宽度超过设计宽度时 zoom 应封顶为 1');
   assert.ok(zAfter >= 1, '至少下发过');
+});
+
+test('0.33.4 宿主: 前进后退 / 停止 / 加载状态 / 存储模式 / 页面内快捷键 / 加载失败后刷新按失败网址重试', async () => {
+  created.length = 0;
+  CHILD_VIEWS.clear();
+  const host = await load();
+  const browser = host.ensureHost(fakeWindow);
+  try {
+    const r = await browser.newTab({ url: 'https://a.test/', partition: 'persist:fc-browser-use' });
+    const wc = browser.contentsOf(r.id);
+    let back = 0; let fwd = 0; let stops = 0; let hard = 0;
+    wc.navigationHistory = { canGoBack: () => true, canGoForward: () => false, goBack: () => { back++; }, goForward: () => { fwd++; } };
+    wc.stop = () => { stops++; };
+    wc.reloadIgnoringCache = () => { hard++; };
+    const tabOf = (id) => browser.hostInfo().tabs.find((tab) => tab.id === id);
+    assert.equal(tabOf(r.id).canGoBack, true);
+    assert.equal(tabOf(r.id).canGoForward, false);
+    assert.equal(tabOf(r.id).persistent, true, '长期保留的标签要标出来');
+    assert.equal(browser.navHistory(r.id, 'back').ok, true);
+    assert.equal(back, 1);
+    assert.equal(browser.navHistory(r.id, 'forward').ok, false, '不能前进时不乱跳');
+    assert.equal(fwd, 0);
+    assert.equal(browser.navHistory(r.id, 'stop').ok, true);
+    assert.equal(stops, 1);
+    wc.emit('did-start-loading');
+    assert.equal(tabOf(r.id).loading, true);
+    wc.emit('did-stop-loading');
+    assert.equal(tabOf(r.id).loading, false);
+
+    const key = (k, mods = {}) => {
+      let prevented = false;
+      wc.emit('before-input-event', { preventDefault: () => { prevented = true; } }, { type: 'keyDown', key: k, ...mods });
+      return prevented;
+    };
+    assert.equal(key('F5'), true);
+    assert.equal(wc.reloads, 1, 'F5 刷新');
+    assert.equal(key('r', { control: true, shift: true }), true);
+    assert.equal(hard, 1, 'Ctrl+Shift+R 强制刷新');
+    assert.equal(key('ArrowLeft', { alt: true }), true);
+    assert.equal(back, 2, 'Alt+← 后退');
+    assert.equal(key('a'), false, '普通按键不拦');
+
+    // 加载失败（被墙 / 超时）：标签 url 原本为空，刷新以前直接拒绝；现在按失败的网址重试
+    const b = await browser.newTab({ url: '' });
+    const wcb = browser.contentsOf(b.id);
+    wcb.emit('did-fail-load', null, -105, 'ERR_NAME_NOT_RESOLVED', 'https://down.test/', true);
+    assert.equal(tabOf(b.id).url, 'https://down.test/');
+    assert.equal(browser.reloadTab(b.id).ok, true);
+    assert.equal(wcb.loads.at(-1), 'https://down.test/');
+    assert.equal(tabOf(b.id).persistent, false);
+    const blank = await browser.newTab({ url: '' });
+    assert.equal(browser.reloadTab(blank.id).ok, false, '空白页没有可刷新的网址');
+  } finally {
+    host.disposeHost();
+  }
 });

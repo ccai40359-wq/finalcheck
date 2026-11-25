@@ -161,7 +161,17 @@ function createBrowserHost(win, { onChange, isManaged }) {
     }
     return {
       attached: true,
-      tabs: host.state.tabs.map((t) => ({ ...t, label: t.title || t.url })),
+      tabs: host.state.tabs.map((t) => {
+        const entry = host.views.get(t.id);
+        return {
+          ...t,
+          label: t.title || t.url,
+          // 0.33.4：前进后退 / 加载中 / 存储模式（界面工具条用）
+          ...navInfo(entry),
+          loading: Boolean(entry?.loading),
+          persistent: String(entry?.partition || '').startsWith('persist:')
+        };
+      }),
       activeId: host.state.activeId,
       rect: host.rect,
       visible: host.visible,
@@ -221,7 +231,9 @@ function createBrowserHost(win, { onChange, isManaged }) {
       // 0.32.6：zoom 初值必须是 null（不是 1/undefined）——否则首帧会白设一次 zoomFactor
       // 0.32.7：权限默认拒绝（Electron 不设处理函数就自动批准摄像头/麦克风/定位等一切请求）
       hardenSession(view.webContents.session);
-      entry = { id, view, wc: view.webContents, url: '', title: '', showing: false, navigation: 0, zoom: null };
+      entry = { id, view, wc: view.webContents, url: '', title: '', showing: false, navigation: 0, zoom: null,
+        // 0.33.4：partition 记下来（界面显示「长期保留 / 无痕」）；requested = 最近一次要打开的网址（加载失败时刷新用它重试）
+        partition: String(partition || ''), requested: String(url || ''), loading: false };
       view.setVisible(false);
       win.contentView.addChildView(view);
     } catch (error) {
@@ -274,6 +286,31 @@ function createBrowserHost(win, { onChange, isManaged }) {
         updateState(patchTab(host.state, id, patch).state);
       }
     };
+    // 0.33.4：加载状态 / 前进后退可用性要实时推给右栏（刷新按钮变「停止」、← → 置灰）
+    const pushNav = () => { if (host.views.has(id)) { try { onChange(); } catch { /* 窗口已关 */ } } };
+    wc.on('did-start-loading', () => { entry.loading = true; pushNav(); });
+    wc.on('did-stop-loading', () => { entry.loading = false; pushNav(); });
+    wc.on('did-fail-load', (_e, code, _desc, failedUrl, isMainFrame) => {
+      // 主帧加载失败（断网 / 被墙 / 超时）：地址栏保留失败的网址，刷新能重试；-3 是被新导航打断，不算
+      if (isMainFrame && code !== -3 && failedUrl) { entry.requested = String(failedUrl); patchPage({ url: String(failedUrl) }); }
+    });
+    // 0.33.4：页面里按 F5 / Ctrl+R 刷新、Ctrl+Shift+R / Ctrl+F5 强制刷新、Alt+← / Alt+→ 后退前进（和 Edge 一样）
+    wc.on('before-input-event', (event, input) => {
+      if (input.type !== 'keyDown') return;
+      const key = String(input.key || '');
+      const ctrl = input.control || input.meta;
+      let act = null;
+      if (key === 'F5') act = ctrl || input.shift ? 'hard-reload' : 'reload';
+      else if (ctrl && !input.alt && (key === 'r' || key === 'R')) act = input.shift ? 'hard-reload' : 'reload';
+      else if (input.alt && !ctrl && key === 'ArrowLeft') act = 'back';
+      else if (input.alt && !ctrl && key === 'ArrowRight') act = 'forward';
+      else if (key === 'BrowserBack') act = 'back';
+      else if (key === 'BrowserForward') act = 'forward';
+      if (!act) return;
+      event.preventDefault();
+      if (act === 'reload' || act === 'hard-reload') reloadTab(id, { hard: act === 'hard-reload' });
+      else navHistory(id, act);
+    });
     wc.on('page-title-updated', (_e, title) => patchPage({ title: String(title || '') }));
     wc.on('did-navigate', (_e, navUrl) => patchPage({ url: String(navUrl || '') }));
     wc.on('did-navigate-in-page', (_e, navUrl, isMainFrame) => {
@@ -331,6 +368,7 @@ function createBrowserHost(win, { onChange, isManaged }) {
     if (!entry) return { ok: false, error: `标签不存在：${id}` };
     if (activate) activateTab(id);
     entry.navigation++;
+    entry.requested = String(url || '');
     try {
       await entry.wc.loadURL(url);
       if (!host.views.has(String(id))) return { ok: false, error: '标签已关闭' };
@@ -340,13 +378,60 @@ function createBrowserHost(win, { onChange, isManaged }) {
     }
   }
 
-  function reloadTab(id) {
+  // 0.33.4 用户反馈「刷新完全没反应」：加载失败的标签 tab.url 是空的（did-navigate 没触发），以前直接拒绝；
+  // 现在按 当前网址 > 状态里的网址 > 最近一次要打开的网址 取目标——页面没真正加载成功就重新 loadURL，否则 reload。
+  function reloadTab(id, { hard = false } = {}) {
     const tab = tabById(host.state, id);
     const entry = host.views.get(String(id));
-    if (!tab?.url || !entry) return { ok: false, error: '没有可重新加载的网页' };
-    entry.wc.reload();
+    if (!tab || !entry) return { ok: false, error: '没有可重新加载的网页' };
+    let live = '';
+    try { live = entry.wc.getURL(); } catch { live = ''; }
+    const target = (live && !/^(about:blank|chrome-error:)/i.test(live) ? live : '') || tab.url || entry.requested || '';
+    if (!target) return { ok: false, error: '这个标签还没有打开网页' };
     entry.navigation++;
-    return { ok: true, id: tab.id };
+    try {
+      if (live && live === target) {
+        if (hard) entry.wc.reloadIgnoringCache(); else entry.wc.reload();
+      } else {
+        entry.requested = target;
+        entry.wc.loadURL(target).catch(() => { /* 失败页由 did-fail-load 记账 */ });
+      }
+    } catch (error) { return { ok: false, error: String(error?.message || error) }; }
+    return { ok: true, id: tab.id, url: target };
+  }
+
+  /** 0.33.4：后退 / 前进 / 停止（Electron 新版用 navigationHistory，旧版退回 wc.goBack） */
+  function navInfo(entry) {
+    const wc = entry?.wc;
+    if (!wc) return { canGoBack: false, canGoForward: false };
+    try {
+      const h = wc.navigationHistory;
+      if (h && typeof h.canGoBack === 'function') return { canGoBack: h.canGoBack(), canGoForward: h.canGoForward() };
+      return { canGoBack: wc.canGoBack(), canGoForward: wc.canGoForward() };
+    } catch { return { canGoBack: false, canGoForward: false }; }
+  }
+  function navHistory(id, dir) {
+    const entry = host.views.get(String(id));
+    if (!entry) return { ok: false, error: '标签不存在' };
+    const wc = entry.wc;
+    try {
+      if (dir === 'stop') { wc.stop(); return { ok: true }; }
+      const info = navInfo(entry);
+      const h = wc.navigationHistory;
+      if (dir === 'back') {
+        if (!info.canGoBack) return { ok: false, error: '没有可后退的页面' };
+        entry.navigation++;
+        if (h && typeof h.goBack === 'function') h.goBack(); else wc.goBack();
+        return { ok: true };
+      }
+      if (dir === 'forward') {
+        if (!info.canGoForward) return { ok: false, error: '没有可前进的页面' };
+        entry.navigation++;
+        if (h && typeof h.goForward === 'function') h.goForward(); else wc.goForward();
+        return { ok: true };
+      }
+    } catch (error) { return { ok: false, error: String(error?.message || error) }; }
+    return { ok: false, error: `未知操作：${dir}` };
   }
 
   /**
@@ -461,7 +546,7 @@ function createBrowserHost(win, { onChange, isManaged }) {
 
   return {
     hostInfo, getState, setRect, setVisible, newTab, activateTab, closeTabById, clearTabs,
-    navigateTab, reloadTab, contentsOf, revealTab, resize: applyAllBounds,
+    navigateTab, reloadTab, navHistory, contentsOf, revealTab, resize: applyAllBounds,
     suspend() { if (!isManaged()) setVisible(false); },
     dispose() { disposed = true; clearTabs(); }
   };

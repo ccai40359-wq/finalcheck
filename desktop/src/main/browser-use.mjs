@@ -41,7 +41,7 @@ function currentScope() {
 export function forSession(sessionId) {
   const methods = {
     isOpen, navigate, snapshot, click, typeInto, evaluate, consoleMessages, screenshot, close, sessionInfo,
-    activeTabId, listTabs, openTab, switchTabTo, viewTab, tabFocusInfo, closeTab, gotoTab, reloadTab, closePanel
+    activeTabId, listTabs, openTab, switchTabTo, viewTab, tabFocusInfo, closeTab, gotoTab, reloadTab, navTab, closePanel
   };
   return Object.fromEntries(Object.entries(methods).map(([key, method]) => [
     key, (...args) => scopeContext.run(sessionId ?? null, () => method(...args))
@@ -1098,6 +1098,8 @@ export async function openTab(url, policy = null) {
     catch (e) { return { ok: false, error: String(e?.message || e) }; }
   }
   const { active, activePolicy, sessionId } = currentScope();
+  // 0.33.4 用户反馈：选了「长期保留」，自己点 ＋ 开的标签却是无痕（全局默认），登录记录像是没了。
+  // 修在调用方：ipc 传进来的 policy 现在是「本会话选过的模式」（没选过才是全局默认），这里照它来。
   const partition = sessionPartition(policy?.partition || active?.policy?.partition || activePolicy.partition, sessionId);
   const r = await host.newTab({ url: target, partition });
   if (!r.ok) return r;
@@ -1143,9 +1145,16 @@ export async function gotoTab(id, url) {
   return r.ok ? { ...r, tabId: r.id, embedded: true } : r;
 }
 
-export function reloadTab(id) {
+export function reloadTab(id, opts = {}) {
   const host = ensureViewHost();
-  return host?.reloadTab(id) || { ok: false, error: '没有可用标签' };
+  return host?.reloadTab(id, opts) || { ok: false, error: '没有可用标签' };
+}
+
+/** 0.33.4：右栏工具条的后退 / 前进 / 停止 */
+export function navTab(id, dir) {
+  const host = ensureViewHost();
+  if (!host?.navHistory) return { ok: false, error: '没有可用标签' };
+  return host.navHistory(String(id), String(dir));
 }
 
 export function tabFocusInfo() {

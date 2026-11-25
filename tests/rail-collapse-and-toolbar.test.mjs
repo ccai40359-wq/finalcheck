@@ -47,10 +47,12 @@ test('加号: 主进程允许空 URL 开空白标签（以前 assertNavigableUrl
 
 test('刷新圈: 改成真正的「重新加载当前网页」（以前只刷新标签列表，用户零感知）', () => {
   const body = paneSrc.slice(paneSrc.indexOf('const reloadPage'), paneSrc.indexOf('if (!visible) return null'));
-  assert.match(body, /await y\?\.browserTabReload\?\.\(current\.id, sessionId\)/, '按当前查看的标签请求原生刷新');
+  assert.match(body, /await y\?\.browserTabReload\?\.\(current\.id, sessionId[,)]/, '按当前查看的标签请求原生刷新');
   assert.doesNotMatch(body, /browserGoto/, '刷新入口不重复发起导航');
   // 按钮必须接到 reloadPage，且有独立标记便于自检
-  assert.match(paneSrc, /onClick=\{\(\) => \{ void reloadPage\(\); \}\} title=\{t\('重新加载当前网页'\)\}/);
+  // 0.33.4：按钮带上点击事件（Shift+点击 = 强制刷新），加载失败的页面也能点（不再要求 url 非空）
+  assert.match(paneSrc, /onClick=\{\(e\) => \{ void reloadPage\(e\); \}\}/);
+  assert.doesNotMatch(body, /if \(!current\?\.url\) return;/, '加载失败的标签 url 为空，也要能刷新');
   assert.match(paneSrc, /data-browser-reload/, '自检要能定位到这个按钮');
 });
 

@@ -135,7 +135,7 @@ test('② 宿主：zoom / bounds / visible 都幂等（不重复下发 = 不重�
   assert.match(hostSrc, /if \(!entry\.showing\) \{ entry\.view\.setVisible\(true\); entry\.showing = true; \}/,
     '已经显示就不再重复 setVisible(true)');
   assert.match(hostSrc, /else if \(entry\.showing\) \{/, '已经隐藏就不再重复 setVisible(false)');
-  assert.match(hostSrc, /showing: false, navigation: 0, zoom: null \}/, 'entry 的 zoom 初值要是 null');
+  assert.match(hostSrc, /showing: false, navigation: 0, zoom: null[,\s}]/, 'entry 的 zoom 初值要是 null');
 });
 
 test('② 宿主：报告状态仍能反映真实 zoom（自检要能读到）', () => {
