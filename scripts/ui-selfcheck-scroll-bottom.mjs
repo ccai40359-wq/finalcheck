@@ -198,7 +198,7 @@ try {
 
   // 4) 点之前量一次（应为「离底部很远」）
   const before = await measure();
-  record('S4 点之前确实离底部很远（证明场景有效）', (before?.gap || 0) > 1000,
+  record('S4 点之前确实离底部很远（证明场景有效）', Number.isFinite(before?.gap) && before.gap > 1000,
     JSON.stringify({ gap: before?.gap, realH: before?.realH, naiveH: before?.naiveH, underestimatedBy: before?.estimatedUnderBy }));
 
   // 5) 真实点击（走 DOM click，和用户点一样）
@@ -216,7 +216,7 @@ try {
   const afterShot = await shot('02-after-click.png');
 
   record('S6 点完之后真的到了底部（|gap| <= ' + GAP_TOLERANCE + 'px）',
-    Math.abs(after?.gap || 99999) <= GAP_TOLERANCE,
+    Math.abs(Number.isFinite(after?.gap) ? after.gap : 99999) <= GAP_TOLERANCE,
     JSON.stringify({ gap: after?.gap, realH: after?.realH, pos: after?.pos, clientH: after?.clientH, before: before?.gap }));
 
   // 7) .cv-off 必须已摘掉（否则长会话永久全量渲染 = 卡）
@@ -236,7 +236,7 @@ try {
   await ev(`document.querySelector('[data-testid="scroll-bottom"]')?.click()`);
   await sleep(2600);
   const again = await measure();
-  record('S8 连点第二次仍然到底（幂等）', Math.abs(again?.gap || 99999) <= GAP_TOLERANCE, JSON.stringify({ gap: again?.gap }));
+  record('S8 连点第二次仍然到底（幂等）', Math.abs(Number.isFinite(again?.gap) ? again.gap : 99999) <= GAP_TOLERANCE, JSON.stringify({ gap: again?.gap }));
 
   const finalShot = await shot('03-after-second-click.png');
 
