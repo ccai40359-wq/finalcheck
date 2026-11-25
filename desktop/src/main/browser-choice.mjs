@@ -133,11 +133,20 @@ export function parseRealConsent(answer) {
   const raw = String(answer == null ? '' : answer).trim();
   if (!raw) return null;
   if (/^(第\s*)?([12])(\s*(个|项|选项)?)?$/.test(raw)) return raw.replace(/[^12]/g, '') === '1';
+  // 0.33.4 用户反馈「明明同意了接真实浏览器，还是被拒、反复问」：英文界面提交的是译文 label
+  // 「Use my own Edge」，以前只认中文「接/用」和 yes/ok → 判成 null → 当拒绝 → 模型重试 → 又弹卡。
+  // 先按卡片自己的两个选项（中文原文 + 当前界面译文）精确比对，再走关键词兜底。
+  const norm = (x) => String(x || '').trim().toLowerCase();
+  const key = norm(raw);
+  const [agree, decline] = buildRealConsentPrompt().options.map((o) => norm(o.label));
+  if (key === agree || key === '接我自己的 edge' || key === 'use my own edge') return true;
+  if (key === decline || key === '不用，走离屏浏览器' || key === 'no, use the offscreen browser') return false;
   // 否定优先：英文界面的「No, use the offscreen browser」里也含 "use"，必须先判否定
   // （0.31.1 自查：不加 i 标志时大写 No 认不出来，会落到「判不出来」的 safe 分支但不精确）
-  if (/不用|不要|不必|拒绝|算了|否|别接/i.test(raw)) return false;
-  if (/\b(no|nope|decline|not\s*now)\b/i.test(raw)) return false;
+  if (/不用|不要|不必|拒绝|算了|否|别接|离屏/i.test(raw)) return false;
+  if (/\b(no|nope|decline|not\s*now|don'?t|offscreen)\b/i.test(raw)) return false;
   if (/接|同意|可以|好|行|用|yes\b|ok\b|sure/i.test(raw)) return true;
+  if (/\b(use|connect|agree|go\s*ahead|edge)\b/i.test(raw)) return true;
   return null;
 }
 

@@ -6,6 +6,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.33.4] - 2026-11-25
+
+This release fixes feedback on 0.33.3: the AI should not take over the desktop unasked, pressing ESC should not stop every task, and plans showed raw Markdown. The built-in browser is also more complete: refresh works, back/forward are there, and logins no longer go missing.
+
+### Added
+
+- **Back / forward / stop in the built-in browser**: Edge-style ← → ↻ next to the address bar, with ↻ turning into ✕ while a page loads; F5 / Ctrl+R, Ctrl+Shift+R (hard reload) and Alt+← / Alt+→ also work inside the page.
+- **Storage mode badge**: the address bar shows "Long-term" or "Private" so you can see whether the tab keeps your logins.
+
+### Fixed
+
+- **No desktop control unless you ask for it**: browser and web tasks (e.g. "open reddit, I'll log in") no longer give the AI desktop control, so it won't steal the foreground; it is only used when you explicitly ask to control the computer or an app like WeChat, Word or Excel.
+- **ESC stops desktop control, not the task**: ESC used to abort the whole task, and tasks running in other sessions too; now it only revokes desktop control, the current task finishes another way, and other sessions are untouched.
+- **Agreeing to use your own Edge actually works**: in the English UI, clicking "Use my own Edge" used to count as a refusal, so the AI kept asking again; one click now connects, and the session does not ask again.
+- **Plan approval cards render Markdown**: plans shown in plan mode no longer display raw # and ** symbols.
+- **Browser refresh no longer does nothing**: when a page failed to load or was still loading for the first time, refresh used to be ignored; it now reopens the address.
+- **Tabs you open follow the persistent mode you chose**: tabs opened by the AI were persistent while tabs you opened with + were private, so logins seemed to vanish; within a session all tabs now follow your choice, and the choice is saved as the default.
+
 ## [0.33.3] - 2026-11-25
 
 This release only fixes scrolling: in long sessions the scroll-to-bottom button used to stop halfway, and streaming output could never keep up with the bottom. Both now land properly.

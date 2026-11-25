@@ -375,3 +375,40 @@ test('0.31.1 新增文案：英文界面全部有非中文译文（提问卡是�
     assert.notEqual(en, k, `英文译文回退成中文原文：${k.slice(0, 40)}`);
   }
 });
+
+test('0.33.4 英文界面同意接真 Edge：「Use my own Edge」算同意（以前判成 null → 被拒 → 反复弹卡）', async () => {
+  setLanguage('en');
+  try {
+    const [agree, decline] = buildRealConsentPrompt().options.map((o) => o.label);
+    assert.equal(agree, 'Use my own Edge');
+    assert.equal(parseRealConsent(agree), true);
+    assert.equal(parseRealConsent(decline), false, '「No, use the offscreen browser」含 use，也必须是拒绝');
+    assert.equal(parseRealConsent('use my own edge'), true);
+    assert.equal(parseRealConsent('Connect it'), true);
+    assert.equal(parseRealConsent("don't connect"), false);
+    // 全链路：英文界面点了同意 → 不再是 user-declined；会话记住 real，第二次不再问
+    let asks = 0;
+    let stored = '';
+    let connected = false;
+    const tools = createAgentTools({
+      repoRoot,
+      askUser: async () => { asks++; return { answer: agree }; },
+      getDesktopToolsAsync: async () => ({ browserUse: {}, computerUse: {} }),
+      getBrowserRealAsync: async () => ({
+        realIsConnected: () => connected,
+        PLATFORM_PLAYBOOKS: { github: { home: 'https://github.com' } },
+        async connectReal() { connected = true; return { ok: true }; }
+      }),
+      browserChoice: { get: () => stored, set: (m) => { stored = m; } }
+    });
+    const r = await tools.browser_connect_real({ platforms: ['github'] });
+    assert.notEqual(r?.deniedBy, 'user-declined', JSON.stringify(r));
+    assert.equal(connected, true, '同意后真的去连了');
+    assert.equal(stored, 'real', '会话记住了同意');
+    connected = false; // 模拟断开后再连：本会话已同意，不再弹卡
+    await tools.browser_connect_real({ platforms: ['github'] });
+    assert.equal(asks, 1, '同一会话只问一次');
+  } finally {
+    setLanguage('zh');
+  }
+});
