@@ -18,7 +18,7 @@ export const EN_SETTINGS = {
   '管理自定义模型供应商。配置好后可在对话里选择使用。': 'Manage custom model providers. Once configured, they can be selected in chat.',
   '只切换界面文案（按钮、菜单、表单、提示）；立即生效。AI 回复与报告跟随你的提问语言。': 'Switches interface text only (buttons, menus, forms, hints), effective immediately. AI replies and reports follow the language you write in.',
   '沙箱与工具并发：对所有供应商生效，与权限模式（Full access）独立。': 'Sandbox and tool concurrency apply to all providers and are independent of the permission mode (Full access).',
-  '版本信息与更新：检查 GitHub Release，下载后重启安装。': 'Version and updates: check GitHub Releases, download, then restart to install.',
+  '版本信息与更新：从官网与 GitHub 检查新版本，取更新的那个，下载后重启安装。': 'Version and updates: check the website and GitHub Releases, take whichever is newer, download, then restart to install.',
 
   // 语言页（只有中文 / English 两态）
   '界面文案用中文；AI 回复与报告跟随你的提问语言。': 'Chinese interface text; AI replies and reports follow the language you write in.',
@@ -58,7 +58,7 @@ export const EN_SETTINGS = {
 
   // 关于 / 更新
   '应用更新': 'App updates',
-  '从 GitHub Release 检查新版本。发现后由你确认下载，重启完成安装；版本与下载地址均由更新模块读取。': 'Checks GitHub Releases for new versions. You confirm the download and restart to install. The version and download URL come from the update module.',
+  '从官网与 GitHub Release 检查新版本，取更新的那个。发现后由你确认下载，重启完成安装。': 'Checks the website and GitHub Releases and takes whichever is newer. You confirm the download and restart to install.',
   '当前版本': 'Current version',
   '仅安装版检查更新；开发模式不联网。': 'Update checks run in installed builds only; dev mode stays offline.',
   '请在 Electron 中运行后检查更新。': 'Run the app in Electron to check for updates.',

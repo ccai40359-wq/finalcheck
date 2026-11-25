@@ -768,7 +768,7 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
     <Card className="p-5 space-y-4">
       <div>
         <div className="text-sm text-ink font-medium">{t('应用更新')}</div>
-        <div className="text-xs text-mute mt-0.5">{t('从 GitHub Release 检查新版本。发现后由你确认下载，重启完成安装；版本与下载地址均由更新模块读取。')}</div>
+        <div className="text-xs text-mute mt-0.5">{t('从官网与 GitHub Release 检查新版本，取更新的那个。发现后由你确认下载，重启完成安装。')}</div>
       </div>
 
       <div className="flex items-center justify-between gap-3 rounded-lg bg-well border border-edge px-4 py-3">
@@ -927,7 +927,7 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
                           ? t('长期有效的允许 / 拒绝规则：常用命令不用每次点批准，危险操作永远不让 AI 做。')
                         : section === 'hooks'
                           ? t('在关键时刻自动跑你的脚本：改完文件自动格式化、拦截危险命令、回复结束发通知。')
-                        : t('版本信息与更新：检查 GitHub Release，下载后重启安装。')}
+                        : t('版本信息与更新：从官网与 GitHub 检查新版本，取更新的那个，下载后重启安装。')}
             </p>
           </div>
           {section === 'models' && (
