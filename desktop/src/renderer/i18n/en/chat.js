@@ -378,6 +378,8 @@ export const EN_CHAT = {
   '继续完善计划': 'Keep refining the plan',
   // 0.33.1 @文件引用
   '@ 引用项目文件：发送时附上文件内容 · ↑↓ 选择 · Enter/Tab 确认 · Esc 关闭': '@ mention project files: their contents are attached on send · ↑↓ select · Enter/Tab confirm · Esc close',
+  // 0.34.1 @ 改成引用会话
+  '@ 引用本项目的会话（发送时附上完整对话记录，AI 会去翻看）· ↑↓ 选择 · Enter/Tab 确认 · Esc 关闭': '@ mention a session in this project (its full transcript is attached on send so the AI can read it) · ↑↓ select · Enter/Tab confirm · Esc close',
   '有 {n} 个 @ 引用没附上：{list}': '{n} @ mention(s) not attached: {list}',
   // 0.33.4 右栏浏览器工具条
   '后退（Alt+←）': 'Back (Alt+←)',

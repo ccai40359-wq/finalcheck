@@ -69,25 +69,41 @@ const POLICY_SESSION_GRANTS = new Map(); // sessionId -> Set<key>
  *
  * 0.34.0 修两个真缺陷（都有实测复现）：
  *  ① **读权限会顺带放开写**：旧实现把 rule 归成 sensitive / destructive / outside 三类，
- *     但 `sensitive` 与 `destructive-sensitive` 都落进 sensitive 桶 → 「允许读这把私钥」
- *     之后 `write_file` 覆盖同一个私钥**不再问、直接写进去**（实测：文件被改成模型内容）。
- *     现在按动作分成 read / write / exec 三个互不相通的桶：
- *       - read  = read_file / grep_code / glob_files / list_dir
- *       - write = edit_file / write_file / 删除改名
- *       - exec  = run_command 里引用到敏感路径（授权「某个程序可以用这把 key」，不授权写它）
- *  ② **命令类授权按整条命令原文记账**：部署时十条 ssh/scp 写法各异，等于每条都要问一次，
- *     还会把提问额度吃光。现在命令类只按「程序名 + 命中的那个路径」记账，
- *     一条 `ssh -i <这把key> host ...` 授权覆盖后续所有 ssh 用同一把 key 的命令。
+ *     整个 `sensitive` 桶共用一个键 → 「允许读这把私钥」之后 `write_file` 覆盖它
+ *     **不再问、直接写进去**（实测：文件被改成模型内容）。
+ *     现在按动作分成 read / write / exec 三个互不相通的桶。
+ *  ② **命令类授权按整条命令原文记账**：部署时十条 ssh/scp 写法各异，等于每条都要问一次。
+ *     现在命令类只按「程序名 + 命中的那个路径」记账。
  *
- * 键的形态：`<kind>|<mode>|<路径>`，命令类再加程序名：`<kind>|exec|<程序名>|<路径>`。
+ * 0.34.1 修第三个真缺陷（用户截图实证）：
+ *  ③ **按完整文件路径记账 → 同目录兄弟文件各问一遍**。
+ *     用户点了 12 次「这个会话都允许」之后，AI 读同一目录下的 validate.mjs / draft.mjs / review.mjs
+ *     还是弹三张卡（截图里那三条 Your input is needed）。这属于「完全不痛不痒的」询问，纯噪音。
+ *     现在：对**项目外**（outside / path-outside）按**目录**记账，授权一个目录就覆盖它下面所有文件；
+ *     敏感路径仍按具体文件记账（私钥目录里允许一把不该顺带放开另一把）。
+ *
+ * 键的形态：`<kind>|<mode>|<路径或目录>`，命令类再加程序名：`<kind>|exec|<程序名>|<路径>`。
  * 路径统一小写、反斜杠归一成正斜杠（Windows 大小写不敏感）。
  */
-export function policyGrantKey(rule, target, { mode = null, program = '' } = {}) {
-  const kind = /sensitive/.test(String(rule)) ? 'sensitive' : /destructive/.test(String(rule)) ? 'destructive' : 'outside';
-  // 没显式给 mode 时按规则推断：destructive* 一定算写；sensitive / outside 默认只读（调用方都会传准确值）
-  const act = mode || (/destructive/.test(String(rule)) ? 'write' : 'read');
-  const norm = String(target || '').replace(/\\/g, '/').toLowerCase();
+export function policyGrantKey(rule, target, { mode = null, program = '', root = '' } = {}) {
+  const ruleText = String(rule || '');
+  const kind = /sensitive/.test(ruleText) ? 'sensitive' : /destructive/.test(ruleText) ? 'destructive' : 'outside';
+  const act = mode || (/destructive/.test(ruleText) ? 'write' : 'read');
   const prog = String(program || '').replace(/\\/g, '/').toLowerCase();
+  const norm = String(target || '').replace(/\\/g, '/').toLowerCase();
+
+  // 项目外（且非命令类、非删除）：**退到目标所在的父目录**记账。
+  // 为什么不是"项目根下的第一层"：项目外文件根本不在项目根之下，那个判断永远不成立
+  // （第一版就是这么写的，测试立刻抓到：同目录兄弟文件仍然各问一遍）。
+  // 改成"父目录"后：D:/other/lib/validate.mjs 与 .../draft.mjs 共用一个键 D:/other/lib。
+  // 敏感路径不退 —— 那是凭据，逐把钥匙授权才安全。
+  // 删除类（destructive）不退 —— 删整个目录比读整个目录危险得多，必须逐个确认。
+  if (kind === 'outside' && !prog) {
+    const i = norm.lastIndexOf('/');
+    const dir = i > 0 ? norm.slice(0, i) : norm;
+    return `${kind}|${act}|${dir}`;
+  }
+  void root;
   return prog ? `${kind}|${act}|${prog}|${norm}` : `${kind}|${act}|${norm}`;
 }
 /**
@@ -877,8 +893,24 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
     if (!isEscalatable(check)) return { ok: false, result: policyDenyResult(check) };
     const tgt = target || check.target || '';
     const program = command ? commandProgramKey(command) : '';
-    // 命令类按「程序名 + 命中的路径」记账；文件类按「路径」记账（read/write 分桶，见 policyGrantKey）
-    const key = policyGrantKey(check.matchedRule, tgt, { mode: command ? 'exec' : mode, program });
+
+    // 0.34.1：**完全权限（full access）不再问越界**。
+    // 用户原话：「full access 就不需要再让用户回答任何东西了，比如说私钥这些」——
+    // 他喜欢自动化，选了 full 就是要一路跑到底。私钥 / 项目外 / 删项目外卖在 full 下直接放行。
+    // 仍然必须问的（不在这里，各自有独立闸）：
+    //   · CU 桌面操作授权（computer_request_access）
+    //   · 浏览器「接我真 Edge」（browser_connect_real 的 consent）
+    //   · 灾难命令黑名单（checkCommand，不可提问，永远直接拒）
+    const fullAccess = typeof permissions?.getMode === 'function' && permissions.getMode() === 'full';
+    if (fullAccess) return { ok: true };
+
+    // 命令类按「程序名 + 命中的路径」记账；文件类按「路径（项目外退到目录）」记账
+    // root 传项目根：让 policyGrantKey 能把 D:/proj/sub/a.js 归到 D:/proj/sub 这个目录级授权上
+    const key = policyGrantKey(check.matchedRule, tgt, {
+      mode: command ? 'exec' : mode,
+      program,
+      root: projectPath || cwd || repoRoot
+    });
     if (grantsFor().has(key)) return { ok: true };
     if (typeof askUser !== 'function') {
       return { ok: false, result: { ...policyDenyResult(check), deniedBy: 'ask-unavailable', hint: '这一步需要用户同意，但子代理没法直接问用户：在报告里说明需要访问什么、为什么，由主对话去问用户。' } };

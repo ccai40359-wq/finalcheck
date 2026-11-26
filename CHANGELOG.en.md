@@ -6,6 +6,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.34.1] - 2026-11-26
+
+This release fixes "it keeps asking even though I already allowed it" and "I can't open my own screenshot": full access no longer interrupts you, files in the same folder are asked once, @ now references sessions, plus a taskbar red dot and UI zoom.
+
+### Added
+
+- **A red dot on the taskbar when the AI needs you**: when the AI asks you something or finishes a task, a red dot appears at the bottom-right of the taskbar icon with a soft system chime (only when the window is not in front). Focusing the window clears it.
+- **UI zoom**: `Ctrl/Cmd` + `+` to zoom in, `-` to zoom out, `0` to reset, from 50% to 300%. The level is remembered for the next launch.
+
+### Fixed
+
+- **Full access no longer asks anything**: with "Full access" selected, reading private keys, reading files outside the project, or deleting things outside the project still popped a card. Full access now runs straight through. The only things still blocked are catastrophic commands (disk format, shutdown) and the two actions that need your own consent: controlling your computer and connecting to your real Edge.
+- **A folder is now approved once**: "Allow for this session" used to be keyed on the full file path, so after approving `validate.mjs`, reading `draft.mjs` or `review.mjs` in the same folder popped a new card every time (measured: a dozen approvals and it still asked). Outside-project reads are now keyed by folder, so one approval covers every file in it; private keys are still confirmed per file (allowing one key must not unlock its neighbours).
+- **Your own screenshots can be opened**: clicking an image you pasted used to show "Access to a sensitive path is blocked" in the side panel, because the attachments folder was treated as sensitive. The attachments folder is now readable; `config.json` and the session database are still refused.
+
+### Improved
+
+- **`@` now references sessions**: `@` used to reference project files; it now references historical sessions in this project — the AI receives that session's full transcript to read, which is far more useful than a file snippet. Typing `@path` by hand still references a file.
+
 ## [0.34.0] - 2026-11-26
 
 Three things in this release: closing the window leaves FinalCheck running in the system tray; questions no longer have a per-turn cap; and three real holes in the "out-of-bounds access asks you" machinery are fixed.

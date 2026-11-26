@@ -204,6 +204,17 @@ export function createPolicy({
     const spill = normalizeRoot(pathApi, spillValue, null, homeDir);
     if (spill) readableDirs.push(trimTrailingSep(pathApi, pathApi.normalize(spill)));
   }
+  // 0.34.1：**附件目录也必须可读**。
+  // 用户自己贴进对话的截图存在 <APPDATA>/FinalCheck/attachments/（见 ipc-workspace.mjs attachDir），
+  // 以前整个 APPDATA/FinalCheck 被当成敏感目录，于是「点开自己发的图看大图 / 在右栏预览」直接被拦：
+  //   Access to a sensitive path is blocked (APPDATA/FinalCheck)
+  // 这是纯误伤——附件是用户自己的东西，不是凭据。只放行 attachments 子目录，
+  // config.json / projects.json / hooks.json / sessions（SQLite 会话库）仍然拒绝。
+  const appdataForAttach = readEnv(envSnapshot, 'APPDATA', true);
+  if (appdataForAttach) {
+    const appdata = normalizeRoot(pathApi, appdataForAttach, null, homeDir);
+    if (appdata) readableDirs.push(trimTrailingSep(pathApi, pathApi.normalize(pathApi.join(appdata, 'FinalCheck', 'attachments'))));
+  }
 
   // %APPDATA%\FinalCheck\**：含 config.json / projects.json / hooks.json
   const appdataValue = readEnv(envSnapshot, 'APPDATA', true);

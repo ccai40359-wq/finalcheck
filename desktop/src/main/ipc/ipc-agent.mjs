@@ -88,7 +88,8 @@ export function registerAgentIpc({
   sessionProjectPathOf,
   store,
   state,
-  shellAppRoot = null
+  shellAppRoot = null,
+  attention = null
 }) {
   const workflowRunsDir = () => path.join(getDataRoot(), 'workflow-runs');
   // One snapshot per executing invocation only. Separate from activeChats because cancel removes
@@ -106,6 +107,8 @@ export function registerAgentIpc({
       const w = getWin();
       if (!w || w.isDestroyed()) throw new Error(t('窗口不可用'));
       w.webContents.send('finalcheck:ask-user', payload);
+      // 0.34.1：AI 需要你回答 → 任务栏红点 + 气泡音（用户在别的窗口时才知道要回来）
+      try { attention?.markAttention?.(w, 'question', 'FinalCheck：需要你回答'); } catch { /* 提醒失败不影响提问 */ }
     }
   });
   ipcMain.handle('finalcheck:ask-user-answer', (_e, payload = {}) => askUsers.answer(payload));
@@ -496,6 +499,11 @@ export function registerAgentIpc({
       // runAgentChat returns after its assistant has been persisted. The old invoke Promise
       // disappears on renderer reload; this independent notification closes reattached runs.
       try { getWin()?.webContents.send('finalcheck:agent-event', { sessionId, runId: chatAbort.snapshot.runId, seq: ++chatAbort.snapshot.seq, ev: { kind: 'run-settled', outcome } }); } catch { /* renderer may be reloading */ }
+      // 0.34.1：任务跑完 → 任务栏红点 + 气泡音（用户可能在别的窗口/别的应用里）
+      // 只在「正常跑完」时提示；用户自己按停止（stopped）不该再叫他回来。
+      if (outcome === 'ok' || outcome === 'deadline') {
+        try { attention?.markAttention?.(getWin(), 'done', 'FinalCheck：任务已完成'); } catch { /* 提醒失败不影响收尾 */ }
+      }
       // 0.29.2：回合收尾即退出 CU 模式（遮罩 + 迷你窗恢复）；下一回合用到桌面操作会重新进入
       void (async () => { try { (await loadDesktopTools())?.computerUse?.endComputerUseSession?.(); } catch { /* ignore */ } })();
     }
@@ -789,9 +797,13 @@ export function registerAgentIpc({
       const lastUser = contextMessages.map((m) => m?.role).lastIndexOf('user');
       const lu = lastUser >= 0 ? contextMessages[lastUser] : null;
       const text = typeof lu?.content === 'string' ? lu.content : Array.isArray(lu?.content) ? lu.content.filter((p) => p?.type === 'text').map((p) => p.text).join(' ') : '';
-      if (text.includes('@') && turnProjectPath) {
+      // 0.34.1：@ 可以引用**会话**（@session:<id>）——用户要 AI 直接翻看历史会话记录
+      if (text.includes('@')) {
         try {
-          const ex = await expandMentions(text, { root: turnProjectPath });
+          const ex = await expandMentions(text, {
+            root: turnProjectPath || null,
+            loadSession: async (sid) => sessions.loadSession(sid)
+          });
           if (ex.blocks.length || ex.skipped.length) {
             contextMessages = contextMessages.map((m, i) => (i === lastUser ? { ...m, content: appendMentionBlocks(m.content, ex) } : m));
             sendEvent({ kind: 'mentions', attached: ex.attached, skipped: ex.skipped });

@@ -62,6 +62,10 @@ export async function runToolSuite(suite, { logDir = null, approvals = 'approve'
   human(`项目：${projDir}`);
   const rows = [];
   for (const [i, st] of (suite.steps || []).entries()) {
+    // 0.34.1：full access 起越界不再问用户，所以「越界必须被拒」这类用例在 full 下天然不成立。
+    // 用例可用 needAsk:true 显式声明「我这条要在 ask 模式下验」；harness 临时切过去、跑完切回来。
+    // 这样每条用例的前提都写在数据里，不再靠全局默认值蒙混。
+    permissions.setMode(st.needAsk ? 'ask' : (approvals === 'approve' ? 'full' : 'ask'));
     const args = fill(st.args);
     const events = [];
     const t0 = Date.now();

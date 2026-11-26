@@ -22,6 +22,8 @@ import { registerDiagnosticsIpc } from './ipc/ipc-diagnostics.mjs';
 import { registerUpdaterIpc } from './ipc/ipc-updater.mjs';
 import { appendLogLine, installProcessGuards, installSafeIpc } from './error-guard.mjs';
 import { installTray, attachHideOnClose, markQuitting, destroyTray, trayReady } from './tray.mjs';
+import { clearAttention } from './attention.mjs';
+import { installZoomShortcuts, stepZoom } from './zoom.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..'); // desktop/src/main → 仓库根
@@ -345,6 +347,8 @@ function createWindow() {
       backgroundThrottling: false
     }
   });
+  // 0.34.1：用户回到窗口 → 清掉任务栏红点（代表「需要你看一下」）
+  win.on('focus', () => { try { clearAttention(win); } catch { /* 忽略 */ } });
   // 自绘窗口按钮通道（removeHandler 保证重复建窗不冲突）
   ipcMain.removeHandler('finalcheck:window-ctl');
   ipcMain.handle('finalcheck:window-ctl', (_e, action) => {
@@ -352,6 +356,10 @@ function createWindow() {
     if (action === 'minimize') win.minimize();
     else if (action === 'maximize') { win.isMaximized() ? win.unmaximize() : win.maximize(); }
     else if (action === 'close') win.close();
+    // 0.34.1：缩放（快捷键本身走 before-input-event，这里给渲染层兜底与自动化验收用）
+    else if (action === 'zoom-in') stepZoom(win, +1);
+    else if (action === 'zoom-out') stepZoom(win, -1);
+    else if (action === 'zoom-reset') stepZoom(win, 0);
     // 0.34.0：从托盘唤回（托盘 click 回调用的也是这条路径的语义）
     else if (action === 'show') {
       if (win.isMinimized()) win.restore();
@@ -489,6 +497,23 @@ app.whenReady().then(async () => {
       writeLog('[tray] 创建托盘失败，退回关窗即退出：' + (e?.message || e));
     }
   }
+
+  // 0.34.1 界面缩放：Ctrl/Cmd + `+` / `-` / `0`。必须在 createWindow 之前装，
+  // 这样第一扇窗创建（browser-window-created 事件）时就能挂上 before-input-event。
+  try {
+    let zoomStart = null;
+    try { zoomStart = (await configStore.load()).uiZoom ?? null; } catch { /* 没配置就用默认 1 */ }
+    installZoomShortcuts({
+      getWin: () => win,
+      start: zoomStart,
+      persist: (z) => {
+        // 存进 config（跨窗口/跨重启都记得）。失败不阻塞快捷键。
+        void (async () => {
+          try { const c = await configStore.load(); await configStore.saveConfig({ ...c, uiZoom: z }); } catch { /* 忽略 */ }
+        })();
+      }
+    });
+  } catch (e) { try { console.warn('[zoom] 快捷键装不上：' + (e?.message || e)); } catch { /* 忽略 */ } }
 
   createWindow();
   installExternalLinkGuards(); // 点消息里的链接要开系统浏览器，不能把主窗口导航走

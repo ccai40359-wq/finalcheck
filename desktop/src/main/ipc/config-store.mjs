@@ -70,6 +70,11 @@ export function createConfigStore({ app, getDataRoot, engineUrl }) {
     // 浏览器会话模式（0.31.0）：'' = 还没选过（首次使用时弹一次选择）；oneshot 无痕（默认）/ persistent 长期保留。
     // 只有值严格等于 'persistent' 才写盘，其余一律回落到 ''（脏值、旧配置、缺省都不该悄悄变成持久）。
     out.browserSessionMode = cfg.browserSessionMode === 'persistent' ? 'persistent' : cfg.browserSessionMode === 'oneshot' ? 'oneshot' : '';
+    // 0.34.1 界面缩放（Ctrl/Cmd + ±）：存这里，跨重启记住。夹在 0.5–3.0，非法值回落 1。
+    {
+      const z = Number(cfg.uiZoom);
+      out.uiZoom = Number.isFinite(z) && z >= 0.5 && z <= 3 ? z : 1;
+    }
     delete out.baseUrl; delete out.apiKey; delete out.model; // 旧形状已迁移进 providers
     const ids = out.providers.map((p) => p.id);
     out.activeProviderId = ids.includes(cfg.activeProviderId) ? cfg.activeProviderId : (ids[0] ?? null);

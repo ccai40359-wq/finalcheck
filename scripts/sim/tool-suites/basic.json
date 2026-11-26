@@ -134,7 +134,8 @@
         "ok": false,
         "errorMatches": "敏感路径"
       },
-      "note": "借落盘目录 ../ 读配置要拒绝"
+      "note": "借落盘目录 ../ 读配置要拒绝",
+      "needAsk": true
     },
     {
       "tool": "run_command",
@@ -144,7 +145,8 @@
       "expect": {
         "ok": false
       },
-      "note": "落盘目录只读：删除要拒绝"
+      "note": "落盘目录只读：删除要拒绝",
+      "needAsk": true
     },
     {
       "tool": "read_file",
@@ -154,7 +156,8 @@
       "expect": {
         "ok": false
       },
-      "note": "项目外路径默认拒绝"
+      "note": "项目外路径默认拒绝",
+      "needAsk": true
     },
     {
       "tool": "repair_rollback",

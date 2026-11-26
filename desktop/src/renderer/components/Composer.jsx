@@ -101,27 +101,38 @@ export default function Composer({
   const slashItems = buildSlashItems({ commands: COMMANDS, skills, lang, query: slashQ }).slice(0, 60);
   const slashOpen = !!slashMatch;
 
-  // 0.33.1 @文件引用：光标前是「@xxx」时弹项目文件候选（主进程模糊匹配，150ms 防抖）
+  // 0.33.1 @引用；0.34.1 改成**@会话**（用户：直接艾特这个项目的会话，让 AI 去翻看会话记录更好）
+  // 输入框打 @ → 列本项目的历史会话（按更新时间倒序），选中插入 @session:<id>
+  // 仍然支持手打 @路径（旧的文件引用照旧可用，只是不再给菜单）
   const mentionMatch = slashOpen ? null : input.match(/(^|\s)@([^\s@"]*)$/);
   const mentionQ = mentionMatch ? mentionMatch[2] : null;
   const [mentionItems, setMentionItems] = useState([]);
   const [mentionIndex, setMentionIndex] = useState(0);
   const [mentionClosed, setMentionClosed] = useState(null); // Esc 关掉的那个查询，换了字再弹
   useEffect(() => {
-    if (mentionQ == null || !y?.projectFiles) { setMentionItems([]); return undefined; }
+    if (mentionQ == null || !y?.sessions?.list) { setMentionItems([]); return undefined; }
     let alive = true;
     const timer = setTimeout(() => {
-      y.projectFiles(activeId || null, mentionQ).then((r) => { if (alive) { setMentionItems(Array.isArray(r) ? r : []); setMentionIndex(0); } }).catch(() => {});
+      y.sessions.list().then((r) => {
+        if (!alive) return;
+        const list = Array.isArray(r) ? r : (r?.sessions || []);
+        const q = String(mentionQ || '').toLowerCase();
+        const items = list
+          .filter((s) => !s.archived)
+          .filter((s) => !q || String(s.title || '').toLowerCase().includes(q))
+          .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+          .slice(0, 30)
+          .map((s) => ({ id: s.id, title: s.title || '(无标题)', updatedAt: s.updatedAt || 0, turns: s.turns || 0 }));
+        setMentionItems(items); setMentionIndex(0);
+      }).catch(() => {});
     }, 150);
     return () => { alive = false; clearTimeout(timer); };
-  }, [mentionQ, activeId, y]);
+  }, [mentionQ, y]);
   const mentionOpen = mentionQ != null && mentionClosed !== mentionQ && mentionItems.length > 0;
-  const chooseMention = (rel) => {
-    if (!rel || !mentionMatch) return;
+  const chooseMention = (it) => {
+    if (!it || !mentionMatch) return;
     const head = input.slice(0, mentionMatch.index) + (mentionMatch[1] || '');
-    const token = /\s/.test(rel) ? `@"${rel}"` : `@${rel}`;
-    // 选了目录：留在 @ 里继续往下挑；选了文件：补空格结束
-    const next = head + token + (rel.endsWith('/') ? '' : ' ');
+    const next = head + `@session:${it.id} `;
     setInput(next);
     requestAnimationFrame(() => {
       const el = inputRef.current;
@@ -627,30 +638,34 @@ export default function Composer({
             )}
           </div>
 
-          {/* @ 文件引用候选 */}
+          {/* @ 会话引用候选（0.34.1：@ 指向本项目的历史会话，AI 会附上该会话的完整对话记录） */}
           {mentionOpen && (
             <div className="glass-pop absolute bottom-full mb-2 left-0 right-0 rounded-2xl overflow-hidden z-50 pop-in" data-testid="mention-menu">
               <div className="max-h-72 overflow-y-auto p-1.5">
-                {mentionItems.map((rel, idx) => {
-                  const isDir = rel.endsWith('/');
-                  const trimmed = isDir ? rel.slice(0, -1) : rel;
-                  const cut = trimmed.lastIndexOf('/');
-                  const name = trimmed.slice(cut + 1) + (isDir ? '/' : '');
-                  const dir = cut > 0 ? trimmed.slice(0, cut) : '';
+                {mentionItems.map((it, idx) => {
+                  const age = (() => {
+                    const ms = Date.now() - (it.updatedAt || 0);
+                    if (!it.updatedAt) return '';
+                    const m = Math.floor(ms / 60000);
+                    if (m < 60) return `${Math.max(m, 0)}m`;
+                    const h = Math.floor(m / 60); if (h < 24) return `${h}h`;
+                    return `${Math.floor(h / 24)}d`;
+                  })();
                   return (
-                    <button key={rel}
+                    <button key={it.id}
                       onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => chooseMention(rel)}
+                      onClick={() => chooseMention(it)}
                       onMouseEnter={() => setMentionIndex(idx)}
                       className={`fc-menu-row w-full flex items-center gap-2.5 px-2.5 py-[6px] rounded-lg text-left ${idx === Math.min(mentionIndex, mentionItems.length - 1) ? 'bg-lift/[0.08]' : 'hover:bg-lift/[0.05]'}`}>
-                      <span className={`shrink-0 w-1.5 h-1.5 rounded-full ${isDir ? 'bg-gold/80' : 'bg-jade/70'}`} />
-                      <span className="shrink-0 max-w-[55%] truncate font-mono text-[12px] text-ink/90">{name}</span>
-                      <span className="min-w-0 flex-1 truncate text-left font-mono text-[11px] text-mute/70">{dir}</span>
+                      <span className="shrink-0 w-1.5 h-1.5 rounded-full bg-gold/80" />
+                      <span className="min-w-0 flex-1 truncate text-[12px] text-ink/90">{it.title}</span>
+                      {it.turns ? <span className="shrink-0 text-[10px] text-mute/50">{it.turns} 轮</span> : null}
+                      <span className="shrink-0 font-mono text-[11px] text-mute/60">{age}</span>
                     </button>
                   );
                 })}
                 <div className="px-3 pt-2 pb-1 text-[10px] text-mute/50 border-t border-lift/[0.06] mt-1">
-                  {t('@ 引用项目文件：发送时附上文件内容 · ↑↓ 选择 · Enter/Tab 确认 · Esc 关闭')}
+                  {t('@ 引用本项目的会话（发送时附上完整对话记录，AI 会去翻看）· ↑↓ 选择 · Enter/Tab 确认 · Esc 关闭')}
                 </div>
               </div>
             </div>

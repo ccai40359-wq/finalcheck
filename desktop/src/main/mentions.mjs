@@ -18,6 +18,8 @@ export function findMentions(text) {
   for (const m of String(text || '').matchAll(MENTION_RE)) {
     const p = (m[2] || m[3] || '').replace(/[),.;:!?，。；：！？）]+$/, '');
     if (!p || seen.has(p)) continue;
+    // 0.34.1：@session:<id> 是会话引用，不是文件路径，交给 expandMentions 的会话分支处理
+    if (/^session:/i.test(p)) continue;
     seen.add(p);
     out.push(p);
   }
@@ -38,10 +40,45 @@ function looksBinary(buf) {
 /**
  * @returns {Promise<{ blocks: string[], attached: string[], skipped: Array<{path, reason}> }>}
  */
-export async function expandMentions(text, { root } = {}) {
+export async function expandMentions(text, { root, loadSession = null, listSessions = null } = {}) {
   const blocks = [];
   const attached = [];
   const skipped = [];
+  // 0.34.1：@ 也能引用**会话**（用户：@ 直接艾特这个项目的会话，让 AI 去翻看会话记录更好）。
+  // 语法：@session:<会话 id>（输入框会给这个形状写进文本）。会话记录不在项目目录里，
+  // 所以必须先处理，且不受 root 限制。
+  const sessionRefs = [...String(text || '').matchAll(/(?:^|\s)@session:([0-9A-Za-z_-]+)/g)]
+    .map((m) => m[1])
+    .filter((v, i, a) => a.indexOf(v) === i);
+  const sessParts = [];
+  if (sessionRefs.length && typeof loadSession === 'function') {
+    const MAX_SESSION_BYTES = 200 * 1024;
+    for (const sid of sessionRefs.slice(0, 4)) {
+      try {
+        const s = await loadSession(sid);
+        if (!s || !Array.isArray(s.messages)) { skipped.push({ path: '@session:' + sid, reason: '读不到这条会话' }); continue; }
+        const title = s.title || '(无标题)';
+        const lines = [];
+        for (const m of s.messages) {
+          const role = m.role === 'user' ? '用户' : (m.role === 'assistant' ? 'AI' : String(m.role || ''));
+          const body = typeof m.content === 'string'
+            ? m.content
+            : Array.isArray(m.content) ? m.content.filter((p) => p?.type === 'text').map((p) => p.text).join(' ') : '';
+          if (!body.trim()) continue;
+          lines.push(`【${role}】${body.trim()}`);
+        }
+        let joined = lines.join('\n\n');
+        if (joined.length > MAX_SESSION_BYTES) joined = joined.slice(-MAX_SESSION_BYTES) + '\n…（更早的内容已省略）';
+        sessParts.push(`<session id="${sid}" title="${title}" turns="${s.messages.length}">\n${joined}\n</session>`);
+        attached.push('@session:' + title);
+      } catch (e) {
+        skipped.push({ path: '@session:' + sid, reason: String(e?.message || e) });
+      }
+    }
+  }
+  if (sessParts.length) {
+    blocks.push(`【用户用 @ 引用的历史会话（下面是完整对话记录，直接看，不用再去找）】\n${sessParts.join('\n\n')}`);
+  }
   if (!root) return { blocks, attached, skipped };
   const base = path.resolve(root);
   let total = 0;

@@ -275,7 +275,10 @@ export function createBackend({ ipcMain, getWin, getDataRoot, engineUrl, repoRoo
       sessionProjectPathOf,
       store,
       state,
-      shellAppRoot
+      shellAppRoot,
+      // 0.34.1 任务栏提醒：提问/审批 → 红点+气泡音；任务完成 → 同样。
+      // 无头环境（CLI/测试台）没窗口，模块里的 markAttention 会自己判空，不报错。
+      attention: await import(engineUrl('desktop/src/main/attention.mjs')).catch(() => null)
     });
   }
 
