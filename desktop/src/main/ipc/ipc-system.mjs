@@ -41,7 +41,10 @@ export function registerSystemIpc({ ipcMain, getWin, engineUrl, store, getHooksC
     // 而 /compact 之后真正发给模型的是「摘要 + 边界之后的消息」——于是面板一直显示压缩前的巨大值
     // （用户实测：压缩提示写着 908451→16411，面板却不动）。修法：用同一个 keepAfterCompactCut
     // 裁到「实际会发出去的那部分」，摘要按注入后的文本计入。
-    const rawMessages = payload.messages || [];
+    // 0.34.4 手机端只发会话 id（useSession）：不再把整段对话从手机上传过来，按电脑上的存档算
+    const rawMessages = payload.useSession && sess
+      ? (sess.messages || []).filter((m) => !m?.steer)
+      : (payload.messages || []);
     let counted = rawMessages;
     if (sess?.summary) {
       const cutAt = Number(sess.summaryAt) || 0;

@@ -18,6 +18,10 @@ const BACKOFF_MAX = 60000;
 const SETTLE_MS = 3500;        // ssh 起来后多久开始验证公网（ExitOnForwardFailure 失败通常 1–2 秒内退出）
 const CHECK_EVERY_MS = 60000;  // 连通后每分钟验一次
 const CHECK_FAILS_TO_RESTART = 2;
+// 0.34.4：只有「服务器明确连不到这台电脑」（502/504、应答的不是这台电脑）才重建隧道。
+// 以前超时也算失败，连着两次就杀掉 ssh 重建——可超时多半只是网络慢或电脑正忙，隧道本身好好的；
+// 一杀，手机上所有正在进行的请求一起断（用户实测：7 分钟断 3 次，每次掐断 40–70 个请求）。
+// 真正断网交给 ssh 自己的心跳（ServerAliveInterval 15 秒 × 3 次 ≈ 45 秒没回应就退出，退出后自动重连）。
 
 /** ssh 目标：user@host 或 ~/.ssh/config 里的别名；不允许以 - 开头（防止被当成 ssh 参数） */
 export function validTarget(t) {
@@ -109,13 +113,13 @@ export function createTunnel({ config, instanceId, onChange = () => {}, spawn = 
     const t = setTimeout(() => ctl.abort(), 10000);
     try {
       const r = await doFetch(`${publicUrl}/api/ping`, { signal: ctl.signal, cache: 'no-store' });
-      if (r.status === 502 || r.status === 504) return { ok: false, error: `公网地址返回 ${r.status}：服务器收到了请求，但隧道那头没接上` };
+      if (r.status === 502 || r.status === 504) return { ok: false, hard: true, error: `公网地址返回 ${r.status}：服务器收到了请求，但隧道那头没接上` };
       if (!r.ok) return { ok: false, error: `公网地址返回 ${r.status}：检查服务器上的转发规则（路径、端口）` };
       const j = await r.json().catch(() => null);
-      if (j?.fc !== instanceId) return { ok: false, error: '公网地址通了，但应答的不是这台电脑的 FinalCheck（端口可能被别的程序或旧插件占着）' };
+      if (j?.fc !== instanceId) return { ok: false, hard: true, error: '公网地址通了，但应答的不是这台电脑的 FinalCheck（端口可能被别的程序或旧插件占着）' };
       return { ok: true };
     } catch (e) {
-      return { ok: false, error: e?.name === 'AbortError' ? '打开公网地址超时' : `打不开公网地址：${e?.cause?.code || e?.message || e}` };
+      return { ok: false, error: e?.name === 'AbortError' ? '打开公网地址超时（隧道没断，先不重建：多半是网络慢或电脑正忙）' : `打不开公网地址：${e?.cause?.code || e?.message || e}` };
     } finally { clearTimeout(t); }
   }
 
@@ -130,16 +134,17 @@ export function createTunnel({ config, instanceId, onChange = () => {}, spawn = 
         checkFails = 0; backoff = T.backoffMin;
         set({ status: 'up', error: '', checkedAt: Date.now(), verified: !r.skipped });
       } else {
-        checkFails += 1;
+        checkFails = r.hard ? checkFails + 1 : 0;
         set({ status: 'unreachable', error: r.error, checkedAt: Date.now() });
-        // 连着两次打不开：重建隧道（服务器那头的转发可能已经失效，ssh 自己察觉不到）
-        if (checkFails >= CHECK_FAILS_TO_RESTART) { checkFails = 0; restartSoon(); return; }
+        // 连着两次「服务器连不到这台电脑」：重建隧道（服务器那头的转发已经失效，ssh 自己察觉不到）
+        if (checkFails >= CHECK_FAILS_TO_RESTART) { checkFails = 0; log(`[tunnel] 重建：${r.error}`); restartSoon(); return; }
       }
       scheduleCheck(myGen, state.status === 'up' ? T.checkEvery : Math.min(T.checkEvery, 15000));
     }, delay);
   }
 
   function restartSoon() {
+    gen++;      // 先作废旧进程的回调：自己杀掉的 ssh 退出时不能再算一次「断开」（以前会再排一次重连、等待时间翻倍）
     killChild();
     clearTimers();
     if (!wanted) return;

@@ -461,4 +461,5 @@ export const EN_SETTINGS = {
   '复位': 'Reset',
   '点击适应窗口': 'Click to fit the window',
   '点击查看原始大小': 'Click to view at actual size',
+  '打开公网地址超时（隧道没断，先不重建：多半是网络慢或电脑正忙）': 'Timed out opening the public URL (the tunnel is still up and is not rebuilt: usually a slow network or a busy computer)',
 };

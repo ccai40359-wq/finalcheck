@@ -603,6 +603,10 @@ export default function App() {
     })) return;
     try {
       let queriedRun = null;
+      // 0.34.4 手机上每次调用都要绕服务器一个来回（约 0.3 秒）：运行状态和存档同时去取，不再一个等一个。
+      // 查到有回合在跑时下面会在快照之后再读一次存档（保持「存档不比快照旧」），所以这里先读的那份只在没回合时用。
+      const diskFirst = Promise.resolve().then(() => y.sessions.open(id));
+      diskFirst.catch(() => {});
       if (!runsRef.current.has(id) && y.agentRunState) {
         queriedRun = reattachedRun(unwrapIpc(await y.agentRunState(id)));
         if (queriedRun) {
@@ -616,9 +620,9 @@ export default function App() {
           }
         }
       }
-      let s = unwrapIpc(await y.sessions.open(id));
-      // A very short run can settle between the snapshot query and disk read.
-      if (queriedRun && !runsRef.current.has(id)) s = unwrapIpc(await y.sessions.open(id));
+      let s = unwrapIpc(await diskFirst);
+      // 有回合在跑：在快照之后重读存档（并发读到的那份可能比快照旧）；很短的回合也可能在两次之间结束，同样靠这次重读
+      if (queriedRun) s = unwrapIpc(await y.sessions.open(id));
       // 归属：调用方传入的项目 → 会话缓存里的目录登记 → 当前项目（老会话/未登记时兜底）
       rememberSessionProject(projectId || projectIdOfSession(s.id) || activeProjectIdRef.current);
       setActiveId(s.id);

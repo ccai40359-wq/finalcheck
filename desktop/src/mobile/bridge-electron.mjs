@@ -5,6 +5,8 @@
 // 这样桌面端的界面、按钮、交互一个不改，在手机浏览器里原样跑。
 // 只有 Electron 才有的几样（原生选文件夹 / 选文件 / 剪贴板 / 用系统程序打开 / 窗口按钮）在这里换成浏览器的做法。
 
+import { isReadCall, createLatestOnly } from './rpc-policy.mjs';
+
 const BEARER_KEY = 'fc-mobile-app-bearer';
 // 渲染层据此知道自己是手机那一端（lib/remote-sync.mjs → 自己发出的同步事件不重复处理）
 window.__FC_MOBILE__ = true;
@@ -207,16 +209,30 @@ function unpaired() {
 }
 
 // ---------------- 远程调用 ----------------
+// 0.34.4 只读的调用（查询、列表、打开会话）碰上网络抖动 / 隧道刚好在重连：等一下自动重试，不直接报错。
+// 会改东西的调用（发消息、新建会话……）不重试：请求可能已经到了电脑，重发会做两遍。
+const RETRY_WAITS = [1000, 2000, 4000];
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
 async function rpc(channel, args) {
+  const canRetry = isReadCall(channel);
   let r;
-  try {
-    r = await fetch(`${BASE}/api/rpc`, {
-      method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + bearer },
-      body: JSON.stringify({ channel, args: encode(args) })
-    });
-  } catch {
-    connState(false);
-    throw new Error('连不上电脑，请检查网络');
+  for (let attempt = 0; ; attempt++) {
+    let netFail = false;
+    try {
+      r = await fetch(`${BASE}/api/rpc`, {
+        method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + bearer },
+        body: JSON.stringify({ channel, args: encode(args) })
+      });
+      // 502/503/504 是服务器那头的反向代理在说「电脑没接上」：和断网一样处理
+      if (r.status === 502 || r.status === 503 || r.status === 504) netFail = true;
+    } catch { netFail = true; }
+    if (!netFail) break;
+    if (!canRetry || attempt >= RETRY_WAITS.length) {
+      connState(false);
+      throw new Error('连不上电脑，请检查网络');
+    }
+    await sleep(RETRY_WAITS[attempt]);
   }
   if (r.status === 401) { unpaired(); throw new Error('需要重新配对'); }
   const j = await r.json().catch(() => ({ ok: false, error: '电脑返回了无法识别的内容' }));
@@ -331,7 +347,13 @@ function pickDirectoryInBrowser() {
   });
 }
 
+// 0.34.4 输入框的上下文用量：桌面每次消息变动都把**整段对话**发过去算；在手机上那是整段对话走流量、
+// 经服务器和隧道上传，电脑还要在主线程上解析——一轮对话里能发几十次，把隧道和电脑都拖慢。
+// 手机只发会话 id（电脑按存档算），同时最多一个在路上，两次之间至少隔 3 秒。
+const contextStats = createLatestOnly((p) => rpc('finalcheck:context:stats', [p]), { gapMs: 3000 });
+
 const LOCAL = {
+  'finalcheck:context:stats': (p = {}) => contextStats({ sessionId: p?.sessionId || null, useSession: true }),
   'finalcheck:window-ctl': () => null,
   'finalcheck:pick-files': () => pickFilesInBrowser(),
   'finalcheck:pick-directory': () => pickDirectoryInBrowser(),

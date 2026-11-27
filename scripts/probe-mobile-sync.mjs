@@ -132,6 +132,23 @@ try {
   phone.on('pageerror', (e) => phone.errors.push(e.message));
   phone.on('request', (r) => { if (/\/api\/pair/.test(r.url())) console.log('[phone] pair', r.postData()); });
   phone.on('framenavigated', (f) => { if (f === phone.mainFrame()) console.log('[phone] nav', f.url()); });
+  // FC_PROBE_STATS=1：统计手机发了哪些调用、多大、同时挂着几个（FC_PROBE_LATENCY 模拟隧道往返延迟，毫秒）
+  if (process.env.FC_PROBE_STATS) {
+    const lat = Number(process.env.FC_PROBE_LATENCY || 0);
+    if (lat) { const cdp = await ctx.newCDPSession(phone); await cdp.send('Network.enable'); await cdp.send('Network.emulateNetworkConditions', { offline: false, latency: lat, downloadThroughput: -1, uploadThroughput: -1 }); }
+    const st = (globalThis.__fcStats = { byCh: new Map(), inflight: 0, peak: 0, t0: Date.now(), total: 0 });
+    phone.on('request', (r) => {
+      if (!/\/api\//.test(r.url())) return;
+      let ch = r.url().replace(/.*\/api\//, '/api/').replace(/\?.*/, '');
+      const body = r.postData() || '';
+      if (ch === '/api/rpc') { try { ch = JSON.parse(body).channel; } catch { /* 忽略 */ } }
+      const e = st.byCh.get(ch) || { n: 0, bytes: 0, max: 0 }; e.n++; e.bytes += body.length; e.max = Math.max(e.max, body.length); st.byCh.set(ch, e);
+      st.total++; st.inflight++; st.peak = Math.max(st.peak, st.inflight);
+      r.__t = Date.now();
+    });
+    const done = (r) => { if (/\/api\//.test(r.url())) st.inflight--; };
+    phone.on('requestfinished', done); phone.on('requestfailed', done);
+  }
   await phone.goto(link);
   await phone.locator('textarea').first().waitFor();
   const st2 = await desk.evaluate(() => window.finalcheck.mobile.state());
@@ -320,6 +337,11 @@ try {
   else child.kill();
   await gw.close?.().catch?.(() => {});
   await sleep(1500);
+  if (globalThis.__fcStats) {
+    const st = globalThis.__fcStats; const sec = (Date.now() - st.t0) / 1000;
+    console.log(`\n[stats] 手机 ${sec.toFixed(0)} 秒内发了 ${st.total} 个请求（${(st.total / sec).toFixed(1)}/秒），同时挂着最多 ${st.peak} 个`);
+    for (const [ch, e] of [...st.byCh].sort((x, y) => y[1].bytes - x[1].bytes || y[1].n - x[1].n).slice(0, 15)) console.log(`[stats] ${String(e.n).padStart(4)} 次  上传共 ${(e.bytes / 1024).toFixed(0).padStart(6)}KB  最大一次 ${(e.max / 1024).toFixed(0).padStart(5)}KB  ${ch}`);
+  }
   const fail = results.filter((r) => !r.ok).length;
   console.log(`\n${results.length - fail}/${results.length} 通过。截图：${out}`);
   process.exit(fail ? 1 : 0);

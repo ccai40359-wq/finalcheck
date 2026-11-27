@@ -6,6 +6,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.34.4] - 2026-11-27
+
+This release stops phone access from dropping now and then, and makes it faster.
+
+### Fixed
+
+- **Phone no longer disconnects for no reason**: before, a slow reply from the public URL made FinalCheck rebuild the whole tunnel, cutting off everything in progress on the phone; now it rebuilds only when the server really cannot reach this computer, and a slow network only shows a notice.
+- **Reconnects no longer wait longer and longer**: after a tunnel rebuild, the old connection exiting is no longer counted as another drop, so the reconnect wait no longer doubles for nothing.
+
+### Improved
+
+- **Faster on the phone**: the phone no longer uploads the whole conversation to the computer at every step to count context usage; the computer counts it from the saved session, at most once every 3 seconds, and opening a session sends its lookups at the same time, saving a round trip.
+- **Brief network hiccups no longer show errors**: viewing and refreshing on the phone retry automatically through a network blip or tunnel reconnect; actions that change things, like sending a message, are not retried, so nothing is sent twice.
+
 ## [0.34.3] - 2026-11-27
 
 This release makes opened images sharp, lets you zoom the interface, and leaves the remote-access server entirely up to you.
