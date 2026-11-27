@@ -49,7 +49,7 @@ contextBridge.exposeInMainWorld('finalcheck', {
   sessions: {
     list: () => ipcRenderer.invoke('finalcheck:sessions:list'),
     open: (id) => ipcRenderer.invoke('finalcheck:sessions:open', id),
-    create: (title) => ipcRenderer.invoke('finalcheck:sessions:new', title),
+    create: (title, projectId) => ipcRenderer.invoke('finalcheck:sessions:new', title, projectId),
     remove: (id) => ipcRenderer.invoke('finalcheck:sessions:delete', id),
     rename: (id, title) => ipcRenderer.invoke('finalcheck:sessions:rename', id, title),
     flags: (id, flags) => ipcRenderer.invoke('finalcheck:sessions:flags', id, flags),
@@ -77,6 +77,19 @@ contextBridge.exposeInMainWorld('finalcheck', {
   // 回合中途提问：主进程推送卡片；回答走 invoke，回填后本回合继续
   onAskUser: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('finalcheck:ask-user', h); return () => ipcRenderer.removeListener('finalcheck:ask-user', h); },
   askUserAnswer: (payload) => ipcRenderer.invoke('finalcheck:ask-user-answer', payload),
+  // 0.35 手机访问：电脑和手机是同一个引擎上的两个界面，另一端做了事这一端跟着刷新
+  onSync: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('finalcheck:sync', h); return () => ipcRenderer.removeListener('finalcheck:sync', h); },
+  onApprovalResolved: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('finalcheck:approval-resolved', h); return () => ipcRenderer.removeListener('finalcheck:approval-resolved', h); },
+  onAskUserResolved: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('finalcheck:ask-user-resolved', h); return () => ipcRenderer.removeListener('finalcheck:ask-user-resolved', h); },
+  mobile: {
+    state: () => ipcRenderer.invoke('finalcheck:mobile:state'),
+    set: (patch) => ipcRenderer.invoke('finalcheck:mobile:set', patch),
+    pairCode: () => ipcRenderer.invoke('finalcheck:mobile:pair-code'),
+    unpair: () => ipcRenderer.invoke('finalcheck:mobile:unpair'),
+    tunnelRetry: () => ipcRenderer.invoke('finalcheck:mobile:tunnel-retry'),
+    autostart: (on) => ipcRenderer.invoke('finalcheck:mobile:autostart', on),
+    onChanged: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('finalcheck:mobile:changed', h); return () => ipcRenderer.removeListener('finalcheck:mobile:changed', h); }
+  },
   confirmHost: (host) => ipcRenderer.invoke('finalcheck:confirm-host', host),
   confirmDir: (dir) => ipcRenderer.invoke('finalcheck:confirm-dir', dir),
   getConfig: () => ipcRenderer.invoke('finalcheck:get-config'),

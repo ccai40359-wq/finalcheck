@@ -18,6 +18,7 @@ import { createConfigStore, registerConfigIpc } from './ipc/config-store.mjs';
 import { registerProjectIpc } from './ipc/ipc-projects.mjs';
 import { registerWorkspaceIpc } from './ipc/ipc-workspace.mjs';
 import { createBackend, IMAGE_MIME } from './backend.mjs';
+import { createMobileAccess } from './mobile/mobile-access.mjs';
 import { registerDiagnosticsIpc } from './ipc/ipc-diagnostics.mjs';
 import { registerUpdaterIpc } from './ipc/ipc-updater.mjs';
 import { appendLogLine, installProcessGuards, installSafeIpc } from './error-guard.mjs';
@@ -30,6 +31,8 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..', '..'); // desktop/src/main
 const engineUrl = (rel) => pathToFileURL(path.join(REPO_ROOT, rel)).href;
 let DATA_ROOT = path.resolve(__dirname, '..', '..'); // dev 默认 desktop/；打包后在 whenReady 改到 userData
 const getDataRoot = () => DATA_ROOT;
+/** @type {ReturnType<typeof createMobileAccess> | null} */
+let mobileAccess = null;
 const APP_ICON = path.join(__dirname, '..', '..', 'build', 'icon.ico'); // 打包后 exe 也用它
 app.setName('FinalCheck'); // 进程/系统里显示 FinalCheck（不再显示 Electron）
 process.title = 'FinalCheck';
@@ -128,7 +131,9 @@ if (!gotLock) {
   app.quit();
 } else {
   // 0.34.0：第二次启动时窗口可能已被收到托盘（隐藏），要 show 回来再聚焦
-  app.on('second-instance', () => {
+  app.on('second-instance', (_e, argv) => {
+    // FinalCheck.exe --mobile-pair-code：远程（SSH）时生成手机配对码写进数据目录，不弹窗口
+    if (Array.isArray(argv) && argv.includes('--mobile-pair-code')) { try { mobileAccess?.writePairCodeFile(); } catch (e) { writeLog('[mobile] 生成配对码失败：' + (e?.message || e)); } return; }
     if (!win || win.isDestroyed()) return;
     if (win.isMinimized()) win.restore();
     if (!win.isVisible()) win.show();
@@ -325,12 +330,23 @@ function exitCuMode() {
   } catch { /* ignore */ }
 }
 
+// 界面缩放存进 config（跨窗口 / 跨重启都记得）。快捷键、设置页按钮都走这里；失败不影响缩放本身。
+function saveZoom(z) {
+  if (!Number.isFinite(Number(z))) return;
+  void (async () => {
+    try { const c = await configStore.load(); await configStore.saveConfig({ ...c, uiZoom: Number(z) }); } catch { /* 忽略 */ }
+  })();
+}
+// 0.34.2 开机自动启动：带 --hidden 启动，有托盘就直接待在托盘里（手机随时能连），不弹窗口打扰
+let startHidden = process.argv.includes('--hidden');
 function createWindow() {
+  const hideNow = startHidden && trayReady();
+  startHidden = false; // 只管第一扇窗：之后从托盘唤回 / 重建窗口都正常显示
   win = new BrowserWindow({
     width: 1280, height: 820, minWidth: 980,
     // 后台驱动模式（FINALCHECK_WINDOW_BG=1）：不建可见窗口、不抢焦点，CDP 照常驱动
     // （自动化跑批/长任务验收用——窗口是真实的，只是不弹到用户面前）
-    show: process.env.FINALCHECK_WINDOW_BG !== '1',
+    show: process.env.FINALCHECK_WINDOW_BG !== '1' && !hideNow,
     title: 'FinalCheck',
     // 窗口底板色：跟随主题，否则浅色主题启动/缩放时会闪一下黑边。
     // 这里读盘上的 config.json（同步、启动期一次），拿不到就按深色兜底。
@@ -347,6 +363,8 @@ function createWindow() {
       backgroundThrottling: false
     }
   });
+  // 0.35：窗口收到的每个事件同时推给已连接的手机
+  mobileAccess?.attachWindow(win);
   // 0.34.1：用户回到窗口 → 清掉任务栏红点（代表「需要你看一下」）
   win.on('focus', () => { try { clearAttention(win); } catch { /* 忽略 */ } });
   // 自绘窗口按钮通道（removeHandler 保证重复建窗不冲突）
@@ -357,9 +375,9 @@ function createWindow() {
     else if (action === 'maximize') { win.isMaximized() ? win.unmaximize() : win.maximize(); }
     else if (action === 'close') win.close();
     // 0.34.1：缩放（快捷键本身走 before-input-event，这里给渲染层兜底与自动化验收用）
-    else if (action === 'zoom-in') stepZoom(win, +1);
-    else if (action === 'zoom-out') stepZoom(win, -1);
-    else if (action === 'zoom-reset') stepZoom(win, 0);
+    else if (action === 'zoom-in') saveZoom(stepZoom(win, +1));
+    else if (action === 'zoom-out') saveZoom(stepZoom(win, -1));
+    else if (action === 'zoom-reset') saveZoom(stepZoom(win, 0));
     // 0.34.0：从托盘唤回（托盘 click 回调用的也是这条路径的语义）
     else if (action === 'show') {
       if (win.isMinimized()) win.restore();
@@ -375,7 +393,8 @@ function createWindow() {
       ok: true,
       visible: win.isVisible(),
       minimized: win.isMinimized(),
-      maximized: win.isMaximized()
+      maximized: win.isMaximized(),
+      zoom: (() => { try { return win.webContents.getZoomFactor(); } catch { return 1; } })()
     };
   });
   if (process.env.ELECTRON_RENDERER_URL) win.loadURL(process.env.ELECTRON_RENDERER_URL);
@@ -427,6 +446,23 @@ app.whenReady().then(async () => {
   } catch {
     logFile = path.join(DATA_ROOT, 'logs', 'main.log');
   }
+  // 0.35 手机访问：必须在任何 ipcMain.handle 之前装上——手机端调的就是这些处理函数本身（同一个引擎，天然同屏）。
+  // 先于 installSafeIpc：这样记下来的是带错误边界的那一份，手机拿到的错误形态和窗口一致。
+  mobileAccess = createMobileAccess({
+    dataRoot: DATA_ROOT,
+    staticDir: path.join(__dirname, '../mobile'),
+    configFile: () => process.env.FINALCHECK_CONFIG_FILE,
+    log: writeLog,
+    // 开机自动启动（Windows 写的是当前用户的启动项）。只有正式打包的程序才写系统：
+    // 开发 / UI 自检下写进去的会是 electron.exe 或临时目录里的程序，所以那里用内存里的假开关。
+    loginItem: app.isPackaged && process.env.FINALCHECK_UI_SELFCHECK !== '1'
+      ? {
+          get: () => app.getLoginItemSettings({ args: ['--hidden'] }).openAtLogin,
+          set: (on) => app.setLoginItemSettings({ openAtLogin: on, args: ['--hidden'] })
+        }
+      : (() => { let on = false; return { get: () => on, set: (v) => { on = !!v; } }; })()
+  });
+  mobileAccess.captureIpc(ipcMain);
   // 所有 IPC handler 统一错误边界：抛错 → { error, code: 'IPC_FAILED' }（不再把栈丢给用户）
   installSafeIpc(ipcMain, { log: writeLog });
 
@@ -463,6 +499,7 @@ app.whenReady().then(async () => {
     store: configStore
   });
   registerConfigIpc({ ipcMain, store: configStore });
+  mobileAccess.registerIpc(ipcMain);
   const updater = registerUpdaterIpc({ ipcMain, app, getWin: () => win });
 
   // 0.34.0 系统托盘：必须在 createWindow 之前建好——createWindow 里要靠 trayReady() 判断
@@ -506,16 +543,15 @@ app.whenReady().then(async () => {
     installZoomShortcuts({
       getWin: () => win,
       start: zoomStart,
-      persist: (z) => {
-        // 存进 config（跨窗口/跨重启都记得）。失败不阻塞快捷键。
-        void (async () => {
-          try { const c = await configStore.load(); await configStore.saveConfig({ ...c, uiZoom: z }); } catch { /* 忽略 */ }
-        })();
-      }
+      persist: saveZoom
     });
   } catch (e) { try { console.warn('[zoom] 快捷键装不上：' + (e?.message || e)); } catch { /* 忽略 */ } }
 
   createWindow();
+  // 手机访问：设置里开着（或测试用 FINALCHECK_MOBILE_PORT）就起服务；失败只记在设置页，不影响桌面端
+  void mobileAccess.apply().then(() => {
+    if (process.argv.includes('--mobile-pair-code')) mobileAccess.writePairCodeFile();
+  }).catch((e) => writeLog('[mobile] 启动失败：' + (e?.message || e)));
   installExternalLinkGuards(); // 点消息里的链接要开系统浏览器，不能把主窗口导航走
   // 0.29.2：CU 模式开关 → 全屏遮罩 + 主窗右上角迷你化（computer-use 模块在首次可操作截图/动作时进入，
   // 撤销授权 / 回合收尾 / 用户点停止时退出）。
@@ -582,6 +618,8 @@ app.on('before-quit', () => {
   })();
   // 0.33.0：关掉 MCP 子进程（Windows 上父进程退出不会顺带结束 stdio 子进程）
   void backend.shutdown?.().catch?.(() => {});
+  // 0.35：关掉手机访问服务（断开手机的事件流，端口立刻释放）
+  void mobileAccess?.stop().catch(() => {});
 });
 
 // 0.34.0：有托盘时窗口全关不退出（那是「收到托盘」），进程留着跑定时唤醒与后台任务。

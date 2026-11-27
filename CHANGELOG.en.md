@@ -6,6 +6,39 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.34.3] - 2026-11-27
+
+This release makes opened images sharp, lets you zoom the interface, and leaves the remote-access server entirely up to you.
+
+### Added
+
+- **Interface zoom**: Settings → Appearance now has zoom buttons and the current level, and like a browser you can press Ctrl + = to zoom in, Ctrl + - to zoom out and Ctrl + 0 to reset; the size is remembered.
+- **Pinch zoom on phones**: on Android you can pinch to enlarge small text and image details.
+
+### Fixed
+
+- **Opened images are no longer blurry**: on the computer and the phone an opened image now shows the original file, filling the window; click again to view it at actual pixels and scroll around.
+
+### Improved
+
+- **No preset server for remote access**: the installer contains no server address; to use remote access, enter your own server in Settings → Phone access. LAN access works as before.
+
+## [0.34.2] - 2026-11-27
+
+This release adds Phone access: your phone browser opens the FinalCheck running on your computer, synced live both ways, and FinalCheck can connect to your own server for access from anywhere.
+
+### Added
+
+- **Phone access**: turn it on in Settings → Phone access and your phone browser uses FinalCheck on this computer: same sessions, same turn, messages from the phone appear on the computer live and vice versa; approval and question cards answered on one side close on the other.
+- **Each side keeps its own view**: the phone and the computer can sit in different projects and sessions, so you can work in chat A on the phone while chat C runs a task on the computer.
+- **Phone button in the sidebar**: a phone icon next to Settings opens the QR code and pairing link, and shows which phone is connected, whether it is online, and whether it came over the internet or LAN. The icon turns green while the phone is online.
+- **Internet access (SSH tunnel)**: enter your server and public URL and FinalCheck opens a reverse tunnel itself, reconnects when it drops, and checks every minute that the public URL really loads; when it does not, it tells you why (for example 502 means the tunnel is not connected).
+- **Start at login**: FinalCheck can start in the tray when you sign in to Windows, so your phone can always connect.
+
+### Improved
+
+- **Phone UI fits small screens**: the sidebar and settings navigation become drawers, long press acts as right click, and buttons keep their desktop size; screenshots and long outputs are compressed and fetched separately, so weak connections no longer stall and drop.
+
 ## [0.34.1] - 2026-11-26
 
 This release fixes "it keeps asking even though I already allowed it" and "I can't open my own screenshot": full access no longer interrupts you, files in the same folder are asked once, @ now references sessions, plus a taskbar red dot and UI zoom.

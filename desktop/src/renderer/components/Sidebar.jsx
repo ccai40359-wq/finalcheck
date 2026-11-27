@@ -5,6 +5,7 @@ import { t } from '../i18n/core.mjs';
 import { prettyTitle, relTime } from '../lib/app-helpers.mjs';
 import { sidebarUpdateButton } from '../lib/sidebar-update.mjs';
 import { IconPlusCircle, IconFolderPlus, IconFolder, IconPlus, IconTrash, IconArchive, IconUnarchive, IconGear, Spinner } from './Icons.jsx';
+import { MobileButton } from './MobilePanel.jsx';
 
 const SESSION_PREVIEW = 5; // 每个工作区默认露出几条会话，其余走 Show more
 
@@ -32,7 +33,7 @@ export default function Sidebar({
   showAllSessions, showArchived, runningIds, sidebarUpdate, onUpdateAction, isProjectExpanded,
   setShowAllSessions, setShowArchived,
   onNewSession, onAddProject, onToggleProject, onOpenSession, onNewSessionInProject,
-  onRemoveProject, onArchiveSession, onOpenRowMenu, onSettings,
+  onRemoveProject, onArchiveSession, onOpenRowMenu, onSettings, onMobileSettings,
   collapsed = false
 }) {
   // 折叠动画的性能约束（本仓踩过的坑）：
@@ -206,6 +207,8 @@ export default function Sidebar({
             page === 'settings' ? 'bg-lift/[0.06] text-ink' : 'text-mute hover:text-ink hover:bg-lift/[0.045]'}`}>
           <IconGear active={page === 'settings'} />Settings
         </button>
+        {/* 0.34.2：手机访问（扫码 / 连着哪台 / 外网通不通）。手机网页里不显示——手机自己就是那台手机 */}
+        {typeof window !== 'undefined' && !window.__FC_MOBILE__ ? <MobileButton onOpenSettings={onMobileSettings} /> : null}
         <SidebarUpdateButton state={sidebarUpdate} onAction={onUpdateAction} />
       </div>
       </div>

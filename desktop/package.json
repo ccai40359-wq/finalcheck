@@ -1,7 +1,7 @@
 {
   "name": "finalcheck-desktop",
   "productName": "FinalCheck",
-  "version": "0.34.1",
+  "version": "0.34.3",
   "author": "Sean (https://github.com/ccai40359-wq)",
   "description": "FinalCheck 终检台桌面端：全方位代码体检 + 渗透/压测 + AI Agent",
   "private": true,
@@ -157,6 +157,7 @@
   "dependencies": {
     "autocannon": "^7.15.0",
     "better-sqlite3": "^12.11.1",
-    "electron-updater": "^6.8.11"
+    "electron-updater": "^6.8.11",
+    "qrcode-generator": "2.0.4"
   }
 }

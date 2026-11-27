@@ -6,6 +6,7 @@ import SettingsPage from './pages/SettingsPage.jsx';
 import { api } from './lib/ui.jsx';
 import { mergeRunningRun, shouldReloadSessionFromDisk } from './lib/session-restore.mjs';
 import { acceptRunPacket, reattachedRun } from './lib/agent-resume.mjs';
+import { classifyPacket, isOwnSync, sameQueue, selfOrigin } from './lib/remote-sync.mjs';
 import { filterAskCardsByTrace, hideAskTracesForCards } from './lib/ask-cards.mjs';
 import { applyAgentEvent, mergeTraceIntoEvents } from './lib/process-events.mjs';
 import { RightRail } from './chat/RightRail.jsx';
@@ -36,6 +37,8 @@ import { SIDEBAR_UPDATE_INITIAL, reduceSidebarUpdateEvent } from './lib/sidebar-
 import { OPEN_STEP_EVENT } from './lib/spawn-agent.mjs';
 import { OPEN_ARTIFACT_EVENT } from './lib/tool-images.mjs';
 import ImageLightbox from './components/ImageLightbox.jsx';
+import { ZOOM_EVENT } from './components/ZoomSettings.jsx';
+import { zoomActionForKey } from './lib/zoom-keys.mjs';
 // 兼容原来的模块出口（外部若按旧路径取这两个函数/组件仍可用）
 export { needsFirstRunSetup, formatDemoAuditSummary } from './lib/app-helpers.mjs';
 export { default as FirstRunCard } from './components/FirstRunCard.jsx';
@@ -134,6 +137,10 @@ export default function App() {
   const y = api(); // window.finalcheck（浏览器直开时为空 → 仅壳）
   useLanguage(); // 订阅语言状态：设置页切换语言后整棵界面重渲染（t() 读的是最新语言）
   const [page, setPage] = useState('chat');
+  const pageRef = useRef(page);
+  pageRef.current = page;
+  // 0.35：自己发起过的回合（runId）。手机和电脑各收一份结束包，自己的那份不当成「别人的回合」
+  const ownRunIdsRef = useRef(new Set());
   // 会话侧栏折叠：开关做在标题栏的 FC logo 上（悬停显示侧栏图标，点一下收起/展开）。
   // 状态记在 localStorage，重启保持；侧栏收起后正文拿回 212px。
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
@@ -373,7 +380,11 @@ export default function App() {
   const refreshSessions = async (projectId = activeProjectIdRef.current) => {
     if (!y) return [];
     try {
-      const list = unwrapIpc(await y.sessions.list());
+      // 0.35：按项目 id 列（只读、不看主进程的「当前项目」）。手机和电脑可以各看各的项目，
+      // 主进程那个全局「当前项目」随时可能被另一端切走，不能再当事实源。
+      const list = projectId && y.projects?.sessions
+        ? unwrapIpc(await y.projects.sessions(projectId))
+        : unwrapIpc(await y.sessions.list());
       // IPC 期间用户切走了：sessions.list() 读的是主进程「那一刻」的当前项目，
       // 不能把它写进旧项目的缓存；按只读 IPC 重新核对一次归属。
       if (projectId && projectId !== activeProjectIdRef.current) {
@@ -653,6 +664,15 @@ export default function App() {
       setMessages((prev) => [...prev, { role: 'notice', content: t('打开会话失败：{msg}', { msg: e?.message || e }) }]);
       refreshSessions(projectId || activeProjectIdRef.current);
     }
+  };
+
+  // 0.35 手机访问：另一端发起的回合，这边正看着那个会话 → 用和「页面重载后接回」同一条路接上
+  // （openSession 会查 agentRunState 拿快照，之后的流式包按 runId/seq 续上）。同一会话同时只接一次。
+  const attachingRef = useRef(new Set());
+  const attachRemoteRun = (sid) => {
+    if (!sid || attachingRef.current.has(sid) || pageRef.current !== 'chat') return;
+    attachingRef.current.add(sid);
+    void openSession(sid).finally(() => { attachingRef.current.delete(sid); });
   };
 
   const settleReattachedRun = async (sid, runId, outcome = 'error') => {
@@ -991,10 +1011,22 @@ export default function App() {
       const sid = p && typeof p === 'object' ? p.sessionId : null;
       const ev = p && typeof p === 'object' ? p.ev : p;
       if (!ev) return;
-      if (ev.kind === 'run-settled') {
-        if (sid) void settleReattachedRun(sid, p.runId, ev.outcome);
+      // 0.35 手机访问：这条回合可能是另一端（手机 / 电脑）发起的——正看着就接上，没在看就让侧栏转圈
+      const who = classifyPacket({
+        sid, runId: p.runId, kind: ev.kind, run: sid ? runsRef.current.get(sid) : null,
+        inflight: sid ? inflightRef.current.has(sid) : false, active: !!sid && activeIdRef.current === sid,
+        ownRunIds: ownRunIdsRef.current
+      });
+      if (who === 'settle-reattached') { void settleReattachedRun(sid, p.runId, ev.outcome); return; }
+      if (who === 'remote-settled' || who === 'mark-idle') {
+        setRunningIds((prev) => { if (!prev[sid]) return prev; const n = { ...prev }; delete n[sid]; return n; });
+        if (who === 'remote-settled' && pageRef.current === 'chat') void openSession(sid);
         return;
       }
+      if (who === 'attach') { attachRemoteRun(sid); return; }
+      if (who === 'mark-running') { setRunningIds((prev) => (prev[sid] ? prev : { ...prev, [sid]: true })); return; }
+      if (who === 'ignore') return;
+      if (ev.kind === 'run-settled') return;
       if (sid && p.runId && !acceptRunPacket(runsRef.current.get(sid), p)) return;
       // 0.32.0：AI 打开了网页 → 右栏自动跳出并切到浏览器 tab（用户明确要求"自动跳到右栏"）。
       // 以前页面画在从不显示的隐藏窗口上，用户只看到白框，还被告知去扫一个看不见的二维码。
@@ -1423,6 +1455,20 @@ export default function App() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, []);
+  // 0.34.3 界面缩放快捷键兜底（主路径在主进程 before-input-event，拦到了页面就收不到这次按键）。
+  // 手机网页不接：那里是浏览器自己的缩放 / 双指缩放。
+  useEffect(() => {
+    if (window.__FC_MOBILE__ || !y?.windowCtl) return undefined;
+    const isMac = /Mac/i.test(navigator.platform || '');
+    const onKey = (e) => {
+      const action = zoomActionForKey(e, isMac);
+      if (!action) return;
+      e.preventDefault();
+      y.windowCtl(action).then(() => window.dispatchEvent(new Event(ZOOM_EVENT))).catch(() => {});
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [y]);
 
   // 浮层（模型菜单 / 供应商子菜单 / 会话右键菜单）：点外部关闭；Esc 关闭任何打开的浮层
   useEffect(() => {
@@ -1616,7 +1662,8 @@ export default function App() {
     let sid = activeId;
     if (!sid) { // 无会话时自动补建，保证每轮落盘
       try {
-        const s = unwrapIpc(await y.sessions.create(t('新会话')));
+        // 0.35：带上项目 id——建在「这个界面」所在的项目里，而不是主进程此刻的当前项目（可能被另一端切走了）
+        const s = unwrapIpc(await y.sessions.create(t('新会话'), sendProjectId || activeProjectIdRef.current || undefined));
         sid = s.id;
         // 0.33.1：空白页上打开的计划模式跟着新会话走
         if (planModesRef.current.__draft__) {
@@ -1713,6 +1760,7 @@ export default function App() {
         });
       }
     } finally {
+      { const rid = runsRef.current.get(sid)?.runId; if (rid) { ownRunIdsRef.current.add(rid); if (ownRunIdsRef.current.size > 200) ownRunIdsRef.current.delete(ownRunIdsRef.current.values().next().value); } }
       inflightRef.current.delete(sid);
       runsRef.current.delete(sid);
       setRunningIds((prev) => { const n = { ...prev }; delete n[sid]; return n; });
@@ -1736,6 +1784,79 @@ export default function App() {
   };
   const sendRef = useRef(null);
   sendRef.current = send;
+
+  // 0.35 手机访问：另一端改了会话 / 项目 / 设置 / 排队 → 这一端跟着刷新（自己发出的不重复刷）。
+  // 多个同步包挤在一起时合并成一次刷新，避免流式期间侧栏来回闪。
+  const syncPendingRef = useRef({ timer: 0, scopes: new Set(), sessions: new Set() });
+  useEffect(() => {
+    if (!y?.onSync) return undefined;
+    const me = selfOrigin();
+    const flush = async () => {
+      const pend = syncPendingRef.current;
+      const scopes = new Set(pend.scopes); const touched = new Set(pend.sessions);
+      pend.scopes.clear(); pend.sessions.clear(); pend.timer = 0;
+      if (scopes.has('projects')) await refreshProjects();
+      if (scopes.has('sessions') || scopes.has('session') || scopes.has('projects')) {
+        await refreshSessions();
+        // 别的项目的缓存（侧栏展开着的）也刷一下：手机在另一个项目里开了会话，电脑侧栏要看得到
+        for (const pid of Object.keys(projectSessionsRef.current)) if (pid !== activeProjectIdRef.current) void loadProjectSessions(pid, { force: true });
+      }
+      if (scopes.has('config')) {
+        y.getConfig?.().then((c) => {
+          setCfg(c);
+          setPermMode(c?.permissionMode === 'full' ? 'full' : 'ask');
+          setLanguage(resolveLanguage(c?.language, navigator.language));
+          setThemeState(normalizeTheme(c?.theme));
+        }).catch(() => {});
+      }
+      // 当前会话的内容被另一端改了（回退 / 压缩 / 恢复检查点）：重读
+      const sid = activeIdRef.current;
+      if (sid && scopes.has('session') && touched.has(sid) && !inflightRef.current.has(sid) && pageRef.current === 'chat') void openSession(sid);
+    };
+    return y.onSync((p) => {
+      if (!p || isOwnSync(p, me)) return;
+      if (p.scope === 'queue') {
+        // 另一端的排队消息：这边显示成「待发送」（要点发送才发），绝不两边同时自动发
+        const sid = String(p.sessionId || '');
+        if (!sid || !y.sessions?.queueGet) return;
+        void Promise.resolve(y.sessions.queueGet(sid)).then((stored) => {
+          const list = Array.isArray(stored) ? stored : [];
+          setQueueBySession((prev) => {
+            if (sameQueue(prev[sid], list)) return prev;
+            const next = list.map((it) => ({ ...it, hold: true }));
+            queueSavedRef.current.set(sid, JSON.stringify(next)); // 不再原样写回去（否则两端互相触发）
+            return { ...prev, [sid]: next };
+          });
+        }).catch(() => {});
+        return;
+      }
+      const pend = syncPendingRef.current;
+      pend.scopes.add(p.scope);
+      if (p.sessionId) pend.sessions.add(String(p.sessionId));
+      if (!pend.timer) pend.timer = window.setTimeout(() => { void flush(); }, 250);
+    });
+  }, [y]);
+
+  // 审批 / 提问在另一端处理掉了：这边的卡片跟着收起（谁先点算谁的）
+  useEffect(() => {
+    if (!y?.onApprovalResolved) return undefined;
+    const me = selfOrigin();
+    return y.onApprovalResolved((p) => {
+      if (!p?.callId || isOwnSync(p, me)) return;
+      approvalsRef.current = approvalsRef.current.filter((a) => a?.callId !== p.callId);
+      setApproval((cur) => (cur?.callId === p.callId ? (approvalsRef.current.shift() || null) : cur));
+    });
+  }, [y]);
+  useEffect(() => {
+    if (!y?.onAskUserResolved) return undefined;
+    const me = selfOrigin();
+    return y.onAskUserResolved((p) => {
+      if (!p?.callId || isOwnSync(p, me)) return;
+      const card = askCardsRef.current.find((c) => c.callId === p.callId);
+      if (!card || card.status !== 'pending') return;
+      patchAskCard(p.callId, p.ok ? { status: 'answered', answer: p.answer || '' } : { status: 'expired', answer: '', error: t('该提问已在另一台设备上处理') });
+    });
+  }, [y]);
 
   // 0.33.5 后台任务完成、会话空闲 → 往该会话队列放一条自动续跑消息。
   // 复用队列泵：只在用户正看着这个会话、且它空闲时才发；切到别的会话不抢视图，回来时再发；
@@ -2106,6 +2227,7 @@ export default function App() {
         onRemoveProject={removeProject} onArchiveSession={archiveSession}
         onOpenRowMenu={(x, y2, s, p) => { setMoveOpen(false); setRowMenu({ x, y: y2, session: s, project: p }); }}
         onSettings={() => setPage('settings')}
+        onMobileSettings={() => setPage('settings-mobile')}
       />}
 
       {/* ---- 主区 + 右侧产物预览 ----
@@ -2203,7 +2325,7 @@ export default function App() {
           <SettingsPage
             onBack={() => setPage('chat')}
             running={anyRunning}
-            initialSection={page === 'usage' ? 'usage' : 'models'}
+            initialSection={page === 'usage' ? 'usage' : page === 'settings-mobile' ? 'mobile' : 'models'}
             theme={theme}
             onThemeChange={setTheme}
           />

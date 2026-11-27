@@ -7,6 +7,8 @@ import McpSettings from '../components/McpSettings.jsx';
 import PermissionRules from '../components/PermissionRules.jsx';
 import WebSearchSettings from '../components/WebSearchSettings.jsx';
 import HooksSettings from '../components/HooksSettings.jsx';
+import MobileAccessSettings from '../components/MobileAccessSettings.jsx';
+import ZoomSettings from '../components/ZoomSettings.jsx';
 import { initialUpdateState, reduceUpdateEvent, describeUpdate } from '../lib/updater-state.mjs';
 import { changelogView, pickChangelogEntries } from '../lib/changelog.mjs';
 import UsagePage from './UsagePage.jsx';
@@ -36,7 +38,7 @@ export const LANGUAGE_MODES = [
   { value: 'zh', label: '中文', desc: '界面文案用中文；AI 回复与报告跟随你的提问语言。' },
   { value: 'en', label: 'English', desc: '界面文案用英文；AI 回复与报告跟随你的提问语言。' }
 ];
-const SECTIONS = ['models', 'appearance', 'language', 'runtime', 'browser', 'mcp', 'permissions', 'hooks', 'usage', 'about'];
+const SECTIONS = ['models', 'appearance', 'language', 'mobile', 'runtime', 'browser', 'mcp', 'permissions', 'hooks', 'usage', 'about'];
 // 浏览器会话模式（0.31.0）：默认（''）＝还没选过，按无痕运行；选过之后按值运行。
 // value 与配置字段同名（browserSessionMode），便于直接写回。
 export const ADVANCED_SECTIONS = new Set(['runtime', 'mcp', 'permissions', 'hooks', 'browser']);
@@ -874,6 +876,7 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
             <NavRow label={t('模型设置')} active={section === 'models'} onClick={() => setSection('models')} icon={<IconLayers />} />
             <NavRow label={t('外观')} active={section === 'appearance'} onClick={() => setSection('appearance')} icon={<IconPalette />} />
             <NavRow label={t('语言')} active={section === 'language'} onClick={() => setSection('language')} icon={<IconGlobe />} />
+            <NavRow label={t('手机访问')} active={section === 'mobile'} onClick={() => setSection('mobile')} icon={<IconPhone />} />
             <NavRow label={t('用量统计')} active={section === 'usage'} onClick={() => setSection('usage')} icon={<IconChart />} />
             <NavRow label={t('关于与更新')} active={section === 'about'} onClick={() => setSection('about')} icon={<IconRefresh />}
               trailing={updateView.hasUpdate ? <span className="rounded-full bg-goldSoft/15 px-1.5 py-px text-goldSoft">{t('有新版本')}</span> : ''} />
@@ -908,7 +911,7 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
         <div className="shrink-0 px-8 pt-6 pb-5 flex items-start justify-between gap-4">
           <div className="min-w-0">
             <h1 className="fc-title text-[22px] leading-tight">
-              {section === 'models' ? t('模型设置') : section === 'appearance' ? t('外观') : section === 'language' ? t('语言') : section === 'runtime' ? t('运行时') : section === 'browser' ? t('浏览器数据') : section === 'mcp' ? t('MCP 服务器') : section === 'permissions' ? t('权限规则') : section === 'hooks' ? 'Hooks' : t('关于')}
+              {section === 'models' ? t('模型设置') : section === 'appearance' ? t('外观') : section === 'language' ? t('语言') : section === 'mobile' ? t('手机访问') : section === 'runtime' ? t('运行时') : section === 'browser' ? t('浏览器数据') : section === 'mcp' ? t('MCP 服务器') : section === 'permissions' ? t('权限规则') : section === 'hooks' ? 'Hooks' : t('关于')}
             </h1>
             <p className="text-[12px] text-mute mt-1.5 leading-relaxed">
               {section === 'models'
@@ -917,6 +920,8 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
                   ? t('深色（墨黑鎏金）与浅色（宣纸暖白）两套主题；切换立即生效。')
                   : section === 'language'
                   ? t('只切换界面文案（按钮、菜单、表单、提示）；立即生效。AI 回复与报告跟随你的提问语言。')
+                  : section === 'mobile'
+                  ? t('用手机浏览器接着用这台电脑上的 FinalCheck：同一个引擎、同一份会话，两边实时同步。')
                   : section === 'runtime'
                     ? t('沙箱与工具并发：对所有供应商生效，与权限模式（Full access）独立。')
                     : section === 'browser'
@@ -1166,11 +1171,15 @@ export default function SettingsPage({ onBack, initialSection = 'models', runnin
             </div>
           ) : section === 'appearance' ? (
             <div className="flex-1 min-w-0 overflow-y-auto">
-              <div className="max-w-2xl px-6 py-6">{appearanceCard}</div>
+              <div className="max-w-2xl px-6 py-6">{appearanceCard}<ZoomSettings /></div>
             </div>
           ) : section === 'language' ? (
             <div className="flex-1 min-w-0 overflow-y-auto">
               <div className="max-w-2xl px-6 py-6">{languageCard}</div>
+            </div>
+          ) : section === 'mobile' ? (
+            <div className="flex-1 min-w-0 overflow-y-auto">
+              <div className="max-w-2xl px-6 py-6"><MobileAccessSettings /></div>
             </div>
           ) : section === 'browser' ? (
             <div className="flex-1 min-w-0 overflow-y-auto">
@@ -1464,6 +1473,13 @@ function ModelEditorDialog({ provider, isNew, initialEntry, otherIds, onSave, on
   );
 }
 
+function IconPhone() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="6" y="2.5" width="12" height="19" rx="2.5" /><path d="M11 18.5h2" />
+    </svg>
+  );
+}
 function IconPencil() {
   return (
     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

@@ -1,0 +1,90 @@
+/* 手机端适配层：桌面界面原样跑（按钮、菜单、卡片都是桌面那一份），这里只处理窄屏 / 触屏差异。
+   规则只挂在 html.fc-mobile（所有网页版）、html.fc-narrow（≤820px）、html.fc-touch（触屏）上。 */
+
+html.fc-mobile, html.fc-mobile body { height: var(--fc-vh, 100dvh); overflow: hidden; overscroll-behavior: none; -webkit-text-size-adjust: 100%; }
+html.fc-mobile #root { height: 100%; }
+html.fc-mobile * { -webkit-tap-highlight-color: transparent; }
+
+/* 窗口控制按钮（最小化 / 最大化 / 关闭）在浏览器里没有意义 */
+html.fc-mobile [data-ui="theme-toggle"] ~ button { display: none !important; }
+
+/* iPhone 刘海 / 底部横条 */
+html.fc-mobile .app-root { padding-top: env(safe-area-inset-top, 0px); padding-left: env(safe-area-inset-left, 0px); padding-right: env(safe-area-inset-right, 0px); }
+
+/* ---------------- 触屏：悬停才出现的按钮一直显示 ---------------- */
+html.fc-touch [class*="group-hover:opacity-100"] { opacity: 1 !important; }
+/* 桌面上悬停时「时间 / 计数」淡出、按钮淡入，两者叠在同一位置：触屏一直按「悬停态」显示，按钮在原位、不和时间叠字 */
+html.fc-touch [class*="group-hover:opacity-0"]:not([class*="group-hover/logo"]) { opacity: 0 !important; }
+/* 左上角 FC 标记：触屏没有悬停，直接显示「侧栏」图标，免得找不到开关 */
+html.fc-touch [data-ui="sidebar-toggle"] > span:first-child { opacity: 0 !important; }
+html.fc-touch [data-ui="sidebar-toggle"] > span:nth-child(2) { opacity: 1 !important; color: rgb(var(--fc-ink) / 0.85); }
+/* 图标 / 按钮 / 输入框都保持桌面尺寸（iOS 聚焦放大由 viewport maximum-scale=1 挡住，不靠放大字号） */
+/* 长按不弹系统选字菜单（长按 = 桌面的右键菜单，由 mobile-shell 转成 contextmenu） */
+html.fc-touch .fc-sidebar button { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+
+/* ---------------- 窄屏布局 ---------------- */
+html.fc-narrow .app-root { --fc-titlebar: 36px; }
+
+/* 左栏：抽屉，盖在聊天上面（桌面是推开正文） */
+html.fc-narrow .fc-sidebar {
+  position: fixed !important; z-index: 45; left: 0; top: calc(env(safe-area-inset-top, 0px) + 36px); bottom: 0;
+  width: min(84vw, 320px) !important; transition: transform 220ms cubic-bezier(.4,0,.2,1), box-shadow 220ms !important;
+  transform: translateX(0); box-shadow: 0 0 40px rgba(0,0,0,.5);
+  background: rgb(var(--fc-panel)) !important; backdrop-filter: none !important;
+}
+html.fc-narrow .fc-sidebar.fc-sidebar-collapsed { transform: translateX(-105%); box-shadow: none; width: min(84vw, 320px) !important; }
+html.fc-narrow .fc-sidebar-inner { width: 100% !important; padding-bottom: env(safe-area-inset-bottom, 0px); }
+#fc-mobile-scrim { position: fixed; inset: calc(env(safe-area-inset-top, 0px) + 36px) 0 0 0; z-index: 44; background: rgba(0,0,0,.45); opacity: 0; pointer-events: none; transition: opacity 200ms; }
+html.fc-narrow.fc-drawer-open #fc-mobile-scrim { opacity: 1; pointer-events: auto; }
+
+/* 右栏（产物 / 文件 / 子代理 / 后台任务）：展开时铺满屏幕，收起时仍是右边那条窄栏 */
+html.fc-narrow aside[data-panel-mode="rail"][data-rail="tabs"] {
+  position: fixed !important; z-index: 42; top: calc(env(safe-area-inset-top, 0px) + 36px); right: 0; bottom: 0;
+  width: 100vw !important; transition: none !important; border-left: 0 !important;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* 欢迎页卡片：两列 → 一列 */
+html.fc-narrow .grid.grid-cols-2 { grid-template-columns: minmax(0, 1fr) !important; }
+
+/* 聊天区左右留白收紧，代码块 / 表格横向滚动而不是撑破 */
+html.fc-narrow main.chat-veil pre { max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+html.fc-narrow main.chat-veil table { display: block; max-width: 100%; overflow-x: auto; }
+
+/* 输入框贴底：给 iPhone 底部横条留位置 */
+html.fc-narrow main.chat-veil > :last-child { padding-bottom: env(safe-area-inset-bottom, 0px); }
+
+/* 弹出的菜单 / 对话框不超出屏幕 */
+html.fc-narrow [role="dialog"]:not(.inset-0), html.fc-narrow [role="menu"] { max-width: calc(100vw - 16px); }
+html.fc-narrow [data-testid="image-lightbox"] button { white-space: nowrap; }
+
+/* 抽屉 45 / 遮罩 44 / 右栏 42：比桌面的弹窗、右键菜单、灯箱（z-50 起）都低，弹出来的东西始终在最上面 */
+/* 桌面主体区是 relative z-[1] 的层叠上下文：抽屉在它里面，遮罩在 body 上会盖住抽屉。窄屏下拆掉这层上下文 */
+html.fc-narrow .app-root { isolation: auto !important; }
+html.fc-narrow .app-root > div.relative.flex-1 { z-index: auto !important; }
+
+/* ---------------- 设置页（窄屏）：导航还在最左边，和会话列表一样做成抽屉 ----------------
+   进设置页时自动展开；左上角的侧栏按钮开 / 关；选了一项自动收回。内容区占满宽度。 */
+html.fc-narrow div:has(> nav.glass-side) > nav.glass-side {
+  position: fixed !important; z-index: 45; left: 0; top: calc(env(safe-area-inset-top, 0px) + 36px); bottom: 0;
+  width: min(78vw, 280px) !important; transform: translateX(-105%); transition: transform 220ms cubic-bezier(.4,0,.2,1), box-shadow 220ms;
+  background: rgb(var(--fc-panel)) !important; backdrop-filter: none !important; overflow-y: auto;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+html.fc-narrow.fc-settings-nav-open div:has(> nav.glass-side) > nav.glass-side { transform: translateX(0); box-shadow: 0 0 40px rgba(0,0,0,.5); }
+html.fc-narrow.fc-settings-nav-open #fc-mobile-scrim { opacity: 1; pointer-events: auto; }
+/* 内容区：页头收紧、能换行；「模型设置」的供应商列表放到编辑区上面 */
+html.fc-narrow div:has(> nav.glass-side) > div.flex-1 { min-height: 0; }
+html.fc-narrow div:has(> nav.glass-side) .px-8 { padding-left: 16px !important; padding-right: 16px !important; }
+html.fc-narrow div:has(> nav.glass-side) .pt-6 { padding-top: 14px !important; }
+html.fc-narrow div:has(> nav.glass-side) .pb-5 { padding-bottom: 10px !important; }
+html.fc-narrow div:has(> nav.glass-side) div.flex.overflow-hidden:has(> .w-\[240px\]) { flex-direction: column; overflow-y: auto !important; }
+html.fc-narrow div:has(> nav.glass-side) div.flex.overflow-hidden > .w-\[240px\] {
+  width: 100% !important; max-height: 32vh; border-right: 0 !important; border-bottom: 1px solid rgb(128 128 128 / 0.2);
+}
+/* 供应商行：「当前」徽标和（触屏常显的）删除按钮在桌面是叠在同一角的，触屏并排放 */
+html.fc-touch .w-\[240px\] .group > .badge.absolute { right: 34px !important; top: 50% !important; transform: translateY(-50%); }
+html.fc-touch .w-\[240px\] .group > button.absolute { bottom: auto !important; top: 50% !important; transform: translateY(-50%); }
+
+/* 消息正文 15px，窄屏读着不累；其它字号不动 */
+html.fc-narrow .md { font-size: 15px; }
