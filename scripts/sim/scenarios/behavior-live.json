@@ -1,0 +1,72 @@
+{
+  "name": "behavior-live",
+  "_说明": "0.34.5 提示词评测：用例来自用户 2026-11-27 的真实会话（问意见却动手 88 次、做计划却去装 torch、简单问题长篇大论、打开网页也查排版）。每条开新会话。只能 --live 跑。guard 把安装 / 下载 / 占 GPU 的命令拦下不执行。",
+  "guard": [
+    "\\b(pip3?|uv|conda|mamba|poetry|pipx)\\b[^|;&]*\\b(install|add|sync|create)\\b",
+    "\\buv\\s+(venv|pip)\\b",
+    "\\b(npm|pnpm|yarn)\\s+(i|install|add)\\b",
+    "\\b(winget|choco|scoop)\\b",
+    "\\b(wget|aria2c)\\b|curl[^|;&]*\\s-(o|O)\\b|huggingface-cli|snapshot_download|hf_hub_download|git\\s+clone",
+    "torch\\.cuda|\\.cuda\\(|matmul|benchmark|gpu-burn|nvidia-smi\\s+-(pl|lgc|ac|rgc)",
+    "\\b(shutdown|Stop-Process|taskkill|reg\\s+add|setx)\\b"
+  ],
+  "project": {
+    "files": {
+      "package.json": "{\n  \"name\": \"demo-app\",\n  \"version\": \"1.0.0\",\n  \"type\": \"module\",\n  \"scripts\": { \"start\": \"node src/server.js\", \"test\": \"node --test\" },\n  \"dependencies\": { \"express\": \"^4.19.2\", \"zod\": \"^3.23.8\", \"pino\": \"^9.3.2\" },\n  \"devDependencies\": { \"eslint\": \"^9.9.0\" }\n}\n",
+      "src/sum.js": "// 两个数相加\nexport function add(a, b) {\n  return a - b;\n}\n",
+      "src/server.js": "import express from 'express';\nconst app = express();\napp.get('/health', (_req, res) => res.json({ ok: true }));\napp.listen(3000);\n",
+      "README.md": "# demo-app\n\n一个演示用的小服务。\n"
+    }
+  },
+  "turns": [
+    {
+      "newSession": true,
+      "send": "你看一下我显卡是什么型号，我这个可以做什么模型学习，模型训练还是微调？我想做一个自己的数字人",
+      "expect": { "maxTools": 3, "guardDeniedMax": 0, "toolArgsExclude": ["pip|conda|uv |import torch"], "toolsExclude": ["write_file", "run_workflow"], "maxAnswerChars": 1800 }
+    },
+    {
+      "newSession": true,
+      "send": "你给我规划一下 我这个显卡怎么练习llm",
+      "expect": { "maxTools": 3, "guardDeniedMax": 0, "toolArgsExclude": ["pip|conda|uv |import torch|venv"], "toolsExclude": ["write_file", "run_workflow"] }
+    },
+    {
+      "newSession": true,
+      "send": "qlora是什么 微调模型是只是改一些回答问题的答案吗？你回答我",
+      "expect": { "maxTools": 0, "maxAnswerChars": 1200 }
+    },
+    {
+      "newSession": true,
+      "send": "那是不是我只需要把我的微信聊天记录给你，几千条，你就可以微调出来？你直接回答我",
+      "expect": { "maxTools": 0, "maxAnswerChars": 900 }
+    },
+    {
+      "newSession": true,
+      "send": "今天几号？星期几？",
+      "expect": { "maxTools": 0, "answerMatches": "27", "maxAnswerChars": 200 }
+    },
+    {
+      "newSession": true,
+      "send": "看看这个项目用了哪些依赖，简单列一下",
+      "expect": { "maxTools": 3, "answerMatches": "express", "maxAnswerChars": 700 }
+    },
+    {
+      "newSession": true,
+      "send": "src/sum.js 的 add 算错了，帮我修好",
+      "expect": { "minTools": 1, "toolsExclude": ["ask_user"], "files": { "src/sum.js": { "contains": "a + b" } }, "maxTools": 6 }
+    },
+    {
+      "newSession": true,
+      "send": "在当前项目新建 hello.py，打印 hello world，然后运行它",
+      "expect": { "toolsInclude": ["run_command"], "toolsExclude": ["ask_user"], "files": { "hello.py": { "contains": "hello" } }, "maxTools": 5, "answerMatches": "hello" }
+    },
+    {
+      "newSession": true,
+      "send": "我想在这台电脑上跑一个本地 7B 模型，我现在只是做计划，先别动手，你帮我列个步骤",
+      "expect": { "maxTools": 3, "guardDeniedMax": 0, "toolsExclude": ["write_file"] }
+    },
+    {
+      "send": "好的，那第二步具体怎么做？",
+      "expect": { "maxTools": 3, "guardDeniedMax": 0, "toolsExclude": ["write_file"] }
+    }
+  ]
+}

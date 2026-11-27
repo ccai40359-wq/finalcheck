@@ -121,6 +121,7 @@ const sim = await createSimClient({
   config: sc.config || {},
   providerExtra,
   logDir: outDir,
+  guard: sc.guard || null,
   answerAsk: sc.askAnswers ? ((ask) => {
     for (const a of sc.askAnswers) if (!a.match || new RegExp(a.match).test(ask.question || '')) return a.answer;
     return null;

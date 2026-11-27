@@ -20,7 +20,7 @@ import { assertArtifactPath } from './artifact-gate.mjs';
 import { createSandboxedRun, sandboxAvailability, sandboxCompatible } from './sandbox.mjs';
 // 工作流兜底提示走双语词典（zh 原样返回，en 查表）
 import { t } from '../renderer/i18n/core.mjs';
-import { checkProbeBudget, checkScreenshotBudget, isProbeCommand, workflowBudgetFromEnv, WORKFLOW_BUDGET_INITIAL } from './cu-workflow-budget.mjs';
+import { checkProbeBudget, checkScreenshotBudget, isProbeCommand, runsScriptFile, workflowBudgetFromEnv, WORKFLOW_BUDGET_INITIAL } from './cu-workflow-budget.mjs';
 // 0.31.1：浏览器三模式「先问用户」的纯逻辑（选项文案 / 回答解析 / 决策 / CU 重定向）
 import { decideBrowserChoice, buildChoicePrompt, parseBrowserChoice, parseRealConsent, buildRealConsentPrompt, choiceNote, realEdgeRedirect, NO_CHANNEL_REAL_DENY } from './browser-choice.mjs';
 // 用户选了模式后要按它重建窗口，所以这里也要用到 partition 纯函数（该模块不 import electron）
@@ -207,7 +207,10 @@ function openBackgroundLog() {
     const dir = path.join(os.tmpdir(), 'finalcheck-bg-logs');
     mkdirSync(dir, { recursive: true });
     const file = path.join(dir, `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.log`);
-    const fd = openSync(file, 'a');
+    // 必须用 'w' 不能用 'a'（0.34.5 修）：Windows 上 'a' 打开的是「只能追加」的句柄，
+    // Git Bash（msys）往这种句柄写一律失败——echo 退出码 1、ls 退出码 2、一个字都写不进去。
+    // 用户实测：后台下载其实成功了，面板却显示「失败 · 退出码 2 · 没有输出」。文件名本来就唯一，'w' 不会覆盖别人的。
+    const fd = openSync(file, 'w');
     let closed = false;
     return { path: file, fd, close: () => { if (closed) return; closed = true; try { closeSync(fd); } catch { /* 已关 */ } } };
   } catch {
@@ -1653,7 +1656,10 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
       const idleMs = args?.idle_ms ?? args?.idleMs ?? commandIdleMs ?? DEFAULT_COMMAND_IDLE_MS;
       // 0.30.4：窗口探测配额——computer_screenshot target:"window" 已返回 hwnd/rect，
       // 再单独 Get-Process/tasklist/Add-Type 查窗口是纯浪费（真机实测一轮跑了 21 次 run_command）。
-      if (isProbeCommand(cmd)) {
+      // 0.34.5：只在「本回合已经在做桌面操作」（成功截过图）时才限额——用户实测：开发微信导出工具、
+      // 查 llama-server 有没有在跑这类正常开发里的 Get-Process / ctypes 被反复拒，一个会话撞了几十次。
+      // 跑项目里的脚本文件（python x.py / node x.mjs）也不算探测。
+      if (cuWorkflowUsed.cuActive && isProbeCommand(cmd) && !runsScriptFile(cmd)) {
         const probeVerdict = checkProbeBudget({ used: cuWorkflowUsed, budget: cuWorkflowBudget, command: cmd });
         if (!probeVerdict.allowed) {
           return { error: probeVerdict.error, deniedBy: probeVerdict.deniedBy, hint: probeVerdict.hint };
@@ -1810,6 +1816,7 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
       const r = await computerUse.captureScreen(options);
       if (!r.ok) return { ...r, error: r.error || '截图失败' };
       // 配额只在成功截图后计数（失败不占额度，允许重试）
+      cuWorkflowUsed.cuActive = true;
       if (kind === 'region') cuWorkflowUsed.regions += 1;
       else if (kind === 'screen') cuWorkflowUsed.screenShots += 1;
       const fg = r.foreground

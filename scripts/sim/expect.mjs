@@ -41,6 +41,12 @@ export async function checkTurn(turn, ex, { projectDir, sim }) {
   for (const t of ex.toolsInclude || []) add(`调用了 ${t}`, turn.tools.includes(t), `实际工具：${turn.tools.join(', ') || '无'}`);
   for (const t of ex.toolsExclude || []) add(`没有调用 ${t}`, !turn.tools.includes(t), `实际工具：${turn.tools.join(', ')}`);
   if (ex.firstTool) add(`第一个工具是 ${ex.firstTool}`, turn.tools[0] === ex.firstTool, `实际：${turn.tools[0] || '无'}`);
+  if (ex.maxAnswerChars != null) add(`回答 ≤ ${ex.maxAnswerChars} 字`, String(turn.answer || '').length <= ex.maxAnswerChars, `实际 ${String(turn.answer || '').length} 字`);
+  for (const r of [].concat(ex.toolArgsExclude || [])) {
+    const hit = (turn.toolArgs || []).find((a) => re(r).test(a));
+    add(`工具参数里没有 /${r}/`, !hit, `实际：${String(hit || '').slice(0, 200)}`);
+  }
+  if (ex.guardDeniedMax != null) add(`试图跑被拦截的命令 ≤ ${ex.guardDeniedMax} 次`, (turn.guardDenied || []).length <= ex.guardDeniedMax, (turn.guardDenied || []).map((d) => d.command).join(' | ').slice(0, 300));
   if (ex.maxTools != null) add(`工具 ≤ ${ex.maxTools} 次`, turn.tools.length <= ex.maxTools, `实际 ${turn.tools.length}`);
   if (ex.minTools != null) add(`工具 ≥ ${ex.minTools} 次`, turn.tools.length >= ex.minTools, `实际 ${turn.tools.length}`);
   if (ex.maxRequests != null) add(`请求 ≤ ${ex.maxRequests} 次`, turn.requests.length <= ex.maxRequests, `实际 ${turn.requests.length}`);

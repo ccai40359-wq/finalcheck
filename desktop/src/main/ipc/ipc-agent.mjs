@@ -51,6 +51,16 @@ async function attachImagesToLastUser(messages, imageMime) {
 // 而不是复用回合启动时的快照。用户运行中改模型/供应商后，从下一个可切换点（下一步 / 下一次请求）生效。
 // - 解析成功：current() 更新，之后的回落也以它为准
 // - 解析失败（供应商被禁用/删光、模型列表为空）：沿用上一次可用目标，fellBack=true 由调用方记 warning
+/** 0.34.5：每回合注入的「今天 + 运行环境」。只到天，同一天内文本不变（前缀缓存友好）。 */
+export function runtimeEnvNote(now = new Date(), platform = process.platform) {
+  const pad = (n) => String(n).padStart(2, '0');
+  const date = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  const week = '日一二三四五六'[now.getDay()];
+  const osName = platform === 'win32' ? 'Windows' : platform === 'darwin' ? 'macOS' : 'Linux';
+  const shell = platform === 'win32' ? 'run_command 在 Git Bash 里执行（bash 语法；路径写 D:/x 或 /d/x）' : 'run_command 在 bash/sh 里执行';
+  return `【运行环境】今天是 ${date}（星期${week}，本机时间）。系统：${osName}；${shell}。`;
+}
+
 export function createLiveModelResolver({ store, sessionsStore, sessionId = null, initial = null }) {
   let last = initial && initial.provider && initial.model ? { provider: initial.provider, model: initial.model } : null;
   const resolve = async () => {
@@ -611,6 +621,9 @@ export function registerAgentIpc({
 用户说「当前项目 / 这个项目 / 工作区」时指的就是它：代码体检、下载闸默认对它执行，不要反问路径。`
       }, ...contextMessages];
     }
+    // 0.34.5：日期与运行环境。以前模型不知道今天几号（问「今天星期几」会去跑 date 或瞎猜），
+    // 也不知道命令跑在 Windows 的 Git Bash 里。只精确到「天」：同一天内这条不变，不破坏前缀缓存。
+    contextMessages = [{ role: 'system', content: runtimeEnvNote() }, ...contextMessages];
     // 三级技能目录（Agent Skills 对齐）：内置目录在系统提示里；用户级/项目级每回合按项目注入。
     // 就近覆盖 project > user > builtin；同名覆盖内置后这里只列非 builtin 条目，避免重复。
     if (turnProjectPath) {

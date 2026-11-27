@@ -652,7 +652,9 @@ export default function App() {
         const hadLocal = (queueBySession[s.id] || []).length > 0;
         if (!hadLocal && y.sessions?.queueGet) {
           const stored = await y.sessions.queueGet(s.id);
-          const restored = Array.isArray(stored) ? stored : [];
+          // 0.34.5：「后台任务已结束，请继续」这种自动续跑不恢复——后台任务只活在内存里，FC 一重启就没了，
+          // 恢复出来再发，模型只会收到「任务完成」却看不到任何结果（用户实测：两次「报告没有回到我这里」）。
+          const restored = (Array.isArray(stored) ? stored : []).filter((it) => !it?.bgAuto);
           if (restored.length) {
             setQueueBySession((prev) => {
               if ((prev[s.id] || []).length) return prev;

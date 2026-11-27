@@ -7,7 +7,7 @@
 // 提问卡（ask_user）、审批条、停止、Steer、重开会话、重启应用都按渲染层的调用方式模拟。
 //
 // 隔离：createSimClient 第一件事就是 isolateEnv()——所有数据目录、APPDATA、HOME 都指到临时目录。
-import { cpSync, mkdirSync, writeFileSync, appendFileSync, existsSync } from 'node:fs';
+import { cpSync, mkdirSync, writeFileSync, appendFileSync, existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { isolateEnv } from './isolate.mjs';
@@ -63,7 +63,7 @@ export function createSimLog(dir) {
  */
 export async function createSimClient({
   label = 'sim', root = null, project = {}, gateway, model = 'sim-model', apiKey = 'sim-key', config = {}, providerExtra = {},
-  approvals = 'approve', answerAsk = null, logDir = null
+  approvals = 'approve', answerAsk = null, logDir = null, guard = null
 } = {}) {
   const env = isolateEnv({ root, label });
   const log = createSimLog(logDir);
@@ -103,6 +103,17 @@ export async function createSimClient({
     ...config
   };
   writeFileSync(process.env.FINALCHECK_CONFIG_FILE, JSON.stringify(cfg, null, 2));
+  // ---- 命令拦截（真模型测试用）：guard = [正则…] → 命中的 run_command 不执行，记进 guard-denied.jsonl ----
+  const guardLog = path.join(env.dataRoot, 'guard-denied.jsonl');
+  if (Array.isArray(guard) && guard.length) {
+    const rulesFile = path.join(env.dataRoot, 'guard-rules.json');
+    writeFileSync(rulesFile, JSON.stringify({ deny: guard, log: guardLog }));
+    const script = path.join(REPO_ROOT, 'scripts', 'sim', 'command-guard.mjs').replaceAll('\\', '/');
+    writeFileSync(process.env.FINALCHECK_HOOKS_FILE, JSON.stringify({
+      enabled: true,
+      events: { PreToolUse: [{ matcher: 'run_command', command: `node "${script}" "${rulesFile.replaceAll('\\', '/')}"` }] }
+    }, null, 2));
+  }
   const proj = await projects.addProject(projDir, { name: projName });
 
   // ---- 假窗口：收集主进程推给渲染层的一切 ----
@@ -242,6 +253,8 @@ export async function createSimClient({
       events,
       trace,
       tools: trace.map((x) => x?.tool || x?.name).filter(Boolean),
+      toolArgs: trace.map((x) => JSON.stringify(x?.args ?? x?.input ?? x?.arguments ?? '')),
+      guardDenied: (() => { try { return readFileSync(guardLog, 'utf8').split(/\r?\n/).filter(Boolean).map((l) => JSON.parse(l)).filter((d) => d.at >= startedAt); } catch { return []; } })(),
       toolMs: events.filter((e) => e.kind === 'tool-end').reduce((a, e) => a + (Number(e.ms) || 0), 0),
       requests,
       ms: Date.now() - startedAt

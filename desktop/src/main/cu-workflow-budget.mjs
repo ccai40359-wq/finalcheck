@@ -81,3 +81,12 @@ export const PROBE_PATTERN = /Get-Process|tasklist|EnumWindows|GetWindowRect|Get
 export function isProbeCommand(command) {
   return PROBE_PATTERN.test(String(command || ''));
 }
+
+/** 命令是不是在跑一个脚本文件（python x.py / node x.mjs / powershell -File x.ps1）。
+ *  跑用户项目里的工具不算「窗口探测」——那是在开发 / 使用工具，不是绕开截图去查窗口。
+ *  内联代码（python -c / python - <<EOF / node -e）不算脚本文件，照旧按探测计。 */
+export function runsScriptFile(command) {
+  const c = String(command || '');
+  return /(^|[\s/\&;|(])(python[\d.]*|pythonw|py|node)(\.exe)?"?\s+(-(?![ce]\s)[\w-]+\s+)*["']?[^\s"'<|;&-][^\s"'<|;&]*\.(py|pyw|mjs|cjs|js)(?=$|[\s"'|;&])/i.test(c)
+    || /-File\s+["']?[^\s"']+\.ps1(?=$|[\s"'])/i.test(c);
+}

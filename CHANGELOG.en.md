@@ -6,6 +6,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.34.5] - 2026-11-27
+
+This release teaches the AI to tell a question from a task, and background tasks no longer report false failures.
+
+### Fixed
+
+- **Background commands no longer show "failed" when they succeeded**: a background command such as a download could finish fine yet show "failed · exit code 2 · no output"; now the exit code and output are shown as they really are.
+- **Background research reports no longer go missing**: after FinalCheck restarts, it no longer sends a "background task finished" message that carries no result.
+- **Normal development is no longer blocked by the window-probe limit**: checking processes or running your own scripts is no longer blocked; repeated window lookups are limited only while operating the desktop.
+
+### Improved
+
+- **Questions get answers, not actions**: when you ask for an opinion, an explanation or a plan, the AI answers or lists steps instead of installing environments, writing scripts and running long chains of commands; it starts work when you say so.
+- **Answer length fits the question**: "just answer me" gets a few lines, not headings and tables everywhere.
+- **Heavy work is announced first**: before installing dependencies, downloading large files or keeping the GPU busy for long, the AI says what it will do and roughly how long it takes.
+- **Knows today's date**: the AI now knows the date, weekday and system environment without running a command.
+
 ## [0.34.4] - 2026-11-27
 
 This release stops phone access from dropping now and then, and makes it faster.
