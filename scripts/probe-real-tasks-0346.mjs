@@ -4,11 +4,10 @@
 // 用法：node scripts/probe-real-tasks-0346.mjs [任务序号列表，如 1,7,8；缺省全部 10 个]
 import { spawn } from 'node:child_process';
 import { mkdirSync, writeFileSync, existsSync, readFileSync, statSync } from 'node:fs';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import os from 'node:os';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const OUT = 'D:/rcw-geo/.tmp/real-tasks-0346';
@@ -172,7 +171,6 @@ const list = TASKS.filter((t) => !only || only.includes(t.id));
 console.log(`[plan] ${list.length} 个真实任务，串行跑（真网关）\n`);
 const scoreboard = [];
 
-const electronExe = (await import(pathToFileURL(path.join(root, 'desktop/node_modules/electron/index.js')).href)).default;
 
 for (const task of list) {
   const dir = path.join(OUT, `task-${task.id}`);
@@ -215,7 +213,6 @@ for (const task of list) {
   }
   const wallMs = Date.now() - t0;
   const answer = String(turn?.answer || '');
-  const trace = Array.isArray(turn?.trace) ? turn.trace : [];
   const r = task.check(turn, projectDir);
   // 任务 10 抽查：1 月合计对源数据
   let spotCheck = '';

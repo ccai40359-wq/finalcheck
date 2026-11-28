@@ -95,7 +95,7 @@ const waitText = async (p, re, ms = 20000) => { const end = Date.now() + ms; whi
 const send = async (p, msg) => { const ta = p.locator('textarea').first(); await ta.click(); await ta.fill(msg); await p.keyboard.press('Enter'); };
 // 侧栏里每个项目下挂着哪些会话：[项目名, 会话标题…]
 const rowTitles = () => [...document.querySelectorAll('.fc-sidebar div.cursor-pointer.rounded-lg')].map((r) => (r.classList.contains('pl-1') ? '#' : '') + (r.querySelector('span.truncate')?.textContent || '').trim());
-const sessionsUnder = (rows, proj) => { const i = rows.indexOf('#' + proj); if (i < 0) return null; const out = []; for (const r of rows.slice(i + 1)) { if (r.startsWith('#')) break; out.push(r); } return out; };
+const sessionsUnder = (rows, proj) => { const i = rows.indexOf('#' + proj); if (i < 0) return null; const titles = []; for (const r of rows.slice(i + 1)) { if (r.startsWith('#')) break; titles.push(r); } return titles; };
 const shot = (p, name) => p.screenshot({ path: path.join(out, name + '.png') });
 
 try {
@@ -136,17 +136,17 @@ try {
   if (process.env.FC_PROBE_STATS) {
     const lat = Number(process.env.FC_PROBE_LATENCY || 0);
     if (lat) { const cdp = await ctx.newCDPSession(phone); await cdp.send('Network.enable'); await cdp.send('Network.emulateNetworkConditions', { offline: false, latency: lat, downloadThroughput: -1, uploadThroughput: -1 }); }
-    const st = (globalThis.__fcStats = { byCh: new Map(), inflight: 0, peak: 0, t0: Date.now(), total: 0 });
+    const stats = (globalThis.__fcStats = { byCh: new Map(), inflight: 0, peak: 0, t0: Date.now(), total: 0 });
     phone.on('request', (r) => {
       if (!/\/api\//.test(r.url())) return;
       let ch = r.url().replace(/.*\/api\//, '/api/').replace(/\?.*/, '');
       const body = r.postData() || '';
       if (ch === '/api/rpc') { try { ch = JSON.parse(body).channel; } catch { /* 忽略 */ } }
-      const e = st.byCh.get(ch) || { n: 0, bytes: 0, max: 0 }; e.n++; e.bytes += body.length; e.max = Math.max(e.max, body.length); st.byCh.set(ch, e);
-      st.total++; st.inflight++; st.peak = Math.max(st.peak, st.inflight);
+      const e = stats.byCh.get(ch) || { n: 0, bytes: 0, max: 0 }; e.n++; e.bytes += body.length; e.max = Math.max(e.max, body.length); stats.byCh.set(ch, e);
+      stats.total++; stats.inflight++; stats.peak = Math.max(stats.peak, stats.inflight);
       r.__t = Date.now();
     });
-    const done = (r) => { if (/\/api\//.test(r.url())) st.inflight--; };
+    const done = (r) => { if (/\/api\//.test(r.url())) stats.inflight--; };
     phone.on('requestfinished', done); phone.on('requestfailed', done);
   }
   await phone.goto(link);

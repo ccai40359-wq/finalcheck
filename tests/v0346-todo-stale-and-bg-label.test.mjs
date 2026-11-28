@@ -112,13 +112,13 @@ test('登记后台任务时 title 用 label，没传退回原始命令', () => {
 });
 
 test('压缩双摘要修复：回合开头已压缩过，atTurnStart 分支不再重复压', () => {
-  const appService = read('desktop/src/main/agent-service.mjs');
-  assert.match(appService, /let turnStartCompacted = false;/, '旗标必须存在');
-  assert.match(appService, /turnStartCompacted = true; \/\/ 边界已落库/, 'site1 落库边界后置位');
-  assert.match(appService, /if \(atTurnStart && turnStartCompacted\) return \{ ok: false \};/,
+  const appSvc = read('desktop/src/main/agent-service.mjs');
+  assert.match(appSvc, /let turnStartCompacted = false;/, '旗标必须存在');
+  assert.match(appSvc, /turnStartCompacted = true; \/\/ 边界已落库/, 'site1 落库边界后置位');
+  assert.match(appSvc, /if \(atTurnStart && turnStartCompacted\) return \{ ok: false \};/,
     'atTurnStart 分支必须被旗标挡住（否则边界带的重读现场会被二次摘要——0.34.5 起必现的双摘要）');
   // 顺序：置位（site1）必须先于检查（compactInTurn）
-  assert.ok(appService.indexOf('turnStartCompacted = true;') < appService.indexOf('if (atTurnStart && turnStartCompacted)'),
+  assert.ok(appSvc.indexOf('turnStartCompacted = true;') < appSvc.indexOf('if (atTurnStart && turnStartCompacted)'),
     'site1 置位在 compactInTurn 检查之前');
 });
 
@@ -134,10 +134,10 @@ test('打字回显提速：MessageList memo + App 侧 latest-ref 回调 + 派生
 });
 
 test('效率策略：dev 轨提示词强制「并行 + 后台」子代理用法', () => {
-  const appService = read('desktop/src/main/agent-service.mjs');
-  assert.match(appService, /子代理能并行就并行、能后台就后台/, 'dev 轨必须有激进的并行后台策略行');
-  assert.match(appService, /background:true 派到后台/, '长活直接派后台');
-  assert.match(appService, /每会话最多 10 个/, '并发上限写进提示词');
+  const appSvc = read('desktop/src/main/agent-service.mjs');
+  assert.match(appSvc, /子代理能并行就并行、能后台就后台/, 'dev 轨必须有激进的并行后台策略行');
+  assert.match(appSvc, /background:true 派到后台/, '长活直接派后台');
+  assert.match(appSvc, /每会话最多 10 个/, '并发上限写进提示词');
   // 钉住策略行在 SYSTEM_DEV_BASE 里（audit 轨保持自己的纪律不动）
   const dev = appService.slice(appService.indexOf('const SYSTEM_DEV_BASE = ['), appService.indexOf('const SYSTEM_DEV_BASE = [') + 6000);
   assert.match(dev, /子代理能并行就并行、能后台就后台/, '策略行必须在 dev 轨提示词里');
