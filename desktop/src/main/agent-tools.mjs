@@ -1690,8 +1690,11 @@ export function createAgentTools({ repoRoot, permissions, recordAudit = async ()
       // yield_ms：模型可以调大（明确要原地等结果）或传 0（这条必须等完）。
       const yieldRaw = args?.yield_ms ?? args?.yieldMs;
       const yieldMs = bgTasks ? (yieldRaw === undefined || yieldRaw === null ? Number(commandYieldMs) || 0 : Math.max(0, Number(yieldRaw) || 0)) : 0;
+      // 0.34.6（用户：「所有的东西都要有目的」）：转后台的命令必须带一句人话目的（label），
+      // 任务面板和完成通知都显示它；模型没传时退回原始命令，不额外猜。
+      const bgLabel = String(args?.label || '').trim().replace(/\s+/g, ' ').slice(0, 80);
       const onDetach = bgTasks ? ({ pid, reason, stdout, stderr, kill }) => {
-        const r = bgTasks.start({ sessionId, kind: 'command', title: cmd.replace(/\s+/g, ' ').slice(0, 160), command: cmd, detail: String(runCwd || ''), pid, stop: kill });
+        const r = bgTasks.start({ sessionId, kind: 'command', title: bgLabel || cmd.replace(/\s+/g, ' ').slice(0, 160), command: cmd, detail: String(runCwd || ''), pid, stop: kill });
         if (r?.error) return null;
         const id = r.id;
         if (stdout) bgTasks.append(id, stdout);

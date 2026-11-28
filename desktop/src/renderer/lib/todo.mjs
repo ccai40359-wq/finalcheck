@@ -278,14 +278,34 @@ export function todoFromMessage(msg) {
 
 /**
  * 整段消息里「当前会话最新一份」验收单：浮层只显示这一份，消息流里同一份不再内联渲染。
- * 从后往前扫：新回合还没写验收单时继续显示上一份（清单在当前会话内保持常驻）。
+ * 从后往前扫：新回合还没写验收单时继续显示上一份——但 AI 已经搁置它就不算了（见下）。
+ * 0.34.6（用户实测：AI 早就转去干别的、清单一直挂在右上角）：清单被**搁置**后浮层自动收起，
+ * 退回消息流里的历史行（点开历史还在）。「搁置」的判定是确定性的：清单最后一次更新之后，
+ * 存在一条用户消息 + 一条**已结束**的助手回复（非流式），且这轮回复里没有更新清单——
+ * 即「AI 完整回答了一轮却没碰它」。AI 之后写了新清单（下标前移）浮层自动重新点亮；
+ * 正在流式的回合不算结束（还没机会写清单，不收）。
  * @returns {{index:number, items:Array, error:string|null, live:boolean}|null}
  */
 export function latestTodoFromMessages(messages) {
   const list = Array.isArray(messages) ? messages : [];
   for (let i = list.length - 1; i >= 0; i--) {
     const found = todoFromMessage(list[i]);
-    if (found) return { index: i, ...found };
+    if (!found) continue;
+    if (todoAbandonedAfter(list, i)) return null;
+    return { index: i, ...found };
   }
   return null;
+}
+
+/** 清单最后一次更新之后，AI 是否已经完整回答过一轮却没更新它（＝搁置） */
+function todoAbandonedAfter(list, todoIndex) {
+  let sawUser = false;
+  for (let i = todoIndex + 1; i < list.length; i++) {
+    const m = list[i];
+    if (!m) continue;
+    // Steer 是用户在同回合中途注入的，不算新的一轮
+    if (m.role === 'user' && !m.steer) { sawUser = true; continue; }
+    if (m.role === 'assistant' && sawUser && !m.streaming) return true;
+  }
+  return false;
 }

@@ -22,7 +22,8 @@ test('界面：用户消息上有「恢复文件」入口，先弹计划确认�
   const ml = read('desktop/src/renderer/components/MessageList.jsx');
   assert.match(ml, /onRewindFiles\(keepTurns\)/);
   const app = read('desktop/src/renderer/App.jsx');
-  assert.match(app, /onRewindFiles=\{busy \? null : openRewindFiles\}/);
+  // 0.34.6 打字提速：回调走 latest-ref（msgApi），busy → null 的语义不变（运行中不给入口）
+  assert.match(app, /onRewindFiles=\{busy \? null : msgApi\.onRewindFiles\}/);
   assert.match(app, /<RewindFilesDialog state=\{rewindBox\}/);
   const dlg = read('desktop/src/renderer/components/RewindFilesDialog.jsx');
   assert.match(dlg, /disabled=\{loading \|\| applying \|\| actionable === 0\}/, '没有可恢复的文件时确认按钮不可点');

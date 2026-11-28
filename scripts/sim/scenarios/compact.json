@@ -104,8 +104,8 @@
     {
       "send": "好的",
       "expect": {
-        "summaryRequests": 0,
-        "firstCacheRatioMin": 0.9
+        "summaryRequests": 1,
+        "note": "0.34.6 修双摘要后：turns[6] 的巨型 user 消息仍在保留区，本回合开始超阈值 → 合法压缩一次（旧期望 0 次编码了双摘要 bug 的副作用）"
       }
     },
     {

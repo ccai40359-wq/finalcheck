@@ -30,7 +30,7 @@ export const BG_OUTPUT_CAP = 200000;          // 后台命令输出收集上限�
 export const BG_NOTICE_TAIL = 4000;           // 通知里带的输出尾巴
 export const BG_REPORT_MAX = 12000;           // 子代理报告进上下文的上限（和前台 spawn_agent 一致）
 export const BG_WAIT_MAX_MS = 10 * 60 * 1000; // background_task wait 最长等 10 分钟
-export const BG_MAX_RUNNING = 6;              // 每个会话同时在跑的后台任务上限
+export const BG_MAX_RUNNING = 10;             // 每个会话同时在跑的后台任务上限（0.34.6：6→10，多子代理并发；网关限流由供应商配置兜底）
 export const BG_KEEP_FINISHED = 30;           // 每个会话保留的已结束任务条数（面板 / 查询用）
 
 const TERMINAL = new Set(['done', 'failed', 'stopped']);

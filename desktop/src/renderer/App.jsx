@@ -1,7 +1,7 @@
 // DeepSeek 式对话主界面：左栏品牌 + 会话列表，中央聊天流（工具调用渲染富卡片）
 // 仅两个视图：「对话」（默认）与「模型设置」（左下角齿轮进入）
 // 拆分后 App 只保留状态 / effects / handler 与编排；展示与弹层在 components/ 下按职责分开。
-import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import SettingsPage from './pages/SettingsPage.jsx';
 import { api } from './lib/ui.jsx';
 import { mergeRunningRun, shouldReloadSessionFromDisk } from './lib/session-restore.mjs';
@@ -2194,9 +2194,11 @@ export default function App() {
   // 实时提问卡与历史 trace 的互斥渲染（同 callId 只出一张卡）：
   // - 已收尾的 ask 以历史卡为准，藏掉实时卡；
   // - 仍在进行的 ask 以实时卡为准，从展示用消息里摘掉它的历史 trace 条目。
-  const activeAskCards = activeId ? askCards.filter((c) => c.sessionId == null || c.sessionId === activeId) : [];
-  const visibleAskCards = filterAskCardsByTrace(activeAskCards, messages);
-  const chatMessages = hideAskTracesForCards(messages, visibleAskCards);
+  // 0.34.6 打字回显提速：这三个派生数组每个键击都会重算一次（O(消息数)），且每次的新引用
+  // 会把 memo 后的 MessageList 拖进重渲染——按依赖 memo（两个函数都是纯函数，依赖齐全）。
+  const activeAskCards = useMemo(() => (activeId ? askCards.filter((c) => c.sessionId == null || c.sessionId === activeId) : []), [askCards, activeId]);
+  const visibleAskCards = useMemo(() => filterAskCardsByTrace(activeAskCards, messages), [activeAskCards, messages]);
+  const chatMessages = useMemo(() => hideAskTracesForCards(messages, visibleAskCards), [messages, visibleAskCards]);
   // 0.32.0：右栏里显示的那个子代理 tab 用哪份 target。
   // 优先用当前 active 的子代理 tab 自己的 payload（用户可能在多个子代理 tab 间切换）；
   // 拿不到再退回 stepView（保持与旧行为一致）。
@@ -2206,9 +2208,23 @@ export default function App() {
     : stepView;
   // 用量页自动刷新开关：任一会话正在跑（含后台/工作流）就 5 秒轮询，全部停下即停
   const anyRunning = Object.values(runningIds).some(Boolean);
-  const providers = (cfg?.providers || []).filter((p) => p.enabled !== false);
+  // 0.34.6：providers 传给了 memo 后的 MessageList——内联 filter 每键新引用会打穿 memo，按 cfg memo
+  const providers = useMemo(() => (cfg?.providers || []).filter((p) => p.enabled !== false), [cfg]);
   const activeProv = (cfg?.providers || []).find((p) => p.id === sessCfg.providerId) || providers[0] || null;
   const activeModel = (sessCfg.model && modelIdsOf(activeProv).includes(sessCfg.model)) ? sessCfg.model : (modelIdsOf(activeProv)[0] || '');
+
+  // 0.34.6 打字回显提速：MessageList 套 React.memo，回调走 latest-ref——包装函数引用稳定（memo 生效，
+  // 敲键盘 setInput 不再把整棵消息树拖进重渲染），每次 render 仍把最新闭包挂进 ref（不会调到过期闭包）。
+  const msgApiRef = useRef(null);
+  const msgApi = useMemo(() => ({
+    onSendRecover: (text) => msgApiRef.current?.send({ text, pasted: [] }),
+    onOpenArtifact: (...a) => msgApiRef.current?.openArtifact(...a),
+    onEditMessage: (...a) => msgApiRef.current?.editMessage(...a),
+    onOpenStep: (...a) => msgApiRef.current?.openStep(...a),
+    onRewindFiles: (...a) => msgApiRef.current?.openRewindFiles(...a),
+    onAskUserAnswer: (...a) => msgApiRef.current?.answerAskUser(...a),
+  }), []);
+  msgApiRef.current = { send, openArtifact, editMessage, openStep, openRewindFiles, answerAskUser };
 
   return (
     <div className="app-root h-full flex flex-col bg-base text-ink">
@@ -2288,11 +2304,11 @@ export default function App() {
                 openWorkflowRaw={openWorkflowRaw} setOpenWorkflowRaw={setOpenWorkflowRaw}
                 scrollRef={scrollRef} stickRef={stickRef} jumpingRef={jumpingRef}
                 showJump={showJump} setShowJump={setShowJump} y={y}
-                onSendRecover={(text) => send({ text, pasted: [] })}
-                onOpenArtifact={openArtifact} onEditMessage={editMessage} onOpenStep={openStep} onRewindFiles={busy ? null : openRewindFiles}
+                onSendRecover={msgApi.onSendRecover}
+                onOpenArtifact={msgApi.onOpenArtifact} onEditMessage={msgApi.onEditMessage} onOpenStep={msgApi.onOpenStep} onRewindFiles={busy ? null : msgApi.onRewindFiles}
                 compaction={compaction}
                 askCards={visibleAskCards}
-                onAskUserAnswer={answerAskUser}
+                onAskUserAnswer={msgApi.onAskUserAnswer}
               />
             ) : (
               <EmptyState y={y} demoBusy={demoBusy} setDemoBusy={setDemoBusy}

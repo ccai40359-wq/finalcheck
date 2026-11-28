@@ -634,6 +634,15 @@ button, [role="button"] {
 @keyframes fc-msg-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 .fc-msg-in { animation: fc-msg-in .28s var(--fc-ease) both; }
 
+/* 点「编辑」回到那条消息时的锚点高亮：金圈一闪后淡出（MessageList 的 jumpToMessage 挂 .fc-msg-flash）。
+   画在气泡上而不是行容器上：行容器是全宽的，圈上去看不出是哪一条。 */
+@keyframes fc-msg-flash {
+  0% { box-shadow: 0 0 0 2px rgb(var(--fc-gold) / 0.55), 0 0 22px rgb(var(--fc-gold) / 0.28); }
+  70% { box-shadow: 0 0 0 2px rgb(var(--fc-gold) / 0.3), 0 0 16px rgb(var(--fc-gold) / 0.12); }
+  100% { box-shadow: 0 0 0 0 rgb(var(--fc-gold) / 0); }
+}
+.fc-msg-flash .glass-bubble { animation: fc-msg-flash 1.8s var(--fc-ease) both; }
+
 /* 下拉/弹层里的行：统一悬停底色与圆角 */
 .fc-menu-row { transition: background-color .16s var(--fc-ease), color .16s var(--fc-ease); }
 

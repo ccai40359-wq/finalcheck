@@ -6,6 +6,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.34.6] - 2026-11-28
+
+This release makes finding history and waiting on results faster: Edit jumps straight back to the message, and typing in long sessions no longer lags.
+
+### Added
+
+- **Edit jumps back to the message**: clicking the pencil on an earlier message scrolls the view to it with a gold highlight and refills the composer — no more scrolling up by hand.
+- **Abandoned checklists dismiss themselves**: when the AI answers a full turn without updating the pinned checklist, the panel folds back into the message history; a new checklist lights it up again.
+- **Background commands state their purpose**: backgrounded commands carry a plain-language label (e.g. "download model weights", "switch pip mirror") shown in the task panel and completion notices, instead of a raw command.
+
+### Fixed
+
+- **Context compaction no longer fires twice**: the once-per-turn compaction at long-conversation turn starts could re-summarize the boundary it had just written (an extra request and an extra boundary); now it compacts at most once per turn.
+
+### Improved
+
+- **The AI now parallelizes and uses the background proactively**: medium-or-larger tasks get split into 2-5 independent subtasks dispatched as multiple subagents in one reply; long-running work goes straight to the background (per-session concurrency cap raised from 6 to 10) and reports back automatically.
+- **Local model tasks prefer the GPU**: before running local OCR / speech / transcoding it checks the GPU and picks the CUDA / nvenc build when an NVIDIA card is present.
+- **Typing in long sessions no longer lags**: input echo dropped from ~20 ms to ~2.5 ms per keystroke and no longer slows down as the session grows (typing no longer re-renders the whole message tree).
+
 ## [0.34.5] - 2026-11-27
 
 This release teaches the AI to tell a question from a task, and background tasks no longer report false failures.

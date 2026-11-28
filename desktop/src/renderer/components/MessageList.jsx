@@ -91,7 +91,7 @@ function PastedTextBlock({ text }) {
   );
 }
 
-export default function MessageList({
+function MessageList({
   messages, activeId, providers, artifactPath, openWorkflowRaw, setOpenWorkflowRaw,
   scrollRef, stickRef, jumpingRef, showJump, setShowJump,
   y, onSendRecover, onOpenArtifact, onEditMessage, onOpenStep, onRewindFiles,
@@ -177,6 +177,60 @@ export default function MessageList({
       throw err;
     }
   };
+  // 点消息上的「编辑」先回到那条消息：滚动到视口中央 + 金圈高亮，再回填输入框。
+  // 与回到底部相反的方向：跳去历史消息必须主动退出跟随态（stickRef=false），
+  // 否则流式输出下一帧就把视口拽回底部，用户根本看不到自己正在编辑哪条。
+  // cv-off 同 jumpToBottom：屏幕外的行按 400px 占位，不挂 .cv-off 量/滚都会停在半路。
+  const jumpToMessage = (idx) => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const target = el.querySelector(`[data-midx="${idx}"]`);
+    if (!target) return;
+    // 高亮每次点击都重放：先摘 class，强制重绘再挂回（同一元素连点两次也要闪）
+    target.classList.remove('fc-msg-flash');
+    void target.offsetWidth;
+    target.classList.add('fc-msg-flash');
+    const host = el.getBoundingClientRect();
+    const box = target.getBoundingClientRect();
+    // 已经完整在视口内就不动滚动条（只高亮），避免无谓的滚动跳动
+    if (box.top >= host.top && box.bottom <= host.bottom) return;
+    cvOffReleaseRef.current?.();
+    stickRef.current = false; // 离开跟随态：流式输出不再抢滚动条（与手动往上滚同一语义）
+    jumpingRef.current = true; // 滚动期间不弹「回到底部」箭头
+    setShowJump(false);
+    el.classList.add('cv-off');
+    let released = false;
+    let timer = 0;
+    const release = () => {
+      if (released) return; // 幂等：scrollend / 兜底定时器 / 卸载 三条路径谁先到谁干活
+      released = true;
+      clearTimeout(timer);
+      el.removeEventListener('scrollend', onScrollEnd);
+      el.classList.remove('cv-off'); // 必须摘：留着等于整条会话永久全量渲染
+      if (cvOffReleaseRef.current === release) cvOffReleaseRef.current = null;
+      jumpingRef.current = false;
+      setShowJump(true); // 停在历史消息处、不在底部：「回到底部」箭头要回来
+    };
+    cvOffReleaseRef.current = release;
+    timer = setTimeout(release, 1600); // 与 jumpToBottom 同款兜底：smooth 不来 scrollend 时也收尾
+    // armed 门：点击**之前**别人滚动（探针设 scrollTop / 流式跟随每帧贴底）残留的 scrollend
+    // 是异步补发的，会落在监听注册之后、rAF 之前——不挡住它 release 就提前跑完，
+    // rAF 里 `if (released) return` 会把 scrollIntoView 整个跳掉（真机自检 2791→2791 的根因）。
+    let armed = false;
+    const onScrollEnd = () => { if (armed) release(); };
+    try {
+      el.addEventListener('scrollend', onScrollEnd, { passive: true });
+      // 等一帧再滚：class 刚加上，浏览器还没按真实高度重排（同 jumpToBottom 的理由）
+      requestAnimationFrame(() => {
+        if (released) return;
+        armed = true;
+        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      });
+    } catch (err) {
+      release(); // 异常路径也一定摘掉 .cv-off
+      throw err;
+    }
+  };
   return (
     <div className="flex-1 min-h-0 flex" data-testid="message-host">
       {/* 消息滚动列：验收单浮层 absolute 覆盖在本列内，不占布局宽度 */}
@@ -226,7 +280,7 @@ export default function MessageList({
               );
             }
             return (
-              <div key={mk} className={`group flex flex-col items-end ${i >= shown.length - 2 ? 'fc-msg-in' : ''}`}>
+              <div key={mk} data-midx={i} className={`group flex flex-col items-end ${i >= shown.length - 2 ? 'fc-msg-in' : ''}`}>
                 <div className={`glass-bubble max-w-[75%] rounded-2xl rounded-br-md px-3.5 py-2 text-sm break-words leading-relaxed ${wf || m.pasted?.length || hasSkills ? '' : 'whitespace-pre-wrap'}`}>
                   {m.pasted?.length ? (
                     <div className="min-w-0">
@@ -270,6 +324,7 @@ export default function MessageList({
                     className="p-1.5 rounded-md text-mute/55 hover:text-goldSoft hover:bg-lift/5 transition-colors"><IconCopy /></button>
                   <button title={t('编辑并从这条重开')}
                     onClick={() => {
+                      jumpToMessage(i); // 先回到那条消息（滚动+高亮），再回填输入框
                       if (m.pasted?.length) {
                         onEditMessage(i, typedSk?.tokenText || m.typed || '', keepTurns, u.files, m.pasted);
                       } else {
@@ -355,3 +410,8 @@ export default function MessageList({
     </div>
   );
 }
+
+// 0.34.6 打字回显提速：消息树是大头（长会话上千节点），memo 掉「敲一个键整棵树重调和」——
+// props 里值类型（messages/activeId/artifactPath/showJump/openWorkflowRaw…）浅比较即可挡住键击，
+// 回调由 App 侧 latest-ref 包装保持引用稳定（见 App.jsx 的 msgApi）。流式/切会话等真变化照常触发。
+export default React.memo(MessageList);
