@@ -44,16 +44,14 @@ function encode(v) {
   }
   return v;
 }
-function decode(v) {
-  if (Array.isArray(v)) return v.map(decode);
-  if (v && typeof v === 'object') {
-    if (typeof v.__fcb64 === 'string' && Object.keys(v).length === 1) return bytesFromB64(v.__fcb64);
-    const o = {};
-    for (const k of Object.keys(v)) o[k] = decode(v[k]);
-    return o;
-  }
-  return v;
+// 0.34.7 收到的 JSON 一次解析到位：只有真带二进制（"__fcb64"）才用 reviver 还原，否则原样 JSON.parse。
+// 以前是 r.json() 之后再把整棵对象树递归复制一遍——打开一个 7MB 的会话，手机上光这一步就要好几百毫秒。
+function parseWire(text) {
+  const str = String(text ?? '');
+  if (!str.includes('"__fcb64"')) return JSON.parse(str);
+  return JSON.parse(str, (_k, v) => (v && typeof v === 'object' && !Array.isArray(v) && typeof v.__fcb64 === 'string' && Object.keys(v).length === 1 ? bytesFromB64(v.__fcb64) : v));
 }
+async function readWire(r) { return parseWire(await r.text()); }
 
 // ---------------- 连接状态条（手机网络不稳时给个交代） ----------------
 let bar = null;
@@ -116,7 +114,7 @@ function handleMsg(msg) {
   if (!msg) return;
   if (msg.rpc) { settle(msg.rpc, msg); return; }
   if (msg.reset) { location.reload(); return; } // 断太久、事件缓冲已翻篇：整页重载，桌面界面会按引擎状态复原
-  if (msg.channel) dispatch(msg.channel, decode(msg.payload));
+  if (msg.channel) dispatch(msg.channel, msg.payload); // 已在 parseWire 里还原过二进制
 }
 async function fetchBig(seq) {
   for (let i = 0; i < 3; i++) {
@@ -125,7 +123,7 @@ async function fetchBig(seq) {
         method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + bearer },
         body: JSON.stringify({ seq })
       });
-      const j = await r.json();
+      const j = await readWire(r);
       if (j && j.gone) { location.reload(); return null; } // 太旧已被丢弃：重载复原
       return j;
     } catch { await new Promise((res) => setTimeout(res, 800 * (i + 1))); }
@@ -166,7 +164,7 @@ async function openEvents() {
     lastSeen = Date.now();
     if (m.lastEventId) lastEventId = m.lastEventId;
     let msg;
-    try { msg = JSON.parse(m.data); } catch { return; }
+    try { msg = parseWire(m.data); } catch { return; }
     if (msg.ka) return;
     // 大事件（截图、长输出）服务端只发占位，这里按 seq 单独取；排进同一条队列，保证事件顺序不乱
     inbox = inbox.then(() => (msg.big ? fetchBig(msg.seq) : msg)).then(handleMsg, () => {});
@@ -187,7 +185,7 @@ function settle(id, msg) {
   const d = deferred.get(id);
   if (!d) return;
   deferred.delete(id);
-  if (msg.ok) d.resolve(decode(msg.result));
+  if (msg.ok) d.resolve(msg.result);
   else d.reject(new Error(msg.error || '操作失败'));
 }
 
@@ -197,7 +195,7 @@ async function fetchDeferred(id) {
       method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + bearer },
       body: JSON.stringify({ id })
     });
-    const j = await r.json();
+    const j = await readWire(r);
     if (j.pending) return;
     settle(id, j);
   } catch { /* 下次重连再取 */ }
@@ -214,7 +212,34 @@ function unpaired() {
 const RETRY_WAITS = [1000, 2000, 4000];
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// 0.34.7 打开会话 / 切项目这类要等电脑回数据的：顶部一条细进度条，点了就知道「在加载」
+const SLOW_UI_CALLS = new Set(['finalcheck:sessions:open', 'finalcheck:projects:select', 'finalcheck:projects:sessions']);
+let busyCount = 0;
+let busyEl = null;
+let busyTimer = null;
+function busy(on) {
+  busyCount = Math.max(0, busyCount + (on ? 1 : -1));
+  clearTimeout(busyTimer);
+  if (busyCount > 0) {
+    busyTimer = setTimeout(() => {
+      if (!busyEl) {
+        busyEl = document.createElement('div');
+        busyEl.setAttribute('data-testid', 'fc-mobile-busy');
+        busyEl.className = 'fc-mobile-busy';
+        document.body.appendChild(busyEl);
+      }
+      busyEl.style.display = 'block';
+    }, 150);
+  } else if (busyEl) busyEl.style.display = 'none';
+}
+
 async function rpc(channel, args) {
+  if (!SLOW_UI_CALLS.has(channel)) return rpcRaw(channel, args);
+  busy(true);
+  try { return await rpcRaw(channel, args); } finally { busy(false); }
+}
+
+async function rpcRaw(channel, args) {
   const canRetry = isReadCall(channel);
   let r;
   for (let attempt = 0; ; attempt++) {
@@ -235,10 +260,10 @@ async function rpc(channel, args) {
     await sleep(RETRY_WAITS[attempt]);
   }
   if (r.status === 401) { unpaired(); throw new Error('需要重新配对'); }
-  const j = await r.json().catch(() => ({ ok: false, error: '电脑返回了无法识别的内容' }));
+  const j = await readWire(r).catch(() => ({ ok: false, error: '电脑返回了无法识别的内容' }));
   if (j.deferred) return new Promise((resolve, reject) => deferred.set(j.deferred, { resolve, reject }));
   if (!j.ok) throw new Error(j.error || '操作失败');
-  return decode(j.result);
+  return j.result;
 }
 
 // ---------------- 浏览器里替代 Electron 原生能力 ----------------

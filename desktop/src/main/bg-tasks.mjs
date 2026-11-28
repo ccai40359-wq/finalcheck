@@ -220,11 +220,15 @@ export function createBgTaskManager({ now = () => Date.now(), onChange = () => {
   }
 
   /** 结束了但还没告诉模型的任务（取走即标记送达）。 */
-  function takeUndelivered(sessionId) {
+  // only：只取这几个 id（background_task wait 等到的那几个）；不传 = 本会话全部。
+  // 0.34.7 以前 wait 一个任务会把同会话别的已结束任务也标成已送达 → 它们的完成通知丢了。
+  function takeUndelivered(sessionId, only = null) {
     const sid = String(sessionId ?? '');
+    const pick = Array.isArray(only) ? new Set(only.map(String)) : null;
     const out = [];
     for (const task of tasks.values()) {
       if (task.sessionId !== sid || !TERMINAL.has(task.status) || task.delivered) continue;
+      if (pick && !pick.has(task.id)) continue;
       task.delivered = true;
       out.push({ ...summary(task), notice: noticeText(task) });
     }

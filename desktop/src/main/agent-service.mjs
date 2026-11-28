@@ -284,7 +284,7 @@ export const TOOLS_SCHEMA = [
   {type: 'function',function: {name: 'view_image',description: '看图：把本地图片（png/jpg/gif/webp/bmp）直接给你看。用于检查自己生成的图、用户/项目里的截图与设计稿。大图会自动缩到 1600px 宽。最多一次 4 张（paths）。',parameters: {type: 'object',properties: {path: {type: 'string',description: '图片绝对路径'},paths: {type: 'array',items: {type: 'string'},description: '可选：一次看多张（≤4）'}}}}},
   {type: 'function',function: {name: 'capture_screenshot',description: '截图并直接给你看：本地 html/svg（渲染后的真实效果）、pdf / pptx / docx 的某一页、mp4/webm/mov 的某一帧、http(s) 网页。做 PPT / 网页 / 视频 / 海报等视觉产物时，生成后必须用它逐页/关键帧看效果，发现文字溢出、重叠、错位、配色问题就改，改完再截一次确认——不要只凭代码判断「应该没问题」。**写完 HTML/CSS/JS 一定要先截图看一遍再交**，尤其是自己起的服务（传 http://127.0.0.1:端口）。**顺序纪律**：先把产物做完并起好服务，再集中看一轮；**同一产物的自检最多 3 轮**，之后必须交付并列出「已知未修的细节」。只在**严重问题**（内容被截断、元素重叠、白屏、错位、文字压到别的元素）时才改；编号字重、轴线粗细、1px 圆角这类**像素级微调不要反复截图复查**——一次改完就过，不要再截第二轮确认。',parameters: {type: 'object',properties: {target: {type: 'string',description: '本地文件绝对路径或 http(s) 网址'},page: {type: 'number',description: 'pdf / pptx / docx 的页码（从 1 开始）'},time: {type: 'number',description: '视频的时间点（秒）'},width: {type: 'number',description: '视口/输出宽度，默认 1280（PPT 16:9 建议 1600）'},height: {type: 'number',description: '网页视口高度，默认 800'},full_page: {type: 'boolean',description: '网页截整页（长页面）'},wait_ms: {type: 'number',description: '网页加载后再等多少毫秒再截（动画/字体），默认 800-1200'}},required: ['target']}}},
   {type: 'function',function: {name: 'remember_project',description: '把「下次任何人打开这个项目都成立」的事实写进项目根 AGENTS.md（项目宪法，不是任务日志）。按 kind 分节：overview 项目概况（用途/技术栈/部署）、commands 常用命令（启动/构建/测试/重新生成产物）、layout 目录约定（源码与产物各在哪、哪些是生成的不要手改）、rules 规范与禁忌（长期偏好、不许做的事）、acceptance 验收口径（默认档位、必须过的闸）。会被直接拒绝的写法：行号、进度（已修好/这次/下一步）、会变的数量（13 页/6 个脚本）、产物文件清单、超过 220 字。例：✅「宣传 PPT 源文件在 deck/src/（HTML+CSS），产物输出到 deck/out/，不要手改产物」（layout）✅「重建 PPT：python deck/tools/build_deck.py，改完跑 deck/tools/qa_*.py」（commands）❌「产物 deck/out/finalcheck-deck.pptx（13 页）、finalcheck-deck.pdf、slides/*.png；质检脚本 qa_layout.py、qa_contrast.py…」。已有条目过时了就传 replace（旧条目里的一段原文）就地更新，不要再追加一条。跨目录改别的项目时传 dir 写进那个项目。',parameters: {type: 'object',properties: {fact: {type: 'string',description: '一个长期成立的事实，一句话（≤220 字），带可核对的目录/命令/配置名'},kind: {type: 'string',enum: ['overview','commands','layout','rules','acceptance'],description: '写进哪一节（默认 rules）'},replace: {type: 'string',description: '可选：要更新的旧条目里的一段原文（从 AGENTS.md 复制）；传了就替换那一条而不是追加'},dir: {type: 'string',description: '要记住的项目根绝对路径（可选）。跨目录场景必传：用户让你改 A 项目、但当前会话绑的是 B，就传 A 的路径，记忆写进 A 的 AGENTS.md'}},required: ['fact']}}},
-  { type: 'function', function: { name: 'run_command', description: '在本机执行 shell 命令。**统一是 Git Bash 一种语法**（2026-11-17 决策：ACL 沙箱默认关闭，不再有 cmd 这条路径；bash 语法在这里全部可用）。\n可用写法：`ls -la`、`grep -rn`、`cat`、`head -n`、`tail -n`、`wc -l`、`sed`、`awk`、`find . -name "*.py"`、`sort`、`uniq`、`diff`、`tr`、`cut`、`rm -rf`、`mv`、`cp`、`mkdir -p`、`for f in ...; do ...; done`、`$(...)`、`2>/dev/null`、`| head`、`&&`、`||`、`~`（会展开成家目录）。\n⚠️ 不要写 cmd 语法，这些在 bash 里都不对：`dir /b`（用 `ls -la`）、`type`（用 `cat` 或 read_file）、`findstr`（用 `grep -rn` 或 grep_code）、`2>nul`（用 `2>/dev/null`）、`if exist`（用 `test -e`）、`cd /d`（用 `cd`）。\n⚠️ 硬性分工（违反会被应用层拒绝）：① 读文件必须用 read_file（自带行号+分页），禁止 cat/head/tail 读文件；② 搜代码必须用 grep_code（返回 file:line:内容），禁止 grep 搜代码内容；③ 碰敏感路径（~/.ssh、~/.aws、~/.gnupg、私钥文件）、项目外路径、删除项目外文件时，系统会**自动弹卡问用户**，用户同意就执行、不同意会告诉你——你照常调用即可，不要自己先放弃，也不要换写法绕过；用户拒绝后按用户的意思调整做法。\n灾难性命令（rm -rf /、format、dd 等）会被黑名单拦截。起常驻服务（node server.mjs / 端口监听 / uvicorn）必须用 background:true 立刻拿 PID，不要用 nohup & 再等它返回；连续 120s 无输出的命令会自动转后台并返回 PID（进程不杀）。主会话里命令跑过 30s 还没结束会自动转成后台任务（进程不停、输出继续收集，结束时系统自动把结果发给你），你可以先做别的或结束本轮；必须原地等完的传 yield_ms 调大（或 0=一直等）。凡是要转后台的命令（background:true，或可能跑很久被自动转后台的）**必须传 label** 用一句话写明这条命令在干什么——后台任务面板和完成通知都靠它向用户说明目的，不传就只显示原始命令。', parameters: { type: 'object', properties: { command: { type: 'string', description: '要执行的命令（Git Bash 语法）' }, cwd: { type: 'string', description: '工作目录（可选）。' + PATH_JSON_HINT }, timeout_ms: { type: 'number', description: '超时毫秒（可选）；不传则不限时跑到命令结束（连续 120s 无输出会转后台返回 PID），传了按该毫秒数到点终止' }, background: { type: 'boolean', description: 'true=立刻在后台启动并返回 PID（起常驻服务用），不等待输出' }, label: { type: 'string', maxLength: 80, description: '一句话说明这条命令在干什么（如「换 pip 源」「下载模型权重」「安装 triton」）。转后台的任务在面板和完成通知里显示它；前台跑完就结束的命令不需要传' }, idle_ms: { type: 'number', description: '可选：多久无输出算卡住并转后台，默认 120000；0=关闭该兜底' }, yield_ms: { type: 'number', description: '可选（仅主会话）：跑多久还没结束就转成后台任务，默认 30000；0=不转后台、一直等到结束' } }, required: ['command'] } } }
+  { type: 'function', function: { name: 'run_command', description: '在本机执行 shell 命令。**统一是 Git Bash 一种语法**（2026-11-17 决策：ACL 沙箱默认关闭，不再有 cmd 这条路径；bash 语法在这里全部可用）。\n可用写法：`ls -la`、`grep -rn`、`cat`、`head -n`、`tail -n`、`wc -l`、`sed`、`awk`、`find . -name "*.py"`、`sort`、`uniq`、`diff`、`tr`、`cut`、`rm -rf`、`mv`、`cp`、`mkdir -p`、`for f in ...; do ...; done`、`$(...)`、`2>/dev/null`、`| head`、`&&`、`||`、`~`（会展开成家目录）。\n⚠️ 不要写 cmd 语法，这些在 bash 里都不对：`dir /b`（用 `ls -la`）、`type`（用 `cat` 或 read_file）、`findstr`（用 `grep -rn` 或 grep_code）、`2>nul`（用 `2>/dev/null`）、`if exist`（用 `test -e`）、`cd /d`（用 `cd`）。\n⚠️ 硬性分工（违反会被应用层拒绝）：① 读文件必须用 read_file（自带行号+分页），禁止 cat/head/tail 读文件；② 搜代码必须用 grep_code（返回 file:line:内容），禁止 grep 搜代码内容；③ 碰敏感路径（~/.ssh、~/.aws、~/.gnupg、私钥文件）、项目外路径、删除项目外文件时，系统会**自动弹卡问用户**，用户同意就执行、不同意会告诉你——你照常调用即可，不要自己先放弃，也不要换写法绕过；用户拒绝后按用户的意思调整做法。\n灾难性命令（rm -rf /、format、dd 等）会被黑名单拦截。起常驻服务（node server.mjs / 端口监听 / uvicorn）必须用 background:true 立刻拿 PID，不要用 nohup & 再等它返回；连续 120s 无输出的命令会自动转后台并返回 PID（进程不杀）。主会话里命令跑过 30s 还没结束会自动转成后台任务（进程不停、输出继续收集，结束时系统自动把结果发给你），你可以先做别的或结束本轮；必须原地等完的传 yield_ms 调大（或 0=一直等）。凡是要转后台的命令（background:true，或可能跑很久被自动转后台的）**必须传 label** 用一句话写明这条命令在干什么——后台任务面板和完成通知都靠它向用户说明目的，不传就只显示原始命令。', parameters: { type: 'object', properties: { command: { type: 'string', description: '要执行的命令（Git Bash 语法）' }, cwd: { type: 'string', description: '工作目录（可选）。' + PATH_JSON_HINT }, timeout_ms: { type: 'number', description: '超时毫秒（可选）；不传则不限时跑到命令结束（连续 120s 无输出会转后台返回 PID），传了按该毫秒数到点终止' }, background: { type: 'boolean', description: 'true=立刻在后台启动并返回 PID（起常驻服务用），不等待输出' }, parallel: { type: 'boolean', description: '可选：true=和同一次回复里其它标了 parallel:true 的命令同时跑（各跑各的、不读彼此输出的脚本 / 下载 / 测试）。有先后关系的（先 mkdir 再 cd、装完再跑）不要标' }, label: { type: 'string', maxLength: 80, description: '一句话说明这条命令在干什么（如「换 pip 源」「下载模型权重」「安装 triton」）。转后台的任务在面板和完成通知里显示它；前台跑完就结束的命令不需要传' }, idle_ms: { type: 'number', description: '可选：多久无输出算卡住并转后台，默认 120000；0=关闭该兜底' }, yield_ms: { type: 'number', description: '可选（仅主会话）：跑多久还没结束就转成后台任务，默认 30000；0=不转后台、一直等到结束' } }, required: ['command'] } } }
 ];
 
 // review_diff：只读 git 改动审查。单列一份而不是塞进 TOOLS_SCHEMA：
@@ -357,7 +357,7 @@ export const AGENT_ONLY_TOOLS_SCHEMA = [
   // 可多次调用更新状态；done 必须带 evidence，failed/skipped 会被报告闸要求写进 ## Not covered。
   { type: 'function', function: { name: 'todo_write', description: '维护本轮任务的验收单（勾选清单）：2-8 条，每条必须给 acceptance（怎么算做完）；可多次调用按 id 更新 status。开工时先写一遍，做完一条就把 status 改成 done 并补 evidence（文件:行 / 命令输出 / HTTP 复现）。不能做或跳过的条目标 failed/skipped，最终回答的 ## Not covered 必须点名它们。' + TODO_CC_RULES_TEXT, parameters: { type: 'object', properties: { items: { type: 'array', minItems: 2, maxItems: 8, description: '2-8 条任务（只有一两个目标时写 2 条也行，不要硬凑）；id 稳定（更新状态时按 id 合并）', items: { type: 'object', properties: { id: { type: 'string', description: '稳定标识（如 s1 / step-1）' }, task: { type: 'string', description: '这一步要做什么（一句话）' }, acceptance: { type: 'string', description: '验收标准（必填）：怎么算这一步完成，可检查的条件' }, status: { type: 'string', enum: ['pending', 'running', 'done', 'failed', 'skipped'], description: '状态，默认 pending' }, evidence: { type: 'string', description: '证据（done 时必填）：文件:行 / 命令输出摘要 / HTTP 复现' } }, required: ['id', 'task', 'acceptance'] } } }, required: ['items'] } } },
   // 0.33.5 后台任务：命令跑久了自动转后台 / spawn_agent background:true 派出的子代理，都在这里查、等、停
-  { type: 'function', function: { name: 'background_task', description: '查看 / 等待 / 停止后台任务（run_command 跑太久自动转成的后台命令、background:true 启动的服务、background:true 派出的子代理）。后台任务结束时系统会自动把结果送给你，一般不需要轮询；只有确实要原地等结果、或要看中途输出、或要停掉时才用。', parameters: { type: 'object', properties: { action: { type: 'string', enum: ['list', 'output', 'wait', 'stop'], description: 'list=列出本会话后台任务；output=看某个任务目前的输出（子代理则给报告）；wait=原地等它结束（最多 timeout_ms）；stop=停止' }, id: { type: 'string', description: '任务 id，如 bg-3（list 不需要）' }, timeout_ms: { type: 'number', description: 'wait 最多等多久，默认 120000，上限 600000' }, tail_chars: { type: 'number', description: 'output 返回末尾多少字符，默认 8000' } }, required: ['action'] } } }
+  { type: 'function', function: { name: 'background_task', description: '查看 / 等待 / 停止后台任务（run_command 跑太久自动转成的后台命令、background:true 启动的服务、background:true 派出的子代理）。后台任务结束时系统会自动把结果送给你，一般不需要轮询；只有确实要原地等结果、或要看中途输出、或要停掉时才用。', parameters: { type: 'object', properties: { action: { type: 'string', enum: ['list', 'output', 'wait', 'stop'], description: 'list=列出本会话后台任务；output=看某个任务目前的输出（子代理则给报告）；wait=原地等它结束（最多 timeout_ms；传 ids 一起等多个）；stop=停止' }, id: { type: 'string', description: '任务 id，如 bg-3（list 不需要）' }, ids: { type: 'array', items: { type: 'string' }, description: '仅 wait：同时等多个任务（如 ["bg-1","bg-2"]），全部结束才返回' }, timeout_ms: { type: 'number', description: 'wait 最多等多久，默认 120000，上限 600000' }, tail_chars: { type: 'number', description: 'output 返回末尾多少字符，默认 8000' } }, required: ['action'] } } }
 ];
 export const AGENT_TOOLS_SCHEMA = [...TOOLS_SCHEMA, GREP_CODE_SCHEMA, GLOB_FILES_SCHEMA, LIST_DIR_SCHEMA, WEB_FETCH_SCHEMA, WEB_SEARCH_SCHEMA, ...AGENT_ONLY_TOOLS_SCHEMA];
 
@@ -448,8 +448,16 @@ const SYSTEM_DEV_BASE = [
   '修审计发现时按技能修：audit_project 报出的每类问题（S3 密钥轮换 / S1 路由鉴权 / S2 注入 / S4 依赖 / A1 权限收敛 / A2 提示注入 / A3 沙箱限额 / A4 数据脱敏 / H1 交接 / O1 运维）先 read_playbook(topic=对应编号 41-50) 读修复技能，按其「修复步骤」执行、按其「验证」段重跑对应 gate 确认归零。',
   '多条独立发现并行修：≥3 条互不依赖的审计发现（不同文件/不同规则）→ run_workflow 扇出修复——每条发现一个独立子代理（prompt 写明「先 read_playbook(topic=对应编号) 读修复技能再动手」），depends_on 全部空数组并行；最后一步汇总「各发现修没修好 + 重跑 gate 的结果」。修复失败的发现如实列「未修好 + 原因」，不许为了结论好看硬说修完。',
   '需要并行查证 / 多路改造时用 run_workflow 分头跑（步骤 3-8 个，每步一个独立子代理；不需要上游结果就写 depends_on: [] 并行）；单文件小改动不要用工作流。每步 name 用职位名（4-10 字），不许写「步骤 1」。',
-  '子代理能并行就并行、能后台就后台（效率优先，不等用户开口）：中等以上的任务先**拆成 2-5 份互不依赖的子任务**（比如「A 调研接口 + B 统计数据 + C 写脚本」各一个 spawn_agent），在同一次回复里全部派出去——它们真并行跑，绝不是排队；你绝不为省事自己一个人串行做完所有部分。预计要跑几分钟以上的（大范围调研、测一大块功能、和当前问题无关的长活、用户说「后台」「你先去查着」）直接传 background:true 派到后台——你接着干自己的活或结束本轮，做完系统自动把报告送回来；多个后台子代理可以同时跑（每会话最多 10 个）。只有一两次 read_file / grep_code 就能搞定的小事才自己做。重要结论派 type=verify 的子代理独立复核。',
-  '本地模型类任务用显卡（N 卡跑同一件事比 CPU 快几十倍）：要跑本地 OCR / 语音识别 / 本地 LLM / 图像生成 / 视频转码这类活之前，先用 nvidia-smi 查这台机器的显卡型号和显存；有 N 卡且显存装得下，就装 / 选 CUDA / GPU 版本来跑（pip 装 GPU 版、模型放显存、ffmpeg 用 h264_nvenc 之类），别用 CPU 版慢慢磨；没有 N 卡或显存不够再退 CPU，并一句话告诉用户为什么没用上显卡。',
+  // 0.34.7（用户：「时间和效率最重要，token 无所谓；能分给几个人同时做的绝不一个人串行做」）。
+  // 0.34.6 的「能并行就并行」是一句口号：中性提示词实测 4 题 spawn_agent=0。弱模型照具体做法做，不会自己统筹，
+  // 所以这里写成可照抄的分工法；每回合的「本回合调度」提醒（dispatchNote）再在用户消息后面点一次名。
+  '分工提速（要你动手的任务，效率第一，token 不用省）：动手前先看这件事能不能分给几个人同时做——\n'
+    + '· 小事（改一两处、一条命令、一两个文件就完）→ 自己直接做，别拆。\n'
+    + '· 有 2 份以上互不依赖的工作（不同文件 / 不同模块 / 不同脚本 / 不同数据源 / 不同调研方向）→ **第一次回复就在同一次回复里调用多个 spawn_agent**，每人负责一块（2-5 个；只读调查 type:"explore"，要改文件 type:"general"；prompt 写清负责的文件范围、要交回什么，范围互不重叠）。它们同时跑，你只做分工、汇总和最后验证。不要自己一块一块按顺序做。\n'
+    + '· 几条互不依赖的命令 / 脚本（各跑各的、不读彼此的输出）→ 同一次回复里多条 run_command，每条都传 parallel:true，它们同时跑；要跑很久的传 background:true + label，再用 background_task(action:"wait", ids:[…]) 一起等。\n'
+    + '· 后一步要用前一步的结果、或都要改同一个文件 → 只能一个人做，自己按顺序做，不要硬拆。\n'
+    + '· 和当前回答无关的长活（大范围调研、测一大块功能、用户说「后台」「你先去查着」）→ spawn_agent 传 background:true 派到后台，做完系统自动把报告送回来。',
+  '本地模型用显卡（同样的活 N 卡比 CPU 快几十倍）：跑本地 OCR / 语音识别 / 本地 LLM / 图像生成 / 视频转码时，看「运行环境」里的显卡信息：有 N 卡且显存装得下，就选 CUDA / GPU 版本（pip 装 GPU 版的 torch / paddle / onnxruntime-gpu，模型放显存，ffmpeg 用 h264_nvenc）；装好后用一行代码确认真的在用 GPU（如 torch.cuda.is_available()）。没有 N 卡或显存不够才用 CPU，并一句话说明原因。',
   '长任务提速：互不依赖的读文件 / 查看 / 命令放在同一次回复里一起发，不要一次只调一个；视觉迭代成批看（一次 view_image 最多 4 张），问题列全一次改完再整体验证；已经确认没问题的部分不要重复检查。',
   '看图与截图：只有你自己做出来的视觉产物（PPT / 网页 / 视频 / 海报 / 图表）才要 capture_screenshot 检查文字溢出、重叠、错位；写完 HTML/CSS/JS 一定要先截图看一遍再交，不要只看代码就说「应该没问题」。自检有止损线：同一产物最多 3 轮自检，只修严重问题（内容截断、元素重叠、白屏、错位）。浏览别人的网站、看用户发来的图时，只说用户关心的内容，不要评价排版、对齐、有没有溢出。',
   '打开网页让用户自己登录 / 扫码：打开页面、截一张图让用户看到当前状态，然后结束本轮，等用户操作完回来说——不要循环截图、轮询等登录完成。',
@@ -1056,6 +1064,67 @@ export function classifyTool(name) {
   return PARALLEL_TOOLS.has(String(name ?? '')) ? 'parallel' : 'serial';
 }
 
+// 0.34.7 run_command 默认串行（同一次回复里的命令常有先后：mkdir 再 cd、装完再跑）。
+// 模型明确标了 parallel:true 的（「各跑各的、不读彼此的输出」）和别的 parallel 调用合成一批同时跑。
+function callMode(tc) {
+  const name = String(tc?.function?.name ?? '');
+  if (name === 'run_command') {
+    try {
+      const a = JSON.parse(String(tc?.function?.arguments || '{}'));
+      if (a && (a.parallel === true || a.parallel === 'true')) return 'parallel';
+    } catch { /* 参数坏了按串行走，由后面的参数校验报错 */ }
+    return 'serial';
+  }
+  return classifyTool(name);
+}
+
+// ---- 0.34.7 本回合调度：要动手的任务，在用户消息后面点一次名「能分工就分工」 ----
+// 为什么不只写在 system 里：0.34.6 中性提示词实测（4 题、最大一题 28 次工具 195 秒）spawn_agent 一次都没用；
+// 用户在消息里明说「用多个子代理并行」时它都照做。离用户消息最近的一条具体指令，这个模型最听。
+const HOLD_HINT = /(先别动|先不要动|别动手|不要动手|先不要改|不要改任何|别改代码|只给计划|只要计划|只做计划|先别开始|只回答|只是问问|先不要做)/;
+const PLAN_HINT = /(规划|计划|方案|思路|步骤清单|列个步骤|列一下步骤)/;
+const GO_HINT = /(开始吧|开始做|可以开始|按这个做|照这个做|照着做|做吧|动手吧|就这么做|去做吧|执行吧)/;
+const ASK_HINT = /(为什么|为啥|是不是|是否|怎么样|好不好|行不行|有没有必要|什么是|是什么|什么意思|啥意思|区别|哪个好|原理|解释一下|你觉得|你认为|回答我|直接回答)/;
+const STRONG_DO = /(帮我|给我|替我|麻烦你|你去|去把|^请|^把|^将)/;
+const DO_HINT = /(写个|写一个|写一下|写成|写入|写好|重写|改成|改一下|改好|改掉|修改|修好|修一下|修复|修掉|做个|做一个|做一下|做成|做好|跑一下|跑通|跑起来|跑个|跑完|安装|装上|装好|下载|部署|创建|新建|搭建|生成|实现|重构|拆成|拆分|迁移|统计|测试|测一下|整理|梳理|清理|转码|识别|翻译|导出|导入|爬取|抓取|分析一下|调研|搜集|收集|优化|升级|打包|发布|运行|启动|配置|批量|提取|合并|删除|删掉)/;
+export function turnIntent(text) {
+  const s = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!s) return 'ask';
+  if (GO_HINT.test(s)) return 'do';                    // 「开始 / 做吧」= 计划之后的放行
+  if (HOLD_HINT.test(s)) return 'ask';
+  if (PLAN_HINT.test(s)) return 'ask';                 // 「帮我规划一下」也是先给计划
+  if (STRONG_DO.test(s)) return 'do';
+  if (/[?？]\s*$/.test(s) || /(吗|呢|么)[。.!！\s]*$/.test(s) || ASK_HINT.test(s)) return 'ask';
+  return DO_HINT.test(s) ? 'do' : 'ask';
+}
+
+export const DISPATCH_NOTE = '【本回合调度（效率第一，token 不用省）】这条是要你动手的任务。先用一句话判断规模，再按下面选一种做法：\n'
+  + '1. 小事（改一两处、一条命令、一两个文件就完）→ 自己直接做，别拆。\n'
+  + '2. 有 2 份以上互不依赖的工作（不同文件 / 不同模块 / 不同脚本 / 不同数据源 / 不同调研方向）→ **这一次回复就调用多个 spawn_agent**（2-5 个，同一次回复里一起发，它们同时跑）：每个负责一块，prompt 写清负责的文件范围和要交回什么，范围互不重叠；只读调查 type:"explore"，要改文件 type:"general"。你只做分工、汇总和最后验证，不要自己一块一块按顺序做。\n'
+  + '3. 几条互不依赖的命令 / 脚本 → 同一次回复里多条 run_command，每条都传 parallel:true，它们同时跑（跑很久的传 background:true + label，再用 background_task(action:"wait", ids:[…]) 一起等）。\n'
+  + '4. 后一步要用前一步的结果、或都要改同一个文件 → 自己按顺序做，不要硬拆。\n'
+  + '跑本地模型（OCR / 语音 / LLM / 图像 / 转码）用显卡，见「运行环境」。';
+
+/** 要动手的任务 → 返回本回合调度提醒；提问 / 做计划 / 「先别动」→ null（保持 0.34.5「问就答」） */
+export function dispatchNote(text) {
+  return turnIntent(text) === 'do' ? DISPATCH_NOTE : null;
+}
+
+function lastUserText(messages) {
+  for (let i = (messages?.length || 0) - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m?.role !== 'user') continue;
+    if (typeof m.content === 'string') return m.content;
+    if (Array.isArray(m.content)) return m.content.map((p) => (typeof p?.text === 'string' ? p.text : '')).join(' ');
+    return '';
+  }
+  return '';
+}
+
+// 一个人连续做了这么多次工具调用、一次都没分工 → 提醒一次「剩下的能不能分出去」
+export const SOLO_NUDGE_CALLS = 8;
+export const SOLO_NUDGE = '你已经一个人按顺序做了 {n} 次工具调用，还没有分工。看一眼**剩下**要做的：如果还有 2 份以上互不依赖的部分（不同文件 / 模块 / 脚本 / 调研方向），现在就在同一次回复里调用多个 spawn_agent 分出去同时做（prompt 写清范围和交付物，要改文件用 type:"general"），你只做汇总和验证；互不依赖的命令同一次回复发、都传 parallel:true。如果剩下的只能顺序做，或者马上就做完了，就继续自己做，不用解释。';
+
 function automationFamily(name) {
   if (name.startsWith('browser_')) return 'browser';
   if (name.startsWith('computer_')) return 'computer';
@@ -1595,9 +1664,9 @@ async function runToolCalls(toolCalls, { tools, onEvent, toolConcurrency, signal
   const results = [];
   let i = 0;
   while (i < toolCalls.length) {
-    if (classifyTool(toolCalls[i]?.function?.name) === 'parallel') {
+    if (callMode(toolCalls[i]) === 'parallel') {
       let j = i + 1;
-      while (j < toolCalls.length && classifyTool(toolCalls[j]?.function?.name) === 'parallel') j++;
+      while (j < toolCalls.length && callMode(toolCalls[j]) === 'parallel') j++;
       const start = i;
       const batch = await mapLimited(toolCalls.slice(start, j), limit, (tc, offset) => run(tc, start + offset));
       results.push(...batch);
@@ -1768,6 +1837,12 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
     /* 压缩失败不阻断对话 */
   }
   const convo = [{ role: 'system', content: systemText }, ...viewMessages];
+  // 0.34.7 本回合调度：dev 轨、主代理（有 spawn_agent）、这条消息是要动手的 → 用户消息后面点一次名「能分工就分工」
+  const dispatchOn = roleMode === 'dev' && typeof tools?.spawn_agent === 'function' && !!dispatchNote(lastUserText(messages));
+  if (dispatchOn) convo.push({ role: 'system', content: DISPATCH_NOTE });
+  let soloCalls = 0;
+  let spawnedThisTurn = false;
+  let soloNudged = false;
   // Steer：回合进行中用户从界面注入的消息。每次发起模型请求前 drain，追加为一条 user 消息
   // （不重置已完成的工具结果，直接计入本轮上下文），并推送给渲染层画「已注入」气泡。
   const applySteer = () => {
@@ -1913,7 +1988,8 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
   // 边界通过 compact-boundary 事件交给 ipc-agent 落库（带「裁到哪一步」），下一轮从库里重建时同形。
   const compactInTurn = async () => {
     const curUser = convo.map((m) => isRealUserText(m)).lastIndexOf(true);
-    const floor = Math.max(1, curUser + 1);
+    // 0.34.7：紧跟用户消息的「本回合调度」提醒算用户消息的一部分，不算本轮步骤（否则回合开头会被当成已有步骤、重复压缩）
+    const floor = Math.max(1, curUser + 1 + (convo[curUser + 1]?.content === DISPATCH_NOTE ? 1 : 0));
     const keepBudget = Math.floor(Math.min(tokenBudget.compactThreshold, speedThreshold) * 0.25);
     let keepFrom = convo.length;
     let used = 0;
@@ -2420,6 +2496,17 @@ export async function runAgentTurn({ config, messages, confirmedHosts = [], onTo
     });
     // 工具返回的图片：所有 tool 消息之后补一条多模态消息（tool 消息必须紧跟 assistant 的 tool_calls）
     appendToolImages(convo, toolResults, { vision: liveConfig.vision });
+    // ---- 0.34.7 一个人串行做太久 → 提醒一次「剩下的能不能分出去」（不判停、一回合一次）----
+    if (dispatchOn) {
+      const spawnedNow = toolCalls.some((tc) => tc?.function?.name === 'spawn_agent');
+      if (spawnedNow) spawnedThisTurn = true;
+      else soloCalls += toolCalls.length;
+      if (!spawnedThisTurn && !soloNudged && soloCalls >= SOLO_NUDGE_CALLS) {
+        soloNudged = true;
+        convo.push({ role: 'user', content: `[系统] ${SOLO_NUDGE.replace('{n}', String(soloCalls))}` });
+        onEvent?.({ kind: 'warning', internal: true, message: t('已经一个人连续做了 {n} 次工具调用，提醒把剩下互不依赖的部分分给子代理', { n: soloCalls }) });
+      }
+    }
     // ---- 死磕检测（2026-11-20）：换着法子试、但撞的是同一个错误 → 提示跳出圈 ----
     // 与上面的「同参数重复调用」互补：那个抓原地打转，这个抓「改了 5 次还是同一个报错」。
     // 不判停（用户明确不要超时/不要硬断），只提示；同一指纹最多提 2 次，避免刷屏。

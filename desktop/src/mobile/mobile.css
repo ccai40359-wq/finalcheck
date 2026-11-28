@@ -88,3 +88,8 @@ html.fc-touch .w-\[240px\] .group > button.absolute { bottom: auto !important; t
 
 /* 消息正文 15px，窄屏读着不累；其它字号不动 */
 html.fc-narrow .md { font-size: 15px; }
+
+/* 0.34.7 打开会话 / 切项目时顶部的细进度条（bridge-electron.mjs busy()） */
+.fc-mobile-busy { position: fixed; left: 0; right: 0; top: env(safe-area-inset-top, 0px); height: 2px; z-index: 2147483001; pointer-events: none;
+  background: linear-gradient(90deg, transparent, #deb06a, transparent); background-size: 40% 100%; background-repeat: no-repeat; animation: fc-busy 0.9s linear infinite; }
+@keyframes fc-busy { from { background-position: -40% 0; } to { background-position: 140% 0; } }

@@ -6,6 +6,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ver
 Each version uses three sections: ### Added / ### Fixed / ### Improved. A section with no content is omitted rather than left as an empty heading.
 Keep each item to one sentence, describe what users actually notice, and avoid internal jargon.
 
+## [0.34.7] - 2026-11-28
+
+This release makes the AI better at doing things at the same time: independent commands run together, and it knows what GPU you have. Switching sessions on the phone is faster too.
+
+### Added
+
+- **Independent commands run at the same time**: several unrelated commands the AI sends in one reply (e.g. three independent scripts) now run concurrently instead of one after another; a three-script task went from 69s to 53s.
+- **Wait on several background tasks at once**: after sending several long jobs to the background, the AI can wait for all of them together and then continue.
+- **The AI knows your GPU**: the runtime environment now states your GPU model and memory (or that there is no NVIDIA GPU), so local OCR / LLM work defaults to the GPU build.
+
+### Fixed
+
+- **Waiting on one background task no longer swallows others' completion notices**: previously, notices for other tasks that finished at the same time were consumed too.
+
+### Improved
+
+- **Work requests remind the AI to split the work**: tasks that need action now remind the AI to run independent parts as parallel sub-agents, send long jobs to the background, and do inherently sequential work itself; it gets one more reminder after 8 solo steps. Small tasks and plain questions are handled directly as before. (Note: the "AI parallelizes on its own" item in 0.34.6 was not reliable in testing; the current model still usually doesn't spawn sub-agents by itself, and this is still being worked on.)
+- **Faster session switching on the phone**: tool output and reasoning are trimmed before sending (message text untouched; the largest session transfers about a quarter of the data), only the latest 30 messages render first with earlier ones a tap away, desktop-side compression no longer stalls, and a progress bar shows while loading.
+
 ## [0.34.6] - 2026-11-28
 
 This release makes finding history and waiting on results faster: Edit jumps straight back to the message, and typing in long sessions no longer lags.

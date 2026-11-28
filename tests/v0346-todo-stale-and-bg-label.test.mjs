@@ -133,14 +133,13 @@ test('打字回显提速：MessageList memo + App 侧 latest-ref 回调 + 派生
   assert.match(app, /const providers = useMemo\(/, 'providers 必须 memo（内联 filter 的新引用会打穿 memo）');
 });
 
-test('效率策略：dev 轨提示词强制「并行 + 后台」子代理用法', () => {
+test('效率策略：dev 轨提示词写明「分工 + 后台」子代理用法（0.34.7 改成可照做的分工法）', () => {
   const appSvc = read('desktop/src/main/agent-service.mjs');
-  assert.match(appSvc, /子代理能并行就并行、能后台就后台/, 'dev 轨必须有激进的并行后台策略行');
-  assert.match(appSvc, /background:true 派到后台/, '长活直接派后台');
-  assert.match(appSvc, /每会话最多 10 个/, '并发上限写进提示词');
   // 钉住策略行在 SYSTEM_DEV_BASE 里（audit 轨保持自己的纪律不动）
-  const dev = appService.slice(appService.indexOf('const SYSTEM_DEV_BASE = ['), appService.indexOf('const SYSTEM_DEV_BASE = [') + 6000);
-  assert.match(dev, /子代理能并行就并行、能后台就后台/, '策略行必须在 dev 轨提示词里');
+  const dev = appSvc.slice(appSvc.indexOf('const SYSTEM_DEV_BASE = ['), appSvc.indexOf('const SYSTEM_DEV_BASE = [') + 8000);
+  assert.match(dev, /分工提速/, 'dev 轨必须有分工策略行');
+  assert.match(dev, /同一次回复里调用多个 spawn_agent/, '互不依赖的部分同一次回复派多个子代理');
+  assert.match(dev, /background:true 派到后台/, '长活直接派后台');
 });
 
 test('后台并发上限提到 10（多子代理同时跑）', () => {

@@ -91,6 +91,9 @@ function PastedTextBlock({ text }) {
   );
 }
 
+const isPhone = () => typeof window !== 'undefined' && !!window.__FC_MOBILE__; // 渲染时再读：桥在界面模块之前挂这个标记
+const PHONE_WINDOW = 30;
+
 function MessageList({
   messages, activeId, providers, artifactPath, openWorkflowRaw, setOpenWorkflowRaw,
   scrollRef, stickRef, jumpingRef, showJump, setShowJump,
@@ -109,6 +112,11 @@ function MessageList({
     ),
     [messages, providers, language]
   );
+  // 0.34.7 手机端只先画最近 PHONE_WINDOW 条：长会话（179 条、两千多步工具）一次全画完，手机上切会话要卡好几秒。
+  // 更早的点顶部按钮再画；下标保持原样（data-midx、编辑跳转都按原下标找）。电脑端照旧全画。
+  const [olderShown, setOlderShown] = useState(0);
+  useEffect(() => { setOlderShown(0); }, [activeId]);
+  const renderFrom = isPhone() ? Math.max(0, shown.length - PHONE_WINDOW - olderShown) : 0;
 
   // 贴底滚动期间临时关掉 content-visibility 的收尾函数（幂等）。
   // 存 ref 是为了让「再点一次」和「组件卸载」都先把上一轮收尾：上一轮的定时器若迟到，
@@ -239,7 +247,16 @@ function MessageList({
         onScroll={handleScroll}>
         {/* 全宽文档式排版：消息/输入区同宽（≥90% 容器宽） */}
         <div className="w-full max-w-[96%] mx-auto space-y-4">
+          {renderFrom > 0 && (
+            <div className="flex justify-center">
+              <button type="button" data-testid="show-older" onClick={() => setOlderShown((n) => n + PHONE_WINDOW)}
+                className="rounded-full border border-lift/10 px-4 py-1.5 text-[12px] text-[rgb(var(--fc-muted,155_149_138))]">
+                {t('显示更早的 {n} 条消息', { n: renderFrom })}
+              </button>
+            </div>
+          )}
           {shown.map((m, i) => {
+            if (i < renderFrom) return null;
             // React 身份键：绝不能用数组下标——切会话时两条会话的消息数组重叠，
             // 下标相同会让 React 复用组件实例，ProcessTimeline 的展开 state 就被跨会话继承，
             // 表现为「切回来所有过程全收起」（round9 用户实测根因之②）。

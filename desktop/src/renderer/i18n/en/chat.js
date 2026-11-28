@@ -444,4 +444,5 @@ export const EN_CHAT = {
   '现在没有后台任务。': 'No background tasks right now.',
   '这个会话还没有项目目录': 'This session has no project folder yet',
   '关闭': 'Close',
+  '显示更早的 {n} 条消息': 'Show {n} earlier messages',
 };

@@ -16,6 +16,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import zlib from 'node:zlib';
 import { createTunnel, validTarget, validPublicUrl, normPublicUrl } from './tunnel.mjs';
+import { slimSessionForPhone } from './slim-session.mjs';
 
 export const KEY_MASK = '••••••••';
 export const DEFAULT_PORT = 7788;
@@ -461,7 +462,14 @@ export function createMobileAccess({ dataRoot, staticDir, configFile, log = () =
   // 弱网 / 隧道下 JSON 压缩后通常只剩 1/5～1/10：会话历史、配置、大事件都走这里
   function sendBody(res, status, body, headers) {
     const buf = Buffer.isBuffer(body) ? body : Buffer.from(String(body), 'utf8');
-    if (res.__gz && buf.length > 1024) {
+    if (res.__gz && buf.length > 64 * 1024) {
+      // 0.34.7 大响应（会话历史几 MB）异步压缩：gzipSync 在电脑主进程上同步跑几百毫秒，期间电脑界面和手机事件流一起卡
+      zlib.gzip(buf, { level: 6 }, (err, gz) => {
+        if (err) { res.writeHead(status, headers); res.end(buf); return; }
+        res.writeHead(status, { ...headers, 'content-encoding': 'gzip', vary: 'accept-encoding' });
+        res.end(gz);
+      });
+    } else if (res.__gz && buf.length > 1024) {
       res.writeHead(status, { ...headers, 'content-encoding': 'gzip', vary: 'accept-encoding' });
       res.end(zlib.gzipSync(buf, { level: 6 }));
     } else {
@@ -592,7 +600,10 @@ export function createMobileAccess({ dataRoot, staticDir, configFile, log = () =
     const channel = body.channel;
     const args = decodeIn(body.args);
     if (typeof channel !== 'string' || !/^(finalcheck|fc-mobile):[\w:.-]{1,80}$/.test(channel) || !Array.isArray(args) || args.length > 8) throw new HttpError(400, '操作格式无效');
-    const work = channel === 'fc-mobile:list-dirs' ? () => listDirs(args[0]) : () => call(channel, args);
+    // 0.34.7 手机打开会话只拿瘦身版（工具输出 / 思考截短，正文一字不动）：最大会话 gzip 后 2.2MB → 约 0.6MB
+    const work = channel === 'fc-mobile:list-dirs' ? () => listDirs(args[0])
+      : channel === 'finalcheck:sessions:open' ? async () => slimSessionForPhone(await call(channel, args))
+      : () => call(channel, args);
     const id = crypto.randomBytes(9).toString('base64url');
     const entry = { at: Date.now(), done: false };
     const p = Promise.resolve().then(work).then(

@@ -2363,6 +2363,22 @@ ${expr.slice(0, 400)}`, ...approvalScope });
         const items = bgTasks.list(sessionId).map(({ id: tid, kind, title, status, ms, exitCode, pid }) => ({ id: tid, kind, title, status, secs: Math.round(ms / 1000), ...(exitCode !== undefined ? { exitCode } : {}), ...(pid ? { pid } : {}) }));
         return { tasks: items, note: items.length ? '' : '当前会话没有后台任务' };
       }
+      // 0.34.7 一起等多个（并行跑的几个脚本 / 子代理）：同时等，全部结束或超时才返回
+      if (action === 'wait' && Array.isArray(a.ids) && a.ids.length) {
+        const ids = [...new Set(a.ids.map((x) => String(x || '').trim()).filter(Boolean))].slice(0, 20);
+        const ms = Math.max(1000, Math.min(600000, Number(a.timeout_ms) || 120000));
+        const mine = ids.filter((x) => bgTasks.get(x)?.sessionId === String(sessionId ?? ''));
+        const missing = ids.filter((x) => !mine.includes(x));
+        const waited = await Promise.all(mine.map((x) => bgTasks.wait(x, ms, ctx?.signal || signal || null).then((r) => [x, r])));
+        const undelivered = bgTasks.takeUndelivered(sessionId, mine);
+        const tasks = waited.map(([x, r]) => {
+          if (!r.done) return { id: x, status: 'running' };
+          const notice = undelivered.find((n) => n.id === x);
+          return { id: x, status: r.task.status, ...(r.task.exitCode !== undefined ? { exitCode: r.task.exitCode } : {}), result: notice?.notice || bgTasks.noticeText(x) };
+        });
+        const running = tasks.filter((x) => x.status === 'running').length;
+        return { tasks, ...(missing.length ? { missing } : {}), ...(running ? { note: `还有 ${running} 个没结束（等了 ${Math.round(ms / 1000)}s）。它们结束时系统会自动通知你。` } : {}) };
+      }
       if (!id) return { error: 'background_task 缺少 id（先用 action:"list" 看有哪些）' };
       const info = bgTasks.get(id);
       if (!info || info.sessionId !== String(sessionId ?? '')) return { error: `没有这个后台任务：${id}` };
@@ -2375,7 +2391,7 @@ ${expr.slice(0, 400)}`, ...approvalScope });
         const r = await bgTasks.wait(id, ms, ctx?.signal || signal || null);
         if (!r.done) return { id, status: 'running', note: `等了 ${Math.round(ms / 1000)}s 还没结束。它结束时系统会自动通知你，不必一直等。` };
         // 已经原地等到了：结果直接给，不再另发通知
-        const notice = bgTasks.takeUndelivered(sessionId).find((x) => x.id === id);
+        const notice = bgTasks.takeUndelivered(sessionId, [id]).find((x) => x.id === id);
         return { id, status: r.task.status, ...(r.task.exitCode !== undefined ? { exitCode: r.task.exitCode } : {}), result: notice?.notice || bgTasks.noticeText(id) };
       }
       return { error: `未知 action：${action}（可用 list / output / wait / stop）` };

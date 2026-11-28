@@ -29,7 +29,7 @@ test('运行环境：只到天、带星期和 shell', () => {
   assert.match(note, /Git Bash/);
   assert.equal(note, runtimeEnvNote(new Date(2026, 10, 27, 0, 1), 'win32'), '同一天文本不变（前缀缓存）');
   assert.match(runtimeEnvNote(new Date(2026, 10, 29), 'linux'), /星期日.*Linux/);
-  assert.match(src('main/ipc/ipc-agent.mjs'), /content: runtimeEnvNote\(\)/);
+  assert.match(src('main/ipc/ipc-agent.mjs'), /content: runtimeEnvNote\(new Date\(\), process\.platform, gpu\)/); // 0.34.7 带显卡
 });
 
 test('后台命令：bash 能写进日志文件（以前 append 句柄让 echo 退出码 1、ls 退出码 2、没有输出）', { skip: process.platform !== 'win32' }, async () => {
